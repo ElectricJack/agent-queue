@@ -4,10 +4,20 @@ tags: [implementation, cli, mcp, api, auth, prime, surface]
 
 # `aq` Surface — Implementation Spec
 
-**Status:** Draft — approved direction (2026-08-19)
-**Related:** [[../design/aq-surface]] (design), [[../design/session-runtime]], [[../design/work-graph]], [[../design/supervisor-agent]], [[../design/feature-pauses]], [[../design/trust-and-ops]], [[../../analysis/framework-overhaul-todo]]
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
 
-Design decisions live in [[../design/aq-surface]]; this document is the build plan. All code
+**Status:** Draft — approved direction (2026-08-19)
+**Related:** [../design/aq-surface](../design/aq-surface.md) (design), [../design/session-runtime](../design/session-runtime.md), [../design/work-graph](../design/work-graph.md), [../design/supervisor-agent](../design/supervisor-agent.md), [../design/feature-pauses](../design/feature-pauses.md), [../design/trust-and-ops](../design/trust-and-ops.md), [../../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md)
+
+Design decisions live in [../design/aq-surface](../design/aq-surface.md); this document is the build plan. All code
 is async-first, ruff line-length 100, py312. Every new state-changing operation is a
 `CommandHandler` command returning `{"success": bool, ...}`.
 
@@ -116,7 +126,7 @@ Section builders in `sections.py` reuse `extract_section()` from `src/prompt_bui
 for pulling `## Role` from profile markdown — do not duplicate it. Spec refs (context type
 `spec_ref`) are resolved to the referenced file + heading and inlined.
 
-**Consumers.** (1) `_cmd_prime` (§3). (2) [[../design/session-runtime]]'s prompt-file writer
+**Consumers.** (1) `_cmd_prime` (§3). (2) [../design/session-runtime](../design/session-runtime.md)'s prompt-file writer
 imports `PrimeRenderer` directly (same process) and writes
 `doc.to_markdown()` → `<work_dir>/.aq/prompt.md`, then sets `AQ_STARTUP_PROMPT_DELIVERED=1`
 in the session env.
@@ -134,14 +144,14 @@ allowlist exactly):
 | `prime` | `task_id?`, `session_id?`, `work_dir?` | resolves task from request scope when omitted; returns `{"success": True, "body", "sections", "source", "tokens_est"}` |
 | `get_schema` | — | `{"success": True, "schema_version": 1, "enums": {...}}` — introspects enums from `src/models.py` + work-graph/session enums |
 | `task_show` | `task_id` | task + work-state + deps + gates + context refs (single round trip; composes existing queries) |
-| `task_set` | `task_id`, `branch?`, `pr_url?`, `work_dir?`, `note?`, `labels_add?`, `labels_remove?`, `meta?` | work-state contract writes; **no status transitions** (state machine owned by [[../design/work-graph]]) |
+| `task_set` | `task_id`, `branch?`, `pr_url?`, `work_dir?`, `note?`, `labels_add?`, `labels_remove?`, `meta?` | work-state contract writes; **no status transitions** (state machine owned by [../design/work-graph](../design/work-graph.md)) |
 | `task_close` | `task_id`, `outcome`, `failure_class?`, `work_outcome?`, `commit?`, `notes?` | validates enums via `get_schema` source, delegates transition to work-graph's `transition_task`; emits `task.closed` |
 | `task_heartbeat` | `task_id?` | refreshes `agents.last_heartbeat` / lease; returns `lease_expires_at` |
 | `task_handoff` | `subject?`, `detail?`, `auto: bool` | writes `task_context(type=handoff)`; non-auto also emits `session.restart_requested` on the EventBus |
 
-`message_send|message_inbox|message_reply` are implemented by [[../design/supervisor-agent]];
-`memory_save|memory_search` pause behavior by [[../design/feature-pauses]];
-`session_*` by [[../design/session-runtime]]. This spec only requires their names to match
+`message_send|message_inbox|message_reply` are implemented by [../design/supervisor-agent](../design/supervisor-agent.md);
+`memory_save|memory_search` pause behavior by [../design/feature-pauses](../design/feature-pauses.md);
+`session_*` by [../design/session-runtime](../design/session-runtime.md). This spec only requires their names to match
 the inventory. All new commands are auto-exposed via MCP pass 3
 (`src/mcp_registration.py:142` `_discover_all_commands`) — add explicit rich schemas to
 `src/tools/definitions.py` for the task allowlist commands so task-scope schemas stay tight
@@ -181,8 +191,13 @@ class SessionTokenStore:
     async def revoke_expired(self) -> int          # cascade housekeeping step
 ```
 
-Mint/revoke are called by [[../design/session-runtime]] at session start/end (in-process —
+Mint/revoke are called by [../design/session-runtime](../design/session-runtime.md) at session start/end (in-process —
 no HTTP hop). A `revoke_expired()` sweep joins the existing 5s cascade housekeeping.
+The sweep is rate-limited to once per minute. Before deletion it renews valid
+elevated credentials nearing expiry for the same live named supervisor launch,
+as specified in [authentication mechanics](../design/aq-surface.md#71-mechanics-owned-here).
+Renewal changes only `expires_at` and evicts the corresponding cache entry;
+neither expiry nor revocation can be undone by presenting an old bearer.
 
 **Revocation window (decided; was API-1).** `validate()` serves its in-memory
 cache until the row's `expires_at` and does not re-read the database on every
@@ -263,6 +278,8 @@ SCHEMA_VERSION = 1
 def envelope(data: Any, *, total: int | None = None) -> dict
     # list data → pagination {returned, total or len(data), truncated}
 def error_envelope(code: str, message: str) -> dict
+def to_jsonable(value: Any) -> JSONValue
+    # recursive typed-model/Pydantic/dataclass/Enum/date conversion; omit Unset fields
 def emit(ctx: click.Context, data: Any, *, entity: str | None = None, total: int | None = None)
     # honors ctx.obj["json"], ctx.obj["brief"], AQ_JSON_LEGACY=1
 
@@ -270,7 +287,27 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {"task": (...), "session": (...)
 ```
 
 Add a global `--brief` flag next to `--json` in the `cli` group (src/cli/app.py:145–167).
-All new commands and (incrementally) existing ones route output through `emit()`.
+All daemon-backed handwritten commands and every command produced by
+`register_auto_commands()` route output through `emit()`. Formatter registry metadata is
+also the generated command's output metadata: `extract` identifies logical list data,
+`entity` selects the central brief projection, and `total`/`count` supplies pagination.
+This includes core-owned wrappers for internal plugin commands. `app.AQGroup` catches Click
+usage failures before invocation and emits the same error envelope with exit 2 in JSON mode.
+`legacy_data=` lets generated list commands restore their exact pre-envelope backend wrapper
+under `AQ_JSON_LEGACY=1`.
+
+`src/cli/plugins.py` passes a context to every core-owned plugin command and uses `emit()` for
+read and mutation successes. Its direct database/loader/filesystem exception paths use
+`emit_error()` with `command_error` or `not_found`; JSON mutations never display Click
+confirmation prompts and require `--yes`. Human renderers build `Text` nodes for all
+plugin-controlled values so Rich markup cannot consume or restyle their contents.
+
+`reject_json_mode()` is the explicit boundary for local operator workflows whose output is
+multi-step process or migration progress (`start|stop|restart`, `db *`, `vault *`). It runs
+before work or prompting and returns one `usage_error` envelope. The only pass-through surfaces
+owned by core are documented protocol/process exceptions (`logs --json`, `prime --hook-json`,
+and `test`); CLI groups loaded from third-party `aq.plugins` entry points own their own output
+contract.
 
 ### 5.3 New command modules
 
@@ -351,7 +388,7 @@ In `run_mcp_server`, after the trusted `mcp` instance (src/embedded_mcp.py:86–
 | Key | Default | Purpose |
 |---|---|---|
 | `api_auth.token_ttl_hours` | `72` | backstop expiry for session tokens |
-| `api_auth.require_session_token` | `false` | reserved enforcement hook for [[../design/trust-and-ops]]; when true, agent-surface commands without a token are rejected for non-loopback clients |
+| `api_auth.require_session_token` | `false` | reserved enforcement hook for [../design/trust-and-ops](../design/trust-and-ops.md); when true, agent-surface commands without a token are rejected for non-loopback clients |
 | `mcp_server.task_scope.enabled` | `false` → `true` at Phase-3 flip | serve `/mcp-task` |
 | `mcp_server.task_scope.allowlist_extra` | `[]` | install-wide widening |
 | `mcp_server.inject_into_tasks` | existing | retargeted to `/mcp-task` when task scope enabled |
@@ -420,13 +457,13 @@ dicts). No new log stream, no new retention rules.
   `int`; error envelope shape; round-trips through `json.dumps`/`json.loads` with no custom
   encoder required.
 - **`emit()`:** `--json` prints the envelope; `--brief` trims via `apply_brief()` before
-  wrapping, only in JSON mode (human-mode `render` callbacks always receive the untrimmed
-  payload — see the note below); `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
+  wrapping and passes the same projection to human renderers; `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
   stdout plus a deprecation warning on **stderr** (verified with separate stdout/stderr
-  capture, not just combined output) and still composes with `--brief`; no-`render` fallback
-  dumps indented JSON; a `ctx.obj is None` context defaults to human mode without raising.
-- **`BRIEF_PROJECTIONS` completeness vs. models:** the five entities from design §4.2
-  (`task`, `session`, `gate`, `message`, `workspace`) are all present; `task`'s tuple matches
+  capture, not just combined output); exact legacy wrappers bypass `--brief`; no-`render`
+  fallback dumps indented JSON; a `ctx.obj is None` context defaults to human mode without
+  raising.
+- **`BRIEF_PROJECTIONS` completeness vs. models:** the entities from design §4.2
+  (`task`, `session`, `gate`, `message`, `workspace`, `agent`, `project`, `pool`) are present; `task`'s tuple matches
   the design table field-for-field; every field in `BRIEF_PROJECTIONS["task"]` is asserted to
   be an actual key produced by `TaskCommandsMixin._task_to_dict()` (the real `list_tasks` /
   `aq task list --brief` row shape) and to appear as an assigned key in `_cmd_get_task`'s
@@ -481,9 +518,9 @@ correct patch target.
 
 **Not covered in S0** (deferred to the phase that lands the backing subsystem): `aq inbox
 --inject`, `aq prime --hook-json`, `task details`'s renderer showing gate/work-state data
-(no query layer yet), exit-code `3`/`4` and `paused` mapping (no daemon-unreachable /
-out-of-scope / paused-memory path exercised by these commands yet), MCP `/mcp-task`
-integration.
+(no query layer yet), `paused` mapping, and MCP `/mcp-task` integration. Exit codes 1–4,
+generated and handwritten successes, Unicode/model normalization, and raw compatibility are
+covered by the cross-family CLI contract tests.
 
 ### 10.1 Later phases
 
@@ -516,7 +553,7 @@ integration.
 | `AQ_JSON_LEGACY=1` (env) | envelope on | removed one release after S0 |
 | `mcp_server.task_scope.enabled` | `false` | after S3 tests + session-runtime injects tokens |
 | `mcp_server.inject_into_tasks` → `/mcp-task` | tied to task_scope flag | same flip |
-| `api_auth.require_session_token` | `false` | [[../design/trust-and-ops]] decision; not this spec's flip |
+| `api_auth.require_session_token` | `false` | [../design/trust-and-ops](../design/trust-and-ops.md) decision; not this spec's flip |
 
 Rollback for each is config-only; no migration is destructive (`api_session_tokens` is
 additive).
@@ -529,7 +566,7 @@ additive).
 |---|---|
 | `--json` envelope breaks existing scripts | `AQ_JSON_LEGACY` escape + stderr deprecation warning; one-release window |
 | `tools/list` shows widened tools a session can't call | call-time guard is the boundary; error message names the CLI fallback; revisit per-session list filtering if agents thrash |
-| Bearer token readable in session env / process table | accepted for v1 (loopback-only daemon); scrubbing + exposure rules in [[../design/trust-and-ops]]; tokens narrow, never widen |
+| Bearer token readable in session env / process table | accepted for v1 (loopback-only daemon); scrubbing + exposure rules in [../design/trust-and-ops](../design/trust-and-ops.md); tokens narrow, never widen |
 | Unauthenticated local path remains fully privileged | by design (today's model); `require_session_token` reserved for hardening |
 | Two FastMCP session managers in one lifespan | combined `async with`; supervised-restart loop (src/embedded_mcp.py:128) resets both `_session_manager`s |
 | `register_auto_commands` name collisions with new groups | import order enforced + a unit test asserting hand-written groups win |

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TilesResponse } from "@aq/ts-client";
 import {
-  dropCarried, emptyStore, evictFar, mergeTiles, missingCells, nodeCount, retainForReflow,
+  dropCarried, emptyStore, evictFar, mergeTiles, missingCells, retainForReflow,
 } from "../layoutStore";
 
 const node = (id: string, x: number, y: number, w = 1, h = 1) => ({
@@ -18,7 +18,7 @@ describe("layoutStore", () => {
     expect([...s.cells.get("0:0")!]).toEqual(["a", "wide"]);
     expect([...s.cells.get("1:0")!]).toEqual(["wide"]);
     expect(missingCells(s, ["0:0", "2:0"])).toEqual(["2:0"]);
-    expect(nodeCount(s)).toBe(2);
+    expect(s.nodes.size).toBe(2);
   });
   it("resets on version change", () => {
     const s1 = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)]));
@@ -69,7 +69,7 @@ describe("layoutStore", () => {
     }));
     expect([...s.stubOverflow.keys()]).toEqual(["a|out"]);
   });
-  it("retains the drawn nodes across an expanded-set change so the reflow can animate", () => {
+  it("retains the drawn nodes across a scope change so the reflow can animate", () => {
     const first = mergeTiles(emptyStore(), ["0:0"], res([node("e", 0, 0), node("z", 0, 3.2)]));
     const next = retainForReflow(first);
     // Nothing is loaded any more -- every visible cell is refetched -- but
@@ -86,7 +86,7 @@ describe("layoutStore", () => {
     expect(merged.nodes.get("z")!.y).toBe(1.2);
   });
 
-  it("drops a carried node the new expanded set never sent back", () => {
+  it("drops a carried node the new generation never sent back", () => {
     const first = mergeTiles(emptyStore(), ["0:0"], res([node("e", 0, 0), node("c0", 0, 1)]));
     const merged = mergeTiles(retainForReflow(first), ["0:0"], res([node("e", 0, 0)]));
     // `c0` is inside `e`, which is now collapsed: it is still drawn ...
@@ -100,5 +100,45 @@ describe("layoutStore", () => {
   it("a root response marks the store whole so nothing is ever missing", () => {
     const s = { ...mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)])), whole: true };
     expect(missingCells(s, ["5:5", "9:9"])).toEqual([]);
+  });
+
+  it("evicts a worker the response no longer reports for a node it covers", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)], {
+      workers: [{ agent_id: "w1", name: "W1", docked_at: "a", in_collapsed: false }],
+    }));
+    expect(first.workers.map((w) => w.agent_id)).toEqual(["w1"]);
+    // A later response covering "a" again, with no workers, means w1 left.
+    const merged = mergeTiles(first, ["0:0"], res([node("a", 0, 0)], { workers: [] }));
+    expect(merged.workers).toEqual([]);
+  });
+
+  it("keeps a worker docked at a node outside the response's cells", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)], {
+      workers: [{ agent_id: "w1", name: "W1", docked_at: "a", in_collapsed: false }],
+    }));
+    // A response for a different cell, not covering "a", says nothing about w1.
+    const merged = mergeTiles(first, ["10:10"], res([node("far", 81, 81)], { workers: [] }));
+    expect(merged.workers.map((w) => w.agent_id)).toEqual(["w1"]);
+  });
+
+  it("moves a worker from one node to another within the same response", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("n1", 0, 0), node("n2", 1, 0)], {
+      workers: [{ agent_id: "w1", name: "W1", docked_at: "n1", in_collapsed: false }],
+    }));
+    const merged = mergeTiles(first, ["0:0"], res([node("n1", 0, 0), node("n2", 1, 0)], {
+      workers: [{ agent_id: "w1", name: "W1", docked_at: "n2", in_collapsed: false }],
+    }));
+    expect(merged.workers.length).toBe(1);
+    expect(merged.workers[0]?.docked_at).toBe("n2");
+  });
+
+  it("leaves gates unaffected by the worker-eviction rule", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)], {
+      gates: [{ id: "g1", gate_type: "approval", status: "open", task_ids: ["a"] }],
+    }));
+    // A later response covering "a" reports no gates, but gates aren't
+    // pruned by the new response-node-coverage rule -- only by node absence.
+    const merged = mergeTiles(first, ["0:0"], res([node("a", 0, 0)], { gates: [] }));
+    expect(merged.gates.map((g) => g.id)).toEqual(["g1"]);
   });
 });

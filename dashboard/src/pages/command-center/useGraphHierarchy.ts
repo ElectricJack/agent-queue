@@ -1,97 +1,118 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { createContext, createElement, useCallback, useContext, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  conflictDocument, dashboardDocumentKey, defaultDashboardDocument,
+  putDashboardDocument, useDashboardDocument, type CommandCenterPreferencesValue,
+  type DashboardDocument, type DashboardNamespace, type DashboardValue, type ManualPosition,
+  type PlaybookGraphViewValue,
+} from "../../api/dashboardState";
+import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
+import { PLAYBOOK_POSITION_SCOPE, type ManualPositions } from "./layout-v2/manualPositions";
 
-const EXPANDED_TASKS_KEY = "aq:command-center:expanded-task-ids:v1";
-const EXPANDED_FINISHED_KEY = "aq:command-center:expanded-finished-task-ids:v1";
-
-function readExpandedTaskIds(key = EXPANDED_TASKS_KEY): ReadonlySet<string> {
-  try {
-    const stored: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-    if (!Array.isArray(stored)) return new Set();
-    return new Set(stored.filter((id): id is string => typeof id === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-function persistExpandedTaskIds(ids: ReadonlySet<string>, key = EXPANDED_TASKS_KEY) {
-  try {
-    localStorage.setItem(key, JSON.stringify([...ids]));
-  } catch {
-    // The graph remains usable when storage is disabled or full.
-  }
-}
-
-/** Expand/collapse is the user's state, not the viewport's.
+/**
+ * The graph view's own server-backed state: how dense the cards are drawn and
+ * and where the operator has pinned playbook cards.
  *
- *  The set changes only through `toggleExpanded` (the container toggle on a
- *  task card) and is persisted so the choice survives zooms, live graph
- *  refreshes, tab switches and reloads. Zoom, pan and resize deliberately
- *  reach none of this: a viewport that is too small or too busy to draw every
- *  child should reduce visual detail, never restructure the graph. Semantic
- *  zoom, if it is ever wanted, has to arrive as an explicit opt-in toggle that
- *  defaults to off. `__tests__/expandedState.test.tsx` guards this.
- *
- *  The one non-click change is filter-driven and lives on the server: a
- *  filtered `tiles`/`list` request force-opens the ancestors of a match so it
- *  can be seen (`forced_expansion_for`), and that never reaches this persisted
- *  set. The set is shared by the canvas, the mobile list and the toolbar's
- *  `locate` call through one storage key. */
-// One live set, not one per consumer: the canvas toggles it and the toolbar
-// has to send the SAME set to `locate`, or a jump would be computed against a
-// layout nobody is looking at. Storage alone only synchronised them on mount.
-let expandedIds: ReadonlySet<string> = readExpandedTaskIds();
-let expandedFinishedIds: ReadonlySet<string> = readExpandedTaskIds(EXPANDED_FINISHED_KEY);
-const expandedListeners = new Set<() => void>();
-
-/** Replace the expanded set outright (persisted, and broadcast to every consumer). */
-export function setExpandedTaskIds(next: ReadonlySet<string>) {
-  expandedIds = next;
-  persistExpandedTaskIds(next);
-  expandedFinishedIds = new Set([...expandedFinishedIds].filter((id) => next.has(id)));
-  persistExpandedTaskIds(expandedFinishedIds, EXPANDED_FINISHED_KEY);
-  for (const listener of [...expandedListeners]) listener();
+ * There is deliberately no expanded set here any more. The graph never
+ * expands a container in place (operator decision 2026-09-20) -- you enter
+ * one, which is addressable navigation and lives in the URL. The
+ * Task placement is server-owned. Retained `command_center_project_view`
+ * documents remain schema-compatible, but this provider deliberately neither
+ * reads nor writes their historical position fields.
+ */
+interface GraphState {
+  density: LayoutDensity;
+  setDensity: (density: LayoutDensity) => void;
+  manualPositions: ManualPositions;
+  saveGraphPosition: (scope: string, id: string, position: ManualPosition) => void;
 }
 
-function toggleExpandedId(id: string, finished = false) {
-  const opening = !expandedIds.has(id);
-  const next = new Set(expandedIds);
-  if (opening) next.add(id); else next.delete(id);
-  const nextFinished = new Set(expandedFinishedIds);
-  if (opening && finished) nextFinished.add(id); else nextFinished.delete(id);
-  expandedFinishedIds = nextFinished;
-  persistExpandedTaskIds(nextFinished, EXPANDED_FINISHED_KEY);
-  setExpandedTaskIds(next);
+const GraphStateContext = createContext<GraphState | null>(null);
+
+// Isolated component tests do not mount the route provider. This in-memory
+// store has intentionally no browser backing; production uses server defaults
+// until GraphStateProvider loads the user's documents.
+let fallbackDensity: LayoutDensity = DEFAULT_DENSITY;
+let fallbackPositions: ManualPositions = {};
+let fallbackSnapshotValue: { density: LayoutDensity; manualPositions: ManualPositions } = {
+  density: fallbackDensity, manualPositions: fallbackPositions,
+};
+const fallbackListeners = new Set<() => void>();
+const notifyFallback = () => {
+  fallbackSnapshotValue = { density: fallbackDensity, manualPositions: fallbackPositions };
+  for (const listener of fallbackListeners) listener();
+};
+
+function fallbackSnapshot() { return fallbackSnapshotValue; }
+
+/** Test helper: back to the server defaults, for consumers rendered without
+ *  their route provider. */
+export function resetGraphStateFallback() {
+  fallbackDensity = DEFAULT_DENSITY;
+  fallbackPositions = {};
+  notifyFallback();
 }
 
-function sameExpandedIds(left: ReadonlySet<string>, right: ReadonlySet<string>) {
-  return left.size === right.size && [...left].every((id) => right.has(id));
-}
-
-export function useExpandedTaskIds() {
-  const persistedIds = readExpandedTaskIds();
-  if (!sameExpandedIds(expandedIds, persistedIds)) expandedIds = persistedIds;
-  const persistedFinished = readExpandedTaskIds(EXPANDED_FINISHED_KEY);
-  if (!sameExpandedIds(expandedFinishedIds, persistedFinished)) {
-    expandedFinishedIds = persistedFinished;
-  }
-
-  const expandedTaskIds = useSyncExternalStore(
-    (listener) => {
-      expandedListeners.add(listener);
-      return () => expandedListeners.delete(listener);
+function useFallbackState(): GraphState {
+  const snapshot = useSyncExternalStore(
+    (listener) => { fallbackListeners.add(listener); return () => fallbackListeners.delete(listener); }, fallbackSnapshot,
+  );
+  return useMemo(() => ({
+    density: snapshot.density,
+    setDensity: (density) => { fallbackDensity = density; notifyFallback(); },
+    manualPositions: snapshot.manualPositions,
+    saveGraphPosition: (scope, id, position) => {
+      if (scope !== PLAYBOOK_POSITION_SCOPE) return;
+      fallbackPositions = { ...fallbackPositions, [scope]: { ...fallbackPositions[scope], [id]: position } };
+      notifyFallback();
     },
-    () => expandedIds,
-  );
-  const finishedIds = useSyncExternalStore(
-    (listener) => {
-      expandedListeners.add(listener);
-      return () => expandedListeners.delete(listener);
-    },
-    () => expandedFinishedIds,
-  );
-  const toggleExpanded = useCallback(
-    (id: string, finished = false) => toggleExpandedId(id, finished),
-    [],
-  );
-  return { expandedTaskIds, expandedFinishedIds: finishedIds, toggleExpanded };
+  }), [snapshot]);
+}
+
+/** Shared server state for graph density and playbook positions. */
+export function GraphStateProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+  const preferences = useDashboardDocument<CommandCenterPreferencesValue>("command_center_preferences");
+  const playbooks = useDashboardDocument<PlaybookGraphViewValue>("playbook_graph_view");
+  const writes = useRef(new Map<string, Promise<void>>());
+
+  const queueUpdate = useCallback(<T extends DashboardValue>(namespace: DashboardNamespace, subject: string | null, change: (value: T) => T) => {
+    const key = dashboardDocumentKey(namespace, subject);
+    const address = key.join("\u0001");
+    const previous = writes.current.get(address) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(async () => {
+      const current = (queryClient.getQueryData(key) as DashboardDocument<T> | undefined) ?? defaultDashboardDocument<T>(namespace, subject);
+      const value = change(current.value);
+      queryClient.setQueryData(key, { ...current, value });
+      try {
+        queryClient.setQueryData(key, await putDashboardDocument(current, value));
+      } catch (error) {
+        // Never overwrite another machine's CAS write with a stale browser edit.
+        queryClient.setQueryData(key, conflictDocument(error) as DashboardDocument<T> | null ?? current);
+      }
+    });
+    writes.current.set(address, next);
+    void next.finally(() => { if (writes.current.get(address) === next) writes.current.delete(address); });
+  }, [queryClient]);
+
+  const manualPositions = useMemo<ManualPositions>(() => ({
+    [PLAYBOOK_POSITION_SCOPE]: playbooks.data?.value.manual_positions ?? {},
+  }), [playbooks.data]);
+
+  const saveGraphPosition = useCallback((scope: string, id: string, position: ManualPosition) => {
+    if (scope !== PLAYBOOK_POSITION_SCOPE) return;
+    queueUpdate<PlaybookGraphViewValue>("playbook_graph_view", null, (value) => ({ ...value, manual_positions: { ...(value.manual_positions ?? {}), [id]: position } }));
+  }, [queueUpdate]);
+  const density = preferences.data?.value.density ?? DEFAULT_DENSITY;
+  const setDensity = useCallback((next: LayoutDensity) => { queueUpdate<CommandCenterPreferencesValue>("command_center_preferences", null, (value) => ({ ...value, density: next })); }, [queueUpdate]);
+  const value = useMemo<GraphState>(() => ({
+    density, setDensity, manualPositions, saveGraphPosition,
+  }), [density, setDensity, manualPositions, saveGraphPosition]);
+  return createElement(GraphStateContext.Provider, { value }, children);
+}
+
+export function useGraphState(): GraphState {
+  const provided = useContext(GraphStateContext);
+  const fallback = useFallbackState();
+  return provided ?? fallback;
 }

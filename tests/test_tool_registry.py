@@ -105,7 +105,6 @@ def test_registry_has_core_tools(registry):
     assert "get_task" in core_names
     # Navigation/core meta-tools synthesized by ToolRegistry._ensure_navigation_tools.
     assert "load_tools" in core_names
-    assert "send_message" in core_names
     assert "reply_to_user" in core_names
 
 
@@ -115,9 +114,14 @@ def test_registry_has_categories(registry):
     assert cat_names == {
         "files",
         "git",
+        "ci",
+        "integration",
         "project",
         "agent",
+        "supervisor",
         "memory",
+        "knowledge",
+        "record",
         "notes",
         "system",
         "task",
@@ -125,10 +129,27 @@ def test_registry_has_categories(registry):
         "playbook",
         "mcp",
         "message",
+        "escalation",
+        "supervisor_inbox",
+        "review",
+        "digest",
+        "decision",
+        "dashboard",
         "discord",
         "pool",
+        "provider",
         "formula",
         "graph",
+        "github_issue",
+        "test_selection",
+        "report",
+        "wait",
+        "cron",
+        "collaboration",
+        "job",
+        "artifact",
+        "policy",
+        "operator",
     }
 
     for cat in categories:
@@ -391,6 +412,8 @@ def test_retired_ask_human_is_unknown_without_plugin_backend():
 
     assert handler.has_command("ask_human") is False
     assert asyncio.run(handler.execute("ask_human", {"question": "Continue?"})) == {
+        "success": False,
+        "error_code": "unknown_command",
         "error": "Unknown command: ask_human"
     }
 
@@ -401,8 +424,8 @@ def test_plugin_may_explicitly_own_retired_ask_human_name():
     backend = AsyncMock(
         return_value={"question_id": "plugin-question-1", "destination": "fake-user"}
     )
-    handler.orchestrator.plugin_registry.get_command.side_effect = (
-        lambda name: backend if name == "ask_human" else None
+    handler.orchestrator.plugin_registry.get_command.side_effect = lambda name: (
+        backend if name == "ask_human" else None
     )
 
     result = asyncio.run(handler.execute("ask_human", {"question": "Continue?"}))
@@ -447,112 +470,6 @@ def test_cmd_load_tools_invalid_category():
     handler = _make_handler()
     result = asyncio.run(handler.execute("load_tools", {"category": "nonexistent"}))
     assert "error" in result
-
-
-def test_cmd_send_message_stub():
-    handler = _make_handler()
-    result = asyncio.run(
-        handler.execute(
-            "send_message",
-            {
-                "channel_id": "12345",
-                "content": "Hello world",
-            },
-        )
-    )
-    # send_message needs Discord bot reference; without it, error
-    assert "error" in result or "success" in result
-
-
-def test_cmd_get_system_channel_requires_name():
-    handler = _make_handler()
-    result = asyncio.run(handler.execute("get_system_channel", {}))
-    assert "error" in result
-    assert "name is required" in result["error"]
-
-
-def test_cmd_get_system_channel_no_bot():
-    handler = _make_handler()
-    handler.orchestrator._discord_bot = None
-    result = asyncio.run(handler.execute("get_system_channel", {"name": "notifications"}))
-    assert "error" in result
-    assert "bot" in result["error"].lower() or "guild" in result["error"].lower()
-
-
-def test_cmd_get_system_channel_unknown_key():
-    handler = _make_handler()
-    bot = MagicMock()
-    bot._guild = MagicMock()
-    bot._guild.text_channels = []
-    bot.config.discord.channels = {"notifications": "notifications", "control": "control"}
-    handler.orchestrator._discord_bot = bot
-    result = asyncio.run(handler.execute("get_system_channel", {"name": "unknown"}))
-    assert "error" in result
-    assert "notifications" in result["error"]
-    assert "control" in result["error"]
-
-
-def test_cmd_get_system_channel_resolves_id():
-    handler = _make_handler()
-    ch = MagicMock()
-    ch.name = "agent-questions"
-    ch.id = 987654321
-    bot = MagicMock()
-    bot._guild = MagicMock()
-    bot._guild.text_channels = [ch]
-    bot.config.discord.channels = {"agent_questions": "agent-questions"}
-    handler.orchestrator._discord_bot = bot
-    result = asyncio.run(handler.execute("get_system_channel", {"name": "agent_questions"}))
-    assert "error" not in result
-    assert result["channel_id"] == "987654321"
-    assert result["channel_name"] == "agent-questions"
-
-
-def test_cmd_get_system_channel_missing_in_guild():
-    handler = _make_handler()
-    bot = MagicMock()
-    bot._guild = MagicMock()
-    bot._guild.text_channels = []  # no matching channel
-    bot.config.discord.channels = {"agent_questions": "agent-questions"}
-    handler.orchestrator._discord_bot = bot
-    result = asyncio.run(handler.execute("get_system_channel", {"name": "agent_questions"}))
-    assert "error" in result
-    assert "not found" in result["error"]
-
-
-def test_cmd_get_system_channel_notifications_aliases_to_channel():
-    """After the config merge, 'notifications' is an alias for 'channel'."""
-    handler = _make_handler()
-    ch = MagicMock()
-    ch.name = "control"
-    ch.id = 11111
-    bot = MagicMock()
-    bot._guild = MagicMock()
-    bot._guild.text_channels = [ch]
-    # Post-merge config: only 'channel' and 'agent_questions' exist
-    bot.config.discord.channels = {"channel": "control", "agent_questions": "agent-questions"}
-    handler.orchestrator._discord_bot = bot
-
-    result = asyncio.run(handler.execute("get_system_channel", {"name": "notifications"}))
-    assert "error" not in result
-    assert result["channel_id"] == "11111"
-
-
-def test_cmd_get_system_channel_control_aliases_to_channel():
-    """'control' is also an alias for 'channel'."""
-    handler = _make_handler()
-    ch = MagicMock()
-    ch.name = "control"
-    ch.id = 22222
-    bot = MagicMock()
-    bot._guild = MagicMock()
-    bot._guild.text_channels = [ch]
-    bot.config.discord.channels = {"channel": "control", "agent_questions": "agent-questions"}
-    handler.orchestrator._discord_bot = bot
-
-    result = asyncio.run(handler.execute("get_system_channel", {"name": "control"}))
-    assert "error" not in result
-    assert result["channel_id"] == "22222"
 
 
 # -------------------------------------------------------------------
@@ -618,7 +535,6 @@ def test_total_tool_count_preserved():
     # These are the navigation tools added by the registry
     expected_new_tools = {
         "load_tools",
-        "send_message",
         "reply_to_user",
     }
 
@@ -889,11 +805,13 @@ class TestCompressToolSchema:
 # Playbook category registration (Roadmap 5.5.7)
 # ------------------------------------------------------------------
 
-# Canonical list of playbook commands.  This must stay identical to
+# Canonical list of playbook commands.  It used to be duplicated as
 # ``TestAllPlaybookCommandsRegistered.EXPECTED_COMMANDS`` in
-# tests/test_playbook_commands.py -- the two drifted apart, each missing a
-# different command (this one had no ``cancel_playbook_run``, that one no
-# ``set_playbook_enabled``), which is how four drift tests sat red.
+# tests/test_playbook_commands.py; the two drifted apart, each missing a
+# different command, which is how four drift tests sat red.  That file is
+# gone and this is now the only copy -- keep it one entry per command, since
+# ``test_playbook_category_has_correct_count`` compares the registry against
+# ``len(_PLAYBOOK_COMMANDS)`` and a duplicate hides a missing tool.
 _PLAYBOOK_COMMANDS = [
     # Run management
     "run_playbook",
@@ -918,6 +836,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
+    # Re-derive a vault source from its active reviewed artifact.
+    "playbook_source_resync",
     # Activation artifacts and the pending-event queue (Package 5).
     "playbook_artifacts",
     "playbook_artifact_diff",
@@ -929,6 +849,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_propose",
     "playbook_v2_import",
     "playbook_v2_shadow_compile",
+    # Command documentation catalog (src/commands/playbook_v2_commands.py).
+    "playbook_commands",
 ]
 
 
