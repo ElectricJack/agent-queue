@@ -501,6 +501,18 @@ observation, progress preparation, ownership fences and per-event rollback.
 
 ## Retry and repair of resume workspace preparation
 
+Worktree acquisition reporting `slots_full`, `slot_warming` or `slot_lost_race`
+without an acquired workspace is capacity backpressure. Return the continuation
+to `queued`, release its temporary agent and capacity grant, and retain its
+admission request identity, FIFO position, first-request age, generation, saved
+head and resolved outcome. Retry with durable exponential backoff from five
+seconds, capped at sixty seconds; capacity contention never consumes the
+workspace failure or launch-attempt budget. Reobserve admission on every retry.
+The existing once-per-generation resume-stall notice signals prolonged capacity
+lag and includes the last workspace capacity reason. Provisioning failures such
+as `slot_stalled`, missing worktree configuration and checkout identity failures
+retain the infrastructure failure path.
+
 Workspace preparation retries contention (`wait.graph_busy`), transport failures,
 and OS busy/timeout errors up to three attempts, with durable 5/10 second backoff.
 The queued continuation retains the same reservation, agent, staged checkout,
@@ -517,3 +529,11 @@ preserves the source and checkout, records actor/reason/time in facts and an aud
 event, and resets the retry budget. It does not acknowledge the outcome. The hold
 incident is withdrawn when the fresh process receives prime, atomically with
 outcome delivery; failed retries retain the incident.
+
+`task_recover` with `decision=retry` also accepts the operational escalation ID
+of a held resume. It delegates to that same requeue transaction, repeating the
+project, task, continuation generation, exact current incident, open escalation,
+hold reason and stopped-process fences. Stale, unrelated and suspension-only
+incidents refuse without mutation. Other recovery decisions direct the operator
+to the continuation controls rather than treating this ID as a generic worker
+failure incident.

@@ -17,6 +17,11 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import integration_close_attempts as attempts
 from src.git.manager import GitError
+from src.integration.regeneration import (
+    GeneratedRegenerationFailure,
+    RegenerationFailure,
+    RegenerationPending,
+)
 from src.waits.sources import record_source_event
 
 
@@ -149,7 +154,10 @@ class CloseMerge:
         if row["base_oid"] is None:
             row = await self.store.save(row, base_oid=parent)
         if not row["candidate_path"]:
-            row = await p.prepare(row, repo, self.store)
+            try:
+                row = await p.prepare(row, repo, self.store)
+            except (RegenerationPending, RegenerationFailure, GeneratedRegenerationFailure) as exc:
+                return await self.regeneration_unsettled(row, exc)
         head = await p.resolved(row, repo)
         if head is None:
             return await self.author(row, policy, "resolve_merge_and_commit")
@@ -159,7 +167,10 @@ class CloseMerge:
         row = await self.store.save(row, candidate_oid=head)
         # Every new committed candidate gets regeneration and fresh checks.
         if row["evidence"].get("regenerated_oid") != head:
-            head = await p.regenerate(row, repo, head)
+            try:
+                head = await p.regenerate(row, repo, head)
+            except (RegenerationPending, RegenerationFailure) as exc:
+                return await self.regeneration_unsettled(row, exc)
             row = await self.store.save(row, candidate_oid=head, evidence={"regenerated_oid": head})
         evidence = await p.check(row, repo, policy)
         row = await self.store.save(row, candidate_oid=head, policy_digest=policy.digest,
@@ -194,6 +205,19 @@ class CloseMerge:
         except (GitError, OSError, TimeoutError):
             return self.result(row, completed=False, reason="publication_unconfirmed")
         return self.result(row, completed=False, reason="parent_or_policy_changed")
+
+    async def regeneration_unsettled(self, row, exc):
+        """A queued, running or retryably failed regeneration keeps the operation.
+
+        The shared run continues detached; resuming the same operation rejoins
+        it or takes its outcome, so a busy box never fails the close.
+        """
+        if isinstance(exc, RegenerationFailure) and not exc.retryable:
+            raise exc
+        reason = ("candidate_regeneration_pending" if isinstance(exc, RegenerationPending)
+                  else "candidate_regeneration_retry")
+        row = await self.store.save(row, last_failure=f"{reason}: {exc}"[:2000])
+        return self.result(row, completed=False, reason=reason)
 
     async def author(self, row, policy, reason):
         row = await self.store.save(row, state="needs_author", last_failure=reason)
