@@ -4,7 +4,8 @@ import "@xyflow/react/dist/style.css";
 import { ArrowPathIcon, DocumentTextIcon } from "@heroicons/react/24/outline";
 import type { PaneViewProps } from "../types";
 import type { ProposalPreviewArgs } from "./manifest";
-import { useDiscardProposal, useProposal, useProposalGate, useResolveGate } from "./hooks";
+import { useApplyProposalDecision, usePrepareProposalDecision, useProposal, useProposalGate, useIngestBatch, type ProposalDecisionPreview } from "./hooks";
+import BatchPanel from "./BatchPanel";
 import { layoutProposalGraph } from "./graph";
 import ProposalTaskNode from "./nodes";
 import { useShellPaneStore } from "../store";
@@ -44,26 +45,37 @@ function sourceSpecPath(source: string | undefined): string | undefined {
 
 export default function ProposalPreviewPane({
   args,
+  setArgs,
   close,
   setToolbar,
   setShortcuts,
 }: PaneViewProps<ProposalPreviewArgs>) {
   const proposalQ = useProposal(args.proposalId);
   const data = proposalQ.data;
-  const gateQ = useProposalGate(data?.project_id, args.proposalId);
-  const resolveGate = useResolveGate();
-  const discard = useDiscardProposal(args.proposalId);
+  const batchMode = !!args.batchProjectId || data?.status === "held";
+  const batchQ = useIngestBatch(args.batchProjectId ?? data?.project_id, args.proposalId, batchMode);
+  const gateQ = useProposalGate(batchMode ? undefined : data?.project_id, args.proposalId);
+  const prepareDecision = usePrepareProposalDecision();
+  const applyDecision = useApplyProposalDecision(args.proposalId);
   const pane = useShellPaneStore();
 
   const [sortBy, setSortBy] = useState<SortKey>("title");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [preview, setPreview] = useState<ProposalDecisionPreview | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
-  const specPath = sourceSpecPath(data?.source);
+  const specPath = sourceSpecPath(batchQ.data?.source ?? data?.source);
+
+  // Keep the batch address through a release event and a dashboard reload.
+  useEffect(() => {
+    if (data?.status === "held" && !args.batchProjectId) {
+      setArgs({ ...args, batchProjectId: data.project_id });
+    }
+  }, [data?.status, data?.project_id, args, setArgs]);
 
   const handleRefresh = () => {
     proposalQ.refetch();
+    if (batchMode) batchQ.refetch();
   };
 
   const handleViewSource = () => {
@@ -71,29 +83,25 @@ export default function ProposalPreviewPane({
     pane.open("spec-doc-reader", { url: specPath });
   };
 
-  async function handleApprove() {
-    if (!gateQ.gate) return;
+  async function handlePrepare(option_key: "approve" | "decline") {
+    if (batchMode || data?.status !== "ready" || !gateQ.gate) return;
     setMutationError(null);
+    setPreview(null);
     try {
-      await resolveGate.mutateAsync({
-        gate_id: gateQ.gate.id,
-        resolved_by: "dashboard",
-        resolution: "approved",
-      });
-      close();
+      setPreview(await prepareDecision.mutateAsync({ gate_id: gateQ.gate.id, option_key }));
     } catch (e) {
-      setMutationError(`Approve failed: ${(e as Error).message}`);
+      setMutationError(`Could not prepare decision: ${(e as Error).message}`);
     }
   }
 
-  async function handleDiscard() {
+  async function handleConfirm() {
+    if (batchMode || data?.status !== "ready" || !preview) return;
     setMutationError(null);
     try {
-      await discard.mutateAsync();
+      await applyDecision.mutateAsync(preview);
       close();
     } catch (e) {
-      setMutationError(`Discard failed: ${(e as Error).message}`);
-      setConfirmDiscard(false);
+      setMutationError(`Decision failed: ${(e as Error).message}`);
     }
   }
 
@@ -116,27 +124,27 @@ export default function ProposalPreviewPane({
       },
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setToolbar, specPath]);
+  }, [setToolbar, specPath, batchMode]);
 
   useEffect(() => {
     const status = data?.status;
     const bindings = [
       { key: "r", label: "Refresh", onFire: handleRefresh },
       { key: "s", label: "View spec source", onFire: handleViewSource },
-      ...(status === "ready"
+      ...(status === "ready" && !batchMode
         ? [
-            { key: "a", label: "Approve", onFire: handleApprove },
+            { key: "a", label: "Approve", onFire: () => handlePrepare("approve") },
             {
               key: "d",
               label: "Discard (confirm)",
-              onFire: () => setConfirmDiscard(true),
+              onFire: () => handlePrepare("decline"),
             },
           ]
         : []),
     ];
     setShortcuts(bindings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setShortcuts, data?.status, specPath, gateQ.gate]);
+  }, [setShortcuts, data?.status, specPath, gateQ.gate, batchMode]);
 
   const { nodes, edges } = useMemo(
     () => layoutProposalGraph(data?.tasks ?? [], data?.edges ?? []),
@@ -152,6 +160,14 @@ export default function ProposalPreviewPane({
     }
     return tasks;
   }, [data?.tasks, sortBy]);
+
+  if (batchMode) return <div className="h-full overflow-auto p-3 text-sm text-gray-200" data-testid="proposal-preview-pane">
+    {batchQ.isPending ? <p role="status">Loading fidelity review batch…</p>
+      : batchQ.isError || !batchQ.data ? <div role="alert">
+        <p>Could not load fidelity review batch.</p>
+        <button type="button" onClick={() => batchQ.refetch()}>Retry</button>
+      </div> : <BatchPanel batch={batchQ.data} />}
+  </div>;
 
   if (proposalQ.isPending) {
     return (
@@ -356,33 +372,22 @@ export default function ProposalPreviewPane({
 
       {showActions && (
         <div className="flex items-center justify-between gap-3 border-t border-gray-800 pt-3">
-          {confirmDiscard ? (
+          {preview ? (
             <div className="flex items-center gap-2 text-xs">
-              <span>Really discard?</span>
-              <button
-                type="button"
-                onClick={handleDiscard}
-                disabled={discard.isPending}
-                className="rounded bg-red-600/80 px-2 py-1 text-white hover:bg-red-600"
-              >
-                Yes
+              <span>{preview.effect}</span>
+              <button type="button" onClick={handleConfirm} disabled={applyDecision.isPending}
+                className="rounded bg-indigo-600 px-2 py-1 text-white">
+                Confirm {preview.args.option_key === "approve" ? "approval" : "decline"}
               </button>
-              <button
-                type="button"
-                onClick={() => setConfirmDiscard(false)}
-                className="rounded bg-gray-800 px-2 py-1 hover:bg-gray-700"
-              >
-                No
+              <button type="button" onClick={() => setPreview(null)} disabled={applyDecision.isPending}>
+                Cancel
               </button>
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmDiscard(true)}
-              disabled={discard.isPending}
-              className="rounded border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-950/40"
-            >
-              {discard.isPending ? "Discarding…" : "Discard"}
+            <button type="button" onClick={() => handlePrepare("decline")}
+              disabled={!gateQ.gate || prepareDecision.isPending}
+              className="rounded border border-red-500/40 px-3 py-1 text-xs text-red-300">
+              Discard
             </button>
           )}
           {!gateQ.gate && (
@@ -390,11 +395,11 @@ export default function ProposalPreviewPane({
           )}
           <button
             type="button"
-            onClick={handleApprove}
-            disabled={!gateQ.gate || resolveGate.isPending}
+            onClick={() => handlePrepare("approve")}
+            disabled={!gateQ.gate || prepareDecision.isPending || applyDecision.isPending}
             className="rounded bg-indigo-600 px-3 py-1 text-xs text-white hover:bg-indigo-500 disabled:opacity-40"
           >
-            {resolveGate.isPending ? "Approving…" : "Approve"}
+            {prepareDecision.isPending ? "Preparing…" : "Approve"}
           </button>
         </div>
       )}

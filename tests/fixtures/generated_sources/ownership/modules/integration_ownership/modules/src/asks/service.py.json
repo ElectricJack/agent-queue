@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/asks/service.py::new_id": "Generic random prefixed identifier generation for human request records; no integration state or authority.",
+    "src/asks/service.py::version_of": "Generic human request decision, feedback, display and source version projection; integration gate/version interpretation remains in the charged source adapter."
+  }
+}
