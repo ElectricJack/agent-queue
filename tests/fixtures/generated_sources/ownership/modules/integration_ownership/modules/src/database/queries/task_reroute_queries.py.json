@@ -1,0 +1,29 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_reroute_queries.py::TaskRerouteQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/task_reroute_queries.py::TaskRerouteQueryMixin.list_spill_candidates": {
+      "baseline_span": [
+        382,
+        431
+      ],
+      "landing_span": [
+        382,
+        431
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/database/queries/task_reroute_queries.py::import from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in": {
+      "baseline_span": [
+        23,
+        23
+      ],
+      "landing_span": [
+        23,
+        23
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
