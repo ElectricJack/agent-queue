@@ -157,7 +157,7 @@ to [`integration_parent_verify`](integration_parent_verify.md), not here.
 
 `aq integration status <project>` shows the live stage with its `attempts`,
 `state` and `deadline_at` under `repair[]`; the resulting repair delegate is
-described in [Repair tasks](../../guides/integration-troubleshooting.md#repair-tasks).
+described in [Repair tasks](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress).
 
 ## Example step
 
@@ -176,5 +176,5 @@ and `escalate` complete; `human_required` and `budget_exhausted` fail. The typed
 
 * [`integration_repair_start`](integration_repair_start.md) — opens the stage this command spends.
 * [`integration_repair_dispatch`](integration_repair_dispatch.md) — acts on `dispatch_debug`.
-* [`integration_resume`](integration_resume.md) — the operator answer to `block_for_human`.
+* [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress) — inspect and resolve the named human gate.
 * Spec: [Roll-forward repair and escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#9-roll-forward-repair-and-escalation).

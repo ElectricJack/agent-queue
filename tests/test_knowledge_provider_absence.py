@@ -1,7 +1,8 @@
 """Inert defaults and degraded optional retrieval preserve ordinary core reads."""
 
 import asyncio
-import importlib
+import subprocess
+import sys
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -180,18 +181,35 @@ async def test_invalid_requests_fail_before_optional_work(service, limit, query,
     lookup.assert_not_called()
 
 
-def test_import_has_no_optional_initialization_or_transport(monkeypatch):
-    import socket
-    import src.knowledge.providers as module
-    from src.plugins.registry import PluginRegistry
+def test_import_has_no_optional_initialization_or_transport():
+    # A fresh import verifies the boundary without replacing model identities
+    # used by already imported adapters in the same pytest worker.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import socket
+import sys
+from unittest.mock import AsyncMock, Mock
+from src.plugins.registry import PluginRegistry
 
-    initialize = AsyncMock(side_effect=AssertionError("initialization on import"))
-    network = Mock(side_effect=AssertionError("network on import"))
-    monkeypatch.setattr(PluginRegistry, "load_plugin", initialize)
-    monkeypatch.setattr(socket, "create_connection", network)
-    importlib.reload(module)
-    initialize.assert_not_awaited()
-    network.assert_not_called()
+initialize = AsyncMock(side_effect=AssertionError("initialization on import"))
+network = Mock(side_effect=AssertionError("network on import"))
+PluginRegistry.load_plugin = initialize
+socket.create_connection = network
+sys.modules.pop("src.knowledge.providers", None)
+import src.knowledge.providers
+initialize.assert_not_awaited()
+network.assert_not_called()
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("timeout", [0, -1, 6, True, float("nan"), float("inf")])

@@ -291,17 +291,20 @@ NATIVE_HARNESSES = frozenset({OpenCodeQuestionStore.harness})
 
 
 def resolve_native_question_source(
-    harness: str, data_dir: Path | None = None, *, registry=None
+    harness: str, data_dir: Path | None = None, *, registry=None, project_id: str | None = None
 ) -> OpenCodeQuestionStore | None:
     """The structured question store for *harness*, or ``None`` if it has none.
 
     The store belongs to the CLI, not to one harness file: with *registry*, a
     harness such as ``opencode-zen`` that runs the ``opencode`` executable
     against another backend shares the same store
-    (:func:`~src.sessions.harness_registry.runs_cli`).
+    (:func:`~src.sessions.harness_registry.runs_cli`).  *project_id* resolves
+    the harness in that project's scope, the way the launch path does: a
+    project file that shadows the id with a different executable moves the
+    store with it, for that project alone.
     """
     from src.sessions.harness_registry import runs_cli
 
-    if runs_cli(OpenCodeQuestionStore.harness, harness, registry):
+    if runs_cli(OpenCodeQuestionStore.harness, harness, registry, project_id):
         return OpenCodeQuestionStore(data_dir)
     return None

@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
+import type { FlockSession } from "../../../api/client";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
 
@@ -14,10 +15,12 @@ vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../../tes
 const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
-  sessionInput: vi.fn(), startAgentTerminal: vi.fn(), supervisorRestart: vi.fn(),
+  sessionInput: vi.fn(), sessionPrune: vi.fn(), startAgentTerminal: vi.fn(), supervisorRestart: vi.fn(),
   poolStatus: vi.fn(), poolScale: vi.fn(), sessionList: vi.fn(),
+  getSessionMessagesApiSessionsNameMessagesGet: vi.fn(), postSessionMessageApiSessionsNameMessagePost: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
+vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));
 function agent(id: string, name: string): FlockAgent {
   return {
     id, name, profile_id: "implementer", role: "worker", enabled: true,
@@ -140,6 +143,73 @@ afterEach(() => {
 
 describe("Agent flock sidebar", () => {
 
+  it("lists every running session the rows above do not already show", async () => {
+    const base: FlockSession = { session_id: "s", name: "s", role: "supervisor", scope: "project-one",
+      project_id: "project-one", agent_id: null, provider: "openai", harness: "codex", model: "gpt-6-astra",
+      intelligence_class: "deep-low", profile_id: "supervisor", task_id: null,
+      state: "running", desired_state: "running", started_at: 1, last_activity: 2,
+      uptime_seconds: 90, lifecycle: "named" };
+    const sessions: FlockSession[] = [
+      { ...base, session_id: "proj-sup", name: "n-supervisor--project-one" },
+      { ...base, session_id: "asleep", name: "n-supervisor--sleepy", state: "sleeping", desired_state: "sleeping" },
+    ];
+    api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length, sessions } }));
+    renderFlock("/");
+    const group = await screen.findByRole("group", { name: "Other running sessions" });
+    expect(within(group).getByRole("link", { name: /n-supervisor--project-one/ })).toHaveAttribute("href", "/sessions/proj-sup");
+    expect(within(group).getByText("codex · gpt-6-astra · deep-low")).toBeInTheDocument();
+    expect(within(group).queryByText("n-supervisor--sleepy")).not.toBeInTheDocument();
+  });
+
+  it("shows unlinked supervisors and every session, with history on demand", async () => {
+    const sessions: FlockSession[] = [
+      { session_id: "global", name: "Global supervisor", role: "supervisor", scope: "global",
+        project_id: null, agent_id: null, provider: "openai", harness: "codex", model: "gpt-5",
+        intelligence_class: "standard-high", profile_id: "supervisor", task_id: null,
+        state: "running", desired_state: "running", started_at: 1, last_activity: 2,
+        uptime_seconds: 90, lifecycle: "named" },
+      { session_id: "sleeping", name: "Sleeping supervisor", role: "supervisor", scope: "project-one",
+        project_id: "project-one", agent_id: null, provider: "anthropic", harness: "claude", model: "sonnet",
+        intelligence_class: "standard-high", profile_id: "supervisor", task_id: null,
+        state: "sleeping", desired_state: "sleeping", started_at: 1, last_activity: 2,
+        uptime_seconds: 120, lifecycle: "named" },
+    ];
+    api.listAgents.mockImplementation(async ({ body }: { body: { include_stopped?: boolean } }) => ({
+      data: { agents: roster, count: roster.length, sessions: body.include_stopped
+        ? [...sessions, { ...sessions[0]!, session_id: "old", name: "Old supervisor", state: "stopped" }]
+        : sessions },
+    }));
+    renderFlock("/agents", true);
+    const directory = await screen.findByRole("region", { name: "All flock sessions" });
+    expect(await within(directory).findByRole("link", { name: "Global supervisor" })).toHaveAttribute("href", "/sessions/global");
+    expect(within(directory).getByText("project-one")).toBeInTheDocument();
+    expect(within(directory).getByText("openai / gpt-5 / standard-high")).toBeInTheDocument();
+    expect(within(directory).queryByText("Old supervisor")).not.toBeInTheDocument();
+    fireEvent.click(within(directory).getByLabelText("Show stopped history"));
+    expect(await within(directory).findByText("Old supervisor")).toBeInTheDocument();
+    expect(api.listAgents).toHaveBeenCalledWith(expect.objectContaining({ body: { include_stopped: true } }));
+    fireEvent.change(within(directory).getByLabelText("Session state"), { target: { value: "sleeping" } });
+    expect(within(directory).getByText("Sleeping supervisor")).toBeInTheDocument();
+    expect(within(directory).queryByText("Global supervisor")).not.toBeInTheDocument();
+  });
+
+  it("cleans up an inactive supervisor and refreshes the session roster", async () => {
+    let sessions = [{ session_id: "sleeping", name: "Stale supervisor", role: "supervisor", scope: "global",
+      project_id: null, agent_id: null, provider: "openai", harness: "codex", model: "gpt-5",
+      intelligence_class: "standard-high", profile_id: "supervisor", task_id: null,
+      state: "sleeping", desired_state: "sleeping", started_at: 1, last_activity: 2,
+      uptime_seconds: 90, lifecycle: "named" }];
+    api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length, sessions } }));
+    api.sessionPrune.mockImplementation(async () => {
+      sessions = [];
+      return { data: { success: true, session_id: "sleeping" } };
+    });
+    renderFlock("/agents", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Clean up Stale supervisor" }));
+    await waitFor(() => expect(api.sessionPrune).toHaveBeenCalledWith({ body: { session_id: "sleeping" }, throwOnError: true }));
+    await waitFor(() => expect(screen.queryByText("Stale supervisor")).not.toBeInTheDocument());
+  });
+
   it("focuses the selected terminal after ready, then moves focus when switching and re-selecting", async () => {
     renderFlock("/agents", true);
     fireEvent.click(await screen.findByRole("button", { name: "Open Builder" }));
@@ -225,7 +295,7 @@ describe("Agent flock sidebar", () => {
 
 
   it.each([
-    ["/tasks/task-1", "/projects/first/tasks?q=worktree&completed=1", "/projects/second/tasks?q=worktree&completed=1"],
+    ["/tasks/task-1", "/projects/first/tasks-knowledge?q=worktree&completed=1", "/projects/second/tasks-knowledge?q=worktree&completed=1"],
     ["/tasks/task-1/files", "/projects/first/graph?status=READY", "/projects/second/graph?status=READY"],
     ["/sessions/session-1", "/projects/first/sessions?q=triage", "/projects/second/sessions?q=triage"],
     ["/playbooks/audit", "/projects/first/playbooks?completed=1", "/projects/second/playbooks?completed=1"],
@@ -920,5 +990,87 @@ describe("supervisor restart", () => {
     renderFlock("/agents?agent=b", true);
     const worker = await screen.findByRole("region", { name: "Builder agent window" });
     expect(within(worker).queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+  });
+});
+
+describe("project supervisor messages", () => {
+  it("lists all 13 unlinked supervisors with their project, activity and auth health", async () => {
+    roster = [...roster, ...Array.from({ length: 13 }, (_, index) => ({
+      ...agent("session:sup-" + index, "Supervisor · project-" + index),
+      profile_id: "supervisor", role: "supervisor", state: "running", project_id: "project-" + index,
+      session_id: "sup-" + index, session_backed: true, session_address: "supervisor-project-" + index,
+      idle_seconds: 90, last_activity: 100, auth_health: { state: index === 3 ? "failed" : "unknown", status_code: index === 3 ? 401 : null },
+    }))];
+    renderFlock();
+    for (let index = 0; index < 13; index++) {
+      const row = await screen.findByRole("button", { name: "Open Supervisor · project-" + index });
+      expect(within(row).getByText("Supervises project-" + index)).toBeInTheDocument();
+      expect(within(row).getByText(/Idle: 1m · Last activity:/)).toBeInTheDocument();
+      expect(within(row).getByText("Harness: claude")).toBeInTheDocument();
+    }
+    const failed = screen.getByRole("button", { name: "Open Supervisor · project-3" });
+    expect(within(failed).getByText("Auth: failed (HTTP 401)")).toHaveClass("text-red-400");
+    expect(screen.queryByRole("switch", { name: /Supervisor · project-3/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the exact terminal, sends via the project relay, and shows delivered, read and replied states", async () => {
+    HTMLElement.prototype.scrollTo = vi.fn();
+    const { __dispatchEventForTests } = await import("../../../ws/useEventStream");
+    let messages: Record<string, unknown>[] = [{
+      id: "cli-message", from_kind: "user", from_id: "cli", to_kind: "session", to_id: "supervisor-project-one",
+      body: "Unread CLI request", thread_id: "cli-thread", project_id: "project-one", created_at: 10,
+      delivered_at: null, read_at: null,
+    }];
+    let failure: { at: number; reason: string; deferred: boolean } | null = {
+      at: 11, reason: "nudge transport failed", deferred: false,
+    };
+    api.getSessionMessagesApiSessionsNameMessagesGet.mockImplementation(async () => ({ data: {
+      success: true, session: "supervisor-project-one", project_id: "project-one", count: messages.length,
+      messages, delivery_failure: failure,
+    } }));
+    api.postSessionMessageApiSessionsNameMessagePost.mockImplementation(async ({ body }) => {
+      messages = [...messages, { id: "sent", ...body, from_kind: "user", from_id: "dashboard",
+        to_kind: "session", to_id: "supervisor-project-one", project_id: "project-one", created_at: Date.now() / 1000 }];
+      return { data: { success: true, message_id: "sent", state: "queued" } };
+    });
+    roster.push({ ...agent("session:sup-one", "Supervisor · project-one"), profile_id: "supervisor",
+      role: "supervisor", project_id: "project-one", session_id: "sup-one", session_backed: true,
+      session_address: "supervisor-project-one" });
+    renderFlock("/agents", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Supervisor · project-one" }));
+    const window = await screen.findByRole("region", { name: "Supervisor · project-one agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/sup-one");
+    expect(within(window).queryByRole("tab", { name: "Settings" })).not.toBeInTheDocument();
+    fireEvent.click(within(window).getByRole("tab", { name: "Messages" }));
+    expect(await within(window).findByText("Unread CLI request")).toBeInTheDocument();
+    expect(within(window).getByRole("alert")).toHaveTextContent("nudge transport failed");
+    expect(within(window).getByText("Delivery failed · awaiting retry")).toBeInTheDocument();
+    expect(api.getSessionMessagesApiSessionsNameMessagesGet).toHaveBeenCalledWith({
+      path: { name: "supervisor-project-one" }, query: { since: undefined, limit: 200, thread_id: undefined, supervisor_only: true }, throwOnError: true,
+    });
+    fireEvent.change(within(window).getByRole("textbox", { name: "Message the supervisor" }), { target: { value: "Status please" } });
+    fireEvent.click(within(window).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.postSessionMessageApiSessionsNameMessagePost).toHaveBeenCalledWith({
+      path: { name: "supervisor-project-one" }, body: { body: "Status please", from: "dashboard", from_kind: "user", thread_id: "dashboard:project-one" }, throwOnError: true,
+    }));
+    await waitFor(() => expect(within(window).getByText("Queued · unread")).toBeInTheDocument());
+    failure = null;
+    messages = messages.map((msg) => msg.id === "sent" ? { ...msg, delivered_at: 20 } : msg);
+    act(() => __dispatchEventForTests({ _event_type: "message.delivered", event_type: "message.delivered",
+      message_id: "sent", project_id: "project-one", method: "nudge" }));
+    expect(await within(window).findByText("Delivered · unread")).toBeInTheDocument();
+    messages = messages.map((msg) => msg.id === "sent" ? { ...msg, read_at: 21 } : msg);
+    act(() => __dispatchEventForTests({ _event_type: "message.delivered", event_type: "message.delivered",
+      message_id: "sent", project_id: "project-one", method: "inject" }));
+    expect(await within(window).findByText("Read")).toBeInTheDocument();
+    messages = [...messages, { id: "reply", from_kind: "session", from_id: "supervisor-project-one",
+      to_kind: "user", to_id: "dashboard", body: "Everything is running", project_id: "project-one",
+      thread_id: "dashboard:project-one", reply_to_id: "sent", created_at: Date.now() / 1000 + 1 }];
+    act(() => __dispatchEventForTests({ _event_type: "message.replied", event_type: "message.replied",
+      message_id: "sent", reply_id: "reply", project_id: "project-one" }));
+    expect(await within(window).findByText("Everything is running")).toBeInTheDocument();
+    expect(within(window).getByText("Replied")).toBeInTheDocument();
+    expect(within(window).queryByRole("alert")).not.toBeInTheDocument();
   });
 });

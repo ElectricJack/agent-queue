@@ -1,5 +1,13 @@
 # Development integration
 
+<!-- aq:historical -->
+> **Historical procedure.** The development/Subject publishers and runtimes are
+> retired. Commands and defaults below describe their earlier rollout and must
+> not be used as current operating instructions. `git_first: shadow` starts no
+> fallback publisher. Use the [Git-first train runbook](git-first-train-runbook.md)
+> and [current recovery guide](hierarchical-integration-trains.md).
+> `app-setup`, `app-verify` and `trust-manifest` remain available for diagnostics.
+
 Turn on AQ's batched delivery for a project, watch a batch reach your default
 branch, and read the journal it leaves behind.
 
@@ -113,7 +121,7 @@ so ignored `node_modules` survives between them. A retry uses a fresh snapshot.
 > (`slot_wait_seconds`, default 600). A timeout is recorded as exit code 124
 > and, like any validation that verified nothing, defers the batch rather
 > than parking it — see
-> [Validation could not finish](integration-troubleshooting.md#validation-could-not-finish-deferred).
+> [Validation could not finish](integration-troubleshooting.md#a-passed-task-blocked-at-delivery).
 
 Existing policies containing commands outside this list must be reconfigured
 by the local operator. AQ does not rewrite a stored policy during an upgrade;
@@ -199,7 +207,7 @@ cleanup, status, explain and doctor — asks git one question through
 [`src/integration/delivery_truth.py`](../../src/integration/delivery_truth.py):
 is the exact final source of the task's *current* completion generation an
 ancestor of the configured target? A close retains that source in git
-(`refs/heads/aq-provenance/completions/…`, see
+(`refs/aq/provenance/completions/…`, see
 [exact completion provenance](../specs/design/git-completion-provenance.md)), so
 branch cleanup and archive never erase the answer.
 
@@ -321,7 +329,15 @@ parent completion, and so does a parent an operator already adopted — a stale
 adoption is a decision to redo, not a legacy episode.
 `invalid_parent_completion` and `parent_provenance_mismatch` name broken
 bindings and require parent verification recovery. They do not mean a branch
-must be pushed again.
+must be pushed again. Neither does `parent_adoption_provenance_mismatch`: an
+adopted parent's retained source disagrees with the head its operator adoption
+recorded, or that record holds no artifact. The adoption is redone through the
+delivered-children recovery (`aq integration adopt … --settle-delivered-children
+--dry-run`, see [integration troubleshooting](integration-troubleshooting.md)),
+never through `migrate-provenance`. `missing_or_ambiguous_source` means git
+could not resolve the retained record itself — unreadable, or naming a commit or
+replacement the repository cannot resolve — so the stall names it rather than a
+missing ref, and only a new completion of the exact commit supersedes it.
 
 ## What a worker sees
 
@@ -483,7 +499,7 @@ recorded in its `development_publisher_skip` task metadata: an undelivered
 dependency, a source ref that is gone before its work reached `main`, a
 dependency cycle, a parked source. A skip is an observation, not a failure —
 but one that repeats forever is a stall, so it has a bounded life
-([`src/integration/development_stalls.py`](../../src/integration/development_stalls.py)):
+(`src/integration/development_stalls.py` (retired)):
 
 * Each evaluation is fingerprinted: task, latest completion, reason, related
   task, the configured target (repository and ref) and the git evidence that
@@ -609,7 +625,7 @@ Retargeting a development project — `aq integration enable --mode disabled`,
 `aq project set … integration-repository` with a new `default_branch`, then
 `aq integration develop` — makes the publisher deliver somewhere new. Three
 things about the old target are not carried over
-([`src/integration/development_settlement.py`](../../src/integration/development_settlement.py)):
+(`src/integration/development_settlement.py` (retired)):
 
 * **Work the old target already has.** A generation completed before the
   retarget whose source the old target contains is settled as not owed to the new
@@ -833,9 +849,9 @@ catalogue or rule regeneration was required.
 
 [`src/integration/development.py`](../../src/integration/development.py),
 skip stalls in
-[`src/integration/development_stalls.py`](../../src/integration/development_stalls.py),
+`src/integration/development_stalls.py` (retired),
 retargets and settlements in
-[`src/integration/development_settlement.py`](../../src/integration/development_settlement.py),
+`src/integration/development_settlement.py` (retired),
 commands in
 [`src/commands/integration_commands.py`](../../src/commands/integration_commands.py),
 CLI in [`src/cli/integration.py`](../../src/cli/integration.py).

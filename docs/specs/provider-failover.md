@@ -7,8 +7,9 @@
 > Start at [the documentation home](../README.md) for what AQ does today.
 
 **Date:** 2026-09-20
-**Status:** proposed — the design the `bold-rapids` implementation tasks are held
-to; written ahead of the code, and nothing here has shipped
+**Status:** implemented historical design record (`bold-rapids` complete). For current
+commands, defaults and recovery behaviour, use the [operator guide](../guides/provider-outage.md)
+and [providers system spec](systems/providers.md).
 **Epic:** `bold-rapids` — *Provider failover: re-route work when a provider runs
 out of usage or loses its login*
 **Implemented by:** `bold-rapids.2` (availability state), `.3` (pin semantics and
@@ -144,7 +145,7 @@ the digest layer; every rule in D3–D5 is a unit test with a fake clock.
 | `usage_snapshot` | Newest non-stale row per `(provider, window, scope)` in `provider_usage_snapshots` — staleness per the existing `providers.*stale_after_seconds` horizons | `used_percent`, `resets_at` | **Structured** — the provider's own number |
 | `auth_probe` | `probe_login` (`src/install/logins.py`) run off the event loop with a short timeout (D5) | `authenticated` / `not_authenticated` / `cannot_tell` | **Structured**. `cannot_tell` (timeout, `OSError`) is never evidence of anything. |
 | `startup_dialog` | `SessionDiedDuringStartup.detail` names the quarantine dialog; the rule's new `signal` field says what it means | `auth` / `usage` | **Strong** — a typed match during startup |
-| `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT`; also the stall ladder's usage-limit screen, and an idle pool worker recycled on that screen (D13) | `usage` | **Medium** — pane text. `RATE_LIMIT_PATTERNS` includes a bare `429` and `resets at`, so one match proves little. The usage-limit screen's pattern set is far stricter, but it is still pane text and records the same kind. |
+| `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT`; also the stall ladder's usage-limit screen, and an idle pool worker recycled on that screen (D13) | `usage`; strict retry screens may add `usage_exhausted` and absolute `resets_at` in detail | **Medium** for broad pane text, including a bare `429` or `resets at`. An explicit OpenCode free-quota statement paired with its own retry footer is sufficient exhaustion evidence (D3); long ordinary provider retries still need corroboration. |
 | `launch_failure` | Any other `SessionDiedDuringStartup` (`end_reason = startup_exit`) | — | **Weak** — may be the repository, not the provider |
 | `launch_success` | The session's first authenticated API call with its session token (`prime`, `claim`, `heartbeat`), or its first transcript usage line, whichever is first — counted once per launch, and only for a launch this daemon run witnessed (below) | — | **Structured** |
 | `llm_call` | Direct path only: adapter outcome mapped to `ok` / `auth` (401/403) / `usage` (429 with a quota body, `insufficient_quota`) / `error` | as named | **Structured** |
@@ -183,14 +184,14 @@ exception into `reason`.
 
 ### D3 — trip rules, and the hysteresis that keeps one flaky launch from flipping a provider
 
-No single unstructured observation changes the half a provider is in. A trip
-needs either the provider's own structured statement or **two independent
-signals**.
+No single broad pane-text observation changes the half a provider is in. A trip
+needs an explicit quota statement on the CLI's own retry screen, the provider's
+own structured statement, or **two independent signals**.
 
 | To | Trips when | `until` |
 |---|---|---|
 | `unauthenticated` | (a) one `startup_dialog(auth)` **and** the auth probe it triggers answers `not_authenticated`; or (b) two consecutive `startup_dialog(auth)` with no `launch_success` between them, whatever the probe says (a token can be present and dead); or (c) two consecutive scheduled probes ≥ 60 s apart answer `not_authenticated` | none |
-| `exhausted` | (a) a non-stale `usage_snapshot` on an **account-wide** window (scope empty or `all models`) at `used_percent ≥ usage.exhausted_percent`; or (b) two consecutive `startup_dialog(usage)`, or one plus a snapshot `≥ usage.degraded_percent`; or (c) `exit_rate_limit` from two distinct sessions inside `launch.window_seconds`, or one plus a snapshot `≥ usage.degraded_percent` | the fullest account-wide window's `resets_at` when known and in the future; else `now + rate_limit.cooldown_seconds × 2^level`, capped at `recovery.backoff_max_seconds` |
+| `exhausted` | (a) a non-stale `usage_snapshot` on an **account-wide** window (scope empty or `all models`) at `used_percent ≥ usage.exhausted_percent`; or (b) two consecutive `startup_dialog(usage)`, or one plus a snapshot `≥ usage.degraded_percent`; or (c) `exit_rate_limit` from two distinct sessions inside `launch.window_seconds`, or one plus a snapshot `≥ usage.degraded_percent`; or (d) a strict OpenCode free-quota retry footer carrying `usage_exhausted = true` | a retry screen's stated `resets_at`, taking the later account-wide reset if both are known; otherwise the fullest account-wide window's future `resets_at`; else `now + rate_limit.cooldown_seconds × 2^level`, capped at `recovery.backoff_max_seconds` |
 | `failing` | `launch.generic_failures_to_trip` consecutive `launch_failure` with no `launch_success`, inside `launch.window_seconds`, **and attributable**: the failures span ≥ 2 projects, *or* another provider recorded a `launch_success` in one of the same projects inside the window | `now + recovery.failing_backoff_seconds × 2^level`, capped |
 | `degraded` | a snapshot `≥ usage.degraded_percent`; a **model-scoped** window (e.g. Claude's `week`/`Opus`) at or past `exhausted_percent`; one uncorroborated `startup_dialog` or `exit_rate_limit`; the `failing` count reached without attribution; or probation (D4) | — |
 
@@ -257,6 +258,11 @@ A `launch_success` observed while a provider is `exhausted` or `failing` (a
 session this run launched before the trip, whose first call lands after it) is
 recovery evidence and moves it to probation early. It does not clear
 `unauthenticated` or `disabled`.
+
+A blocking retry screen's stated reset also outranks delayed launch
+acknowledgements. Its exhaustion stays unavailable until that reset plus grace
+or a fresh low usage snapshot, even after the evidence ring evicts the pane
+observation. A failed canary carrying a new retry countdown uses that deadline.
 
 **A still-valid exhausted reading outranks every positive signal.** While the
 fullest fresh account-wide window (the `usage_view` the trip reads: not older
@@ -591,8 +597,9 @@ else in this section is active:
 1. **Launch suppression.** Nothing starts against an unavailable provider:
    `idle_workers` (`src/scheduler.py`) drops workers whose profile resolves to
    it, `AgentReconciler` grows none for it, `_measure_pools` sizes its pools to
-   zero, the pre-launch check in `src/orchestrator/execution.py` refuses, and a
-   claim from one of its sessions answers `drain_requested`.
+   zero, the pre-launch check in `src/orchestrator/execution.py` refuses,
+   `SessionLens` refuses cold supervisor starts (including message-triggered
+   starts), and a claim from one of its sessions answers `drain_requested`.
 2. **The derived hold.** A queued task whose effective profile is on an
    unavailable provider is *held*. It keeps its status — `READY` stays `READY` —
    and `aq task explain`, `task show` and the API report a computed
@@ -677,6 +684,7 @@ policy == "same_class":
 | Work | `class_only` / `preferred` | `pinned` |
 |---|---|---|
 | **Queued** (`DEFINED`/`READY`/`BLOCKED`, unassigned) on an unavailable provider | Re-routed by the sweep under D12 and the capacity rules (D14–D15). Until its turn comes it is held with `awaiting_failover_capacity`. | Held. Released automatically on recovery. |
+| **Continuation awaiting resume** (`RESUME_PENDING`, unassigned, no starting/running/draining session) on an unavailable provider | Included in provider reroute previews and sweeps under D12–D15. The move preserves `RESUME_PENDING`, the branch and the durable continuation; ordinary continuation admission launches it on the new profile. A concurrent resume reservation or live writer prevents the move. Manual `aq task route` refuses this state with the supported sequence: `aq task pause --task-id ID`, `aq task route --task-id ID --prefer TARGET`, then `aq task resume --task-id ID`. | Listed as held with `provider_pinned`; the continuation stays pending. |
 | **Unrouted** (`profile_id` NULL, or missing a class) | `_effective_default_profile_id` becomes availability-aware: when the project default's provider is unavailable it resolves to the default's equivalent rung on the next `available` provider. **Derived per call, never persisted** — `projects.default_profile_id` is not rewritten, so recovery needs no undo. The same resolver feeds pool demand, the routing catalog's `prefer_provider` and the claim path's default-profile widening (which today reads the raw column and must switch). | n/a |
 | **PAUSED by a provider failure** | New pauses carry the cause (D17). Once the provider has tripped there is nothing left to wait out, so the sweep returns the task `PAUSED → READY` at once instead of at `resume_after`, and the queued rule above applies: re-route. | The same `PAUSED → READY`, after which it is an ordinary held task. Launch suppression is what keeps it from starting, so no special paused-and-pinned state exists. |
 | **PAUSED before this shipped** (the seven tasks of 2026-09-20) | No recorded cause, so never touched automatically. `aq provider reroute --provider codex --include-paused` handles them by hand, listing what it will move first. | same |
@@ -687,6 +695,19 @@ policy == "same_class":
 | **Pool sessions** | Target size 0 for every pool on the provider; `aq pool status` shows `provider_unavailable` with the state and `until` — distinct from `placement_starved`. Idle sessions get `drain_requested` on their next claim. **Busy sessions are left alone**: a session still making turns is recovery evidence (D4), not something to kill. Startup deaths attributed to provider evidence do **not** arm the `(project, profile)` key quarantine or count toward `sessions.max_restarts`. Demand follows the tasks: re-routed work raises demand on the target rung, inside that rung's own bounds. | Pinned tasks add no demand anywhere while held. |
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
+
+**OpenCode retry screens (`vivid-stone-92`).** On harnesses whose executable is
+OpenCode, inspect the strict retry footer before the pane activity gate: its
+countdown can repaint for hours while the worker makes no progress. `Free limit
+reached` / `Free usage exceeded` with the bracketed retry status exhausts the
+provider in one observation. Recognised provider-error retry footers lasting
+at least an hour use the same exit path but retain D3's corroboration rule;
+brief server retries keep running. Claimed workers use the existing stop,
+checkpoint, push and handoff path in enforce mode. Idle unclaimed workers
+record this evidence through their guarded recycle in observe/enforce modes;
+one explicit free-quota footer can therefore trip that provider too. The
+[worker-pane specification](../superpowers/specs/2026-10-06-worker-provider-usage-exhaustion.md)
+defines matching and reset parsing.
 
 > **Superseded by mandatory task routing (2026-09-28):** the *Unrouted* row is gone. There
 > is no project default and no `_effective_default_profile_id`: an unrouted task
@@ -751,11 +772,29 @@ detail) into `_fail_session_launch`; the exit path is
   locked by the task, never a pool claim still `preparing` (`not_started`),
   and plan files -- left out of every task commit -- do not count as work at
   risk. It runs in the orchestrator cycle, so each is bounded by
-  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
-  hierarchy/train branch is left to its integration owner (`checkpoint:
-  integration_managed`), and a tripped task there takes a short provider pause
-  instead of READY, as the launch path does when the integration release is
-  unconfirmed.
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds.
+* **A hierarchy/train branch** keeps its integration owner, so its checkpoint
+  is `stranded_work.save_wip_to_task_branch`: the stopped writer's work becomes
+  one `WIP saved by AQ: <reason>` commit fast-forwarded onto the task's *own*
+  branch (never forced, only in the project's integration repository), with no
+  `aq/preserved` snapshot. Only the task's own writer is saved (owner role
+  `worker` or `repair`, owner id the task): a verifier's checkout is not the
+  task's work and is left untouched. The save records `failover_resume_checkpoint`
+  (repository, branch, base, saved sha) in task metadata; the next exact-origin
+  preparation starts from `origin/<branch>` while it still descends from that
+  sha (else from the filing base), and launch or pool-claim activation consumes
+  it. A pool claim is retained while its owner is attached, so once the save
+  leaves the checkout clean and pushed the exit path hands the owner back
+  (`arelease_integration_writer_for_retry(pool=True)`) before the teardown. A
+  branch that cannot fast-forward is left untouched (`checkpoint:
+  integration_managed`) for owner recovery, and a tripped task there takes a
+  short provider pause instead of READY, as the launch path does when the
+  integration release is unconfirmed.
+* **`aq task stop` on a hierarchy/train writer** (`stop_task`, and the forced
+  shutdown and delete paths) stops the process first and then saves the same
+  way instead of refusing because the writer or its workspace is still
+  attached; it records the same resume point. A dirty verifier keeps the
+  refusal.
 * **Order on the exit path:** checkpoint while the session row is still live
   (a daemon that dies mid-push re-runs the failover next tick, where a row
   already marked non-live would have let the orphan sweep BLOCK the task),
@@ -773,8 +812,16 @@ detail) into `_fail_session_launch`; the exit path is
   take) and `unknown`, because none of them proves the work is safe.
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
-  the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments.
+  the task-context section on its own with terminal context, alongside the full
+  comment history. It names the saved commit, tells the next
+  worker to continue from the branch tip rather than restart, and keeps the
+  stopped session's last ~80 screen lines (`screen_tail`, captured before the
+  stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
+  2 KiB (`PRIME_SCREEN_BYTES`) and points at `aq session logs` for the rest:
+  its body is required knowledge context, and a body over the context budget
+  fails `aq prime` outright (`context.required_over_budget`). The quote sits
+  inside a fence its content cannot close, labelled as quoted output.
+  Writing it emits `task.handoff` for the dashboard and supervisor playbooks.
 * **A move to another provider drops `session_resume_key`**
   (`ProviderRerouteService._move`): the carried conversation id belongs to the
   old CLI, and a harness without a transcript reader would take it unchecked.
@@ -1026,6 +1073,11 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   `tasks.route.candidates`, in the router's order, so a spill never breaks a lane (an
   integration repair never spills to OpenCode, art design never leaves Codex); only a
   legacy task with no candidates keeps the same-class search above.
+  Supply, demand and workspace room are matched to the task's primary repository
+  kind, using the claim path's `pool_primary_kind`. An idle worker or free
+  workspace of another kind cannot serve it. Per-kind placement rows must not
+  overwrite each other; profile, project and global launch limits remain shared
+  across kinds, including moves planned by either pass of the sweep.
 * **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
   only rungs on that provider are targets. Spill never moves a task off it: a task whose
   source is on the preferred provider with no other same-class pool on that provider
@@ -1156,6 +1208,15 @@ replay and the five-minute timer never notify twice:
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
 | Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
 
+Half-change notifications run in the availability service's tracked background work.
+Draining awaits them; closing cancels and awaits them before database teardown.
+
+Project supervisors are opt-in. A disabled project's notice routes to
+`session:supervisor-global` while retaining its project context and
+`reroute:<batch>:<project>` thread. Deduplication uses that thread regardless
+of recipient changes or read/archive state, so a later sweep never repeats
+the notice and projects sharing the global supervisor keep separate notices.
+
 **As built (`bold-rapids.6`).** The escalation half lives in
 `ProviderAvailabilityService.reconcile_escalations`
 (`src/providers/availability_service.py`), run by
@@ -1257,9 +1318,11 @@ receive no provider events, matching the operator-only provider API.
   its expiry, held and re-routed counts, and actions — *Disable for…*,
   *Recheck*, *Clear override*. The rule the cards already follow applies: a state
   is server-derived and never recomputed in the browser.
-* **A banner** on every page while any provider is unavailable: *"Codex
+* **A banner** on every desktop page while any provider is unavailable: *"Codex
   unavailable — logged out since 12:04 · 5 tasks moved to Claude · 4 held"*,
-  linking to the card.
+  linking to the card. Hide it below the dashboard's 768 CSS px mobile
+  breakpoint; provider state remains available on mobile in the Metrics
+  provider cards.
 * **Task detail**: an intent chip (*Pinned* / *Preferred* / *Class only*),
   editable where routing is editable; *"re-routed from `standard-high-codex` ·
   undo"*; and the hold, rendered like `TaskAttention` with the `kind` in words.

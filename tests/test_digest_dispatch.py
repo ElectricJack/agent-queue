@@ -18,7 +18,6 @@ import pytest
 from sqlalchemy import update
 
 from src.config import DiscordConfig, DiscordDigestConfig, DiscordEscalationConfig
-from src.database import Database
 from src.database.tables import tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.dispatch import MARKER_PREFIX, marker_for
@@ -75,13 +74,11 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest_dispatch"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest_dispatch")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **kwargs):
@@ -164,10 +161,12 @@ async def test_an_hour_with_work_reserves_one_window_and_sends_one_message(db):
     assert len(transport.messages) == 1
     posted = next(iter(transport.messages.values())).content
     assert "finished the migration" in posted
-    assert MARKER_PREFIX in posted
-
     rows = await windows(db)
+    assert MARKER_PREFIX not in posted
+    assert posted.count(marker_for(rows[0]["id"])) == 1
     assert len(rows) == 1
+    marker = marker_for(rows[0]["id"])
+    assert posted.endswith(marker) and posted.count(marker) == 1
     assert rows[0]["send_status"] == "sent"
     assert rows[0]["external_receipt_id"]
     assert rows[0]["payload"]["reported_keys"]
@@ -622,10 +621,13 @@ async def test_a_transport_that_explodes_never_escapes_the_tick(db):
     assert report.sent == 0  # and no exception reached the orchestrator cycle
 
 
-async def test_the_rendered_body_leaves_room_for_the_marker(db):
-    """The finished message, marker included, still honours the §8 budget."""
+@pytest.mark.parametrize("long_dashboard_url", [False, True])
+async def test_the_rendered_body_leaves_room_for_the_marker(db, long_dashboard_url):
+    """The finished message, marker included, honours the current 600-character budget."""
     clock = Clock(BASE + HOUR + 30)
     service = make_service(db, transport := SinkTransport(), clock=clock)
+    if long_dashboard_url:
+        service._base_url = "https://" + "x" * 200 + ".example.test"
     for index in range(40):
         await complete(
             db,
@@ -636,7 +638,7 @@ async def test_the_rendered_body_leaves_room_for_the_marker(db):
     service._anchors[(f"discord:{CHANNEL}", schedule_for(make_config()).generation)] = BASE
     await service.tick()
     assert len(transport.messages) == 1
-    assert len(next(iter(transport.messages.values())).content) <= 1200
+    assert len(next(iter(transport.messages.values())).content) <= 600
 
 
 async def test_the_orchestrator_cycle_evaluates_and_survives_a_broken_digest(tmp_path):
