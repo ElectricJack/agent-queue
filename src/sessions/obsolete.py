@@ -118,6 +118,9 @@ _CLOSEABLE_FROM = frozenset(
         TaskStatus.PAUSED,
         TaskStatus.FAILED,
         TaskStatus.WAITING_INPUT,
+        TaskStatus.WAITING,
+        TaskStatus.HIBERNATED,
+        TaskStatus.RESUME_PENDING,
         TaskStatus.ASSIGNED,
         TaskStatus.IN_PROGRESS,
         TaskStatus.COMPLETED,
@@ -429,6 +432,9 @@ class ObsoleteClose:
                     task_metadata.c.key.in_(_CLEARED_KEYS),
                 )
             )
+            # The close is the decision: an open recovery incident or hold ends
+            # here, under the same row lock a racing ``task recover`` waits on.
+            await self.db._supersede_restarted_task_recovery_on(conn, task_id, context=context)
             released = await self._release_stopped_claim(conn, row)
             if existing is None and disposition != "obsolete":
                 await conn.execute(
@@ -874,16 +880,6 @@ def _pending_owner(row: dict, reason: str, detail: str) -> dict:
         "owner_row_id": row["id"],
         "ref": row["ref"],
         "handoff_state": row["handoff_state"],
-        "reason": reason,
-        "detail": detail,
-    }
-
-
-def _pending_batch(batch: dict, reason: str, detail: str) -> dict:
-    return {
-        "kind": "development_batch",
-        "batch_id": batch["id"],
-        "state": batch["state"],
         "reason": reason,
         "detail": detail,
     }
