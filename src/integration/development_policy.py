@@ -14,6 +14,7 @@ import yaml
 
 from src.integration.development import DevelopmentPolicy
 from src.playbooks.definition import PlaybookDefinition, source_digest
+from src.integration.runtime_contracts import PolicyArtifactPin
 from src.playbooks.integration_policy import CompiledIntegrationPolicy, policy_from_markdown
 
 TEMPLATE = Path(__file__).with_name("development_policy_template.md")
@@ -89,3 +90,38 @@ class PinnedDevelopmentPolicy:
     @property
     def compiled(self) -> CompiledIntegrationPolicy:
         return CompiledIntegrationPolicy(self.definition)
+
+
+def project_development_pin(project) -> PolicyArtifactPin | None:
+    """The project's reviewed, imported Development artifact pin.
+
+    Project settings cannot change an in-flight subject: the pin is what makes
+    a subject load its own reviewed source. A project without one is never
+    seeded.
+    """
+    policy = project.get("hierarchical_integration_policy") or {}
+    boundary = policy.get("development") if isinstance(policy, dict) else None
+    artifact = (boundary or {}).get("route", {}).get("artifact") if boundary else None
+    if not artifact or not artifact.get("artifact_sha256"):
+        return None
+    return PolicyArtifactPin(
+        playbook_id=artifact["playbook_id"], artifact_sha256=artifact["artifact_sha256"]
+    )
+
+
+def load_pinned_development_policy(config, artifact_sha256, definition):
+    """Load retained reviewed source, with a hash-checked bridge for old imports."""
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(config.compiled_root)
+    try:
+        source = store.load_source(artifact_sha256)
+    except FileNotFoundError:
+        # The compiled schema never contained Markdown. Older installs can
+        # bridge from the vault only while its source matches the frozen pin.
+        vault = Path(config.vault_root).expanduser().resolve()
+        path = (vault / "projects" / definition.scope.project_id / "playbooks"
+                / f"{definition.id}.md").resolve()
+        path.relative_to(vault)
+        source = path.read_text(encoding="utf-8")
+    return PinnedDevelopmentPolicy(definition, source)
