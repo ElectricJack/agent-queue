@@ -10,11 +10,18 @@ the global one. A mention-created or operator-created *thread* still carries its
 own conversation. This route is off by default.
 It deliberately relaxes the
 2026-09-08 Discord simplification without restoring slash commands, task
-controls, gate buttons, worker input or unrestricted channel chat.
+controls, the retired gate view classes or worker input. Canonical ask decision
+buttons and legacy escalation choices are separate human-authority surfaces.
+
+**Ask channel mode takes precedence.** The inbound router checks durable ask
+ownership before escalation or conversation intake. When this destination is in
+`channel` mode, all observed input goes to `ask_intake`, including refusals; it
+never falls back to supervisor conversations. Inspect `aq ask cutover-status` and
+follow [the human-asks rollout guide](human-asks-rollout.md) before changing modes.
 
 ## What enabling means
 
-The approved mention-routing spec states:
+The initial mention-routing design stated (project routing below extends it):
 
 > Choose transport-neutral intake commands plus durable conversation rows and the
 > shared outbound-delivery implementation owned by the narrative spec. Opt-in extension;
@@ -32,7 +39,7 @@ an already-running elevated session. An installation requiring enforced
 read-only chat must keep this feature off until a separately scoped author
 session exists.
 
-The approved 2026-10-03 chat-extension spec adds project routing. Set
+The implemented 2026-10-03 chat extension adds project routing. Set
 `discord.project_id` to the project served by this channel. AQ infers it when
 there is exactly one project. Inputs go to that project's live named
 supervisor, then to the live global supervisor. With several projects and no

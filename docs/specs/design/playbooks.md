@@ -12,13 +12,32 @@ tags: [design, playbooks, automation, workflows]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-**Status:** Active — **Paused** ([feature-pauses](feature-pauses.md); `playbooks.enabled=false`)
+**Status:** Superseded V1 design. The current [Playbooks V2 guide](../../concepts/playbooks.md) and [system map](../systems/playbooks.md) describe execution and configuration; the original design below is retained as history.
 **Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
 **Related:** [vault](vault.md), [agent-coordination](agent-coordination.md), [specs/event-bus](../event-bus.md), [specs/supervisor](../supervisor.md), [specs/plugin-system](../plugin-system.md)
 
 ---
+
+## Current V2 authoring contract (2026-10-14)
+
+The historical model below is superseded for executable V2 policy by the
+[building-block authoring and rollout guide](../../guides/playbook-building-blocks.md).
+The compiler emits exactly `rules` and `steps`; the server derives metadata from
+reviewed source. Catalogue coverage and caller authority are independent, including
+review verbs. The four denied commands remain `run_command`, `shutdown`,
+`restart_daemon`, `update_and_restart`; registered commands retain scope, capability,
+claim and human-decision checks.
+
+V2 supports bounded lexical collections, finite immutable observation snapshots,
+state CAS and notification episodes, plus script steps. State is retained through
+recompile/disable/removal; operator reset or reviewed version migration can re-alert.
+Incomplete coverage never authorizes absence clearing. Scripts run as ordinary
+processes with timeout/output caps and JSON parsing, enabled by default via config.
+There is no sandbox isolation, launcher prerequisite or real-host acceptance gate.
+Protected output uses authorized readback; ambiguous launches are not replayable.
+Installation, targeted artifact rebuilds and rollback remain explicit operator work.
 
 ## 1. Problem Statement
 
@@ -1353,3 +1372,27 @@ These were originally open questions, now resolved:
    unreachable nodes, missing entry point, cycles without exit conditions,
    transitions referencing nonexistent nodes. Should this be a post-compilation
    check or part of the compilation prompt?
+
+## System source recovery (2026-10-13)
+
+Reviewed bundle import retains the exact Markdown with the immutable artifact.
+Import and activation do not overwrite authored vault sources. Installation is
+one-shot and restart preserves sources, deletions and activation state. Legacy
+explicit seeding must copy Markdown from the reviewed bundle, rather than a
+second packaged source.
+
+When explicit required-playbook repair replaces an activation, it advances an
+existing system source only if its digest still matches the previous artifact.
+Edited or deleted sources remain unchanged. Source write failures are reported
+in daemon logs; the activation continues to serve its immutable artifact.
+
+A supervisor or local operator can restore a drifted system source with
+`aq playbook source-resync --playbook-id ID --artifact-sha256 SHA
+--expected-source-hash HASH`. Read SHA from activation-health and HASH from
+get-playbook-source. The command requires the pinned artifact to be the active
+system artifact, verifies its retained source digest, refuses stale hashes and
+unsafe paths, and atomically replaces the Markdown while preserving the old
+bytes in a unique `.bak-*` sibling. It never compiles, changes activation,
+replays events or reads backups as restoration inputs. Repeating it against
+the restored source makes no further write. Activation-health must then report
+`source_drift=false`, including after installation and restart.

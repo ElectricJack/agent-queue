@@ -1,0 +1,165 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/core.py::Orchestrator.__init__": {
+      "baseline_span": [
+        227,
+        673
+      ],
+      "landing_span": [
+        227,
+        662
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._branch_materialization_hierarchy": {
+      "baseline_span": [
+        1257,
+        1261
+      ],
+      "landing_span": [
+        1246,
+        1250
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace": {
+      "reason": "Managed pause requires full durable capture, exact source identity and fresh provider/process proof before cleanup; bounded retry exhaustion cannot release an uncaptured managed slot."
+    },
+    "src/orchestrator/core.py::Orchestrator._dispatch_integration_repair_stage": {
+      "baseline_span": [
+        1243,
+        1251
+      ],
+      "landing_span": [
+        1232,
+        1240
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._observe_integration_source_ci": {
+      "baseline_span": [
+        1220,
+        1226
+      ],
+      "landing_span": [
+        1209,
+        1215
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
+    },
+    "src/orchestrator/core.py::Orchestrator._reconcile_sessions": {
+      "baseline_span": [
+        3554,
+        3604
+      ],
+      "landing_span": [
+        3519,
+        3569
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._repair_integration_source_ancestry": {
+      "baseline_span": [
+        1227,
+        1235
+      ],
+      "landing_span": [
+        1216,
+        1224
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._reverify_integration_parent_source": {
+      "baseline_span": [
+        1236,
+        1242
+      ],
+      "landing_span": [
+        1225,
+        1231
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._run_daily_git_branch_sweep": {
+      "landing_span": [
+        3650,
+        3794
+      ],
+      "reason": "Sweeps exact Git-proven local and remote refs across registered Git-first project checkouts and reports preserved work and stash inventory."
+    },
+    "src/orchestrator/core.py::Orchestrator._salvage_paused_workspace": {
+      "reason": "Partial-source salvage validates the stopped task and exact workspace/branch before recording context; it does not qualify managed-slot release without a full checkpoint."
+    },
+    "src/orchestrator/core.py::Orchestrator._schedule_daily_git_branch_sweep": {
+      "landing_span": [
+        3625,
+        3649
+      ],
+      "reason": "Schedules the fleet Git branch sweep once per UTC day while Git-first integration is active."
+    },
+    "src/orchestrator/core.py::Orchestrator._stop_task_locked": {
+      "reason": "Task-stop implementation proves managed writer handoff, retains unproven attachments and protects successor preparation claims under the task control lock."
+    },
+    "src/orchestrator/core.py::Orchestrator._sweep_stranded_owners": {
+      "baseline_span": [
+        1274,
+        1289
+      ],
+      "landing_span": [
+        1263,
+        1278
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator.initialize": {
+      "baseline_span": [
+        1442,
+        2413
+      ],
+      "landing_span": [
+        1431,
+        2381
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator.run_one_cycle": {
+      "reason": "Builds one revalidated Git prerequisite view per cycle and shares it across scheduling and pool measurement."
+    },
+    "src/orchestrator/core.py::Orchestrator.shutdown": {
+      "baseline_span": [
+        2816,
+        2865
+      ],
+      "landing_span": [
+        2784,
+        2833
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator.stop_task": {
+      "baseline_span": [
+        1290,
+        1399
+      ],
+      "landing_span": [
+        1279,
+        1388
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::import from src.notifications.builder import build_task_detail": {
+      "baseline_span": [
+        101,
+        101
+      ],
+      "landing_span": [
+        101,
+        101
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

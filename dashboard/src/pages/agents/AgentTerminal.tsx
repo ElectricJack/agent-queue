@@ -44,7 +44,7 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
             : "This agent has no live terminal. Viewing it does not start a session."}
         </p>
         {supervisor ? (
-          <p className="max-w-sm text-xs text-gray-400">Supervisor access: all projects.</p>
+          <p className="max-w-sm text-xs text-gray-400">Supervisor access: {agent.project_id || "all projects"}.</p>
         ) : <label className="flex w-full max-w-sm flex-col gap-1 text-left text-xs text-gray-400">
           Project
           <select aria-label={"Project for " + agent.name + " terminal"} value={projectId}
@@ -56,11 +56,11 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
             ))}
           </select>
         </label>}
-        <button type="button" disabled={!canStart || start.isPending}
+        {!agent.session_backed && <button type="button" disabled={!canStart || start.isPending}
           onClick={() => start.mutate({ agent_id: agent.id, ...(!supervisor && projectId ? { project_id: projectId } : {}) })}
           className="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
           {start.isPending || starting ? "Starting…" : sleeping ? "Resume terminal" : "Start terminal"}
-        </button>
+        </button>}
         {!canStart && (
           <p className="max-w-sm text-xs text-gray-500">
             {taskOwned ? "The assigned task controls this session."
