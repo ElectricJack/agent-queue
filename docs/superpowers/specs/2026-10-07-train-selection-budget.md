@@ -18,6 +18,12 @@ reuses its candidate IDs for `pending` only within that visit, after unchanged
 stack refreshes; a changed refresh ends the visit and requires a new Git view.
 Mutable eligibility and publication fences still revalidate independently.
 
+Parent-only preparation may record a stack with no sibling prerequisites. Refresh
+still requires a qualified repository snapshot for delivery, source and currentness
+checks; the empty prerequisite set alone supplies no Git evidence. An unavailable
+repository or failed or stale observation holds the source. An unchanged empty
+stack preserves the original completion, checkpoint, branch and filing origin.
+
 At most four visits per repository run concurrently, including requested visits.
 No tasks are created just to wait for a repository slot. Admission chooses the
 least recently started idle target, with unvisited targets first; other repositories
@@ -97,3 +103,15 @@ completions; partial windows preserve cadence and prerequisite fences; stacked
 refresh cancellation still records a pushed completion; existing frozen repairs
 are not delayed by the new frontier. Production activation requires normal
 native delivery and deployment; a worker checkpoint does not clear the incident.
+
+## Red-source isolation (2026-10-21)
+
+A root refused for genuinely red PR checks, including an exhausted or unchanged
+automatic recovery, must not spend the cooperative candidate-selection quantum.
+Exclude the time spent evaluating that refused candidate so later roots can
+reach their own admission gates in the same visit. Preserve the refusal and
+cursor, the outer visit deadline, and the ordinary budget for other candidates.
+This grants no admission to a red source or its dependents: paired repair,
+prerequisite, exact-head and publication checks still apply. Deterministic tests
+must cover a slow red prefix followed by green independent work, and show that
+the green work still spends the quantum and that red prerequisites stay withheld.

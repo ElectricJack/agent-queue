@@ -31,6 +31,8 @@ from src.integration.ownership import BranchBusy, BranchOwnershipError, StaleFen
 DEFAULT_TTL_SECONDS = 480.0
 RENEWAL_MARGIN_SECONDS = DEFAULT_TTL_SECONDS / 3
 CRITICAL_SECTION_SECONDS = 30.0
+# Repair startup includes an isolated Git object import before ref mutation.
+REPAIR_START_SECONDS = GitManager._GIT_TIMEOUT + CRITICAL_SECTION_SECONDS
 
 
 class RemoteMoved(GitError):
@@ -125,24 +127,36 @@ class BranchLock:
         return dict(rows[0]) if rows else None
 
     @asynccontextmanager
-    async def exclusion(self, fence: Fence, *, conn=None):
+    async def exclusion(self, fence: Fence, *, conn=None, timeout_seconds: float | None = None):
         """Hold current authority through bounded I/O, shared with reacquisition."""
-        bound = asyncio.timeout(CRITICAL_SECTION_SECONDS)
+        seconds = (CRITICAL_SECTION_SECONDS if timeout_seconds is None
+                   else self._ttl(timeout_seconds))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        bound = asyncio.timeout(seconds)
+
+        def require_current(row):
+            nonlocal seconds
+            self.require_current(row, fence)
+            # A longer acquisition budget never extends the authority grant.
+            seconds = min(seconds, loop.time() - started + row["expires_at"] - self.clock())
+            bound.reschedule(started + seconds)
+
         try:
             async with bound:
                 if conn is not None:
                     row = await self.lock_on(conn, fence.target)
-                    self.require_current(row, fence)
+                    require_current(row)
                     yield row
                 else:
                     async with self.db.immediate() as owned:
                         row = await self.lock_on(owned, fence.target)
-                        self.require_current(row, fence)
+                        require_current(row)
                         yield row
         except TimeoutError as exc:
             if not bound.expired() or isinstance(exc, BranchLockTimeout):
                 raise
-            raise BranchLockTimeout(fence.target, CRITICAL_SECTION_SECONDS) from exc
+            raise BranchLockTimeout(fence.target, seconds) from exc
 
     def require_current(self, row: dict | None, fence: Fence) -> None:
         if (
@@ -220,6 +234,7 @@ class BranchLock:
             "session_id": None,
             "workspace_id": None,
             "confirmed_workspace_id": None,
+            "delegation": None,
             "updated_at": now,
         }
         if row:
@@ -452,11 +467,17 @@ async def renew_session_leases_on_liveness(
         .mappings()
         .one_or_none()
     )
+    from src.waits.holding import execution_waits
+
+    execution_wait = await conn.scalar(execution_waits().where(
+        sessions.c.id == session_id,
+    ).limit(1))
     if (
         task is None
         or task["assigned_agent_id"] != session["agent_id"]
         or (session["lifecycle"] == "pool" and session["last_claim_epoch"] != task["claim_epoch"])
-        or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+        or (task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+            and not (task["status"] == "WAITING" and execution_wait is not None))
     ):
         return
     rungs = await conn.scalar(
@@ -464,7 +485,7 @@ async def renew_session_leases_on_liveness(
             task_metadata.c.task_id == task["id"], task_metadata.c.key == "stall_nudges"
         )
     )
-    if int(json.loads(rungs) if rungs is not None else 0) > 1:
+    if execution_wait is None and int(json.loads(rungs) if rungs is not None else 0) > 1:
         return
     for row in candidates:
         if row["holder"] != task["id"]:
