@@ -76,6 +76,11 @@ list and run python scripts/generate-worker-capabilities.py. -->
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
+    "integration_batch_fix",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -140,6 +145,7 @@ list and run python scripts/generate-worker-capabilities.py. -->
     "review_attachment_add",
     "review_attachment_list",
     "review_comment",
+    "review_feedback_complete",
     "review_show",
     "review_submit",
     "github_issue_close_rejected",
@@ -166,6 +172,7 @@ list and run python scripts/generate-worker-capabilities.py. -->
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
     "get_git_status",
