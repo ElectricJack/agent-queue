@@ -21,7 +21,7 @@ const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(), listIntelligenceClasses: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(),
   sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
-  poolStatus: vi.fn(), poolRename: vi.fn(), poolScale: vi.fn(), poolSetEnabled: vi.fn(), sessionList: vi.fn(),
+  poolStatus: vi.fn(), poolRename: vi.fn(), poolDelete: vi.fn(), poolScale: vi.fn(), poolSetEnabled: vi.fn(), sessionList: vi.fn(),
   getProviderAllocationApiProvidersAllocationGet: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
@@ -146,6 +146,7 @@ beforeEach(() => {
   api.poolScale.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", min_active: 2, max_active: 6, project_caps: [], terminated: [], warnings: [] } });
   api.poolSetEnabled.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", enabled: false, warnings: [] } });
   api.poolRename.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", name: "Space Bunny", changed: true } });
+  api.poolDelete.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", deleted: "worker-standard", warnings: [] } });
   api.getProviderAllocationApiProvidersAllocationGet.mockResolvedValue({ data: {
     success: true, now: 1, providers: [], projects: [], diagnostics: [],
   } });
@@ -1272,5 +1273,49 @@ describe("creating an agent or a pool", () => {
     expect(screen.queryByRole("region", { name: "Create agent or pool" })).not.toBeInTheDocument();
     expect(api.poolScale).not.toHaveBeenCalled();
     expect(api.createAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleting a pool from settings", () => {
+  async function openDelete() {
+    renderAgents("/agents?agent=pool%3Aworker-standard");
+    const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
+    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+    fireEvent.click(within(window).getByRole("button", { name: "Delete pool" }));
+    return within(await screen.findByRole("dialog", { name: /Delete .* pool/ }));
+  }
+
+  it("warns about workers and files in one confirmation and cancels without deletion", async () => {
+    const dialog = await openDelete();
+    expect(dialog.getByText(/Running workers will stop/)).toBeInTheDocument();
+    expect(dialog.getByText(/Entire directory also removes/)).toBeInTheDocument();
+    expect(dialog.getByLabelText("Vault deletion depth")).toHaveValue("profile");
+    fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: /Delete .* pool/ })).not.toBeInTheDocument();
+    expect(api.poolDelete).not.toHaveBeenCalled();
+  });
+
+  it.each(["profile", "directory"])("deletes at %s depth and removes the pool while preserving cleanup warnings", async (depth) => {
+    api.poolDelete.mockImplementation(async () => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
+      return { data: { success: true, deleted: "worker-standard", warnings: ["Session busy is still stopping"] } };
+    });
+    const dialog = await openDelete();
+    fireEvent.change(dialog.getByLabelText("Vault deletion depth"), { target: { value: depth } });
+    fireEvent.click(dialog.getByRole("button", { name: "Delete pool" }));
+    await waitFor(() => expect(api.poolDelete).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolDelete.mock.calls[0]![0].body).toEqual({ profile_id: "worker-standard", depth });
+    expect(await screen.findByText(/Pool deleted.*Session busy is still stopping/, undefined, SLOW)).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent(/^\/agents$/);
+    expect(screen.queryByRole("dialog", { name: /Delete .* pool/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the confirmation and an in-band command error visible", async () => {
+    api.poolDelete.mockResolvedValue({ data: { success: false, error: "Deletion could not be persisted" } });
+    const dialog = await openDelete();
+    fireEvent.click(dialog.getByRole("button", { name: "Delete pool" }));
+    expect(await dialog.findByRole("alert")).toHaveTextContent("Deletion could not be persisted");
+    expect(screen.getByRole("dialog", { name: /Delete .* pool/ })).toBeInTheDocument();
   });
 });
