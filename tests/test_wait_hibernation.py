@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import shutil
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,7 @@ from src.commands import CommandHandler
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import AppConfig
 from src.database import Database
+from src.integration.admission import observe_admission
 from src.database.queries.continuation_queries import (
     checkpoint_continuation,
     continuation_prime_context,
@@ -64,8 +66,17 @@ async def env():
                 created_at=NOW,
             )
         )
-    yield SimpleNamespace(db=db, scope=scope, wait_id=result["wait_id"])
-    await db.close()
+    context = SimpleNamespace(db=db, scope=scope, wait_id=result["wait_id"])
+    try:
+        yield context
+    finally:
+        if getattr(context, 'legacy_null_tokens', False):
+            async with db._engine.begin() as conn:
+                await conn.execute(update(sessions).where(sessions.c.instance_token.is_(None)).values(
+                    instance_token='restored-test-token'))
+                await conn.exec_driver_sql(
+                    'ALTER TABLE sessions ALTER COLUMN instance_token SET NOT NULL')
+        await db.close()
 
 
 async def intent(env):
@@ -202,7 +213,7 @@ async def test_eviction_transition_budget_uses_intent_time_and_reclaimed_owner_i
     assert not (await intent(env))["summary_degraded"]
 
 
-async def test_command_is_concrete_but_activation_remains_required(env):
+async def test_checkpoint_remains_available_during_flag_rollback(env):
     handler = CommandHandler(
         SimpleNamespace(
             db=env.db,
@@ -224,8 +235,6 @@ async def test_command_is_concrete_but_activation_remains_required(env):
     )
     with principal_context(principal):
         args = dict(wait_id=env.wait_id, summary="next: inspect result", claim_epoch=1)
-        assert (await handler.execute("wait_checkpoint", args))["error_code"] == "wait.disabled"
-        handler.config.wait_policy.v2_enabled = True
         result = await handler.execute("wait_checkpoint", args)
     assert result["success"], result
     facts = (await intent(env))["facts"]
@@ -542,7 +551,7 @@ async def test_wait_task_audit_migration_drops_old_fks_idempotently(env):
     from alembic.operations import Operations
 
     path = Path(__file__).resolve().parents[1] / (
-        "migrations/versions/a00000000112_continuation_task_audit.py")
+        "migrations/versions/a00000000113_continuation_task_audit.py")
     spec = importlib.util.spec_from_file_location("wait_task_audit_migration", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
@@ -651,6 +660,244 @@ async def test_outcome_during_stop_queues_only_after_park(env):
     assert (await intent(env))['resume_state'] == 'queued'
 
 
+async def test_live_service_resumes_parked_outcome_without_orchestrator_cycle(env):
+    from tests.test_wait_dispatch import runtime
+    from src.models import TaskStatus
+
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    service = runtime(env, registry=build_registry(clock=lambda: NOW))
+    service.orch.wait_dispatcher = service._dispatcher
+    service.listener.renewal_seconds = 0.01
+    delivered = asyncio.Event()
+
+    async def command(name, args):
+        assert name == 'wait_resume_dispatch'
+        assert args == {'continuation_id': 'c', 'generation': 1}
+        row = await intent(env)
+        assert row['resume_state'] == 'queued'
+        assert (await env.db.get_task('owner')).status is TaskStatus.RESUME_PENDING
+        delivered.set()
+        return {'success': True}
+
+    async def listen():
+        # Drain a real outcome, then simulate a stalled source listener.
+        await env.db.transition_task('source', TaskStatus.COMPLETED)
+        await service.listener.tick()
+        await asyncio.Event().wait()
+
+    service.command = command
+    service.listener.run = listen
+    service.startup_bridge = AsyncMock()
+    runner = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(delivered.wait(), 5)
+        async with env.db._engine.connect() as conn:
+            wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['outcome'] == 'satisfied' and wait['wake_delivered_at'] is None
+        assert wait['cleared_at'] is None  # Recovery never acknowledges on the worker's behalf.
+    finally:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+    assert not service.lifecycle._resume_tasks
+
+
+@pytest.mark.parametrize('state', ['queued', 'reserved', 'launching', 'held'])
+async def test_resume_stall_notice_retains_outcome_and_deduplicates_across_restart(env, state):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state=state))
+    now = [NOW + 309]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    async def notices():
+        async with env.db._engine.connect() as conn:
+            return list((await conn.execute(select(messages).where(
+                messages.c.subject == 'Resume stalled: owner',
+            ))).mappings())
+    before = await intent(env)
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    assert not await notices()
+    now[0] += 1
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    [notice] = await notices()
+    assert notice['to_id'] == 'supervisor-p' and notice['to_kind'] == 'session'
+    assert f'state {state}' in notice['body'] and '300 seconds' in notice['body']
+    replacement = runtime(env, clock=lambda: NOW + 900, registry=build_registry())
+    await replacement.orch._command_handler.wait_service_resume_stalls(replacement.lifecycle)
+    assert len(await notices()) == 1
+    assert await intent(env) == before
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+    assert wait['outcome'] == 'satisfied' and wait['cleared_at'] is None
+
+
+async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried(env):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    service = runtime(env, registry=build_registry())
+    started, release = asyncio.Event(), asyncio.Event()
+    async def dispatch(*args):
+        started.set()
+        await release.wait()
+        return {'success': False, 'error_code': 'wait.unavailable'}
+    service.command = AsyncMock(side_effect=dispatch)
+    try:
+        await service.lifecycle.resume_pending()
+        await asyncio.wait_for(started.wait(), 5)
+        await service.lifecycle.resume_pending()
+        assert service.command.await_count == 1
+        release.set()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        service.command.side_effect = RuntimeError('temporary dispatch failure')
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        service.command.side_effect = None
+        service.command.return_value = {'success': True}
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        assert service.command.await_count == 3
+    finally:
+        await service.lifecycle.stop()
+
+
+async def test_slow_resume_does_not_block_another_parked_task_and_shutdown_joins_it(env):
+    from tests.test_wait_dispatch import runtime
+
+    second = await owner(env.db, task_id='second', session_id='s2', agent_id='a2')
+    async with env.db._engine.begin() as conn:
+        receipt = await register_wait(conn, scope=second,
+            condition={'kind': 'task', 'task_id': 'source'}, idempotency_key='second',
+            registry=build_registry(clock=lambda: NOW), policy=Policy(), now=NOW,
+            source_watermark=0, decide_sleep=lambda *_: SleepDecision('hibernate', 'test', {}))
+        await conn.execute(insert(continuations).values(
+            id='c2', task_id='second', wait_id=receipt['wait_id'], suspension_generation=1,
+            facts={}, branch='aq/second', prior_status='IN_PROGRESS', held_cursor_seq=0,
+            resume_state='sleeping', created_at=NOW))
+        await conn.execute(update(tasks).where(tasks.c.id == 'second').values(branch_name='aq/second'))
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await env.db.park_task_for_continuation(conn, task_id='second', wait_id=receipt['wait_id'],
+            continuation_id='c2', generation=1, session_id='s2', instance_token='token',
+            claim_epoch=1, saved_head='a' * 40, now=NOW + 20)
+    service = runtime(env, registry=build_registry())
+    first, other = asyncio.Event(), asyncio.Event()
+    async def dispatch(name, args):
+        if args['continuation_id'] == 'c':
+            first.set()
+            await asyncio.Event().wait()
+        other.set()
+        return {'success': True}
+    service.command = dispatch
+    try:
+        await service.lifecycle.resume_pending()
+        await asyncio.wait_for(first.wait(), 5)
+        await asyncio.wait_for(other.wait(), 5)
+        assert ('c', 1) in service.lifecycle._resume_tasks
+    finally:
+        await service.lifecycle.stop()
+    assert not service.lifecycle._resume_tasks
+
+
+async def test_slow_hibernation_does_not_block_overdue_writer_or_duplicate_attempts(env):
+    from src.database.tables import wait_deadlines
+    from tests.test_wait_dispatch import runtime
+
+    second = await owner(env.db, task_id='second', session_id='s2', agent_id='a2')
+    async with env.db._engine.begin() as conn:
+        receipt = await register_wait(conn, scope=second,
+            condition={'kind': 'task', 'task_id': 'source'}, idempotency_key='second',
+            registry=build_registry(clock=lambda: NOW), policy=Policy(), now=NOW,
+            source_watermark=0, decide_sleep=lambda *_: SleepDecision('hibernate', 'test', {}))
+        await conn.execute(insert(continuations).values(
+            id='c2', task_id='second', wait_id=receipt['wait_id'], suspension_generation=1,
+            facts={}, branch='aq/second', prior_status='IN_PROGRESS', held_cursor_seq=0,
+            resume_state='sleeping', created_at=NOW))
+        await conn.execute(insert(wait_deadlines).values(
+            id='overdue', wait_id=receipt['wait_id'], deadline_type='transition',
+            due_at=NOW + 120, generation=1))
+    service = runtime(env, clock=lambda: NOW + 10000, registry=build_registry())
+    first, other = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def suspend(name, args):
+        assert name == 'wait_sleep_decide'
+        calls.append(args['wait_id'])
+        if args['wait_id'] == env.wait_id:
+            first.set()
+            await asyncio.Event().wait()
+        other.set()
+        return {'success': True}
+
+    service.command = suspend
+    try:
+        await service.lifecycle.tick()
+        await asyncio.wait_for(first.wait(), 5)
+        await asyncio.wait_for(other.wait(), 5)
+        await service.lifecycle.tick()
+        assert calls.count(env.wait_id) == 1
+        assert env.wait_id in service.lifecycle._hibernate_tasks
+        async with env.db._engine.connect() as conn:
+            assert await conn.scalar(select(wait_deadlines.c.fired_at).where(
+                wait_deadlines.c.id == 'overdue')) is None
+    finally:
+        await service.lifecycle.stop()
+    assert not service.lifecycle._hibernate_tasks
+
+
+async def test_maintenance_retries_after_a_transient_failure(env):
+    from tests.test_wait_dispatch import runtime
+
+    service = runtime(env, registry=build_registry())
+    service.listener.renewal_seconds = 0.01
+    resumed = asyncio.Event()
+    attempts = 0
+
+    async def tick():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError('temporary')
+        resumed.set()
+
+    service.lifecycle.tick = tick
+    runner = asyncio.create_task(service.maintain())
+    try:
+        await asyncio.wait_for(resumed.wait(), 5)
+        assert attempts >= 2
+    finally:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+
+@pytest.mark.parametrize('change', ['pause', 'acknowledged', 'cleared'])
+async def test_resume_stall_notice_excludes_paused_and_consumed_waits(env, change):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        if change == 'pause':
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status='PAUSED'))
+        elif change == 'acknowledged':
+            await conn.execute(update(continuations).values(resume_state='acknowledged'))
+        else:
+            await conn.execute(update(wait_records).values(cleared_at=NOW + 20))
+    service = runtime(env, clock=lambda: NOW + 1000, registry=build_registry())
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    async with env.db._engine.connect() as conn:
+        assert not list((await conn.execute(select(messages))).mappings())
+
+
 async def test_suspension_fence_is_exact_session_bound(env):
     from src.waits.fencing import mutation_fence
 
@@ -679,8 +926,7 @@ async def test_begin_suspension_is_idempotent_and_binds_registration_cursor(env)
         assert current['suspension_generation'] == 1
 
 
-@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach', 'push_retry'])
-async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, monkeypatch, failure):
+async def suspension_case(env, monkeypatch, failure=None):
     from src.wait_runtime.hibernate import HibernationTransaction
 
     await capture(env)
@@ -694,7 +940,8 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
         integration_repository_id='repo')))
     monkeypatch.setattr(env.db, 'get_repo', AsyncMock(return_value=SimpleNamespace(
         url='remote', default_branch='main')))
-    provider = SimpleNamespace(stop=AsyncMock(), confirm_instance_stopped=AsyncMock(
+    provider = SimpleNamespace(stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=True),
+                              confirm_instance_stopped=AsyncMock(
         return_value=failure != 'stop'), process_alive=AsyncMock(return_value=False))
     saved = SimpleNamespace(status='failed' if failure == 'push' else 'pushed',
                             commit='a' * 40, error='push failed')
@@ -721,6 +968,15 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
     )
     handler = SimpleNamespace(wait_escalation_create=AsyncMock(return_value={'success': True}))
     driver = HibernationTransaction(SimpleNamespace(orch=orch), clock=lambda: NOW + 1)
+    return SimpleNamespace(driver=driver, orch=orch, handler=handler, provider=provider,
+                           save=save, workspace=workspace)
+
+
+@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach', 'push_retry'])
+async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, monkeypatch, failure):
+    case = await suspension_case(env, monkeypatch, failure)
+    driver, orch, handler = case.driver, case.orch, case.handler
+    save, workspace = case.save, case.workspace
     result = await driver.advance(env.wait_id, handler=handler)
     if failure == 'push_retry':
         assert result['push_pending']
@@ -747,6 +1003,170 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
         orch._release_workspace_and_cleanup.assert_awaited_once_with(workspace)
         orch.token_store.revoke_session.assert_awaited_once_with('s')
         assert (await intent(env))['facts']['workspace_released_at'] == NOW + 1
+
+
+async def expire_stop(env, token):
+    async with env.db._engine.begin() as conn:
+        if token is None:
+            # Reproduce the legacy rows from the incident. Current metadata
+            # requires tokens; restore its constraint before returning the lease.
+            await conn.exec_driver_sql(
+                'ALTER TABLE sessions ALTER COLUMN instance_token DROP NOT NULL')
+            env.legacy_null_tokens = True
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        await conn.execute(update(wait_records).values(decision_inputs={
+            **wait['decision_inputs'], 'delivery': {
+                **wait['decision_inputs']['delivery'], 'instance_token': token}}))
+        await conn.execute(update(sessions).where(sessions.c.id == 's').values(instance_token=token))
+        await conn.execute(update(continuations).values(
+            facts={'hibernation': {'stop_started_at': NOW - 120}}))
+
+
+@pytest.mark.parametrize('token', [None, 'token'])
+@pytest.mark.parametrize('proof', ['gone', 'alive', 'unavailable', 'timeout', 'successor'])
+async def test_expired_stop_budget_uses_read_only_proof(env, monkeypatch, token, proof):
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, token)
+    if proof == 'alive':
+        case.provider.process_alive.return_value = True
+    elif proof == 'unavailable':
+        case.provider.confirm_instance_stopped.side_effect = RuntimeError('unavailable')
+    elif proof == 'timeout':
+        monkeypatch.setattr('src.wait_runtime.hibernate.STOP_PROOF_TIMEOUT_SECONDS', 0.01)
+
+        async def stuck_probe(*args):
+            await asyncio.Event().wait()
+
+        case.provider.confirm_instance_stopped.side_effect = stuck_probe
+    elif proof == 'successor':
+        # The instance-specific probe accepts a successor for a known old token;
+        # name absence must still be proved before touching the checkout.
+        case.provider.confirm_instance_stopped.return_value = token is not None
+        case.provider.confirm_stopped.return_value = False
+    result = await case.driver.advance(env.wait_id, handler=case.handler)
+    case.provider.stop.assert_not_awaited()
+    if proof == 'gone':
+        assert result['parked']
+        case.save.assert_awaited_once()
+        assert (await intent(env))['stopped_at'] == NOW + 1
+    else:
+        assert result['held'] and result['hold_reason'] == 'stop_uncertain'
+        case.save.assert_not_awaited()
+        case.orch._release_workspace_and_cleanup.assert_not_awaited()
+        assert (await env.db.get_task('owner')).claim_epoch == 1
+
+
+@pytest.mark.parametrize('resolved', [False, True])
+@pytest.mark.parametrize('token', [None, 'token'])
+async def test_held_stop_recovers_on_later_tick_and_withdraws_incident(
+    env, monkeypatch, resolved, token,
+):
+    from src.database.tables import escalations
+    from tests.test_wait_dispatch import runtime
+
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, token)
+    now = [NOW + 1]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    # Exercise the real command boundary, incident creation and withdrawal.
+    service.orch.__dict__.update(case.orch.__dict__)
+    service.orch.config = AppConfig()
+    service.lifecycle.hibernate.clock = lambda: now[0]
+    driver, handler = service.lifecycle.hibernate, service.orch._command_handler
+    case.provider.process_alive.return_value = True
+    assert (await driver.advance(env.wait_id, handler=handler))['held']
+    held = await intent(env)
+    incident_id = held['facts']['hold_escalation_id']
+    if resolved:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=now[0]))
+    try:
+        case.provider.process_alive.return_value = False
+        # Restart the lifecycle to prove that the backoff lives in the database.
+        from src.wait_runtime.lifecycle import WaitLifecycle
+        service.lifecycle = WaitLifecycle(service, clock=lambda: now[0])
+        await service.lifecycle.tick()
+        assert not service.lifecycle._hibernate_tasks
+        assert (await intent(env))['resume_state'] == 'held'
+        now[0] += 5
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+    finally:
+        await service.lifecycle.stop()
+    row = await intent(env)
+    assert row['stopped_at'] == now[0] and row['hold_reason'] is None
+    assert row['resume_state'] == ('queued' if resolved else 'sleeping')
+    assert (await env.db.get_task('owner')).status.value == (
+        'RESUME_PENDING' if resolved else 'HIBERNATED')
+    async with env.db._engine.connect() as conn:
+        [incident] = (await conn.execute(select(escalations))).mappings().all()
+    assert incident['id'] == incident_id and incident['state'] == 'cancelled'
+    assert incident['terminal_outcome'] == 'source_satisfied'
+    case.provider.stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize('proof', ['alive', 'unavailable'])
+async def test_stop_proof_retries_exhaust_without_releasing_checkout(env, monkeypatch, proof):
+    from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS
+    from tests.test_wait_dispatch import runtime
+
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, 'token')
+    case.provider.process_alive.return_value = True
+    if proof == 'unavailable':
+        case.provider.confirm_instance_stopped.side_effect = RuntimeError('unavailable')
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    for attempt in range(2, STOP_PROOF_MAX_ATTEMPTS + 1):
+        state = (await intent(env))['facts']['hibernation']
+        assert state['stop_proof_attempts'] == attempt - 1
+        case.driver.clock = lambda: state['stop_retry_at']
+        assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    service = runtime(env, clock=lambda: NOW + 10000, registry=build_registry())
+    service.command = AsyncMock()
+    await service.lifecycle.tick()
+    assert not service.lifecycle._hibernate_tasks
+    case.driver.clock = lambda: NOW + 10000
+    probes = case.provider.confirm_instance_stopped.await_count
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    assert case.provider.confirm_instance_stopped.await_count == probes == STOP_PROOF_MAX_ATTEMPTS
+    case.handler.wait_escalation_create.assert_awaited_once()
+    case.save.assert_not_awaited()
+    case.orch.token_store.revoke_session.assert_not_awaited()
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+
+
+async def test_null_token_never_signals_even_with_stop_budget_remaining(env, monkeypatch):
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, None)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={}))
+    case.provider.confirm_instance_stopped.return_value = False
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    case.provider.stop.assert_not_awaited()
+
+
+async def test_writer_identity_changed_during_stop_proof_never_saves(env, monkeypatch):
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, None)
+
+    async def successor(*args):
+        await env.db.update_session('s', instance_token='successor-token')
+        return True
+
+    case.provider.confirm_instance_stopped.side_effect = successor
+    with pytest.raises(WaitError, match='writer identity changed'):
+        await case.driver.advance(env.wait_id, handler=case.handler)
+    case.save.assert_not_awaited()
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+
+
+async def test_failed_stop_signal_with_fresh_death_proof_still_parks(env, monkeypatch):
+    case = await suspension_case(env, monkeypatch)
+    case.provider.stop.side_effect = OSError('stop response lost')
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['parked']
+    case.provider.stop.assert_awaited_once()
+    case.save.assert_awaited_once()
+    case.handler.wait_escalation_create.assert_not_awaited()
 
 
 async def bound_resume(env):
@@ -1057,7 +1477,8 @@ async def test_failed_resume_retries_once_then_holds_without_frontier_requeue(en
     assert metrics['wakes_1h']['other'] == 0
 
 
-async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env, tmp_path):
+@pytest.mark.parametrize('setup_fails', [False, True])
+async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env, tmp_path, setup_fails):
     from pathlib import Path
     from src.git.manager import GitManager
     from src.models import Workspace, RepoSourceType
@@ -1090,17 +1511,424 @@ async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env
     env.db.resolve_workspace_kind = AsyncMock(return_value=SimpleNamespace())
     env.db.update_workspace = AsyncMock()
     slots = SimpleNamespace(reprovision_slot=AsyncMock())
+    if setup_fails:
+        slots.reprovision_slot.side_effect = RuntimeError('setup failed')
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(
-        return_value=str(old)), _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots)
+        return_value=str(old)), _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
+        _worktree_base_paths={})
     driver = ResumeTransaction(SimpleNamespace(orch=orch))
-    target = await driver.fresh_workspace(AssignAction('a', 'owner', 'p', 'c', 1),
-        await env.db.get_task('owner'), None, await intent(env))
+    args = (AssignAction('a', 'owner', 'p', 'c', 1),
+            await env.db.get_task('owner'), None, await intent(env))
+    if setup_fails:
+        with pytest.raises(RuntimeError, match='setup failed'):
+            await driver.fresh_workspace(*args)
+        target = (await intent(env))['facts']['fresh_workspace']['new_path']
+    else:
+        target = await driver.fresh_workspace(*args)
     assert target != str(old) and Path(target).is_dir()
     assert not (Path(target) / 'transcript.cache').exists()
     assert await git._arun(['rev-parse', 'HEAD'], cwd=target) == head
     assert await git._arun(['branch', '--show-current'], cwd=target) == 'aq/owner'
     env.db.update_workspace.assert_awaited_once_with('slot', workspace_path=target)
     slots.reprovision_slot.assert_awaited_once()
+
+
+@pytest.fixture
+async def cold_restart_checkout(env, tmp_path):
+    from src.git.manager import GitManager
+    from src.models import RepoConfig, RepoSourceType, Workspace
+
+    git = GitManager()
+    origin = tmp_path / 'origin.git'
+    await git._arun(['init', '--bare', str(origin)])
+    base_path = tmp_path / 'base'
+    await git._arun(['clone', str(origin), str(base_path)])
+    await git._arun(['config', 'user.email', 'test@example.test'], cwd=str(base_path))
+    await git._arun(['config', 'user.name', 'Test'], cwd=str(base_path))
+    await git._arun(['switch', '-c', 'main'], cwd=str(base_path))
+    (base_path / 'content').write_text('saved work\n')
+    await git._arun(['add', 'content'], cwd=str(base_path))
+    await git._arun(['commit', '-m', 'base'], cwd=str(base_path))
+    await git._arun(['push', 'origin', 'main'], cwd=str(base_path))
+    head = await git._arun(['rev-parse', 'HEAD'], cwd=str(base_path))
+    old = base_path / '.aq' / 'worktrees' / 'slot-0'
+    target = old.parent / 'resume-c-1'
+    duplicate = old.parent / 'slot-1'
+    await git._arun(['worktree', 'add', '-b', 'aq/owner', str(old)], cwd=str(base_path))
+    await git._arun(['push', 'origin', 'aq/owner'], cwd=str(old))
+    await git._arun(['switch', '--detach'], cwd=str(old))
+    await git._arun(['worktree', 'add', str(target), 'aq/owner'], cwd=str(base_path))
+    await git._arun(['worktree', 'add', '--detach', str(duplicate), 'main'], cwd=str(base_path))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url=str(origin),
+                                      source_type=RepoSourceType.CLONE, default_branch='main'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='base', project_id='p',
+        workspace_path=str(base_path), source_type=RepoSourceType.CLONE))
+    for index, path in enumerate((old, duplicate)):
+        await env.db.create_workspace(Workspace(id=f'slot-{index}', project_id='p',
+            workspace_path=str(path), source_type=RepoSourceType.WORKTREE,
+            base_workspace_id='base', slot_index=index, locked_by_task_id='owner',
+            locked_by_agent_id='a'))
+    await park(env, saved_head=head)
+    await env.db.update_session('s', state='stopped', desired_state='stopped')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state='held', launch_attempts=1,
+            hold_reason='resume_workspace_failed', facts={'fresh_workspace': {
+                'workspace_id': 'slot-0', 'old_path': str(old), 'new_path': str(target),
+                'attempt': 1}}))
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    locks = {}
+    orch = SimpleNamespace(git=git, config=AppConfig(),
+        _git_mutex=lambda path: locks.setdefault(path, asyncio.Lock()),
+        _task_control_lock=lambda task: locks.setdefault(('task', task), asyncio.Lock()),
+        session_providers=SimpleNamespace(create=lambda *_: provider))
+    return SimpleNamespace(env=env, git=git, old=old, target=target, duplicate=duplicate,
+        base=base_path, provider=provider, command=SimpleNamespace(db=env.db, orchestrator=orch))
+
+
+@pytest.mark.parametrize('relocation_recorded', [False, True])
+@pytest.mark.parametrize('prior_resume', [False, True])
+async def test_cold_restart_releases_staged_branch_and_all_reservations(
+    cold_restart_checkout, relocation_recorded, prior_resume,
+):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.tables import admission_reservations
+    from src.models import TaskStatus
+
+    case = cold_restart_checkout
+    db = case.env.db
+    if prior_resume:
+        old = case.old.parent / 'resume-prior-1'
+        await case.git._arun(['worktree', 'move', str(case.old), str(old)], cwd=str(case.base))
+        async with db._engine.begin() as conn:
+            current = await intent(case.env)
+            await conn.execute(insert(continuations).values(id='prior', task_id='owner',
+                wait_id=case.env.wait_id, suspension_generation=0, branch='aq/owner',
+                prior_status='IN_PROGRESS', held_cursor_seq=0, resume_state='acknowledged',
+                facts={'fresh_workspace': {'workspace_id': 'slot-0', 'attempt': 1,
+                    'old_path': str(case.old), 'new_path': str(old)}}))
+            stage = {**current['facts']['fresh_workspace'], 'old_path': str(old)}
+            await conn.execute(update(continuations).where(continuations.c.id == 'c').values(
+                facts={'fresh_workspace': stage}))
+        case.old = old
+        await db.update_workspace('slot-0', workspace_path=str(old))
+    if relocation_recorded:
+        await db.update_workspace('slot-0', workspace_path=str(case.target))
+        await case.git._arun(['worktree', 'remove', str(case.old)], cwd=str(case.base))
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(admission_reservations).values(id='reservation',
+            project_id='p', task_id='owner', continuation_id='c', state='granted',
+            scope={}, provenance='resume', created_at=NOW, effective_priority=100,
+            deadline_at=NOW + 300))
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert result['success'], result
+    assert (await db.get_task('owner')).status == TaskStatus.READY
+    assert all(not ws.locked_by_task_id for ws in await db.list_workspaces('p'))
+    assert await case.git._arun(['branch', '--show-current'], cwd=str(case.target)) == ''
+    assert (case.target / 'content').read_text() == 'saved work\n'
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(continuations.c.resume_state).where(
+            continuations.c.id == 'c')) == 'cancelled'
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(admission_reservations.c.state)) == 'cancelled'
+    case.provider.confirm_stopped.assert_awaited_once()
+    # Replay must not reattach the branch, recreate reservations or reprobe writers.
+    assert (await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'}))['success']
+    case.provider.confirm_stopped.assert_awaited_once()
+    # This is the Git operation that the next claim previously could not perform.
+    await case.git._arun(['switch', 'aq/owner'], cwd=str(case.duplicate))
+
+
+async def test_cold_restart_waits_for_resume_workspace_transaction(cold_restart_checkout):
+    from src.commands.task_commands import TaskCommandsMixin
+
+    case = cold_restart_checkout
+    lock = case.command.orchestrator._task_control_lock('owner')
+    async with lock:
+        restart = asyncio.create_task(TaskCommandsMixin._cmd_restart_task(
+            case.command, {'task_id': 'owner'}))
+        await asyncio.sleep(0)
+        assert not restart.done()
+        case.provider.confirm_stopped.assert_not_awaited()
+    assert (await restart)['success']
+
+
+@pytest.mark.parametrize('blocker', [
+    'live', 'unknown_stop', 'stop_error', 'dirty', 'unpushed', 'head_drift',
+    'reused', 'reused_agent', 'pinned',
+])
+async def test_cold_restart_refuses_without_losing_ownership(cold_restart_checkout, blocker):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.tables import workspaces
+
+    case = cold_restart_checkout
+    db = case.env.db
+    if blocker == 'live':
+        await db.create_session(SessionRecord(id='live-writer', project_id='p',
+            profile_id='worker', harness='codex', provider='fake', name='live-writer', lifecycle='task',
+            work_dir=str(case.target), task_id='owner', epoch='boot',
+            instance_token='live-token', state='running', desired_state='running',
+            started_at=NOW, last_activity=NOW))
+    elif blocker == 'unknown_stop':
+        case.provider.confirm_stopped.return_value = False
+    elif blocker == 'stop_error':
+        case.provider.confirm_stopped.side_effect = RuntimeError('provider unavailable')
+    elif blocker == 'dirty':
+        (case.target / 'unsaved').write_text('retain this')
+    elif blocker == 'unpushed':
+        (case.target / 'content').write_text('unpublished work')
+        await case.git._arun(['commit', '-am', 'unpublished'], cwd=str(case.target))
+    elif blocker == 'head_drift':
+        async with db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(saved_head='f' * 40))
+    elif blocker == 'reused':
+        await db.create_task(Task(id='other-owner', project_id='p', title='Other', description=''))
+        await db.update_workspace('slot-0', locked_by_task_id='other-owner')
+    elif blocker == 'reused_agent':
+        await db.update_workspace('slot-0', locked_by_task_id=None)
+    else:
+        async with db._engine.begin() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == 'slot-0').values(
+                job_pin_count=1))
+    before = await db.get_task('owner')
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert not result['success'], result
+    assert (await db.get_task('owner')).status == before.status
+    assert (await db.get_workspace('slot-1')).locked_by_task_id == 'owner'
+    assert (await intent(case.env))['resume_state'] == 'held'
+    assert case.target.is_dir()
+
+
+async def fresh_rig(env, tmp_path):
+    """A slot holding the parked branch, beside a peer whose folder is gone.
+
+    The real ``WorktreeSlotManager`` provisions the fresh checkout, so a drift
+    in its ``reprovision_slot`` signature fails here rather than in production.
+    """
+    from collections import defaultdict
+    from pathlib import Path
+
+    from src.config import WorktreesConfig
+    from src.git.manager import GitManager
+    from src.models import KIND_MODE_WORKTREE, RepoSourceType, Workspace, WorkspaceKind
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    from src.wait_runtime.resume import ResumeTransaction
+    from tests.git_seed_helpers import clone_seed, init_bare_seed
+
+    git = GitManager()
+    origin, base_path = tmp_path / 'origin.git', tmp_path / 'base'
+    init_bare_seed(origin)
+    clone_seed(origin, base_path)
+
+    async def run(args, cwd=base_path):
+        return await git._arun(['-c', 'user.name=T', '-c', 'user.email=t@t.test', *args],
+                               cwd=str(cwd))
+
+    (base_path / '.gitignore').write_text('transcript.cache\n')
+    await run(['add', '.gitignore'])
+    await run(['commit', '-m', 'base'])
+    await run(['push', 'origin', 'main'])
+    worktrees = base_path / '.aq' / 'worktrees'
+    old, peer = worktrees / 'slot-0', worktrees / 'slot-1'
+    await run(['worktree', 'add', '--detach', str(peer)])
+    shutil.rmtree(peer)  # registration retained: preserved evidence, never pruned
+    await run(['worktree', 'add', '-b', 'aq/owner', str(old)])
+    (old / 'saved.txt').write_text('saved work\n')
+    await run(['add', 'saved.txt'], old)
+    await run(['commit', '-m', 'saved work'], old)
+    (old / 'transcript.cache').write_text('old process transcript')
+    head = await git._arun(['rev-parse', 'HEAD'], cwd=str(old))
+    await park(env, saved_head=head)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state='reserved', launch_attempts=1))
+    workspace = Workspace(id='slot', project_id='p', workspace_path=str(old), slot_index=0,
+                          source_type=RepoSourceType.WORKTREE, base_workspace_id='base',
+                          kind_id='project-repo')
+    base = Workspace(id='base', project_id='p', workspace_path=str(base_path),
+                     source_type=RepoSourceType.CLONE, kind_id='project-repo')
+    env.db.get_workspace_for_task = AsyncMock(return_value=workspace)
+    env.db.get_workspace = AsyncMock(return_value=base)
+    env.db.resolve_workspace_kind = AsyncMock(return_value=WorkspaceKind(
+        project_id='__system__', id='project-repo', is_git_repo=True, mode=KIND_MODE_WORKTREE))
+    env.db.update_workspace = AsyncMock()
+    locks = defaultdict(asyncio.Lock)
+    slots = WorktreeSlotManager(db=env.db, git=git, bus=SimpleNamespace(emit=AsyncMock()),
+                                config=WorktreesConfig(enabled=True, setup_timeout_seconds=60),
+                                git_mutex=lambda path: locks[path])
+    slots.reprovision_slot = AsyncMock(wraps=slots.reprovision_slot)
+    orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(
+        return_value=str(old)), _git_mutex=lambda path: locks[path], _worktree_slots=lambda: slots,
+        _worktree_base_paths={})
+
+    async def registered():
+        return {Path(e['path']).resolve() for e in await git.aworktree_list(str(base_path))}
+
+    return SimpleNamespace(
+        git=git, run=run, base=base_path, old=old, peer=peer, head=head, slots=slots, orch=orch,
+        target=worktrees / 'resume-c-1', registered=registered,
+        driver=ResumeTransaction(SimpleNamespace(orch=orch)))
+
+
+async def resume_fresh(env, rig):
+    from src.scheduler import AssignAction
+
+    return await rig.driver.fresh_workspace(AssignAction('a', 'owner', 'p', 'c', 1),
+        await env.db.get_task('owner'), None, await intent(env))
+
+
+async def stage_recovery(env, rig):
+    """The state a restart leaves after ``worktree add`` and before reprovision."""
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'fresh_workspace': {
+            'old_path': str(rig.old), 'new_path': str(rig.target), 'workspace_id': 'slot',
+            'attempt': 1}}))
+    await rig.git._arun(['switch', '--detach'], cwd=str(rig.old))
+    await rig.git._arun(['worktree', 'add', str(rig.target), 'aq/owner'], cwd=str(rig.base))
+
+
+def assert_fresh_checkout(env, rig, target):
+    from pathlib import Path
+
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    assert Path(target) == rig.target
+    sentinel = WorktreeSlotManager.read_sentinel(target)
+    assert (sentinel.workspace_id, sentinel.base_workspace_id, sentinel.slot) == (
+        'slot', 'base', 'slot-0')
+    assert rig.slots.reprovision_slot.await_args.kwargs == {'prune': False}
+    assert not (Path(target) / 'transcript.cache').exists()
+    assert (Path(target) / 'saved.txt').read_text() == 'saved work\n'
+    env.db.update_workspace.assert_awaited_once_with('slot', workspace_path=str(target))
+    assert not rig.old.exists()
+
+
+async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruning(env, tmp_path):
+    rig = await fresh_rig(env, tmp_path)
+
+    target = await resume_fresh(env, rig)
+
+    assert_fresh_checkout(env, rig, target)
+    registered = await rig.registered()
+    assert rig.peer.resolve() in registered
+    assert rig.target.resolve() in registered and rig.old.resolve() not in registered
+    assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=target) == rig.head
+    assert await rig.git._arun(['branch', '--show-current'], cwd=target) == 'aq/owner'
+    assert (await intent(env))['facts']['fresh_workspace'] == {
+        'old_path': str(rig.old), 'new_path': str(rig.target), 'workspace_id': 'slot',
+        'attempt': 1}
+
+
+async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env, tmp_path):
+    rig = await fresh_rig(env, tmp_path)
+    await stage_recovery(env, rig)
+
+    target = await resume_fresh(env, rig)
+
+    rig.orch._prepare_workspace_locked.assert_not_awaited()
+    assert_fresh_checkout(env, rig, target)
+    registered = await rig.registered()
+    assert rig.peer.resolve() in registered and rig.old.resolve() not in registered
+    assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=target) == rig.head
+
+
+@pytest.mark.parametrize('drift', ['dirty', 'branch', 'ancestry'])
+async def test_restart_recovery_fences_refuse_before_reprovision(env, tmp_path, drift):
+    from src.git.manager import GitError
+
+    rig = await fresh_rig(env, tmp_path)
+    await stage_recovery(env, rig)
+    if drift == 'dirty':
+        (rig.target / 'stray.txt').write_text('unsaved\n')
+    elif drift == 'branch':
+        await rig.run(['switch', '-c', 'aq/other'], rig.target)
+    else:
+        await rig.run(['commit', '--allow-empty', '-m', 'elsewhere'])
+        side = await rig.git._arun(['rev-parse', 'HEAD'], cwd=str(rig.base))
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(saved_head=side))
+
+    with pytest.raises(GitError if drift == 'ancestry' else WaitError) as raised:
+        await resume_fresh(env, rig)
+
+    if drift != 'ancestry':
+        assert raised.value.code == 'continuation.head_drift'
+    rig.orch._prepare_workspace_locked.assert_not_awaited()
+    rig.slots.reprovision_slot.assert_not_awaited()
+    env.db.update_workspace.assert_not_awaited()
+    assert rig.old.is_dir() and rig.target.is_dir()
+    assert {rig.old.resolve(), rig.target.resolve(), rig.peer.resolve()} <= await rig.registered()
+
+
+@pytest.mark.parametrize('drift', ['dirty', 'ancestry'])
+async def test_fresh_resume_fences_refuse_before_any_git_mutation(env, tmp_path, drift):
+    from src.git.manager import GitError
+
+    rig = await fresh_rig(env, tmp_path)
+    if drift == 'dirty':
+        (rig.old / 'saved.txt').write_text('edited after save\n')
+    else:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(saved_head='f' * 40))
+
+    with pytest.raises(WaitError if drift == 'dirty' else GitError):
+        await resume_fresh(env, rig)
+
+    rig.slots.reprovision_slot.assert_not_awaited()
+    env.db.update_workspace.assert_not_awaited()
+    assert not rig.target.exists()
+    assert await rig.git._arun(['branch', '--show-current'], cwd=str(rig.old)) == 'aq/owner'
+    assert 'fresh_workspace' not in (await intent(env))['facts']
+
+
+@pytest.mark.parametrize('owner', ['row', 'dirty'])
+async def test_retire_checkout_keeps_a_folder_a_row_names_or_that_holds_work(
+    env, tmp_path, owner,
+):
+    from src.models import RepoSourceType, Workspace
+
+    rig = await fresh_rig(env, tmp_path)
+    await stage_recovery(env, rig)
+    if owner == 'row':
+        await env.db.create_workspace(Workspace(id='other', project_id='p',
+            workspace_path=str(rig.old), source_type=RepoSourceType.WORKTREE))
+    else:
+        (rig.old / 'stray.txt').write_text('unsaved\n')
+
+    await rig.driver.retire_checkout(str(rig.old), str(rig.target), SimpleNamespace(
+        workspace_path=str(rig.base)))
+
+    assert rig.old.is_dir() and rig.old.resolve() in await rig.registered()
+    if owner == 'dirty':
+        assert (rig.old / 'stray.txt').read_text() == 'unsaved\n'
+
+
+async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env, monkeypatch):
+    from src.integration import delivery_observer
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.waits.graph import lock_graph
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    monkeypatch.setattr(delivery_observer, 'hierarchy_frontier_modes', AsyncMock())
+    orch = SimpleNamespace(db=env.db, _task_control_lock=lambda _: asyncio.Lock())
+    driver = ResumeTransaction(SimpleNamespace(orch=orch))
+    driver.failed = AsyncMock()
+    driver.fresh_workspace = AsyncMock()
+    before = await intent(env)
+    assert before['resume_state'] == 'queued'
+
+    async with env.db._engine.begin() as holder:
+        await lock_graph(holder)
+        with pytest.raises(WaitError, match='within 0.25s') as refused:
+            await asyncio.wait_for(driver.dispatch(
+                {'continuation_id': 'c', 'generation': 1},
+                principal=None, scope=None, handler=None,
+            ), timeout=5)
+        assert refused.value.code == 'wait.graph_busy'
+    assert await intent(env) == before
+    driver.failed.assert_not_awaited()
+    driver.fresh_workspace.assert_not_awaited()
 
 
 async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env):
@@ -1132,6 +1960,7 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
     config.swarm.global_max_active = 1
     orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
                            _pool_quarantine_state=lambda *a: (None, None))
     service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch, clock=lambda: NOW))
     now = [NOW + 30]
@@ -1237,3 +2066,302 @@ async def test_completed_turn_costs_arriving_after_ack_are_recorded(env, monkeyp
     assert sample['setup_seconds'] == 3 and sample['rebuild_seconds'] == 10
     await measurements.capture_costs(lifecycle, env.wait_id)
     assert observed.await_count == 2
+
+
+async def test_slow_scheduler_observation_does_not_exhaust_resume_graph_retry(env, monkeypatch):
+    from src.commands.principal import ExecutionPrincipal
+    from src.integration import admission
+    from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+    from src.waits import graph
+
+    await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool'))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='available', project_id='p',
+        workspace_path='/tmp/resume-available', source_type=RepoSourceType.CLONE,
+        kind_id='project-repo'))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker', route_source='override'))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    config.swarm.global_max_active = 1
+    orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    scheduler = SchedulerWaitService(orch, clock=lambda: NOW + 30)
+    driver = ResumeTransaction(SimpleNamespace(orch=orch, scheduler=scheduler),
+                               clock=lambda: NOW + 30)
+    entered, release = asyncio.Event(), asyncio.Event()
+    observe = admission.observe_admission
+
+    async def slow(*args, **kwargs):
+        if asyncio.current_task().get_name() == 'slow-scheduler':
+            entered.set()
+            await release.wait()
+        return await observe(*args, **kwargs)
+
+    monkeypatch.setattr(admission, 'observe_admission', slow)
+    monkeypatch.setattr(graph, 'GRAPH_LOCK_TIMEOUT', 0.05)
+    scan = asyncio.create_task(scheduler.sync({'project_id': 'p', 'cycle_id': 'slow'},
+        principal=ExecutionPrincipal.service('test')), name='slow-scheduler')
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        action = await asyncio.wait_for(driver.reserve('c', 1), 5)
+        assert action is not None and action.continuation_id == 'c'
+        assert not scan.done()  # Dispatch completed while the observation was still stalled.
+        assert (await intent(env))['resume_state'] == 'reserved'
+    finally:
+        release.set()
+        await asyncio.wait_for(scan, 5)
+
+
+async def test_cold_restart_provider_stop_proof_leaves_graph_free(cold_restart_checkout):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.waits.graph import lock_graph
+
+    case = cold_restart_checkout
+
+    async def stopped(handle):
+        # A slow external proof can hold this task's rows, but must leave the
+        # global fence available to unrelated continuation reservations.
+        async with case.env.db._engine.begin() as conn:
+            await lock_graph(conn, timeout=0.05)
+        return True
+
+    case.provider.confirm_stopped.side_effect = stopped
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert result['success'], result
+    case.provider.confirm_stopped.assert_awaited_once()
+
+
+async def workspace_resume(env):
+    """A real parked owner and granted resume seat, before spawning a process."""
+    from src.database.tables import admission_reservations
+    from tests.test_wait_dispatch import runtime
+
+    _, action, _ = await bound_resume(env)
+    await env.db.update_session('fresh', state='stopped', desired_state='stopped')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='reserved', new_session_id=None, envelope_id=None,
+            facts={'workspace_released_at': NOW + 20, 'resume_attempt_started_at': NOW + 30},
+        ))
+        await conn.execute(update(admission_reservations).values(state='granted'))
+    now = [NOW + 30]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    service.orch._task_control_lock = lambda _: asyncio.Lock()
+    service.orch._launch_session_for_task_locked = AsyncMock()
+    service.lifecycle.resume.fresh_workspace = AsyncMock(return_value='/tmp/preserved')
+    return service, action, now
+
+
+@pytest.mark.parametrize('error', [WaitError('wait.graph_busy', 'lock timeout'), TimeoutError()])
+async def test_workspace_transient_retry_preserves_reservation_and_then_resumes(env, error):
+    from src.waits.occupancy import continuation_occupancy
+    from src.database.tables import admission_reservations
+
+    service, action, now = await workspace_resume(env)
+    driver = service.lifecycle.resume
+    driver.fresh_workspace.side_effect = [error, '/tmp/preserved']
+    # Occupancy uses the real admission scope, including the profile identity.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(admission_reservations).values(scope={'profile_id': 'worker-codex'}))
+    before = await intent(env)
+    args = {'continuation_id': 'c', 'generation': 1}
+    result = await driver.dispatch(args, principal=None, scope=None,
+                                   handler=service.orch._command_handler)
+    assert result['retry_queued'] and result['retry_at'] == now[0] + 5
+    row = await intent(env)
+    assert row['resume_state'] == 'reserved' and row['launch_attempts'] == 1
+    assert (row['saved_head'], row['branch'], row['wait_id']) == (
+        before['saved_head'], before['branch'], before['wait_id'])
+    assert (await env.db.get_task('owner')).assigned_agent_id == action.agent_id
+    _, occupancy = await continuation_occupancy(env.db, service.orch.config)
+    assert occupancy == {('p', 'worker-codex'): 1}
+    assert await driver.reserve('c', 1) == action
+    service.command = AsyncMock()
+    await service.lifecycle.resume_pending()
+    service.command.assert_not_awaited()
+    now[0] += 5
+    result = await driver.dispatch(args, principal=None, scope=None,
+                                   handler=service.orch._command_handler)
+    assert result['dispatched'] and driver.fresh_workspace.await_count == 2
+    service.orch._launch_session_for_task_locked.assert_awaited_once()
+    assert (await intent(env))['launch_attempts'] == 1
+
+
+@pytest.mark.parametrize('retryable', [True, False])
+async def test_workspace_failure_holds_after_budget_or_immediately(env, retryable):
+    from src.database.tables import escalations
+
+    service, _, now = await workspace_resume(env)
+    driver = service.lifecycle.resume
+    driver.fresh_workspace.side_effect = (WaitError('wait.graph_busy', 'lock busy') if retryable
+                                         else WaitError('continuation.head_drift', 'dirty checkout'))
+    for attempt in range(3 if retryable else 1):
+        result = await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+            principal=None, scope=None, handler=service.orch._command_handler)
+        if attempt < 2 and retryable:
+            assert result['retry_queued']
+            now[0] = result['retry_at']
+    assert result['held'] and result['hold_reason'] == 'resume_workspace_failed'
+    row = await intent(env)
+    assert row['resume_state'] == 'held' and row['launch_attempts'] == 1
+    assert row['facts']['workspace_retry']['failures'] == (3 if retryable else 1)
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(escalations.c.id)) == row['facts']['hold_escalation_id']
+    service.orch._launch_session_for_task_locked.assert_not_awaited()
+
+
+async def test_supervisor_requeue_generation_fence_audit_and_resumed_incident(env):
+    import json
+    from dataclasses import replace
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import escalations, events
+    from src.waits.resume_ack import mark_delivered
+
+    service, action, now = await workspace_resume(env)
+    driver = service.lifecycle.resume
+    handler = service.orch._command_handler
+    driver.fresh_workspace.side_effect = RuntimeError('repairable setup configuration')
+    assert (await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=handler))['held']
+    held = await intent(env)
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=2, note='Setup repaired')
+    with principal_context(TRUSTED_LOCAL):
+        assert (await handler.execute('wait_decide', args))['error_code'] == 'continuation.stale_generation'
+        assert await intent(env) == held
+        args['expected_generation'] = 1
+        assert (await handler.execute('wait_decide', args))['success']
+        assert not (await handler.execute('wait_decide', args))['success']
+    row = await intent(env)
+    # The workspace hold kept its agent and granted seat, so the retry reuses them.
+    assert row['resume_state'] == 'reserved' and row['hold_reason'] is None
+    assert row['launch_attempts'] == 1 and row['facts']['workspace_retry'] == {}
+    assert row['saved_head'] == held['saved_head'] and row['wait_id'] == held['wait_id']
+    async with env.db._engine.connect() as conn:
+        incident = (await conn.execute(select(escalations))).mappings().one()
+        assert incident['state'] == 'needs_human'
+        audit = json.loads(await conn.scalar(select(events.c.payload).where(
+            events.c.event_type == 'wait.resume_requeued')))
+        assert audit['generation'] == 1 and audit['note'] == 'Setup repaired'
+    assert await driver.reserve('c', 1) == action
+    record = replace(await env.db.get_session('fresh'), id='repaired',
+                     state='running', desired_state='running')
+    await driver.bind_launch(action, record)
+    await env.db.create_session(record)
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id='c', session_id='repaired',
+            instance_token='fresh-token', claim_epoch=2, now=now[0] + 10)
+    async with env.db._engine.connect() as conn:
+        incident = (await conn.execute(select(escalations))).mappings().one()
+        assert incident['state'] == 'cancelled' and incident['terminal_outcome'] == 'source_satisfied'
+
+
+async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    service, _, _ = await workspace_resume(env)
+    # A launch hold released its agent and seat, so the repair must re-reserve.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_launch_failed', launch_attempts=2))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(assigned_agent_id=None))
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=1, note='Provider repaired')
+    with principal_context(TRUSTED_LOCAL):
+        assert (await service.orch._command_handler.execute('wait_decide', args))['success']
+    row = await intent(env)
+    assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+
+
+async def test_workspace_retry_recovers_actual_staged_checkout(env, tmp_path):
+    from dataclasses import replace
+    from src.database.tables import admission_reservations, agents
+    from tests.test_wait_dispatch import runtime
+
+    rig = await fresh_rig(env, tmp_path)
+    now = [NOW + 30]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    driver = service.lifecycle.resume
+    rig.orch.config = service.orch.config
+    rig.orch._task_control_lock = lambda _: asyncio.Lock()
+    rig.orch._launch_session_for_task_locked = AsyncMock()
+    driver.orch = rig.orch
+    driver.fresh_workspace = rig.driver.fresh_workspace
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            status='RESUME_PENDING', assigned_agent_id='a'))
+        await conn.execute(update(agents).where(agents.c.id == 'a').values(
+            state='BUSY', current_task_id='owner'))
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 25))
+        await conn.execute(update(continuations).values(facts={
+            'workspace_released_at': NOW + 20, 'resume_attempt_started_at': now[0]}))
+        await conn.execute(insert(admission_reservations).values(
+            id='reservation', project_id='p', continuation_id='c', scope={},
+            effective_priority=100, provenance='resume', deadline_at=NOW + 300,
+            state='granted', created_at=now[0]))
+    real_reprovision = rig.slots.reprovision_slot
+    rig.slots.reprovision_slot = AsyncMock(side_effect=TimeoutError('setup transport timed out'))
+    args = {'continuation_id': 'c', 'generation': 1}
+    result = await driver.dispatch(args, principal=None, scope=None,
+                                   handler=service.orch._command_handler)
+    assert result['retry_queued'] and rig.target.is_dir()
+    stage = (await intent(env))['facts']['fresh_workspace']
+    env.db.get_workspace_for_task.return_value = replace(
+        env.db.get_workspace_for_task.return_value, workspace_path=str(rig.target))
+    rig.slots.reprovision_slot = real_reprovision
+    now[0] = result['retry_at']
+    assert (await driver.dispatch(args, principal=None, scope=None,
+                                 handler=service.orch._command_handler))['dispatched']
+    assert (await intent(env))['facts']['fresh_workspace'] == stage
+    assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=str(rig.target)) == rig.head
+    rig.orch._prepare_workspace_locked.assert_awaited_once()
+    rig.orch._launch_session_for_task_locked.assert_awaited_once()
+
+
+async def test_requeue_checks_live_supervisor_project_and_process_fences(env):
+    from dataclasses import replace
+    from src.commands.principal import TRUSTED_LOCAL
+
+    service, _, _ = await workspace_resume(env)
+    driver, handler = service.lifecycle.resume, service.orch._command_handler
+    driver.fresh_workspace.side_effect = RuntimeError('setup needs repair')
+    await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=handler)
+    record = replace(await env.db.get_session('fresh'), id='supervisor', task_id=None,
+                     agent_id=None, name='supervisor', lifecycle='named', profile_id='supervisor',
+                     state='running', desired_state='running')
+    await env.db.create_session(record)
+    principal = ExecutionPrincipal(kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=['wait_decide']),
+        session_id=record.id, session_instance_token=record.instance_token,
+        project_id='p', profile_id='supervisor', elevated=True)
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=1, note='Repair verified')
+    held = await intent(env)
+    for rejected in (replace(principal, elevated=False),
+                     replace(principal, project_id='foreign'),
+                     replace(principal, session_instance_token='stale')):
+        with principal_context(rejected):
+            assert not (await handler.execute('wait_decide', args))['success']
+        assert await intent(env) == held
+    live = replace(await env.db.get_session('fresh'), id='unexpected', name='unexpected',
+                   state='running')
+    await env.db.create_session(live)
+    with principal_context(TRUSTED_LOCAL):
+        assert (await handler.execute('wait_decide', args))['error_code'] == 'continuation.stop_uncertain'
+    assert await intent(env) == held
+    await env.db.update_session('unexpected', state='stopped')
+    with principal_context(principal):
+        result = await handler.execute('wait_decide', args)
+    assert result['success'], result
+    assert (await intent(env))['facts']['resume_requeue']['session_id'] == 'supervisor'

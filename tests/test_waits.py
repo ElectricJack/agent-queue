@@ -257,6 +257,7 @@ CONDITIONS = [
     {"kind": "timer", "due_at": NOW + 20},
     {"kind": "resource", "blocker": "slot", "identity": "p:profile", "source_revision": "1"},
     {"kind": "playbook_condition", "run_id": "run", "wait_id": "wait"},
+    {"kind": "close_merge", "operation_id": "op", "budget_seconds": 90},
 ]
 
 
@@ -363,8 +364,9 @@ def test_result_projection_rejects_a_new_source_generation():
                 f"timer:{NOW + 20}",
                 "resource:slot:p:profile",
                 "playbook_condition:run:wait",
+                "close_merge:op",
             ],
-            [7, 7, 7, 0, 0, 0, 7, 0, 7, 7, 0, 0, 0, 7],
+            [7, 7, 7, 0, 0, 0, 7, 0, 7, 7, 0, 0, 0, 7, 0],
             strict=True,
         )
     ),
@@ -441,7 +443,8 @@ def test_project_policy_applies_canary_rollout_flags():
     from src.config_wait_policy import WaitPolicyConfig, WaitProjectOverrides
     from src.waits.decision import project_policy
 
-    policy = WaitPolicyConfig(projects={'canary': WaitProjectOverrides(v2_enabled=True)})
+    policy = WaitPolicyConfig(v2_enabled=False, hibernation_enabled=False,
+                              projects={'canary': WaitProjectOverrides(v2_enabled=True)})
     assert project_policy(policy, 'canary').v2_enabled
     assert not project_policy(policy, 'canary').hibernation_enabled
     assert project_policy(policy, 'other') is policy and not policy.v2_enabled
