@@ -1,0 +1,13 @@
+{
+  "shared_definitions": {
+    "src/portable_setup.py::ProjectSettings.integration_preferences": {
+      "reason": "Typed portable integration preference draft; carries desired mode, policy and repository identity without runtime state."
+    },
+    "src/portable_setup.py::ProjectSettings.valid_policy": {
+      "reason": "Read-only validation of portable integration modes and review delegation."
+    },
+    "src/portable_setup.py::ProjectSettings.with_project_preferences": {
+      "reason": "Read-only typed projection of desired integration mode, policy and repository identity; generic project and repository export remains separate."
+    }
+  }
+}

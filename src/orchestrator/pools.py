@@ -5,8 +5,8 @@ demand per profile (aggregated over every active project), ask the pure
 :func:`~src.scheduler.size_pools` how many workers that profile should have
 fleet-wide, ask the equally pure :func:`~src.scheduler.place_pool_actions`
 *which project* each authorised start or drain applies to, then start or
-drain sessions to converge.  The step reads one ``count_ready_by_profile``,
-one ``list_sessions`` and one ``count_available_workspaces`` per active
+drain sessions to converge.  The step reads pool sessions once, then one
+``count_ready_by_profile`` and one ``count_available_workspaces`` per active
 project with a pool profile — no per-task queries.
 
 Sizing is global because the configuration always was: a profile is global,
@@ -31,9 +31,11 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 
 from dataclasses import dataclass, field
 
+from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.models import (
     Agent,
     AgentProfile,
@@ -43,14 +45,18 @@ from src.models import (
     SessionRecord,
     Task,
     TaskStatus,
+    TaskType,
 )
+from src.git.identity import resolve_git_identity
 from src.orchestrator.base_workspace import base_checkout_refusal
+from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
 from src.scheduler import (
     PlacementCandidate,
     PoolKey,
     PoolProjectSupply,
     PoolSupply,
     place_pool_actions,
+    rebalance_idle_pools,
     size_pools,
 )
 from src.sessions.spec import pool_session_name
@@ -66,8 +72,20 @@ _LIVE_STATES = ("starting", "running", "draining")
 #: (seconds).  A bad harness or a raised exception from acquisition/mint is
 #: not going to self-heal between now and the next 5s tick, so retrying
 #: immediately just creates and deletes an agent row every cycle.  A starved
-#: workspace pool does *not* quarantine — see ``_launch_pool_session``.
+#: workspace acquisition failure also backs off so other projects can launch.
 LAUNCH_BACKOFF = 60.0
+
+# Independent of the cascade cadence: a blocked housekeeping step must not
+# strand eligible pool demand. Reads/placement may be retried; live launches
+# remain separately owned and are never cancelled by this timeout.
+POOL_WATCHDOG_INTERVAL = 30.0
+POOL_STALL_TICKS = 3
+POOL_RECONCILE_TIMEOUT = 30.0
+# Continuation funding runs first so a resume can claim its seat, but it is
+# wait reconciliation: it may block on the wait graph. It gets this head start,
+# then finishes off the pool budget under its own bound (2026-10-22 wedges).
+RESUME_HEAD_START = 5.0
+RESUME_PENDING_TIMEOUT = 60.0
 
 
 #: How much of a dead session's captured startup output to carry into the
@@ -98,6 +116,23 @@ def read_stderr_excerpt(path: str | None) -> str:
 
 
 @dataclass
+class PoolLaunch:
+    """Capacity reserved before Git or the provider can yield for a long time."""
+
+    project_id: str
+    profile_id: str
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    task: asyncio.Task | None = None
+    agent_id: str | None = None
+    reservation: asyncio.Task | None = None
+    provider: object | None = None
+    handle: object | None = None
+    token_attempted: bool = False
+    workspace_acquired: bool = False
+    workspace_kind: str = "project-repo"
+
+
+@dataclass
 class PoolMeasurement:
     """One tick's observation of every pool, as both halves of the pipeline see it.
 
@@ -118,6 +153,8 @@ class PoolMeasurement:
     profiles: dict[PoolKey, AgentProfile] = field(default_factory=dict)
     candidates: dict[PoolKey, list[PlacementCandidate]] = field(default_factory=dict)
     projects: dict[str, Project] = field(default_factory=dict)
+    all_profiles: list[AgentProfile] = field(default_factory=list)
+    pool_sessions: list[SessionRecord] = field(default_factory=list)
 
 
 class PoolsMixin:
@@ -188,13 +225,36 @@ class PoolsMixin:
     ) -> set[str]:
         return set(await self._pool_profiles(project_id, system_profiles=system_profiles))
 
-    async def _measure_pools(self, project_ids: set[str] | None = None) -> PoolMeasurement:
+    async def _delivery_admission(
+        self, task_ids, *, cached_only=False, hierarchy_modes=None, router_ready_projects=None,
+    ):
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentPrimitives
+
+        service = getattr(self, "development_integration", None)
+        if service is None:
+            service = DevelopmentPrimitives(self.db, data_dir=self.config.data_dir, git=self.git)
+        return await observe_admission(
+            self.db,
+            task_ids,
+            service,
+            cached_only=cached_only,
+            default_mode=self.config.integration.default_mode,
+            hierarchy_modes=hierarchy_modes, router_ready_projects=router_ready_projects,
+        )
+
+    async def _measure_pools(
+        self,
+        project_ids: set[str] | None = None,
+        *,
+        hierarchy_modes=None,
+        for_display=False,
+    ) -> PoolMeasurement:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
-        The loop is still per project — one ``count_ready_by_profile``, one
-        ``list_sessions`` and one ``count_available_workspaces`` per active
-        project with a pool profile is the cheapest shape the observation
-        has — but each project now folds into the *aggregate* key rather
+        The loop is still per project — one ``count_ready_by_profile`` and
+        one ``count_available_workspaces`` per active project with a pool
+        profile — but each project now folds into the *aggregate* key rather
         than minting one of its own, and also records its own breakdown
         (``PoolSupply.by_project``) and its standing as a placement
         candidate.
@@ -205,104 +265,190 @@ class PoolsMixin:
         free workspace be skipped *before* it consumes start budget instead
         of after it has wasted a launch.
 
-        One ``list_profiles()`` serves the whole tick, shared across every
-        project's ``_pool_profiles`` lookup.
+        One ``list_profiles()`` and one ``list_sessions()`` serve the whole
+        tick.  The same rows are available to the status endpoint, which
+        needs the full pool session list even when no project is active.
+        ``for_display`` restricts Git evidence to the observer's cache; actual
+        sizing and claim admission retain their existing freshness checks.
         """
         measurement = PoolMeasurement()
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(
+                self.db, project_ids=project_ids, cached_only=for_display,
+            )
+        # Keep this snapshot even if a launch finishes during the DB reads.
+        # Its durable session is either in the rows below or counted here.
+        pending_launches = tuple(getattr(self, "_pool_launches", {}).values())
+        unacquired = {launch.session_id for launch in pending_launches
+                      if not launch.workspace_acquired}
         #: ``(started_at, session_id)`` per key, so the aggregate idle list
         #: can be ordered oldest-first across projects rather than by the
         #: order the project loop happened to visit them in.
         idle_ages: dict[PoolKey, list[tuple[float, str]]] = {}
         now = time.time()
         worktrees_enabled = self._worktrees_enabled()
+        stall_seconds = pool_claim_loop_stall_seconds(self.config.swarm)
 
         system_profiles = await self.db.list_profiles()
+        measurement.all_profiles = system_profiles
+        pool_profiles = {
+            p.id: p
+            for p in system_profiles
+            if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
+        }
+        measurement.pool_sessions = await self.db.list_sessions(
+            lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
+        )
+        from src.waits.occupancy import continuation_occupancy, evictable_sessions
+        evictable = await evictable_sessions(self.db, self.config)
+        resuming, reserved = await continuation_occupancy(self.db, self.config)
+        known = {session.id for session in measurement.pool_sessions}
+        for session_id in resuming - known:
+            session = await self.db.get_session(session_id)
+            if session is not None:
+                measurement.pool_sessions.append(session)
+        task_statuses = await self.db.get_task_statuses([
+            s.task_id for s in measurement.pool_sessions if s.task_id
+        ])
+        from src.routing.readiness import orchestrator_ready_projects
 
-        for project in await self.db.list_projects():
+        ready_projects = await orchestrator_ready_projects(self)
+        sessions_by_project: dict[str, list[SessionRecord]] = {}
+        for session in measurement.pool_sessions:
+            status = task_statuses.get(session.task_id)
+            if status == TaskStatus.HIBERNATED.value or (
+                status == TaskStatus.RESUME_PENDING.value and session.state != "starting"
+                and session.id not in resuming
+            ):
+                continue  # Continuation ownership carries no live pool seat.
+            if session.project_id is not None:
+                sessions_by_project.setdefault(session.project_id, []).append(session)
+
+        # One ordered workspace inventory and one kind catalogue per tick.
+        # These are capacity observations; launch/claim still recheck ownership.
+        workspace_snapshot = await self.db.list_workspaces()
+        kind_snapshot = await self.db.list_all_workspace_kinds()
+        system_kinds = {k.id: k for k in kind_snapshot if k.project_id == "__system__"}
+        for project in await self.db.list_projects(include_admission=True):
             if project.status != ProjectStatus.ACTIVE:
                 continue
             if project_ids is not None and project.id not in project_ids:
                 continue
-            pool_profiles = await self._pool_profiles(project.id, system_profiles=system_profiles)
             if not pool_profiles:
                 continue
 
             measurement.projects[project.id] = project
-            ready_by_profile = await self.db.count_ready_by_profile(project.id)
-            unrouted_ready = ready_by_profile.get(None, 0)
-            default_profile_id = await self._effective_default_profile_id(project)
-            workspace_capacity = await self.db.count_available_workspaces(
-                project.id,
-                worktree_slot_cap=(
-                    self._project_slot_cap(project) if worktrees_enabled else None
-                ),
-            )
-            sessions = await self.db.list_sessions(lifecycle="pool", project_id=project.id)
-            sessions_by_profile: dict[str, list] = {}
-            for s in sessions:
-                sessions_by_profile.setdefault(s.profile_id, []).append(s)
+            from src.integration.admission import structural_candidates
 
-            # Every live pool session in this project, whatever profile it
-            # belongs to: the project cap bounds the project, not one pool.
-            # Draining rows are excluded, matching what counts as supply.
-            project_live_total = sum(
-                1
-                for s in sessions
-                if s.state in ("starting", "running") and s.desired_state != "stopped"
+            allowed = None
+            batch = None
+            if (getattr(project, "_source_admission_required", True)
+                    or project.hierarchical_integration_mode in {"hierarchy", "train"}):
+                batch = await self._delivery_admission(
+                    await structural_candidates(self.db, project.id),
+                    hierarchy_modes=hierarchy_modes, router_ready_projects=ready_projects,
+                    **({"cached_only": True} if for_display else {}),
+                )
+                allowed = batch.allowed
+            # Demand is claimable work only (mandatory routing §9.1): an
+            # unrouted task is demand for no pool, and neither is a legacy
+            # one once the project's router is ready.
+            policy = dict(
+                router_ready=project.id in ready_projects,
+                pool_profiles=pool_profiles, include_repair_counts=True, by_workspace_kind=True,
             )
+            demand_by_profile = (
+                await batch.counts(project.id, **policy) if batch is not None else
+                await self.db.count_ready_by_profile(
+                    project.id, allowed_task_ids=allowed,
+                    hierarchy_mode=hierarchy_modes.get(project.id)
+                    or ProjectIntegrationMode.of(project), **policy,
+                )
+            )
+            workspaces = [w for w in workspace_snapshot if w.project_id == project.id]
+            kinds_by_path = {w.workspace_path: w.kind_id or "project-repo" for w in workspaces}
+            sessions = sessions_by_project.get(project.id, [])
+            session_ids = {s.id for s in sessions}
+            pending = [launch for launch in pending_launches
+                       if launch.project_id == project.id and launch.session_id not in session_ids]
+            project_kinds = system_kinds | {
+                k.id: k for k in kind_snapshot if k.project_id == project.id
+            }
+            execution_kinds = {k.id for k in project_kinds.values()
+                               if k.writable and k.lockable and k.is_git_repo
+                               and k.mode in ("worktree", "exclusive-clone")}
+            kind_ids = execution_kinds | {"project-repo"} | {
+                kinds_by_path.get(s.work_dir, "") for s in sessions
+            } | {launch.workspace_kind for launch in pending}
+            capacities = {}
+            for kind_id in kind_ids:
+                capacity = await self.db.count_available_workspaces(
+                    project.id, kind_id=kind_id,
+                    workspace_snapshot=workspaces, kind_snapshot=project_kinds,
+                    worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
+                ) if kind_id in execution_kinds else 0
+                capacities[kind_id] = max(0, capacity - sum(
+                    launch.session_id in unacquired and launch.workspace_kind == kind_id
+                    for launch in pending
+                ))
+            project_live_total = sum(
+                1 for s in sessions
+                if s.state in ("starting", "running") and s.desired_state != "stopped"
+            ) + len(pending) + sum(n for (pid, _), n in reserved.items() if pid == project.id)
 
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(profile_id)
                 measurement.profiles[key] = profile
-                ready = ready_by_profile.get(profile_id, 0)
-                if default_profile_id == profile_id:
-                    ready += unrouted_ready
-                measurement.demand[key] = measurement.demand.get(key, 0) + ready
-
-                local = PoolProjectSupply()
-                rows = sorted(
-                    sessions_by_profile.get(profile_id, []),
-                    key=lambda s: s.started_at or 0.0,
-                )
-                for s in rows:
-                    if s.state not in _LIVE_STATES:
-                        continue
-                    if s.state == "starting":
-                        local.starting += 1
-                    elif s.state == "draining" or s.desired_state == "stopped":
-                        local.draining += 1
-                    elif s.task_id or s.claim_phase:
-                        local.running_busy += 1
-                    else:
-                        local.running_idle += 1
-                        local.idle_session_ids.append(s.id)
-                        idle_ages.setdefault(key, []).append((s.started_at or 0.0, s.id))
-
+                measurement.demand.setdefault(key, 0)
                 sup = measurement.supply.setdefault(key, PoolSupply())
-                sup.running_idle += local.running_idle
-                sup.running_busy += local.running_busy
-                sup.starting += local.starting
-                sup.draining += local.draining
-                sup.idle_session_ids.extend(local.idle_session_ids)
-                sup.by_project[project.id] = local
-
+                project_supply = PoolProjectSupply()
+                sup.by_project[project.id] = project_supply
                 until, _reason = self._pool_quarantine_state(project.id, profile_id, now)
-                measurement.candidates.setdefault(key, []).append(
-                    PlacementCandidate(
-                        project_id=project.id,
-                        ready=ready,
-                        live=local.running_idle + local.running_busy + local.starting,
-                        project_live_total=project_live_total,
-                        project_cap=project.max_concurrent_agents,
-                        workspace_capacity=workspace_capacity,
-                        quarantined=until is not None,
-                        # Read defensively: ``min_per_project`` is a Phase 2
-                        # profile field and defaults to "no reservation".
-                        warm_floor=getattr(profile, "min_per_project", 0) or 0,
+                for kind_id in sorted(kind_ids):
+                    ready, repair_ready = demand_by_profile.get((profile_id, kind_id), (0, 0))
+                    measurement.demand[key] += ready
+                    local = PoolProjectSupply(running_busy=(
+                        reserved.get((project.id, profile_id), 0) if kind_id == "project-repo" else 0
+                    ))
+                    local.starting = sum(launch.profile_id == profile_id
+                                         and launch.workspace_kind == kind_id for launch in pending)
+                    rows = sorted((s for s in sessions if s.profile_id == profile_id
+                                   and kinds_by_path.get(s.work_dir, "") == kind_id),
+                                  key=lambda s: s.started_at or 0.0)
+                    for s in rows:
+                        if s.state not in _LIVE_STATES:
+                            continue
+                        if s.state == "starting":
+                            local.starting += 1
+                        elif s.state == "draining" or s.desired_state == "stopped":
+                            local.draining += 1
+                        elif s.task_id or s.claim_phase:
+                            local.running_busy += 1
+                            local.evictable += s.id in evictable
+                        elif idle_pool_claim_loop_stalled(s, now=now, stall_seconds=stall_seconds):
+                            local.unresponsive += 1
+                        else:
+                            local.running_idle += 1
+                            local.idle_session_ids.append(s.id)
+                            idle_ages.setdefault(key, []).append((s.started_at or 0.0, s.id))
+                    for destination in (sup, project_supply):
+                        for attr in ("running_idle", "running_busy", "evictable", "starting", "draining",
+                                     "unresponsive"):
+                            setattr(destination, attr, getattr(destination, attr) + getattr(local, attr))
+                        destination.idle_session_ids.extend(local.idle_session_ids)
+                    measurement.candidates.setdefault(key, []).append(PlacementCandidate(
+                        project_id=project.id, workspace_kind=kind_id,
+                        ready=ready, live=local.running_idle + local.running_busy + local.starting,
+                        project_live_total=project_live_total, project_cap=project.max_concurrent_agents,
+                        workspace_capacity=capacities[kind_id], quarantined=until is not None,
+                        warm_floor=(getattr(profile, "min_per_project", 0) or 0)
+                                   if kind_id == "project-repo" else 0,
                         idle_session_ids=tuple(local.idle_session_ids),
-                        starting=local.starting,
-                    )
-                )
+                        starting=local.starting, repair_ready=repair_ready,
+                        evictable=local.evictable,
+                    ))
 
         for key, sup in measurement.supply.items():
             # ``size_pools`` reports the fleet's oldest idle sessions on a
@@ -316,6 +462,16 @@ class PoolsMixin:
                 # floors ``desired`` at ``busy + starting``, so a worker
                 # mid-task keeps its session and only idle workers drain —
                 # the same semantics as scaling max down to 0.
+                measurement.bounds[key] = (0, 0)
+                continue
+            availability = getattr(self, "provider_availability", None)
+            if availability is not None and availability.suppresses(
+                availability.provider_for_profile(profile)
+            ):
+                # Its provider is unavailable (provider-failover D13): target
+                # zero, exactly like a disabled pool.  Busy sessions keep
+                # running -- one still making turns is recovery evidence --
+                # and idle ones get ``drain_requested`` on their next claim.
                 measurement.bounds[key] = (0, 0)
                 continue
             # A ``min_per_project`` the global ``min_active`` cannot fund
@@ -350,15 +506,57 @@ class PoolsMixin:
             return self.config.resources.max_concurrent_agents
         return explicit
 
-    async def _reconcile_pools(self) -> None:
+    async def _reconcile_pools(self, *, hierarchy_modes=None) -> None:
         """The pool cascade step: measure, size, place, converge.  No-op unless enabled."""
         if not (self.config.swarm.enabled and self.config.sessions.enabled):
             return
 
-        measurement = await self._measure_pools()
-        now = time.time()
-        await self._announce_bounds_rescoped(measurement)
-        actions, self._pool_surplus_since = size_pools(
+        async with self._pool_reconcile_lock():
+            try:
+                async with asyncio.timeout(POOL_RECONCILE_TIMEOUT):
+                    await self._reconcile_pools_inner(hierarchy_modes=hierarchy_modes)
+            except TimeoutError:
+                logger.warning(
+                    "Pool reconciliation timed out after %.0fs; retrying on a later tick",
+                    POOL_RECONCILE_TIMEOUT,
+                )
+
+    async def _resume_pending_first(self, service) -> None:
+        """Fund continuations ahead of the pool, never at the pool's expense.
+
+        A still-running pass from an earlier tick is awaited, not duplicated,
+        and its failure is logged rather than aborting this tick's placement.
+        """
+        task = self.__dict__.get("_resume_pending_task")
+        if task is None or task.done():
+
+            async def bounded():
+                try:
+                    async with asyncio.timeout(RESUME_PENDING_TIMEOUT):
+                        await service.lifecycle.resume_pending()
+                except TimeoutError:
+                    logger.warning("Continuation resume pass exceeded %.0fs; retrying "
+                                   "on a later tick", RESUME_PENDING_TIMEOUT)
+                except Exception:
+                    logger.exception("Continuation resume pass failed")
+
+            task = self._resume_pending_task = asyncio.create_task(bounded())
+        await asyncio.wait({task}, timeout=RESUME_HEAD_START)
+
+    def _pool_reconcile_lock(self) -> asyncio.Lock:
+        return self.__dict__.setdefault("_pool_reconciliation_lock", asyncio.Lock())
+
+    def _reap_pool_launches(self) -> None:
+        # Cancellation before a coroutine's first instruction skips its finally.
+        launches = getattr(self, "_pool_launches", {})
+        for sid, launch in list(launches.items()):
+            if launch.task is not None and launch.task.done():
+                if not launch.task.cancelled():
+                    launch.task.exception()
+                launches.pop(sid, None)
+
+    def _size_pool_actions(self, measurement, now):
+        return size_pools(
             supply=measurement.supply,
             demand=measurement.demand,
             bounds=measurement.bounds,
@@ -368,26 +566,131 @@ class PoolsMixin:
             scale_down_grace=self.config.swarm.scale_down_grace,
             max_starts_per_tick=self.config.swarm.max_starts_per_tick,
             max_drains_per_tick=self.config.swarm.max_drains_per_tick,
+            repair_demand={
+                key: sum(max(0, c.repair_ready - len(c.idle_session_ids) - c.starting)
+                         for c in candidates
+                         if not c.quarantined and c.workspace_capacity > 0
+                         and (c.project_cap is None or c.project_live_total < c.project_cap))
+                for key, candidates in measurement.candidates.items()
+            },
         )
+
+    async def _check_pool_progress(self) -> None:
+        """Detect eligible demand stranded behind a cycle with no start progress."""
+        observations = self.__dict__.setdefault("_pool_progress_observations", {})
+        if not (self.config.swarm.enabled and self.config.sessions.enabled):
+            observations.clear()
+            return
+        lock = self._pool_reconcile_lock()
+        if lock.locked():
+            # The bounded active pass owns convergence. Never overlap its
+            # snapshot or cancel its background launches to manufacture room.
+            return
+        async with lock:
+            async with asyncio.timeout(POOL_RECONCILE_TIMEOUT):
+                self._reap_pool_launches()
+                measurement = await self._measure_pools(for_display=True)
+                actions, _ = self._size_pool_actions(measurement, time.time())
+                starts, _, _ = place_pool_actions(
+                    actions=actions, candidates=measurement.candidates,
+                )
+        eligible = {
+            start.key for start in starts
+            if start.reason != 'evict' and any(
+                candidate.project_id == start.project_id
+                and candidate.workspace_kind == start.workspace_kind
+                and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
+                for candidate in measurement.candidates[start.key]
+            )
+        }
+        stalled = []
+        current = {}
+        for key in eligible:
+            supply = measurement.supply[key]
+            if supply.starting:
+                continue
+            generation = getattr(self, "_pool_last_start", {}).get(key, 0.0)
+            previous_generation, ticks, reported = observations.get(key, (generation, 0, False))
+            if generation != previous_generation:
+                ticks, reported = 0, False
+            ticks += 1
+            current[key] = (generation, ticks, reported)
+            if ticks < POOL_STALL_TICKS:
+                continue
+            stalled.append(key)
+            if reported:
+                continue
+            current[key] = (generation, ticks, True)
+            lo, hi = measurement.bounds[key]
+            desired = max(lo, supply.running_busy + measurement.demand[key])
+            if hi is not None:
+                desired = min(desired, hi)
+            payload = {
+                "profile_id": key.profile_id, "desired": desired,
+                "live": supply.running_idle + supply.running_busy,
+                "ready": measurement.demand[key], "ticks": ticks,
+                "recovery": "reconcile",
+            }
+            logger.warning("pool.scaler_stalled: %s", payload)
+            try:
+                async with asyncio.timeout(POOL_RECONCILE_TIMEOUT):
+                    await self.db.log_event("pool.scaler_stalled", payload=json.dumps(payload))
+                    await self.bus.emit("pool.scaler_stalled", payload)
+            except Exception:
+                logger.exception("Could not record pool scaler stall")
+        self._pool_progress_observations = current
+        if stalled:
+            # Re-measure fresh admission/capacity under the same lock as the
+            # cascade. The watchdog's cached diagnostic is never launch authority.
+            await self._reconcile_pools()
+
+    async def _reconcile_pools_inner(self, *, hierarchy_modes=None) -> None:
+        self._reap_pool_launches()
+
+        # Fund fresh continuation sessions before replenishing a warm idle
+        # pool, using the same admission reader and durable reservation fence.
+        service = getattr(self, 'wait_service', None)
+        if service and service.enabled:
+            await self._resume_pending_first(service)
+
+        measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
+        # A drained holder's seat is counted from the next tick on.
+        await self._release_container_claims(measurement.pool_sessions)
+        now = time.time()
+        await self._announce_bounds_rescoped(measurement)
+        actions, self._pool_surplus_since = self._size_pool_actions(measurement, now)
+        from src.waits.sources import record_pool_observations
+
+        await record_pool_observations(self.db, measurement, now)
+        self._wait_slot_pressure = {}
+        for key, candidates in measurement.candidates.items():
+            for candidate in candidates:
+                pressure_key = (candidate.project_id, key.profile_id)
+                self._wait_slot_pressure[pressure_key] = (
+                    self._wait_slot_pressure.get(pressure_key, 0)
+                    + candidate.ready - len(candidate.idle_session_ids) - candidate.starting
+                )
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
+        from src.wait_runtime.eviction import request_evictions
+
+        starts = await request_evictions(self, starts)
+        relocations, self._pool_rebalance_since = rebalance_idle_pools(
+            candidates=measurement.candidates,
+            starts=starts,
+            drains=drains,
+            surplus_since=getattr(self, "_pool_rebalance_since", {}),
+            now=now,
+            grace=self.config.swarm.scale_down_grace,
+            max_drains=self.config.swarm.max_drains_per_tick,
+        )
+        drains.extend(relocations)
 
         await self._report_pool_starvation(starvations)
 
         for start in starts:
-            executed = 0
-            for _ in range(start.count):
-                sid = await self._launch_pool_session(
-                    measurement.projects[start.project_id],
-                    measurement.profiles[start.key],
-                )
-                if sid is None:
-                    break
-                executed += 1
-            await self._emit_pool_scaled(
-                start.key, start.project_id, "start", executed, reason=start.reason
-            )
+            self._queue_pool_starts(start, measurement)
 
         for drain in drains:
             executed = 0
@@ -395,6 +698,128 @@ class PoolsMixin:
                 await self.db.update_session(sid, desired_state="stopped")
                 executed += 1
             await self._emit_pool_scaled(drain.key, drain.project_id, "drain", executed)
+
+    async def _release_container_claims(
+        self, pool_sessions: list[SessionRecord] | None = None
+    ) -> list[str]:
+        """Take back every pool claim on a container its holder did not fill.
+
+        The frontier never offers a container, but a plain task claimed a
+        moment before a planner reparents its children under it becomes one
+        while held (prime-glacier.1, bold-flare-35).  Its worker can do
+        nothing with it and holds a pool seat until the whole epic finishes.
+        ``list_container_claims`` owns the rule — children, none filed by the
+        holding session — so a worker's own emergent filings never count.
+        Only pool sessions are released here; ``aq doctor --check
+        claims.container_held`` reports any other holder and repairs on
+        request.  Returns the released task ids.
+
+        *pool_sessions* is this tick's already-read pool session list; when
+        no pool session holds a task there is nothing to find, and an idle
+        fleet pays no extra statement for the check.
+        """
+        released: list[str] = []
+        if pool_sessions is not None and not any(s.task_id for s in pool_sessions):
+            return released
+        try:
+            claims = await self.db.list_container_claims()
+        except Exception:
+            logger.exception("Could not list claims on containers")
+            return released
+        for claim in claims:
+            if claim.get("lifecycle") != "pool":
+                continue
+            try:
+                out = await self.db.release_container_claim(claim, now=time.time())
+            except Exception:
+                logger.exception(
+                    "Could not release container %s from session %s",
+                    claim["task_id"],
+                    claim["session_id"],
+                )
+                continue
+            if not out.released:
+                # An attached integration owner (hierarchy/train) or a claim
+                # that moved on refuses the release; say so once, not per tick.
+                refused = getattr(self, "_container_release_refused", None)
+                if refused is None:
+                    refused = self._container_release_refused = set()
+                key = (claim["session_id"], claim["task_id"])
+                if key not in refused:
+                    refused.add(key)
+                    logger.warning(
+                        "Could not release container %s from pool session %s; "
+                        "see aq doctor --check claims.container_held",
+                        claim["task_id"],
+                        claim["session_id"],
+                    )
+                continue
+            released.append(claim["task_id"])
+            logger.warning(
+                "Released container %s from pool session %s (agent %s): its children "
+                "were filed by someone else, so its holder had nothing to do",
+                claim["task_id"],
+                claim["session_id"],
+                claim["agent_id"],
+            )
+            try:
+                await self.db.log_event(
+                    "task.container_claim_released",
+                    project_id=claim["project_id"],
+                    task_id=claim["task_id"],
+                    agent_id=claim["agent_id"],
+                    payload=json.dumps({"session_id": claim["session_id"]}),
+                )
+            except Exception:
+                logger.debug("container claim release audit failed", exc_info=True)
+        return released
+
+    def _queue_pool_starts(self, start, measurement) -> None:
+        launches = self.__dict__.setdefault("_pool_launches", {})
+        remaining, executed = start.count, 0
+
+        async def run(launch):
+            nonlocal remaining, executed
+            try:
+                sid = await self._launch_pool_session(
+                    measurement.projects[start.project_id],
+                    measurement.profiles[start.key], launch=launch,
+                )
+                executed += sid is not None
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("pool background launch failed: %s", launch.session_id)
+            finally:
+                remaining -= 1
+                try:
+                    if remaining == 0:
+                        await self._emit_pool_scaled(
+                            start.key, start.project_id, "start", executed, reason=start.reason
+                        )
+                finally:
+                    launches.pop(launch.session_id, None)
+
+        for _ in range(start.count):
+            launch = PoolLaunch(start.project_id, measurement.profiles[start.key].id,
+                                workspace_kind=start.workspace_kind)
+            launches[launch.session_id] = launch
+            launch.task = asyncio.create_task(run(launch), name=f"pool-launch:{launch.session_id}")
+
+    async def wait_for_pool_launches(self, *, cancel: bool = False) -> None:
+        tasks = [launch.task for launch in getattr(self, "_pool_launches", {}).values()
+                 if launch.task is not None]
+        if cancel:
+            for task in tasks:
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # A task cancelled before its first instruction cannot run its finally.
+        self._reap_pool_launches()
+
+    def _launching_pool_agent_ids(self) -> set[str]:
+        return {launch.agent_id for launch in getattr(self, "_pool_launches", {}).values()
+                if launch.agent_id}
 
     async def _report_pool_starvation(self, starvations: list) -> None:
         """Warn about starts no project could take — once per condition, not per tick.
@@ -524,11 +949,11 @@ class PoolsMixin:
         announced = getattr(self, "_pool_bounds_rescoped_announced", None)
         if announced is None:
             announced = self._pool_bounds_rescoped_announced = set()
+        pending = []
         for key, profile in sorted(measurement.profiles.items(), key=lambda kv: kv[0].profile_id):
             if key.profile_id in announced:
                 continue
-            announced.add(key.profile_id)
-            eligible = len(measurement.candidates.get(key, ()))
+            eligible = len({c.project_id for c in measurement.candidates.get(key, ())})
             max_active = profile.max_active
             min_active = profile.min_active or 0
             payload = {
@@ -543,10 +968,15 @@ class PoolsMixin:
                 ),
                 "previous_effective_min_active": min_active * eligible,
             }
-            await self.db.log_event(
-                "pool.bounds_rescoped",
-                payload=json.dumps(payload, separators=(",", ":"), sort_keys=True),
-            )
+            pending.append(payload)
+        if pending:
+            await self.db.log_events([
+                {"event_type": "pool.bounds_rescoped",
+                 "payload": json.dumps(payload, separators=(",", ":"), sort_keys=True)}
+                for payload in pending
+            ])
+        for payload in pending:
+            announced.add(payload["profile_id"])
             await self.bus.emit("pool.bounds_rescoped", payload)
 
     async def _emit_pool_scaled(
@@ -580,7 +1010,43 @@ class PoolsMixin:
             payload["placement_reason"] = reason
         await self.bus.emit("pool.scaled", payload)
 
-    async def _launch_pool_session(self, project, profile) -> str | None:
+    async def _launch_pool_session(self, project, profile, *, launch=None) -> str | None:
+        launch = launch or PoolLaunch(project.id, profile.id)
+        try:
+            return await self._launch_pool_session_inner(project, profile, launch)
+        except asyncio.CancelledError:
+            # Reservation is a small shielded DB operation: establish its
+            # outcome before releasing anything. Git/provider work is cancellable.
+            if launch.reservation is not None:
+                await asyncio.gather(launch.reservation, return_exceptions=True)
+            # Once a session row exists, normal session reconciliation owns
+            # it and any task it may already have claimed. Preserve that owner.
+            row = await self.db.get_session(launch.session_id)
+            if row is not None and row.state != "stopped":
+                raise
+            stopped = launch.handle is None
+            if launch.handle is not None:
+                try:
+                    await launch.provider.stop(launch.handle, grace=2.0)
+                    stopped = not await launch.provider.is_running(launch.handle)
+                except Exception:
+                    logger.exception("could not confirm cancelled pool launch stopped")
+            token_store = getattr(self, "token_store", None)
+            if launch.token_attempted and token_store is not None:
+                try:
+                    await token_store.revoke_session(launch.session_id)
+                except Exception:
+                    logger.exception("could not revoke cancelled pool launch token")
+            if launch.agent_id:
+                if stopped:
+                    await self.db.release_workspaces_for_agent(launch.agent_id)
+                    await self.db.update_agent(launch.agent_id, state=AgentState.IDLE,
+                                               current_task_id=None)
+                else:
+                    await self.db.update_agent(launch.agent_id, state=AgentState.ERROR)
+            raise
+
+    async def _launch_pool_session_inner(self, project, profile, launch) -> str | None:
         """Start one pool worker session for *profile* in *project*.
 
         Mirrors ``ExecutionMixin._launch_session_for_task`` step for step —
@@ -595,9 +1061,10 @@ class PoolsMixin:
         the workspace, delete the agent, revoke the token if one was
         minted).  Returns the new session id, or ``None`` on any failure.
 
-        A starved pool (no workspace kind, no free workspace) is expected,
-        not exceptional, and does not quarantine the key — the next tick's
-        demand may simply find a workspace freed.  Every other failure
+        A failed workspace acquisition backs off the project/profile key.
+        Advertised lazy capacity can fail to materialize; retrying the same
+        project every tick would starve other projects of the start budget.
+        Every other failure
         (bad harness, launch crash, a raised exception from acquisition or
         the token mint) quarantines ``(project_id, profile_id)`` for
         :data:`LAUNCH_BACKOFF` seconds so a persistently broken pool does
@@ -607,11 +1074,13 @@ class PoolsMixin:
 
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
         from src.agents.routing import resolve_agent_profile, task_agent_mismatch
+        from src.commands.operator_authority import is_operator_profile
 
         # Don't manufacture a durable definition when no execution workspace
         # could be acquired. Worktree slots still count as lazy capacity.
         available = await self.db.count_available_workspaces(
             project.id,
+            kind_id=launch.workspace_kind,
             worktree_slot_cap=(self._project_slot_cap(project) if self._worktrees_enabled() else None),
         )
         if not available:
@@ -622,6 +1091,24 @@ class PoolsMixin:
         except ValueError as exc:
             self._quarantine_pool(project.id, profile.id, f"session provider unavailable: {exc}")
             return None
+        launch.provider = provider
+
+        async def reserve(agent_id, *, new_agent=None):
+            async def commit_reservation():
+                if new_agent is None:
+                    reserved = await self.db.reserve_idle_agent(agent_id)
+                else:
+                    # Publish a new identity already reserved; another
+                    # simultaneous launch must not steal it between inserts.
+                    new_agent.state = AgentState.BUSY
+                    new_agent.last_heartbeat = time.time()
+                    reserved = await self.db.create_automatic_agent(new_agent)
+                if reserved:
+                    launch.agent_id = agent_id
+                return reserved
+
+            launch.reservation = asyncio.create_task(commit_reservation())
+            return await asyncio.shield(launch.reservation)
 
         # Reserve the identity before any await that starts a process. A live
         # session owns its worker even while it has no currently claimed task.
@@ -629,22 +1116,33 @@ class PoolsMixin:
         requirement = Task(
             id="", project_id=project.id, title="", description="", profile_id=profile.id,
             intelligence_class=profile.default_class,
+            task_type=TaskType.OPERATOR if is_operator_profile(profile) else None,
         )
         classes = self.session_spec_builder._intelligence_classes
         candidates = await self.db.list_agents(state=AgentState.IDLE)
         candidates.sort(key=lambda candidate: (candidate.profile_id != profile.id, candidate.created_at))
         agent = None
         worker_profile = None
+        pool_harness = getattr(profile, "harness", "") or ""
         for candidate in candidates:
             if not candidate.enabled or candidate.role != "worker":
                 continue
             own_profile = resolve_agent_profile(candidate, profiles)
+            # A pool runs its own profile's CLI. ``task_agent_mismatch`` lets a
+            # generic Claude profile accept any worker of its class, and the
+            # overrides below would then take that worker's harness — so a
+            # Claude pool would spend another provider's budget in its name,
+            # blindly when that provider is exhausted.  Compare the harness the
+            # session would actually run, resolved exactly as it is below.
+            resolved = apply_agent_overrides(profile, candidate, agent_profile=own_profile)
+            if (getattr(resolved, "harness", "") or "") != pool_harness:
+                continue
             if task_agent_mismatch(
                 requirement, candidate, task_profile=profile, agent_profile=own_profile,
                 harness_registry=self.harness_registry, intelligence_classes=classes,
             ):
                 continue
-            if await self.db.reserve_idle_agent(candidate.id):
+            if await reserve(candidate.id):
                 agent = candidate
                 worker_profile = own_profile
                 break
@@ -659,11 +1157,9 @@ class PoolsMixin:
             if mismatch:
                 logger.info("pool %s/%s cannot start: %s", project.id, profile.id, mismatch)
                 return None
-            # Only the fallback grows the roster. A persisted deletion opts
-            # out of automatic growth; compatible definitions were tried above.
-            if not await self.db.create_automatic_agent(agent):
-                return None
-            if not await self.db.reserve_idle_agent(agent.id):
+            # Only the fallback grows the roster; compatible definitions were
+            # tried above. Deleted identities do not constrain pool capacity.
+            if not await reserve(agent.id, new_agent=agent):
                 return None
         profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         harness_name = getattr(profile, "harness", "") or ""
@@ -672,16 +1168,46 @@ class PoolsMixin:
             await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
             self._quarantine_pool(project.id, profile.id, f"unknown harness {harness_name!r}")
             return None
+        # Pre-launch check (provider-failover D11): sizing already targets
+        # zero for an unavailable provider; this closes the race, and admits
+        # one canary at a time while the provider is recovering (D4).  A
+        # refusal is not the key's fault, so it quarantines nothing.
+        availability = getattr(self, "provider_availability", None)
+        launch_provider = (
+            availability.provider_for_harness(harness_name, project.id)
+            if availability is not None
+            else ""
+        )
+        if availability is not None:
+            admitted, refusal_reason = availability.admit_launch(
+                launch_provider, session_id=launch.session_id
+            )
+            if not admitted:
+                logger.debug(
+                    "pool %s/%s: launch refused: %s", project.id, profile.id, refusal_reason
+                )
+                await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
+                return None
 
         token_store = getattr(self, "token_store", None)
         # Claude accepts only canonical UUIDs for ``--session-id``. Keep the
         # durable/session-token identity separate from the readable provider
         # name used to address this pool worker.
-        session_id = str(uuid.uuid4())
+        session_id = launch.session_id
         session_name = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
+            row = await self.db.get_session(session_id)
+            if row is not None and row.state in {"starting", "running", "draining"}:
+                logger.error("pool launch remains registered for reconciliation: %s", reason)
+                if quarantine:
+                    self._quarantine_pool(project.id, profile.id, reason)
+                return
+            if availability is not None:
+                # A launch that never ran proves nothing either way: let the
+                # next one be the probation canary (provider-failover D4).
+                availability.release_canary(launch_provider, session_id=session_id)
             if not quarantine:
                 # A starved pool is expected; ``_quarantine_pool`` does the
                 # logging for the failures that are not.
@@ -697,34 +1223,43 @@ class PoolsMixin:
                 self._quarantine_pool(project.id, profile.id, reason)
 
         try:
-            kind = await self.db.resolve_workspace_kind(project.id, "project-repo")
-            if kind is None:
-                await _rollback("starved: no project-repo workspace kind", quarantine=False)
+            kind = await self.db.resolve_workspace_kind(project.id, launch.workspace_kind)
+            if (kind is None or not (kind.writable and kind.lockable and kind.is_git_repo)
+                    or kind.mode not in ("worktree", "exclusive-clone")):
+                await _rollback("starved: incompatible workspace kind", quarantine=True)
                 return None
 
             worktrees_enabled = self._worktrees_enabled()
-            fresh_slot: str | None = None
-            if worktrees_enabled and kind.is_git_repo:
-                # Prefer the slot this launch just paid for, so a concurrent
-                # dispatch cannot take it out from under us (the pool launch
-                # has the same growth-then-lose race task dispatch had).
-                growth = await self._ensure_worktree_slots(project, kind.id)
-                fresh_slot = growth.created.get(kind.id)
+            # Growth only promises one free slot. Keep growth and acquisition
+            # together so another launch cannot consume that promise first.
+            # This lock is local to a project/kind; provider startup and other
+            # projects remain independent background work.
+            locks = self.__dict__.setdefault("_pool_workspace_locks", {})
+            lock = locks.setdefault((project.id, kind.id), asyncio.Lock())
+            async with lock:
+                fresh_slot: str | None = None
+                if worktrees_enabled and kind.is_git_repo:
+                    # Prefer the slot this launch just paid for, so a concurrent
+                    # dispatch cannot take it out from under us (the pool launch
+                    # has the same growth-then-lose race task dispatch had).
+                    growth = await self._ensure_worktree_slots(project, kind.id)
+                    fresh_slot = growth.created.get(kind.id)
 
-            workspace = await self.db.acquire_one_unlocked(
-                project_id=project.id,
-                kind_id=kind.id,
-                mode=kind.default_lock_mode,
-                locked_by_task_id=None,
-                locked_by_agent_id=agent.id,
-                prefer_workspace_id=fresh_slot,
-                kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
-                worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
-            )
+                workspace = await self.db.acquire_one_unlocked(
+                    project_id=project.id,
+                    kind_id=kind.id,
+                    mode=kind.default_lock_mode,
+                    locked_by_task_id=None,
+                    locked_by_agent_id=agent.id,
+                    prefer_workspace_id=fresh_slot,
+                    kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
+                    worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
+                )
             if workspace is None:
-                await _rollback("starved: no free workspace", quarantine=False)
+                await _rollback("starved: no free workspace", quarantine=True)
                 return None
 
+            launch.workspace_acquired = True
             work_dir = workspace.workspace_path
 
             # An exclusive-clone pool bypasses slot setup, but may later write
@@ -748,6 +1283,7 @@ class PoolsMixin:
             instance_token = uuid.uuid4().hex
 
             if token_store is not None:
+                launch.token_attempted = True
                 api_token = await token_store.mint(
                     session_id=session_id,
                     session_instance_token=instance_token,
@@ -770,79 +1306,78 @@ class PoolsMixin:
                 epoch=self.daemon_epoch,
                 api_token=api_token,
                 workspace_source_type=workspace.source_type,
+                git_identity=resolve_git_identity(self.config, project).identity,
             )
 
             launched_at = time.time()
+            launch.handle = SessionHandle(name=spec.session_name, provider=provider.name,
+                                          instance_token=instance_token)
+            from src.sessions.launch import launch_session
+
+            record = SessionRecord(
+                id=session_id,
+                project_id=project.id,
+                profile_id=profile.id,
+                harness=harness.id,
+                provider=provider.name,
+                name=spec.session_name,
+                lifecycle="pool",
+                work_dir=work_dir,
+                epoch=self.daemon_epoch,
+                instance_token=instance_token,
+                started_at=launched_at,
+                session_key=session_id if harness.session_id_flag else None,
+                task_id=None,
+                state="running",
+                agent_id=agent.id,
+                **resolve_launch_settings(profile, harness, self.session_spec_builder),
+                last_activity=launched_at,
+                hooks_provisioned=spec.hooks_provisioned,
+                git_identity_digest=spec.git_identity_digest,
+            )
             try:
-                await provider.start(spec)
+                await launch_session(
+                    self.db, provider, spec, record, release_agent_reservation=True,
+                    bus=self.bus,
+                )
             except SessionDiedDuringStartup as exc:
                 excerpt = read_stderr_excerpt(exc.start_stderr_path)
+                # A death the provider explains (a login/usage dialog, or any
+                # death while it is already unavailable) is the provider's
+                # fault, not this key's: it must not arm the (project,
+                # profile) quarantine (D13) -- provider state stops the
+                # launches instead, fleet-wide.
+                attributed = availability is not None and availability.attributes_startup_death(
+                    exc, harness_name, project.id
+                )
+                if availability is not None:
+                    await availability.record_startup_death(
+                        exc,
+                        harness=harness_name,
+                        project_id=project.id,
+                        session_id=session_id,
+                        profile_id=profile.id,
+                    )
+                    # A death that just tripped the provider (attributable
+                    # generic failures -> ``failing``) was the provider's
+                    # too, and pool sizing now stops the launches fleet-wide
+                    # -- in enforce mode only; observe mode sizes nothing,
+                    # so the key quarantine is all that stops a relaunch.
+                    attributed = attributed or (
+                        availability.enforcing and availability.is_unavailable(launch_provider)
+                    )
                 await _rollback(
                     f"session died during startup: {exc}"
                     + (f" | startup output: {excerpt}" if excerpt else ""),
-                    quarantine=True,
+                    quarantine=not attributed,
                 )
                 return None
 
-            now = time.time()
-            try:
-                await self.db.create_session(
-                    SessionRecord(
-                        id=session_id,
-                        project_id=project.id,
-                        profile_id=profile.id,
-                        harness=harness.id,
-                        provider=provider.name,
-                        name=spec.session_name,
-                        lifecycle="pool",
-                        work_dir=work_dir,
-                        epoch=self.daemon_epoch,
-                        instance_token=instance_token,
-                        started_at=launched_at,
-                        session_key=session_id if harness.session_id_flag else None,
-                        task_id=None,
-                        state="running",
-                        agent_id=agent.id,
-                        **resolve_launch_settings(profile, harness, self.session_spec_builder),
-                        last_activity=now,
-                        hooks_provisioned=spec.hooks_provisioned,
-                    ),
-                    release_agent_reservation=True,
-                )
-            except Exception as exc:
-                logger.error(
-                    "pool %s/%s: session row insert failed",
-                    project.id,
-                    profile.id,
-                    exc_info=True,
-                )
-                try:
-                    await provider.stop(
-                        SessionHandle(
-                            name=spec.session_name,
-                            provider=provider.name,
-                            instance_token=instance_token,
-                        ),
-                        grace=2.0,
-                    )
-                except Exception:
-                    logger.error(
-                        "pool %s/%s: could not stop the orphan session %s",
-                        project.id,
-                        profile.id,
-                        spec.session_name,
-                        exc_info=True,
-                    )
-                    await self.db.update_agent(agent.id, state=AgentState.ERROR)
-                    return None
-                await _rollback(
-                    f"session started but its row could not be written: {exc}", quarantine=True
-                )
-                return None
         except Exception as exc:
             await _rollback(f"launch failed: {exc}", quarantine=True)
             return None
 
+        self.__dict__.setdefault("_pool_last_start", {})[PoolKey(profile.id)] = time.monotonic()
         logger.info(
             "pool %s/%s: session %s started (%s/%s) in %s",
             project.id,
@@ -871,16 +1406,41 @@ class PoolsMixin:
         return locks.setdefault(session_id, asyncio.Lock())
 
     async def _terminate_pool_session(
-        self, session, *, reason: str, task_status=TaskStatus.READY
+        self,
+        session,
+        *,
+        reason: str,
+        task_status=TaskStatus.READY,
+        resume_after: float | None = None,
+        task_meta: dict | None = None,
+        correlation: Mapping[str, object] | None = None,
     ) -> None:
-        """Serialize teardown so late callers cannot clear a reused worker."""
+        """Serialize teardown so late callers cannot clear a reused worker.
+
+        *resume_after* / *task_meta* pause the held task with a backoff and
+        record why in the same transaction (a provider-caused pause,
+        provider-failover D13); by default it simply goes back to READY.
+        """
         async with self._pool_teardown_lock(session.id):
+            event_kwargs = {"correlation": correlation} if correlation else {}
             await self._terminate_pool_session_locked(
-                session, reason=reason, task_status=task_status
+                session,
+                reason=reason,
+                task_status=task_status,
+                resume_after=resume_after,
+                task_meta=task_meta,
+                **event_kwargs,
             )
 
     async def _terminate_pool_session_locked(
-        self, session, *, reason: str, task_status=TaskStatus.READY
+        self,
+        session,
+        *,
+        reason: str,
+        task_status=TaskStatus.READY,
+        resume_after: float | None = None,
+        task_meta: dict | None = None,
+        correlation: Mapping[str, object] | None = None,
     ) -> None:
         """Stop the process before making its durable worker or workspace reusable.
 
@@ -897,18 +1457,29 @@ class PoolsMixin:
         That reuse is what bounds the roster.  Retiring unconditionally would
         add one ``agents`` row per pool session — one per *task* under
         ``fresh_context_per_task`` — with no sweep able to reclaim them:
-        ``soft_delete_agent`` cannot, because ``create_automatic_agent``
-        refuses to grow the roster while any worker tombstone exists, and a
-        hard delete drops history the task ledger still points at.  See
-        swarm-work-model §11.2.1 and ``src/doctor/pool_checks``, which
-        polices the rows that fall outside this loop.
+        ``soft_delete_agent`` cannot, because it only takes an identity *out*
+        of the reuse pool, and a hard delete drops history the task ledger
+        still points at.  See swarm-work-model §11.2.1 and
+        ``src/doctor/pool_checks``, which polices the rows that fall outside
+        this loop.
         """
         # Callers may hold an old in-memory row after its worker has already
         # been reserved for a new launch. Completed teardown is idempotent.
         current = await self.db.get_session(session.id)
-        if current is None or current.state == "stopped":
+        if (
+            current is None or current.state == "stopped"
+            or current.instance_token != session.instance_token
+            or current.task_id != session.task_id
+            or current.last_claim_epoch != session.last_claim_epoch
+        ):
             return
         session = current
+        # Re-check the shared exemption before timeout-driven cleanup. Death,
+        # operator intent and provider failover still stop a waiting session.
+        if reason in {"stalled", "stuck_timeout", "claim_loop_stalled", "prepare_timeout"}:
+            task = await self.db.get_task(session.task_id) if session.task_id else None
+            if task and await self.db.blocking_wait_for(session, task.claim_epoch, time.time()):
+                return
         await self.db.update_session(session.id, desired_state="stopped")
         other_live = [row for row in await self.db.list_sessions(agent_id=session.agent_id, live_only=True)
                       if row.id != session.id] if session.agent_id else []
@@ -945,13 +1516,36 @@ class PoolsMixin:
         still_owned = agent is None or agent.current_task_id in (None, session.task_id)
         if not other_live and still_owned:
             release = await self.db.terminate_pool_session(
-                session.id, reason=reason, task_status=task_status
+                session.id,
+                reason=reason,
+                task_status=task_status,
+                resume_after=resume_after,
+                task_meta=task_meta,
             )
             # An attached or pending integration owner retains this exact
             # session/workspace binding.  It is not safe to mark the worker
             # reusable or remove its claim file until the owner handoff has
             # durably completed.
             if not release.released:
+                # Ownership may retain the claim until a guarded handoff,
+                # but that must not hide a confirmed process exit. Recovery
+                # needs this stopped state while the attachment stays locked.
+                try:
+                    handle = SessionHandle(
+                        name=session.name, provider=session.provider,
+                        instance_token=session.instance_token,
+                    )
+                    if await provider.confirm_stopped(handle):
+                        await self.db.update_session_instance(
+                            session.id, session.instance_token,
+                            require_desired_state="stopped", state="stopped",
+                            end_reason=reason,
+                        )
+                except Exception:
+                    logger.warning(
+                        "pool session %s: retained-owner stop proof unavailable",
+                        session.id, exc_info=True,
+                    )
                 return
             from src.claim_file import remove_claim_file
             try:
@@ -962,11 +1556,21 @@ class PoolsMixin:
             await self.db.update_session(
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
+        if not other_live and still_owned:
+            slot = await self._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().detach_idle_slot_branch(slot)
+                except Exception:
+                    logger.warning(
+                        "pool session %s: branch release deferred", session.id, exc_info=True,
+                    )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(
             "pool.session_drained",
             {
+                **(correlation or {}),
                 "project_id": session.project_id,
                 "profile_id": session.profile_id,
                 "session_id": session.id,
