@@ -19,14 +19,14 @@ class DelegationPolicyDTO:
     """AgentTaskStep only.
 
     Attributes:
-        child_profile_id (str):
+        child_profile_id (None | str | Unset):
         wait_for_completion (bool | Unset):  Default: True.
         cancel_child (bool | Unset):  Default: False.
         narrowed_from (None | str | Unset):
         capability_narrowing (CapabilityNarrowingDTO | None | Unset):
     """
 
-    child_profile_id: str
+    child_profile_id: None | str | Unset = UNSET
     wait_for_completion: bool | Unset = True
     cancel_child: bool | Unset = False
     narrowed_from: None | str | Unset = UNSET
@@ -35,7 +35,11 @@ class DelegationPolicyDTO:
     def to_dict(self) -> dict[str, Any]:
         from ..models.capability_narrowing_dto import CapabilityNarrowingDTO
 
-        child_profile_id = self.child_profile_id
+        child_profile_id: None | str | Unset
+        if isinstance(self.child_profile_id, Unset):
+            child_profile_id = UNSET
+        else:
+            child_profile_id = self.child_profile_id
 
         wait_for_completion = self.wait_for_completion
 
@@ -57,11 +61,9 @@ class DelegationPolicyDTO:
 
         field_dict: dict[str, Any] = {}
 
-        field_dict.update(
-            {
-                "child_profile_id": child_profile_id,
-            }
-        )
+        field_dict.update({})
+        if child_profile_id is not UNSET:
+            field_dict["child_profile_id"] = child_profile_id
         if wait_for_completion is not UNSET:
             field_dict["wait_for_completion"] = wait_for_completion
         if cancel_child is not UNSET:
@@ -78,7 +80,15 @@ class DelegationPolicyDTO:
         from ..models.capability_narrowing_dto import CapabilityNarrowingDTO
 
         d = dict(src_dict)
-        child_profile_id = d.pop("child_profile_id")
+
+        def _parse_child_profile_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        child_profile_id = _parse_child_profile_id(d.pop("child_profile_id", UNSET))
 
         wait_for_completion = d.pop("wait_for_completion", UNSET)
 

@@ -31,9 +31,9 @@ async def db(tmp_path):
     await database.close()
 
 
-async def seed_project(db, pid="p1"):
+async def seed_project(db, pid="p1", *, routed=True):
     await db.create_profile(AgentProfile(id=pid, name=pid, harness="claude"))
-    await db.create_project(Project(id=pid, name=pid, default_profile_id=pid))
+    await db.create_project(Project(id=pid, name=pid))
     await db.create_workspace(
         Workspace(
             id=f"ws-{pid}",
@@ -42,8 +42,14 @@ async def seed_project(db, pid="p1"):
             source_type=RepoSourceType.LINK,
         )
     )
+    # Routed to the project's worker unless *routed* is false: a project
+    # default routes nothing (mandatory routing §8).
     await db.create_task(
-        Task(id=f"t-{pid}", project_id=pid, title=pid, description="work", status=TaskStatus.READY)
+        Task(
+            id=f"t-{pid}", project_id=pid, title=pid, description="work",
+            status=TaskStatus.READY, profile_id=pid if routed else None,
+            route_source="legacy" if routed else "unrouted",
+        )
     )
 
 
@@ -101,8 +107,8 @@ async def test_agent_settings_and_launch_snapshot_round_trip(db):
 
 
 async def test_reconciler_reuses_global_worker_without_reprofiling(db):
-    await seed_project(db, "p1")
-    await seed_project(db, "p2")
+    await seed_project(db, "p1", routed=False)
+    await seed_project(db, "p2", routed=False)
     await db.create_profile(AgentProfile(id="personal", name="Personal", harness="codex"))
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="personal"))
     before = await db.get_agent("a1")
@@ -190,14 +196,12 @@ async def test_existing_worker_supplies_its_default_without_project_reprofile(db
     from src.config import AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
-    await seed_project(db)
-    await db.update_project("p1", default_profile_id=None)
+    await seed_project(db, routed=False)
     await db.create_profile(
         AgentProfile(id="personal", name="Personal", harness="claude", allowed_tools=["Read"])
     )
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="personal"))
     await AgentReconciler(db).reconcile()
-    assert (await db.get_project("p1")).default_profile_id is None
     assert await db.assign_task_to_agent("t-p1", "a1")
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
@@ -210,7 +214,7 @@ async def test_existing_worker_supplies_its_default_without_project_reprofile(db
     orch.bus.emit = AsyncMock()
     profile = await orch._resolve_profile(await db.get_task("t-p1"))
     assert profile.id == "personal" and profile.allowed_tools == ["Read"]
-    await db.update_task("t-p1", profile_id="p1")
+    await db.update_task("t-p1", profile_id="p1", route_source="legacy")
     assert (await orch._resolve_profile(await db.get_task("t-p1"))).id == "p1"
 
 
