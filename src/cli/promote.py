@@ -84,6 +84,24 @@ def _execute_intent(ctx: click.Context, command: str, args: dict) -> None:
         raise SystemExit(1)
 
 
+@promote.command("prepare")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option("--bump", type=click.Choice(["minor", "patch"]))
+@click.option("--version", help="Explicit version to prepare.")
+@click.option("--from-task", help="Task motivating this preparation.")
+@click.pass_context
+@_handle_errors
+def promote_prepare(ctx, project_id, step_id, bump, version, from_task):
+    """File a version bump and notes draft as ordinary work on the default branch."""
+    if (version is None) == (bump is None):
+        raise click.UsageError("Choose exactly one of --version or --bump.")
+    _execute_intent(ctx, "promote_prepare", {
+        "project_id": project_id, "step_id": step_id, "bump": bump,
+        "version": version, "from_task": from_task,
+    })
+
+
 @promote.command("request")
 @click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
 @click.option("--step", "step_id", required=True)
@@ -92,9 +110,13 @@ def _execute_intent(ctx: click.Context, command: str, args: dict) -> None:
 )
 @click.option("--version", help="Version at the pinned source commit.")
 @click.option("--notes-reviewed", is_flag=True)
+@click.option("--allow-breaking-migration", is_flag=True,
+              help="Operator only: accept unproven migrations and disable rollback across this release.")
+@click.option("--from-task", help="Completed hotfix task whose exact source to promote.")
 @click.pass_context
 @_handle_errors
-def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewed):
+def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewed,
+                    allow_breaking_migration, from_task):
     """Open a pinned step PR and an idempotent promotion intent."""
     _execute_intent(
         ctx,
@@ -105,8 +127,27 @@ def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewe
             "source_sha": source_sha,
             "version": version,
             "notes_reviewed": notes_reviewed,
+            **({"allow_breaking_migration": True} if allow_breaking_migration else {}),
+            **({"from_task": from_task} if from_task else {}),
         },
     )
+
+
+@promote.command("hotfix")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option("--title", required=True)
+@click.option("--description")
+@click.option("--from-task", help="Bug task that prompted this hotfix.")
+@click.option("--version", help="Patch version the hotfix must prepare.")
+@click.pass_context
+@_handle_errors
+def promote_hotfix(ctx, project_id, step_id, title, description, from_task, version):
+    """File a fix on the step target; request its promotion after completion."""
+    _execute_intent(ctx, "promote_hotfix", {
+        "project_id": project_id, "step_id": step_id, "title": title,
+        "description": description, "from_task": from_task, "version": version,
+    })
 
 
 @promote.command("approve")
@@ -127,6 +168,16 @@ def promote_approve(ctx, request_id, project_id):
 def promote_cancel(ctx, request_id, project_id):
     """Close an unpublished step PR and abort its intent."""
     _execute_intent(ctx, "promote_cancel", {"project_id": project_id, "request_id": request_id})
+
+
+@promote.command("repair")
+@click.argument("request_id")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.pass_context
+@_handle_errors
+def promote_repair(ctx, request_id, project_id):
+    """Back up and restore a stranded intent's task (IN_PROGRESS, unrouted)."""
+    _execute_intent(ctx, "promote_repair", {"project_id": project_id, "request_id": request_id})
 
 
 @promote.command("status")
