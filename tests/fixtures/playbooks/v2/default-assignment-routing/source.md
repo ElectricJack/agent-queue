@@ -5,6 +5,9 @@ role: assignment-routing
 profile_id: playbook-compiler
 scope: system
 enabled: true
+required_capabilities:
+  - task_route_plan
+  - task_route_apply
 triggers:
   - task.route_needed
 max_tokens: 4096
@@ -34,10 +37,9 @@ it; no code changes. The design is
 
 The rule is admitted only when all of these hold:
 
-- the current hydrated `task` row is `DEFINED`, `READY` or `BLOCKED`;
-- its `task.route_source` is `unrouted` or `legacy`;
-- the event's `router`, the project's bound routing playbook, is
-  `default-assignment-routing`, this playbook's id.
+- the hydrated `task.status` is `in` `["DEFINED", "READY", "BLOCKED"]`;
+- the hydrated `task.route_source` is `in` `["unrouted", "legacy"]`;
+- the event's `router` is `eq` `default-assignment-routing`, this playbook's id.
 
 The guard reads the current row rather than the event payload: route-needed
 events are re-emitted, and one can arrive after another run routed the task or
@@ -84,6 +86,24 @@ once.
    after it was planned. A `rejected` or `runtime_error` outcome fails the
    rule.
 
+## Typed command boundary
+
+The source declares exactly `task_route_plan` and `task_route_apply` as
+`required_capabilities`. They are typed commands: branch on their declared
+outcomes, bind their complete values, and pass the selected plan unchanged to
+apply. The classifier reads only `plan_a.title`, `plan_a.description`,
+`plan_a.task_type`, `plan_a.class_hint`, `plan_a.questions`,
+`plan_a.allowed_kinds` and `plan_a.allowed_classes`. Its existing limits are
+`max_calls` `1`, `max_output_tokens` `4096`, `max_total_tokens` `4096` and
+`timeout_seconds` `300`, with tools disabled.
+
+Keep the three plan/apply paths: bindings are single assignment and each apply
+must receive the plan from its own path. Capacity and quota observations stay
+inside the planner and are refreshed by apply; an extra snapshot would change
+the observation boundary. This rule needs no collection loop, durable state,
+notification, doctor scan or script. Routing policy and classifier guidance
+below remain verbatim.
+
 ## Routing policy
 
 This block is passed verbatim, as the string `policy`, to every
@@ -94,17 +114,26 @@ harness, never by rung id. Key by key:
 - `kinds`: the class a task of that kind gets when it has no hint, and
   `max_class`, the highest class a hint may ask for; a higher hint is clamped.
   A kind with a `lane` goes to that lane. A kind with `narrow: true` may go to
-  the OpenCode lanes.
+  the OpenCode lanes. `escalate` makes a kind try its default class first,
+  regardless of a hint, classifier class or risk class floor. Bugfixes start
+  at `standard-high` and move to `deep-high` after one substantive failed
+  attempt. Worker give-up and failed verification count; explicitly
+  transient failures, lost workers, session close errors, provider outages
+  and review feedback on a completed task (rework, not failure) do not.
+  Retry/reopen goes back through this router and the plan records
+  `escalated_after_failure` with the failed attempts.
 - `risk`: what the classifier's `risk` answer does. The classifier judges
   how much damage the change could do if it is wrong, separately from how hard
   it is; the "Classifying a task" section below gives the guidance. A level
   with a rule gets that rule's `min_class` as a floor: a lower class, whether
   it came from the kind, a hint or the classifier, is raised to the floor, and
   the plan records `class_raised_for_risk`. The floor beats a kind's
-  `max_class` and a class hint. Only an operator route override goes under it.
-  `harnesses` limits every candidate to those harnesses: medium, high and very
-  high risk work runs only on Claude or Codex, never on local OpenCode, the
-  free hosted models or any other harness. `relax` lowers a level's floor when
+  `max_class` and a class hint, except for kinds with `escalate`, whose
+  attempt class takes precedence. An operator route override can also go under it.
+  `harnesses` limits every candidate to those harnesses: high and very high
+  risk work runs only on Claude or Codex; medium-risk work may also run on
+  local OpenCode, but only through the `narrow-medium` lane. None of them runs
+  on the free hosted models or any other harness. `relax` lowers a level's floor when
   the classifier's answer meets every flag it `requires`: very-high-risk work
   leans to a deep class but may stay at standard-high when it is narrow and
   test-verified. The policy never forces a deep class on medium- or high-risk
@@ -113,8 +142,8 @@ harness, never by rung id. Key by key:
   work routes exactly as the rest of this policy says. A failed or missing risk
   answer is treated as `medium`, because not knowing is not evidence the change
   is safe: it gets the medium floor and harnesses, the plan records the class
-  it raised with `assumed: true`, and every lane with `max_risk: low` stays
-  closed.
+  it raised with `assumed: true`, and every lane with a `max_risk` stays
+  closed, since an unknown risk never meets one.
 - `origins`: overrides by who filed the task. Integration and development
   repairs are never OpenCode work, and a review dispatch goes to the
   design-review lane.
@@ -127,7 +156,10 @@ harness, never by rung id. Key by key:
   neither does a precisely written description. `narrow` sends narrow,
   test-verified, low-risk work to local OpenCode while it has a free slot;
   `narrow-unverified-model` does the same only when an independent verifier
-  checks the result. `narrow-hosted` sends trivial work to OpenCode on a hosted
+  checks the result. `narrow-medium` also sends narrow, test-verified
+  standard work classified medium risk to local OpenCode at `standard-high`, to
+  save Claude and Codex plan usage; required CI still gates its landing, and
+  high-risk work never qualifies. `narrow-hosted` sends trivial work to OpenCode on a hosted
   gateway: the `opencode-zen` harness (Space Bunny Free),
   `opencode-zen-nemotron` (Nemotron 3 Ultra free) and `opencode-zen-longcat`
   (LongCat 2.5 Preview free). Until a hosted model has a track record (see
@@ -147,7 +179,7 @@ harness, never by rung id. Key by key:
   The `local_models` gate keeps its defaults: an integration-train bug fix,
   and work other tasks wait on, never run on a self-hosted model.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
-  hard bug fix hinted deep-high lands on deep-high Codex.
+  bug fix escalated after a standard failure lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
   over its slots times its harness weight, its provider's usage factor and its
   availability factor. The least-pressed candidate wins, and `tie_order`
@@ -165,11 +197,12 @@ version: 1
 class_order: [fast-off, fast-low, fast-high, standard-low, standard-high, deep-low, deep-high]
 default_kind: feature
 kinds:
+  operator: {class: standard-high, max_class: deep-high, prefer_harnesses: [codex]}
   design:   {class: deep-high,     max_class: deep-high,     lane: code-design}
   art:      {class: deep-high,     max_class: deep-high,     lane: art-design}
   research: {class: standard-high, max_class: deep-high}
   feature:  {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
-  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  bugfix:   {class: standard-high, max_class: deep-high,     narrow: false, prefer_harnesses: [codex], escalate: {after_failures: 1, to_class: deep-high}}
   refactor: {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
   test:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
   docs:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
@@ -181,7 +214,7 @@ origins:
   development_repair: {narrow: false}
   review_dispatch:    {lane: design-review}
 risk:
-  medium:    {min_class: standard-high, harnesses: [claude, codex]}
+  medium:    {min_class: standard-high, harnesses: [claude, codex, opencode]}
   high:      {min_class: standard-high, harnesses: [claude, codex]}
   very_high:
     min_class: deep-low
@@ -202,6 +235,12 @@ lanes:
     classes: {fast-low: fast-off}
     requires: [narrow, test_verified, independent_verifier]
     max_risk: low
+    prefer: true
+  narrow-medium:
+    harnesses: [opencode]
+    classes: {standard-high: standard-high}
+    requires: [narrow, test_verified]
+    max_risk: medium
     prefer: true
   narrow-hosted:
     harnesses: [opencode-zen*]
@@ -271,6 +310,11 @@ with those.
   approved work into tasks. `research` is an investigation whose deliverable
   is findings rather than a change. `feature`, `bugfix`, `refactor`, `test`,
   `docs`, `chore` and `sync` are what they say.
+  `operator` is project setup, trust/CI checks, integration cutover, promotion
+  configuration, playbook lifecycle, provider diagnostics and policy imports.
+  It runs only on scoped operator profiles at standard-high or deep-high on
+  Claude or Codex. Those profiles are never ordinary worker candidates.
+  Human review decisions, deployment, money and live trading remain human work.
 - `intelligence_class`: one of `allowed_classes`. Keep the `class_hint` when
   the task has one. Default to `standard-high` for ordinary feature
   implementation, debugging, refactoring, tests, and coordinated changes

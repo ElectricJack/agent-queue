@@ -39,6 +39,8 @@ from src.integration.train import (
 )
 from tests import test_integration_gitops
 from tests.test_integration_gitops import commit, git
+from tests.test_integration_gitops import git_history_template as git_history_template
+from tests.test_integration_train_sources import world as world
 
 #: The real Git/PostgreSQL repository substrate, re-exported for the fixture below.
 setup = test_integration_gitops.setup
@@ -223,6 +225,56 @@ async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
     visit = await t.visit(ROOT)
     assert (visit.state, visit.batch_id, visit.target_sha) == ("idle", None, TARGET_SHA)
+
+
+async def test_explicitly_retired_target_drops_finished_status_after_running_visit_settles():
+    epic = TrainTarget("p", "r", "refs/heads/epic", "epic")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_snapshot():
+        entered.set()
+        await release.wait()
+        return await lane(Service()).snapshot()
+
+    targets = Targets(ROOT, epic)
+    targets.retired_targets = set()
+    t = train(targets, Batches(), {
+        ROOT.key: lane(Service()), epic.key: lane(Service(), fetch=blocked_snapshot),
+    })
+    await t.tick()
+    await entered.wait()
+    targets.items = [ROOT]
+    targets.retired_targets = {epic.key}
+    await t.tick()
+    assert any(row["target_ref"] == epic.target_ref and row["running"] for row in t.status())
+    release.set()
+    await t.drain()
+    await t.tick()
+    await t.drain()
+    assert [row["target_ref"] for row in t.status()] == [ROOT.target_ref]
+
+
+@pytest.mark.parametrize("blockers,observes", [
+    (("selection_deferred",), True),
+    (("repository_recovery",), False),
+    (("selection_deferred", "repository_recovery"), False),
+])
+async def test_epic_selection_deferral_observes_aggregate_without_bypassing_refusals(
+    blockers, observes,
+):
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    selected = BatchSelection(blockers=tuple({"code": code} for code in blockers))
+    batches = Batches()
+    batches.open_batch = AsyncMock(return_value=selected)
+    complete = AsyncMock(return_value=())
+    service = Service()
+    epic_lane = replace(lane(service), complete_epic=complete)
+    t = train(Targets(epic), batches, {epic.key: epic_lane})
+    visit = await t.visit(epic)
+    assert visit.state == "blocked"
+    assert visit.detail["blockers"] == list(selected.blockers)
+    assert complete.await_count == int(observes)
+    assert service.calls == 0
 
 
 async def test_contained_candidate_settles_without_checks_or_repair():
@@ -610,9 +662,10 @@ def test_default_branch_sync_conflict_brief_honors_policy_scope(scope):
     assert "src/example.py" in brief
     assert "t-1" in brief and "t-2" in brief and "t-3" in brief
 
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("state", ["testing", "unknown"])
 @pytest.mark.parametrize("lost", ["released", "expired"])
-async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost):
+async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost, sync):
     from src.database.queries.claim_queries import _frontier_where
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
     from src.database.tables import tasks
@@ -628,8 +681,11 @@ async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, st
     repair = OrdinaryRepairService(db, locks=locks, clock=lambda: now[0])
     ref = candidate_ref("batch-retry")
     target = BranchKey(repository_id="r", branch=ref)
-    filed = await repair.allocate("batch-retry", target_ref=ref, head_sha=CANDIDATE,
-                                  authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    filed = await repair.allocate(
+        "batch-retry", target_ref=ref, head_sha=CANDIDATE,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+        sync_default_branch={"ref": "refs/heads/main", "sha": "e" * 40} if sync else None,
+    )
     task_id = filed["task_id"]
     original = await repair.input(task_id)
     await db.update_task(task_id, status=TaskStatus.READY)
@@ -700,6 +756,9 @@ async def conflicting_batch_env(setup):
     db, ops, _subject, _fence, repo, base, _head, _green = setup
     await db.create_project(Project(id="p", name="Project"))
     await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.LINK))
+    await db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     left = commit(repo.store, {"new.txt": "left\n"}, base=base)
     right = commit(repo.store, {"new.txt": "right\n"}, base=base)
     store = BatchStore(db)
@@ -831,7 +890,7 @@ async def test_conflict_after_target_move_publishes_and_briefs_the_real_partial_
     }, repairs)
     visit = await t.visit(ROOT)
     partial = visit.detail["head"]
-    assert visit.state == "repair" and visit.repair["outcome"] == "filed"
+    assert visit.state == "repair" and visit.repair["outcome"] == "filed", visit
     assert visit.repair["attempt_count"] == 2 and visit.repair["task_id"] != previous_task
     assert visit.candidate_sha == partial != repaired
     assert visit.detail["replaced_candidate_sha"] == repaired
@@ -1036,6 +1095,20 @@ async def test_one_target_failure_is_recorded_and_others_continue():
     assert status["q"]["state"] == "delivered"
 
 
+async def test_train_progress_deadline_changes_only_when_observed_work_changes():
+    service = Service("held", "held", "held", "delivered")
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(service)})
+    now = [100.0]
+    t.clock = lambda: now[0]
+    # A restart's first observation cannot erase an old durable batch deadline.
+    for timestamp, expected in ((100, 0), (200, 0), (300, 0), (400, 400)):
+        now[0] = timestamp
+        await t.tick()
+        await t.drain()
+        assert t.status()[0].get("progress_at", 0) == expected
+
+
 def _rate_limited(retry_at=None):
     """A visit failure as the daemon sees it: GitError over the classified cause."""
     cause = GitHubAccessError(
@@ -1098,8 +1171,9 @@ class Holding(Service):
 
     async def visit(self, batch, members, snapshot):
         self.calls += 1
+        reason = self.reasons.pop(0)
         return BatchObservation("held", SOURCE, TARGET_SHA,
-                                detail={"reason": self.reasons.pop(0)})
+                                detail=reason if isinstance(reason, dict) else {"reason": reason})
 
 
 PROMOTION = TrainTarget("p", "r", "refs/heads/main", "promotion",
@@ -1148,6 +1222,32 @@ async def test_named_promotion_hold_defers_its_target_until_woken():
     assert (await t.tick())["started"] == [label]
     await t.drain()
     assert service.calls == 4
+
+
+async def test_a_promotion_hold_logs_its_reason_once_per_hold(caplog):
+    """solid-impact-50: an intent StepAdmission refuses must not idle silently."""
+    clock = [100.0]
+    error = "promotion task t-1 is routed to profile 'worker'; run `aq promote repair r --project p`"
+    invalid = {"reason": "promotion_intent_invalid", "error": error}
+    service = Holding(invalid, dict(invalid), "promotion_operator_approval_missing")
+
+    async def lane_for(target):
+        return lane(service)
+
+    t = IntegrationTrain(targets=Targets(PROMOTION),
+                         batches=Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+    for now in (100.0, 130.0, 190.0):
+        clock[0] = now
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+    held = "promotion batch-1 on refs/heads/main held: "
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "src.integration.train" and " held: " in r.getMessage()] == [
+        (logging.WARNING, f"{held}promotion_intent_invalid {error}"),
+        (logging.INFO, f"{held}promotion_operator_approval_missing"),
+    ]
 
 
 async def test_only_a_named_promotion_hold_defers_its_target():
@@ -1535,6 +1635,9 @@ async def test_repository_budget_admits_new_work_and_keeps_inbox_reconciliation_
         assert row["timing"]["selection"]["stages"]["root_delivery"]["items"] == 1
 
         db = SimpleNamespace(
+            expire_finished_task_notices=AsyncMock(return_value=0),
+            alert_global_supervisor_backlog=AsyncMock(return_value=None),
+            redirect_disabled_supervisor_messages=AsyncMock(return_value=0),
             get_pending_recipients=AsyncMock(return_value=[("user", "dashboard", "p")]),
             get_pending_messages=AsyncMock(return_value=[Message(
                 "inbox-1", "p", "system", "benchmark", "user", "dashboard", "pending")]),
@@ -1723,6 +1826,8 @@ RETIRED_TRUTH = {
     "src.integration.subjects", "src.integration.parent_engine", "src.integration.main_promotion",
     "src.integration.promotion", "src.integration.candidates", "src.integration.root_adapters",
     "src.integration.scheduler", "src.integration.stale_schedule",
+    "src.integration.development_runtime", "src.integration.development_adapter",
+    "src.integration.ci_adapters",
 }
 RETIRED_TABLES = {
     "integration_subject_journal", "integration_subjects", "task_delivery_receipts",
@@ -1731,9 +1836,10 @@ RETIRED_TABLES = {
 # Pure helpers and data types the train may share with modules it outlives: pin and
 # retained-repository construction, and the identity types gitops and checks accept.
 SHARED_NAMES = {
-    "src.integration.development_runtime": {
-        "development_repository", "project_development_pin", "load_pinned_development_policy",
+    "src.integration.development_policy": {
+        "project_development_pin", "load_pinned_development_policy",
     },
+    "src.integration.repository_git": {"development_repository"},
 }
 
 
@@ -1742,10 +1848,17 @@ def test_active_train_and_promotion_modules_import_retained_contracts():
     import ast
     from pathlib import Path
 
+    for module in ("parent_runtime", "parent_engine", "promotion", "scheduler", "settling",
+                   "stale_schedule", "candidates", "main_promotion", "root_runtime",
+                   "root_adapters", "subjects", "reconciler", "development_runtime", "development_adapter",
+                   "ci_adapters"):
+        assert not Path(f"src/integration/{module}.py").exists(), module
+
     modules = (
         "train", "train_sources", "checks", "candidate_baseline", "promotion_steps",
-        "epics", "github_review_poll", "attestation", "ci_producers", "ci_adapters",
+        "epics", "github_review_poll", "attestation", "ci_producers",
         "runtime_contracts", "promotion_contracts", "owner_guards", "source_repairs",
+        "reviews", "repository_git", "release",
     )
     paths = [Path(f"src/integration/{module}.py") for module in modules]
     paths.append(Path("src/git/github.py"))
@@ -1809,7 +1922,8 @@ def test_activation_runbook_exists_before_canary():
     text = runbook.read_text()
     for section in ("## Preconditions", "## Activate", "## Reading blockers", "## Roll back"):
         assert section in text
-    assert "git_first: active" in text and "git_first: shadow" in text
+    assert "git_first: active" in text
+    assert "Trial mode has been removed" in text
     assert "aq restart --no-dashboard" in text
     assert runbook.name in Path("docs/guides/README.md").read_text()
     assert runbook.name in Path("docs/concepts/integration.md").read_text()
@@ -1828,7 +1942,7 @@ import sys
 legacy = {
     "candidates", "main_promotion", "parent_engine", "parent_runtime", "promotion",
     "reconciler", "root_adapters", "root_runtime", "scheduler", "settling",
-    "stale_schedule", "subjects", "source_delivery",
+    "stale_schedule", "subjects", "source_delivery", "development_adapter", "development_runtime",
 }
 class RefuseLegacy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -1837,7 +1951,7 @@ class RefuseLegacy(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, RefuseLegacy())
 for module in (
     "train", "train_sources", "gates", "parent_subjects", "hierarchy",
-    "development_adapter", "development_runtime",
+    "development_policy", "repository_git",
 ):
     importlib.import_module("src.integration." + module)
 '''
@@ -1846,3 +1960,197 @@ for module in (
         capture_output=True, text=True, timeout=20,
     )
     assert result.returncode == 0, result.stderr
+
+
+async def test_event_during_visit_survives_stale_refusal_backoff():
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    notified = asyncio.Event()
+    now = [1000.0]
+
+    async def visit(target):
+        calls.append(target)
+        entered.set()
+        await release.wait()
+        from src.integration.train import TrainVisit
+        return TrainVisit(target, "blocked" if len(calls) == 1 else "idle",
+                          detail={"reason": "held"})
+
+    runtime = train(Targets(ROOT), Batches(), {}, event_driven=True)
+    runtime.clock = lambda: now[0]
+    runtime.visit = visit
+    runtime.on_wake = notified.set
+    await runtime.tick()
+    await entered.wait()
+    runtime.wake("p", "r")
+    release.set()
+    await runtime.drain()
+    await asyncio.wait_for(notified.wait(), 2)
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    assert len(calls) == 2
+    assert (await runtime.tick())["started"] == []
+    # A lost event still gets a finite due observation, without a tight idle loop.
+    now[0] = runtime.status()[0]["deferred_until"]
+    assert now[0] > 1000
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    assert len(calls) == 3
+
+
+async def test_deferred_epic_revisits_when_due_without_waking_a_fixer():
+    from src.integration.train import TrainVisit
+
+    epic = TrainTarget("p", "r", "refs/heads/epic", "epic")
+    targets = Targets(epic)
+    targets.deferred_revisits = {epic.key: 400.0}
+    runtime = train(targets, Batches(), {}, event_driven=True)
+    now = [100.0]
+    runtime.clock = lambda: now[0]
+    runtime.visit = AsyncMock(return_value=TrainVisit(epic, "idle"))
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    now[0] = 399
+    assert not (await runtime.tick())["started"]
+    now[0] = 400
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    targets.deferred_revisits[epic.key] = 700.0
+    assert not (await runtime.tick())["started"]
+    assert runtime.visit.await_count == 2
+
+
+@pytest.fixture
+async def speculative_env(world):
+    # Reuse the real Git/PostgreSQL train substrate, with hosted verdicts supplied
+    # explicitly. No daemon or operator configuration is involved.
+    from tests.test_integration_train_sources import lane as real_lane
+    from tests.test_integration_gitops import LocalGit
+    from pathlib import Path
+
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "train": {"speculative_ci": True, "speculative_public_hosted": True},
+    })
+    t, checks, _ = real_lane(world, LocalGit(Path(world.origin.url)), settling=True)
+    original = t.lane_for
+
+    async def lane_for(target):
+        current = await original(target)
+
+        async def prepare(parent, base, snapshot):
+            return await t.batches.prepare_speculative(
+                target, current.service, parent, base, snapshot)
+
+        return replace(current, prepare_speculative=prepare)
+
+    t.lane_for = lane_for
+    yield SimpleNamespace(world=world, train=t, checks=checks)
+    await t.stop()
+
+
+async def speculative_pair(env):
+    from tests.test_integration_train_sources import completed
+
+    await completed(env.world, "first")
+    first = await env.train.visit(ROOT)
+    # The first speculative scan can finish empty before the later arrival.
+    if ROOT.key in env.train._speculative:
+        await env.train._speculative[ROOT.key].task
+        env.train._discard_speculative(ROOT)
+    await completed(env.world, "second")
+    await completed(env.world, "third")
+    again = await env.train.visit(ROOT)
+    assert again.batch_id == first.batch_id
+    item = env.train._speculative[ROOT.key]
+    await item.task
+    assert item.sha and item.prepared
+    return first, item
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_kept_speculative_candidate_publishes_exact_sha_without_rebuild(speculative_env, restart):
+    env = speculative_env
+    first, item = await speculative_pair(env)
+    repo = env.world.origin.clone
+    assert git(repo, "rev-parse", item.sha + "^1") == first.candidate_sha
+    # CI can finish before its base lands; the delivery tip is still unchanged.
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] != item.sha
+    if restart:
+        from tests.test_integration_train_sources import lane as real_lane
+        from tests.test_integration_gitops import LocalGit
+        from pathlib import Path
+
+        await env.train.stop()
+        env.train, env.checks, _ = real_lane(
+            env.world, LocalGit(Path(env.world.origin.url)), settling=True)
+    current = await env.train.lane_for(ROOT)
+    current.service.gitops.merge_sources = AsyncMock(side_effect=AssertionError("unexpected rebuild"))
+    # Adopting the already-pushed candidate does not produce another CI push.
+    original_publish = current.service.publish
+
+    async def publish(*args, **kwargs):
+        return await original_publish(*args, **kwargs)
+
+    current.service.publish = AsyncMock(side_effect=publish)
+    original = env.train.lane_for
+
+    async def same_lane(target):
+        assert target == ROOT
+        return current
+
+    env.train.lane_for = same_lane
+    env.checks.green.update({first.candidate_sha, item.sha})
+    delivered = await env.train.visit(ROOT)
+    assert delivered.state == "delivered"
+    assert delivered.candidate_sha == item.sha
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == item.sha
+    current.service.gitops.merge_sources.assert_not_called()
+    candidate_pushes = [call for call in current.service.publish.call_args_list
+                        if call.args[1] == candidate_ref(item.prepared.batch.id)]
+    assert not candidate_pushes
+    env.train.lane_for = original
+
+
+@pytest.mark.parametrize("change", ["split", "rebuild"])
+async def test_speculative_candidate_discarded_after_predecessor_changes(speculative_env, change):
+    env = speculative_env
+    first, item = await speculative_pair(env)
+    if change == "split":
+        await (await env.train.lane_for(ROOT)).service.store.set_intent(first.batch_id, "aborted")
+    else:
+        from sqlalchemy import update
+        async with env.world.db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == first.batch_id,
+            ).values(repair_attempt_count=1))
+    env.checks.green.update({first.candidate_sha, item.sha})
+    visit = await env.train.visit(ROOT)
+    assert visit.candidate_sha != item.sha
+    assert git(env.world.origin.clone, "ls-remote", "origin", "refs/heads/main").split()[0] != item.sha
+
+
+async def test_slow_speculative_build_never_delays_predecessor(speculative_env):
+    from tests.test_integration_train_sources import completed
+
+    env = speculative_env
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = env.train.lane_for
+
+    async def lane_for(target):
+        current = await original(target)
+
+        async def slow(*args):
+            entered.set()
+            await release.wait()
+            return None
+
+        return replace(current, prepare_speculative=slow)
+
+    env.train.lane_for = lane_for
+    await completed(env.world, "first")
+    first = await env.train.visit(ROOT)
+    await entered.wait()
+    env.checks.green.add(first.candidate_sha)
+    delivered = await asyncio.wait_for(env.train.visit(ROOT), 10)
+    assert delivered.state == "delivered"
+    assert not release.is_set()

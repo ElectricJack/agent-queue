@@ -1,0 +1,27 @@
+{
+  "exclusions": {
+    "src/agent_waits.py::TERMINAL_TASK_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agent_waits.py::WAIT_STATES['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agent_waits.py::WAIT_STATES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agent_waits.py::WAIT_STATES['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/agent_waits.py::AgentWaitReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/agent_waits.py::AgentWaitReconciler.tick": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::MAX_DIGEST_BYTES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::deadline_for": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::job_wait_deadline": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::resolve_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::typed_match": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::wait_next_step": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/agent_waits.py::AgentWaitReconciler.tick": {
+      "landing_span": [
+        195,
+        207
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}
