@@ -1,0 +1,3 @@
+
+
+Resume the preserved unpublished progress at {{progress_ref}} ({{progress_sha}}). The workspace starts at this exact tip. Frozen members already present as ancestors: {{completed_member_ordinals}}. Keep those merges and finish only the remaining work. The original partial head still anchors the complete repair commit range and candidate submission. Preservation is not candidate acceptance: exact candidate CI and publication still use the frozen subject, manifest, and current delegate fence.
