@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.profiles.capabilities import WILDCARD_CHARS
 from src.models import AgentProfile
+from src.profiles.inheritance import resolve_inheritance
 from src.profiles.parser import (
     ParsedProfile,
     parse_profile,
@@ -60,6 +61,31 @@ logger = logging.getLogger(__name__)
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
 ]
+
+
+def _template_loader(source_path: str):
+    """Build the ``extends`` resolver for a profile living at *source_path*.
+
+    Templates are siblings: ``agent-types/<template-id>/profile.md`` beside
+    ``agent-types/<rung-id>/profile.md``.  Deriving the directory from the
+    file being synced keeps this working for a temporary vault in a test as
+    well as the real one, and means the sync path needs no config object.
+
+    A profile synced from text with no path (an API write, a test) resolves
+    no template; a stub reaching that path is an authoring error the caller
+    sees as a missing-template error rather than a silent half-profile.
+    """
+
+    def load(template_id: str) -> ParsedProfile | None:
+        if not source_path:
+            return None
+        path = Path(source_path).parent.parent / template_id / "profile.md"
+        try:
+            return parse_profile(path.read_text(encoding="utf-8"))
+        except OSError:
+            return None
+
+    return load
 
 
 def is_retired_scoped_path(rel_path: str) -> bool:
@@ -230,6 +256,28 @@ async def sync_profile_to_db(
             errors=parsed.errors,
         )
 
+    # 1b. A template is a source for ``extends``, not a profile: it has no
+    #     class of its own and nothing may be routed to it, so it never
+    #     reaches ``agent_profiles``.  Reported as a success with no action
+    #     so a scan does not log it as a failure every boot.
+    if parsed.frontmatter.template:
+        return ProfileSyncResult(
+            success=True,
+            action="none",
+            profile_id=parsed.frontmatter.id or fallback_id or "",
+        )
+
+    # 1c. Resolve ``extends`` before anything reads the config: a stub rung
+    #     carries only its class and its pool state, and inherits the role,
+    #     rules, capabilities and harness of its ``worker-<harness>``
+    #     template.  A missing template is an error — installing a worker
+    #     with no capabilities is worse than keeping the previous row.
+    parsed, inheritance_errors = resolve_inheritance(
+        parsed, _template_loader(source_path)
+    )
+    if inheritance_errors:
+        return ProfileSyncResult(success=False, action="none", errors=inheritance_errors)
+
     # 2. Convert parsed profile to AgentProfile-compatible dict.
     profile_dict = parsed_profile_to_agent_profile(parsed)
 
@@ -255,6 +303,7 @@ async def sync_profile_to_db(
         model=profile_dict.get("model", ""),
         permission_mode=profile_dict.get("permission_mode", ""),
         codex_full_auto=profile_dict.get("codex_full_auto", False),
+        codex_service_tier=profile_dict.get("codex_service_tier"),
         claude_dangerously_skip_permissions=profile_dict.get(
             "claude_dangerously_skip_permissions", False
         ),
@@ -425,6 +474,40 @@ async def _emit_sync_failed(
         logger.debug("Failed to emit profile sync notification", exc_info=True)
 
 
+async def _sync_shipped_capabilities_on_reload(
+    change: VaultChange,
+    path_id: str,
+    data_dir: str,
+    event_bus: EventBus | None,
+) -> None:
+    """Merge missing shipped grants into a reloaded system profile's vault copy.
+
+    Only the vault copy of a shipped system profile
+    (``<data_dir>/vault/agent-types/<id>/profile.md``) is considered, and
+    :func:`~src.profiles.capability_sync.sync_profile_capabilities` decides
+    whether that profile is synced at all.  The merge's own write triggers
+    one more watcher pass, which finds nothing missing.  Never raises: a
+    failed merge must not stop the reload it precedes.
+    """
+    import asyncio
+
+    from src.profiles.capability_sync import publish_sync_result, sync_profile_capabilities
+    from src.profiles.drift import system_profile_ids, vault_profile_path
+
+    try:
+        if path_id not in system_profile_ids():
+            return
+        vault_path = vault_profile_path(data_dir, path_id)
+        if os.path.realpath(change.path) != os.path.realpath(vault_path):
+            return
+        result = await asyncio.to_thread(sync_profile_capabilities, data_dir, path_id)
+        await publish_sync_result(result, event_bus=event_bus, trigger="reload")
+    except Exception:
+        logger.warning(
+            "capability sync on reload of %s failed", change.rel_path, exc_info=True
+        )
+
+
 async def on_profile_changed(
     changes: list[VaultChange],
     *,
@@ -446,6 +529,11 @@ async def on_profile_changed(
     For ``deleted`` operations, the handler logs the deletion but does
     **not** remove the profile from the database.  Per spec, the DB
     retains the last-known config until explicitly removed via command.
+
+    When *data_dir* is given, a created or modified vault copy of a synced
+    system profile (the supervisor by default) first receives any shipped
+    ``## Capabilities`` grant it lacks
+    (:mod:`src.profiles.capability_sync`), before the DB sync.
 
     The retired-``runtime`` strip (:func:`strip_retired_runtime_key`) is
     deliberately **not** applied here: it is a one-shot startup migration, so
@@ -498,6 +586,12 @@ async def on_profile_changed(
                 path_id or "unknown",
             )
             continue
+
+        # A synced system profile (the supervisor, unless it opts out) first
+        # gains any shipped grant its vault copy lacks, so the DB sync below
+        # reads the merged text.
+        if data_dir and path_id:
+            await _sync_shipped_capabilities_on_reload(change, path_id, data_dir, event_bus)
 
         # created or modified — read, parse, and sync
         try:

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.models.task import TaskDisplayFields
 
-class GraphTaskNode(BaseModel):
+
+class GraphTaskNode(TaskDisplayFields):
     id: str
     title: str
     status: str
@@ -17,6 +19,7 @@ class GraphTaskNode(BaseModel):
     branch_name: str | None = None
     pr_url: str | None = None
     playbook_run_id: str | None = None
+    parent_task_id: str | None = None
 
 
 class GraphEdge(BaseModel):
@@ -56,10 +59,41 @@ class GraphLayoutResponse(BaseModel):
     project_id: str | None = None
     versions: dict[str, int] | None = None
     jobs: list[dict] | None = None
+    request: dict | None = None
+    error: str | None = None
+
+
+class ReflowFailedScope(BaseModel):
+    """A single failed deferred reflow request, as reported by ``graph_reflow_status``."""
+
+    project_id: str
+    variant: str
+    scope_key: str
+    generation: int = 1
+    attempts: int = 0
+    last_error: str | None = None
+
+
+class GraphReflowStatus(BaseModel):
+    """Payload of a ``graph_reflow_status`` success response (operator diagnostics)."""
+
+    queued: int = 0
+    running: int = 0
+    failed: int = 0
+    failed_scopes: list[ReflowFailedScope] = []
+
+
+class GraphReflowStatusResponse(BaseModel):
+    """Response for ``graph_reflow_status`` (deferred active-layout reflow diagnostics)."""
+
+    success: bool
+    project_id: str | None = None
+    status: GraphReflowStatus | None = None
     error: str | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "graph_layout_rebuild": GraphLayoutResponse,
     "graph_tidy": GraphLayoutResponse,
+    "graph_reflow_status": GraphReflowStatusResponse,
 }

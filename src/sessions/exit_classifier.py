@@ -17,7 +17,20 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-__all__ = ["ExitVerdict", "Verdict", "classify_exit", "RATE_LIMIT_PATTERNS"]
+from src.sessions.usage_limit_screen import detect_usage_limit_screen
+
+__all__ = [
+    "DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS",
+    "RATE_LIMIT_PATTERNS",
+    "ExitVerdict",
+    "Verdict",
+    "classify_exit",
+]
+
+#: Seconds a ``RATE_LIMIT`` verdict asks the caller to wait before any restart,
+#: whether the evidence came from a dead process's last capture or from the
+#: stall ladder's usage-limit screen (:mod:`src.sessions.usage_limit_screen`).
+DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 900.0
 
 
 class Verdict(StrEnum):
@@ -32,6 +45,7 @@ class Verdict(StrEnum):
     #: Ran for a while, then exited with the task still open.  Never
     #: silently READY: needs_attention or a policy-driven re-queue.
     PRODUCTIVE_DEATH = "productive_death"
+    CONTEXT_THRASH = "context_thrash"
     #: The task was already closed — this is the normal drain path.
     DRAINED = "drained"
 
@@ -44,6 +58,8 @@ class ExitVerdict:
     reason: str = ""
     #: Seconds the caller should wait before any restart, when applicable.
     cooldown_seconds: float = 0.0
+    usage_exhausted: bool = False
+    resets_at: float | None = None
 
     def __str__(self) -> str:  # pragma: no cover - debugging aid
         return f"{self.verdict}({self.reason})"
@@ -58,6 +74,8 @@ RATE_LIMIT_PATTERNS: tuple[str, ...] = (
     r"usage limit reached",
     r"approaching your usage limit",
     r"quota exceeded",
+    r"free limit reached",
+    r"free usage exceeded",
     r"429",
     r"too many requests",
     r"overloaded_error",
@@ -85,7 +103,8 @@ def classify_exit(
     *,
     now: float,
     rapid_crash_window: float = 600.0,
-    rate_limit_cooldown: float = 900.0,
+    rate_limit_cooldown: float = DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+    opencode: bool = False,
 ) -> ExitVerdict:
     """Classify a dead session.
 
@@ -109,15 +128,32 @@ def classify_exit(
         races (the Windows clock ticks in ~15 ms steps, which has already
         cost this repo a flaky test).
     """
+    # Pool workers may be deliberately killed while holding a task (for
+    # example, to clear a fixture fleet).  Their task goes back to READY in
+    # _terminate_pool_session; treating the signal as a rapid crash instead
+    # quarantines the whole project/profile key for the restart window.
+    if session.lifecycle == "pool" and session.desired_state == "stopped":
+        return ExitVerdict(Verdict.DRAINED, "pool session intentionally stopped")
+
     status = _status_str(task) if task is not None else ""
     if task is None or status in _CLOSED_STATUSES:
         return ExitVerdict(Verdict.DRAINED, "task already closed" if task is not None else "named session")
 
-    if last_peek and _RATE_LIMIT_RE.search(last_peek):
+    from src.sessions.worker_recovery import thrash_screen
+
+    if thrash_screen(last_peek):
+        return ExitVerdict(Verdict.CONTEXT_THRASH, "Autocompact is thrashing")
+
+    screen = detect_usage_limit_screen(last_peek, opencode=opencode)
+    if screen is not None or (last_peek and _RATE_LIMIT_RE.search(last_peek)):
         return ExitVerdict(
             Verdict.RATE_LIMIT,
             "rate-limit text in final capture",
-            cooldown_seconds=rate_limit_cooldown,
+            cooldown_seconds=(
+                screen.retry_after if screen and screen.retry_after else rate_limit_cooldown
+            ),
+            usage_exhausted=screen.usage_exhausted if screen else False,
+            resets_at=now + screen.retry_after if screen and screen.retry_after else None,
         )
 
     age = max(0.0, now - (session.started_at or now))

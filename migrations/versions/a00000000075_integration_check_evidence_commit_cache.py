@@ -1,0 +1,206 @@
+"""Let ``integration_check_evidence`` hold the exact-commit check cache.
+
+Revision ID: a00000000075
+Revises: a00000000074
+
+Git-first integration spec, "Kept in the database" item 2: CI results are one
+refreshable cache per ``(repository_id, sha, check_name, trust identity)``
+holding the latest attempt, its conclusion, ``observed_at`` and ``run_url``.
+Plan §2.2 reshapes the existing table rather than adding a new one, and keeps
+stage-2 revisions additive: legacy run-attempt rows bound to a batch revision
+or parent generation are untouched and stay readable by every legacy reader.
+
+The trust identity is the existing ``producer_id`` and the latest attempt the
+existing ``attempt``. This revision adds the nullable cache columns, admits a
+third "commit" subject form (no batch or parent binding, an exact repository,
+SHA and check), widens the conclusion vocabulary with ``missing`` and
+``unavailable``, and narrows the run-attempt uniqueness to legacy rows: two
+required checks of one workflow run share its run id and attempt, so a cache
+row is unique by commit and check instead.
+
+The baseline guard makes every row append-only. Both of its triggers on this
+table move to ``integration_check_evidence_guard``, which keeps run-attempt
+rows append-only and lets a cache row be refreshed or pruned, never re-keyed
+and never moved to an older observation.
+
+Every step is guarded because the squashed baseline builds this table from
+the live ``src.database.tables.metadata``: a database created after this
+revision already carries the reshaped table.
+
+Chained after the sibling git-first revisions a00000000073 (ref leases) and
+a00000000074 (batch inputs).
+"""
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "a00000000075"
+down_revision = "a00000000074"
+branch_labels = None
+depends_on = None
+
+TABLE = "integration_check_evidence"
+COLUMNS = (
+    ("repository_id", sa.Text()),
+    ("sha", sa.Text()),
+    ("check_name", sa.Text()),
+    ("run_url", sa.Text()),
+    ("due_at", sa.Float()),
+)
+RUN_ATTEMPT = "uq_integration_check_evidence_producer_run_attempt_checks"
+RUN_ATTEMPT_COLUMNS = ["producer_id", "run_id", "attempt", "required_check_version"]
+COMMIT_CHECK = "uq_integration_check_evidence_commit_check"
+COMMIT_CHECK_COLUMNS = ["repository_id", "sha", "check_name", "producer_id"]
+SUBJECT = "ck_integration_check_evidence_subject"
+CONCLUSION = "ck_integration_check_evidence_conclusion"
+
+_LEGACY_SUBJECT = (
+    "(batch_id IS NOT NULL AND candidate_revision IS NOT NULL AND parent_task_id IS NULL "
+    "AND parent_generation IS NULL AND parent_head_sha IS NULL) OR "
+    "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NOT NULL "
+    "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL)"
+)
+_SUBJECT = (
+    "(batch_id IS NOT NULL AND candidate_revision IS NOT NULL AND parent_task_id IS NULL "
+    "AND parent_generation IS NULL AND parent_head_sha IS NULL AND sha IS NULL) OR "
+    "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NOT NULL "
+    "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL AND sha IS NULL) OR "
+    "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NULL "
+    "AND parent_generation IS NULL AND parent_head_sha IS NULL AND repository_id IS NOT NULL "
+    "AND sha IS NOT NULL AND check_name IS NOT NULL)"
+)
+GUARD = """
+    CREATE OR REPLACE FUNCTION integration_check_evidence_guard() RETURNS trigger AS $$
+    BEGIN
+        IF OLD.sha IS NULL THEN
+            RAISE EXCEPTION 'integration parent evidence is append-only';
+        END IF;
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        IF ROW(NEW.id, NEW.repository_id, NEW.sha, NEW.check_name, NEW.producer_id,
+               NEW.batch_id, NEW.candidate_revision, NEW.parent_task_id,
+               NEW.parent_generation, NEW.parent_head_sha) IS DISTINCT FROM
+           ROW(OLD.id, OLD.repository_id, OLD.sha, OLD.check_name, OLD.producer_id,
+               OLD.batch_id, OLD.candidate_revision, OLD.parent_task_id,
+               OLD.parent_generation, OLD.parent_head_sha)
+        THEN RAISE EXCEPTION 'exact-commit check identity is immutable'; END IF;
+        IF NEW.observed_at < OLD.observed_at THEN
+            RAISE EXCEPTION 'exact-commit check observation cannot move backwards';
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+"""
+GUARDED = ("trg_integration_check_evidence_update", "trg_integration_check_evidence_delete")
+
+
+def _install_guard(bind) -> None:
+    bind.execute(sa.text(GUARD))
+    for name in GUARDED:
+        event = "UPDATE" if name.endswith("_update") else "DELETE"
+        bind.execute(sa.text(f"DROP TRIGGER IF EXISTS {name} ON {TABLE}"))
+        bind.execute(
+            sa.text(
+                f"CREATE TRIGGER {name} BEFORE {event} ON {TABLE} "
+                "FOR EACH ROW EXECUTE FUNCTION integration_check_evidence_guard()"
+            )
+        )
+
+
+def _restore_baseline_guard(bind) -> None:
+    from migrations.integration_guards import TRIGGERS
+
+    for name, table, statement in TRIGGERS:
+        if name in GUARDED:
+            bind.execute(sa.text(f"DROP TRIGGER IF EXISTS {name} ON {table}"))
+            bind.execute(sa.text(statement))
+    bind.execute(sa.text("DROP FUNCTION IF EXISTS integration_check_evidence_guard()"))
+
+
+_LEGACY_CONCLUSION = "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')"
+_CONCLUSION = (
+    "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive', "
+    "'missing', 'unavailable')"
+)
+
+
+def _normalise(sqltext: str) -> str:
+    return "".join(str(sqltext or "").lower().split()).replace("'", "").replace("(", "").replace(
+        ")", ""
+    )
+
+
+def _replace_check(bind, name: str, wanted: str) -> None:
+    current = {
+        item["name"]: item["sqltext"]
+        for item in sa.inspect(bind).get_check_constraints(TABLE)
+        if item["name"]
+    }.get(name)
+    if current is not None and _normalise(current) == _normalise(wanted):
+        return
+    if current is not None:
+        op.drop_constraint(name, TABLE, type_="check")
+    op.create_check_constraint(name, TABLE, wanted)
+
+
+def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table(TABLE):
+        return
+    existing = {column["name"] for column in inspector.get_columns(TABLE)}
+    for name, type_ in COLUMNS:
+        if name not in existing:
+            op.add_column(TABLE, sa.Column(name, type_, nullable=True))
+    unique = {item["name"] for item in sa.inspect(bind).get_unique_constraints(TABLE)}
+    if RUN_ATTEMPT in unique:
+        op.drop_constraint(RUN_ATTEMPT, TABLE, type_="unique")
+    indexes = {item["name"] for item in sa.inspect(bind).get_indexes(TABLE)}
+    if RUN_ATTEMPT not in indexes:
+        op.create_index(
+            RUN_ATTEMPT,
+            TABLE,
+            RUN_ATTEMPT_COLUMNS,
+            unique=True,
+            postgresql_where=sa.text("sha IS NULL"),
+        )
+    if COMMIT_CHECK not in indexes:
+        op.create_index(
+            COMMIT_CHECK,
+            TABLE,
+            COMMIT_CHECK_COLUMNS,
+            unique=True,
+            postgresql_where=sa.text("sha IS NOT NULL"),
+        )
+    _replace_check(bind, SUBJECT, _SUBJECT)
+    _replace_check(bind, CONCLUSION, _CONCLUSION)
+    _install_guard(bind)
+
+
+def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table(TABLE):
+        return
+    columns = {column["name"] for column in inspector.get_columns(TABLE)}
+    if "sha" in columns:
+        cached = bind.execute(
+            sa.text(f'SELECT count(*) FROM "{TABLE}" WHERE sha IS NOT NULL')
+        ).scalar_one()
+        if cached:
+            # The cache is refreshable from the trusted provider; dropping it
+            # loses nothing that the next visit cannot observe again.
+            bind.execute(sa.text(f'DELETE FROM "{TABLE}" WHERE sha IS NOT NULL'))
+    _restore_baseline_guard(bind)
+    _replace_check(bind, CONCLUSION, _LEGACY_CONCLUSION)
+    _replace_check(bind, SUBJECT, _LEGACY_SUBJECT)
+    indexes = {item["name"] for item in sa.inspect(bind).get_indexes(TABLE)}
+    if COMMIT_CHECK in indexes:
+        op.drop_index(COMMIT_CHECK, table_name=TABLE)
+    if RUN_ATTEMPT in indexes:
+        op.drop_index(RUN_ATTEMPT, table_name=TABLE)
+    unique = {item["name"] for item in sa.inspect(bind).get_unique_constraints(TABLE)}
+    if RUN_ATTEMPT not in unique:
+        op.create_unique_constraint(RUN_ATTEMPT, TABLE, RUN_ATTEMPT_COLUMNS)
+    for name, _ in reversed(COLUMNS):
+        if name in columns:
+            op.drop_column(TABLE, name)

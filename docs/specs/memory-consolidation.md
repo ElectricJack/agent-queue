@@ -4,11 +4,19 @@ tags: [spec, memory, consolidation]
 
 # Memory Consolidation System
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 > **Status:** Implemented
 > **Author:** Agent (fleet-beacon)
 > **Date:** 2026-04-05
 
-See [[design/memory-scoping]] for scoped collections and [[design/memory-plugin]] for the plugin v2 architecture.
+See [design/memory-scoping](design/memory-scoping.md) for scoped collections and [design/memory-plugin](design/memory-plugin.md) for the plugin v2 architecture.
 
 ## Problem Statement
 
@@ -269,7 +277,7 @@ The existing `MemoryContext` dataclass gets a new tier:
 class MemoryContext:
     factsheet: str = ""        # NEW: Project factsheet (highest priority, Tier 0)
     profile: str = ""          # Project profile (Tier 1)
-    project_docs: str = ""     # CLAUDE.md etc. (Tier 1.5)
+    project_docs: str = ""     # AGENTS.md / CLAUDE.md etc. (Tier 1.5)
     notes: str = ""            # Relevant notes (Tier 2)
     recent_tasks: str = ""     # Recent task summaries (Tier 3)
     search_results: str = ""   # Semantic search results (Tier 4)

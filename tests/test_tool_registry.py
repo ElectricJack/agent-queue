@@ -114,9 +114,14 @@ def test_registry_has_categories(registry):
     assert cat_names == {
         "files",
         "git",
+        "ci",
+        "integration",
         "project",
         "agent",
+        "supervisor",
         "memory",
+        "knowledge",
+        "record",
         "notes",
         "system",
         "task",
@@ -124,12 +129,27 @@ def test_registry_has_categories(registry):
         "playbook",
         "mcp",
         "message",
-            "escalation",
-            "digest",
+        "escalation",
+        "supervisor_inbox",
+        "review",
+        "digest",
+        "decision",
+        "dashboard",
         "discord",
         "pool",
+        "provider",
         "formula",
         "graph",
+        "github_issue",
+        "test_selection",
+        "report",
+        "wait",
+        "cron",
+        "collaboration",
+        "job",
+        "artifact",
+        "policy",
+        "operator",
     }
 
     for cat in categories:
@@ -392,6 +412,8 @@ def test_retired_ask_human_is_unknown_without_plugin_backend():
 
     assert handler.has_command("ask_human") is False
     assert asyncio.run(handler.execute("ask_human", {"question": "Continue?"})) == {
+        "success": False,
+        "error_code": "unknown_command",
         "error": "Unknown command: ask_human"
     }
 
@@ -402,8 +424,8 @@ def test_plugin_may_explicitly_own_retired_ask_human_name():
     backend = AsyncMock(
         return_value={"question_id": "plugin-question-1", "destination": "fake-user"}
     )
-    handler.orchestrator.plugin_registry.get_command.side_effect = (
-        lambda name: backend if name == "ask_human" else None
+    handler.orchestrator.plugin_registry.get_command.side_effect = lambda name: (
+        backend if name == "ask_human" else None
     )
 
     result = asyncio.run(handler.execute("ask_human", {"question": "Continue?"}))
@@ -783,11 +805,13 @@ class TestCompressToolSchema:
 # Playbook category registration (Roadmap 5.5.7)
 # ------------------------------------------------------------------
 
-# Canonical list of playbook commands.  This must stay identical to
+# Canonical list of playbook commands.  It used to be duplicated as
 # ``TestAllPlaybookCommandsRegistered.EXPECTED_COMMANDS`` in
-# tests/test_playbook_commands.py -- the two drifted apart, each missing a
-# different command (this one had no ``cancel_playbook_run``, that one no
-# ``set_playbook_enabled``), which is how four drift tests sat red.
+# tests/test_playbook_commands.py; the two drifted apart, each missing a
+# different command, which is how four drift tests sat red.  That file is
+# gone and this is now the only copy -- keep it one entry per command, since
+# ``test_playbook_category_has_correct_count`` compares the registry against
+# ``len(_PLAYBOOK_COMMANDS)`` and a duplicate hides a missing tool.
 _PLAYBOOK_COMMANDS = [
     # Run management
     "run_playbook",
@@ -812,7 +836,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
-    "playbook_delete",
+    # Re-derive a vault source from its active reviewed artifact.
+    "playbook_source_resync",
     # Activation artifacts and the pending-event queue (Package 5).
     "playbook_artifacts",
     "playbook_artifact_diff",
@@ -824,6 +849,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_propose",
     "playbook_v2_import",
     "playbook_v2_shadow_compile",
+    # Command documentation catalog (src/commands/playbook_v2_commands.py).
+    "playbook_commands",
 ]
 
 
