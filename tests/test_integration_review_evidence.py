@@ -397,7 +397,6 @@ async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
 async def test_reviewer_reopen_command_requires_git_delivery_proof(review_case, proof):
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
     from src.commands.task_commands import TaskCommandsMixin
-    from src.database.queries.hierarchy_queries import HierarchyError
     from src.profiles.capabilities import DENY_ALL
 
     case, db = review_case, review_case["db"]
@@ -419,10 +418,14 @@ async def test_reviewer_reopen_command_requires_git_delivery_proof(review_case, 
             })
             assert result["success"] is True
         else:
-            with pytest.raises(HierarchyError):
-                await handler._cmd_reopen_with_feedback({
-                    "task_id": "leaf", "feedback": "fix it",
-                })
+            result = await handler._cmd_reopen_with_feedback({
+                "task_id": "leaf", "feedback": "fix it",
+            })
+            assert result["success"] is False
+            assert result["code"] == {
+                "contained": "hierarchy.delivery_target_fixed",
+                "missing": "hierarchy.delivery_unknown",
+            }[proof]
     async with db._engine.connect() as conn:
         verdicts = (await conn.execute(select(integration_review_evidence))).mappings().all()
     assert [row["verdict"] for row in verdicts] == (["rejected"] if proof == "pending" else [])

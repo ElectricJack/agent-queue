@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/root_pull_requests.py::RootDeliveryRedrive.run::7e19331672089d9c0ea7a74261bde0f599b69620787f335dbd507e1c5869cedd": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 286,
+      "owner": "RootDeliveryRedrive.run",
+      "owner_fingerprint": "df9de1d1224c126830255ecba6e3387883ad8586040e5cf1a4073cac96659189",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
