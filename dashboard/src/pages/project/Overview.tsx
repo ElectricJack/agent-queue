@@ -29,11 +29,19 @@ export default function ProjectOverview() {
   const { projectId = "" } = useParams();
   const location = useLocation();
   const { data: project } = useProject(projectId);
-  const { data: tasks } = useTasks(projectId);
+  const tasksQuery = useTasks(projectId);
+  const { data: tasks, isPending: tasksPending, isError: tasksError } = tasksQuery;
   const { data: agents } = useAgents(projectId);
   const { data: workspaces } = useWorkspaces(projectId);
 
-  const taskList: Task[] = tasks ?? [];
+  if (tasksPending) {
+    return <p className="text-sm text-gray-500">Loading…</p>;
+  }
+  if (tasksError) {
+    return <p className="text-sm text-red-400">Task summary unavailable.</p>;
+  }
+
+  const taskList: Task[] = tasks?.tasks ?? [];
   const agentList = agents ?? [];
   const workspaceList = workspaces ?? [];
 
@@ -41,12 +49,21 @@ export default function ProjectOverview() {
   const activeTasks = taskList.filter(
     (t) => !TERMINAL.has((t.status ?? "").toUpperCase()),
   );
-  const completed = statusCounts.COMPLETED ?? 0;
+  // The backend hides completed tasks from the returned array in default (active)
+  // mode and reports the authoritative whole-project numbers in the response:
+  //   total            = active (non-completed) tasks
+  //   hidden_completed = completed tasks (never capped)
+  const hiddenCompleted = tasks?.hidden_completed ?? 0;
+  const completed = hiddenCompleted;
   const failed = statusCounts.FAILED ?? 0;
   const inProgress = statusCounts.IN_PROGRESS ?? 0;
   const ready = statusCounts.READY ?? 0;
-  const total = taskList.length;
-  const completedPct = total ? Math.round((completed / total) * 100) : 0;
+  const total = tasks?.total ?? 0;
+  const projectTotal = total + hiddenCompleted;
+  const completedPct = projectTotal ? Math.round((completed / projectTotal) * 100) : 0;
+
+  // Show the completed count in the per-status breakdown (the array omits it).
+  if (hiddenCompleted > 0) statusCounts.COMPLETED = hiddenCompleted;
 
   const busyAgents = agentList.filter((a) => a.state === "busy").length;
   const lockedWorkspaces = workspaceList.filter((w) => w.locked_by_task_id).length;
@@ -61,8 +78,8 @@ export default function ProjectOverview() {
   const budget = (project as { budget_limit?: number | null } | undefined)?.budget_limit;
   const tokensUsed = (project as { total_tokens_used?: number } | undefined)?.total_tokens_used;
   const tokensRecent = (project as { tokens_used_recent?: number } | undefined)?.tokens_used_recent;
-  const defaultProfile = (project as { default_profile_id?: string | null } | undefined)
-    ?.default_profile_id;
+  const router = (project as { assignment_playbook_id?: string | null } | undefined)
+    ?.assignment_playbook_id;
 
   return (
     <div className="space-y-6">
@@ -71,7 +88,7 @@ export default function ProjectOverview() {
         <StatCard
           icon={<ClipboardDocumentListIcon className="h-5 w-5 text-blue-400" />}
           label="Tasks"
-          value={String(total)}
+          value={String(projectTotal)}
           hint={`${completed} done · ${completedPct}%`}
         />
         <StatCard
@@ -172,7 +189,7 @@ export default function ProjectOverview() {
           />
           <MetaField label="Credit weight" value={fmtNumber(creditWeight, "1.0")} />
           <MetaField label="Max concurrent agents" value={fmtNumber(maxAgents, "2")} />
-          <MetaField label="Default profile" value={defaultProfile ?? "— fallback —"} />
+          <MetaField label="Router" value={router ?? "—"} />
           <MetaField label="Budget limit" value={fmtBudget(budget)} />
           <MetaField
             label="Tokens used"
@@ -211,7 +228,7 @@ export default function ProjectOverview() {
                 <ExclamationTriangleIcon className="h-4 w-4" />
                 <span>
                   {failed} task{failed === 1 ? "" : "s"} failed —{" "}
-                  <Link to={workspaceHref(projectId, "tasks", location.search)} className="underline hover:text-red-300">
+                  <Link to={workspaceHref(projectId, "tasks-knowledge", location.search)} className="underline hover:text-red-300">
                     review
                   </Link>
                 </span>
@@ -224,7 +241,7 @@ export default function ProjectOverview() {
         <section className="lg:col-span-2">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase text-gray-500">Active tasks</h2>
-            <Link to={workspaceHref(projectId, "tasks", location.search)} className="text-xs text-indigo-400 hover:underline">
+            <Link to={workspaceHref(projectId, "tasks-knowledge", location.search)} className="text-xs text-indigo-400 hover:underline">
               View all →
             </Link>
           </div>
@@ -255,8 +272,8 @@ export default function ProjectOverview() {
               {activeTasks.length > 8 && (
                 <p className="text-xs text-gray-500">
                   +{activeTasks.length - 8} more · see{" "}
-                  <Link to={workspaceHref(projectId, "tasks", location.search)} className="text-indigo-400 hover:underline">
-                    Tasks tab
+                  <Link to={workspaceHref(projectId, "tasks-knowledge", location.search)} className="text-indigo-400 hover:underline">
+                    Tasks & Knowledge tab
                   </Link>
                 </p>
               )}

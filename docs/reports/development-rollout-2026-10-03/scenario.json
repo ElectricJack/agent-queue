@@ -1,0 +1,24 @@
+{
+  "collected_source_branch": "aq/india",
+  "deletion_log": "tests fixture backup_dir/1970-01.tsv (disposable tmpdir path)",
+  "engine_after_rollback": "legacy",
+  "fixture_base_sha": "ccd804930c9f95e88db526fa64fee94f7ed43360",
+  "production_authorization": null,
+  "project_id": "agent-queue",
+  "published_main_sha": "50df6ce166afe7e384f9e363a8173dde579c2507",
+  "repository_id": "aq-dev-repo",
+  "retained_source_branches": [
+    "aq/golf",
+    "aq/hotel"
+  ],
+  "reviewed_development_artifact": "sha256:d9bc7cdccd997b6275f79612c3b41f56d24cf61d6e1ad56d2c83c638e2682be8",
+  "sources": {
+    "golf": "b0bf415f18bea74316843a640b530945f5d14b67",
+    "hotel": "583c26227fc16450e1394884c4663fb757023338",
+    "india": "079421df13d90c5ca9469d5c3b1f3a92b99a81e2"
+  },
+  "subject_id": "development-subject-aq-dev-repo-sha256-d9bc7cdccd997b6275f79612c3b41f56d24cf61d6e1ad56d2c83c638e2682be8",
+  "subject_version_after_rollback": 14,
+  "subject_version_before_rollback": 13,
+  "transfer_operator_id": "human:local-operator"
+}
