@@ -561,9 +561,10 @@ async def test_gh_observer_uses_latest_workflow_attempt_and_rejects_wrong_reposi
 
     observation = await AuthenticatedGitHubObserver(client).observe(gh_trust, SHA)
 
-    assert isinstance(observation, FailedCIObservation)
-    assert observation.workflow_runs[0]["workflow_run_id"] == 32
-    assert observation.workflow_runs[0]["run_attempt"] == 2
+    assert isinstance(observation, TrustedCIObservation)
+    assert observation.payload.workflow_runs[0].workflow_run_id == 32
+    assert observation.payload.workflow_runs[0].run_attempt == 2
+    assert observation.payload.workflow_runs[0].conclusion == "failure"
 
     attempts[1] = {
         **attempts[1],

@@ -59,7 +59,8 @@ async def scans(targets, members, proof_delay):
     source = Sources(SimpleNamespace(_engine=SimpleNamespace(connect=connection)))
     results = []
     with patch.object(train_sources, "_pending_tasks", pending), \
-            patch.object(train_sources, "delivery_targets", routed):
+            patch.object(train_sources, "delivery_targets", routed), \
+            patch.object(train_sources, "superseded_source_repairs_on", AsyncMock(return_value={})):
         for layout in ("previous_scan_order", "visit_local_window"):
             counts.update(scans=0, proof_items=0)
             metrics = SelectionMetrics()
