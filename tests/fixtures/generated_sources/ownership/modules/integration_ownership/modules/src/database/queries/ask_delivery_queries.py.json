@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority."
+  }
+}
