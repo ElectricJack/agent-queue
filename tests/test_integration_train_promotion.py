@@ -32,6 +32,9 @@ from tests.test_promote_commands import (
 
 async def test_one_step_release_pr_checks_approval_publish_and_annotated_tag(production_push):
     e = production_push
+    await e.db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     opened = await request(e, source_sha=e.source)
     assert opened["outcome"] == "requested", opened
     meta = opened["promotion"]

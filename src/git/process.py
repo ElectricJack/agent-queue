@@ -12,9 +12,26 @@ import os
 import signal
 from pathlib import Path
 
+from src.metrics.perf import timed_operation
+
 CLEANUP_SECONDS = 5.0
 PREPARE_CLEANUP_HOLD = "prepare_cleanup_unproved"
 _pending: set[asyncio.Task] = set()
+
+# Only executable/verb names enter metrics: argv can contain tokens and messages.
+_GIT_VERBS = frozenset({
+    "fetch", "push", "clone", "fsck", "gc", "repack", "maintenance", "status",
+    "rev-parse", "rev-list", "cat-file", "diff", "log", "show", "branch", "worktree",
+    "checkout", "switch", "reset", "clean", "merge", "merge-base", "merge-tree",
+    "commit", "commit-tree", "update-ref", "ls-remote", "remote", "config", "add",
+})
+
+
+def _process_label(*argv, **kwargs) -> str:
+    if argv and argv[0] == "git":
+        verb = next((arg for arg in argv[1:] if arg in _GIT_VERBS), "other")
+        return f"git.{verb}"
+    return "git.helper"
 
 
 class ProcessCleanupError(Exception):
@@ -44,7 +61,9 @@ def _group_has_writer(pgid: int) -> bool:
             continue
         try:
             fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # Any process on the box may exit mid-scan: ENOENT at open, ESRCH
+            # at read. A vanished process is in no group and cannot write.
             continue
         if int(fields[2]) == pgid:
             found = True
@@ -95,6 +114,7 @@ def _observe_pending(task: asyncio.Task) -> None:
         task.exception()  # The caller already recorded the unproved cleanup.
 
 
+@timed_operation(_process_label)
 async def run_owned_process(
     *argv: str, timeout: float, input: bytes | None = None, **kwargs,
 ) -> tuple[asyncio.subprocess.Process, bytes, bytes]:

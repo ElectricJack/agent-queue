@@ -6,13 +6,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, text, update
 
 from src.asks.delivery import AskDeliveryAdapter, config_fingerprint, destination
 from src.asks.intake import input_values
 from src.asks.render import render
 from src.commands.principal import ExecutionPrincipal, principal_context
-from src.database.tables import ask_external_bindings, gates, human_communication_modes, projects
+from src.database.tables import (
+    ask_action_tokens, ask_external_bindings, gates, human_communication_modes, projects,
+)
 from src.delivery.scheduler import DeliveryScheduler
 from src.digest.dispatch import DigestScheduleService
 from src.escalations.transport import SinkTransport, TransportAmbiguous, _units
@@ -420,8 +422,12 @@ async def test_global_config_fence_survives_yaml_reversion(delivery_env):
     await settle(env)
     env.handler.config.discord.authorized_users = ["someone-else"]
     await env.adapter.reconcile()
+    async with env.db.immediate() as conn:
+        revoked = list((await conn.execute(select(ask_action_tokens.c.revoked_at))).scalars())
+    assert revoked and all(stamp is not None for stamp in revoked)
     env.handler.config.discord.authorized_users = ["3"]
     await env.adapter.reconcile()
+    await env.adapter.reconcile()  # Observing the same config again is idempotent.
     async with env.db.immediate() as conn:
         mode = await env.db.get_ask_mode(
             env.ask["project_id"], destination(env.handler.config), conn=conn
@@ -431,6 +437,86 @@ async def test_global_config_fence_survives_yaml_reversion(delivery_env):
         {"project_id": env.ask["project_id"], "mode": "legacy", "expected_generation": 3}
     )
     assert result["error_code"] == "ask.legacy_retired", result
+
+
+@pytest.mark.parametrize("observe", ["reconcile", "cutover"])
+async def test_unrelated_destinations_keep_their_ownership(delivery_env, observe):
+    env = delivery_env
+    other_dest = "discord:unrelated:channel"
+    async with env.db.immediate() as conn:
+        await env.db.advance_ask_mode({
+            "project_id": env.ask["project_id"], "destination": other_dest,
+            "mode": "channel", "config_fingerprint": "unrelated-pin", "updated_at": 1,
+        }, expected_generation=0, conn=conn)
+        before = await env.db.get_ask_mode(env.ask["project_id"], other_dest, conn=conn)
+    env.handler.config.discord.authorized_users = ["new-audience"]
+    if observe == "reconcile":
+        await env.adapter.reconcile()
+    else:
+        result = await env.handler._cmd_ask_cutover({
+            "project_id": env.ask["project_id"], "mode": "transferring", "expected_generation": 1,
+        })
+        assert result["success"], result
+    async with env.db.immediate() as conn:
+        assert await env.db.get_ask_mode(env.ask["project_id"], other_dest, conn=conn) == before
+
+
+@pytest.mark.parametrize("observe", ["reconcile", "cutover"])
+@pytest.mark.parametrize("legacy", ["legacy", "empty_pin", "null_pin"])
+async def test_unpinned_and_legacy_rows_require_explicit_cutover(delivery_env, observe, legacy):
+    env = delivery_env
+    from src.models import Project
+
+    await env.db.create_project(Project(id="legacy-project", name="Legacy"))
+    dest = destination(env.handler.config)
+    async with env.db.immediate() as conn:
+        # Historical installs may predate the NOT NULL pin. Exercise that
+        # compatibility explicitly, only in this disposable test database.
+        if legacy == "null_pin":
+            await conn.execute(text(
+                "ALTER TABLE human_communication_modes ALTER COLUMN config_fingerprint DROP NOT NULL"
+            ))
+        await conn.execute(insert(human_communication_modes).values(
+            project_id="legacy-project", destination=dest,
+            mode="legacy" if legacy == "legacy" else "channel",
+            config_fingerprint="old-pin" if legacy == "legacy" else "" if legacy == "empty_pin"
+            else None, updated_at=1,
+        ))
+        before = await env.db.get_ask_mode("legacy-project", dest, conn=conn)
+    if observe == "reconcile":
+        await env.adapter.reconcile()
+    else:
+        result = await env.handler._cmd_ask_cutover({
+            "project_id": env.ask["project_id"], "mode": "transferring", "expected_generation": 1,
+        })
+        assert result["success"], result
+    async with env.db.immediate() as conn:
+        assert await env.db.get_ask_mode("legacy-project", dest, conn=conn) == before
+    assert not await env.db.ask_channel_enabled(
+        project_id="legacy-project", channel_id=env.handler.config.discord.channel_id,
+        guild_id=env.handler.config.discord.guild_id,
+        config_fingerprint=config_fingerprint(env.handler.config),
+    )
+
+
+async def test_destination_move_is_fenced_across_restart_and_reversion(delivery_env):
+    env = delivery_env
+    old_dest = destination(env.handler.config)
+    old_channel = env.handler.config.discord.channel_id
+    await settle(env)
+    original = await binding(env)
+    env.handler.config.discord.channel_id = "new-channel"
+    # Recreate the adapter to prove the observation is durable across restarts.
+    for channel in ("new-channel", old_channel):
+        env.handler.config.discord.channel_id = channel
+        adapter = AskDeliveryAdapter(env.handler, env.sink, lease_owner="restarted")
+        await adapter.reconcile()
+    async with env.db.immediate() as conn:
+        mode = await env.db.get_ask_mode(env.ask["project_id"], old_dest, conn=conn)
+    assert mode["mode"] == "delivery_disabled" and mode["generation"] == 3
+    assert mode["migrated"]
+    assert original["external_root_id"] in env.sink.messages
+    assert env.sink.calls.count("post_root") == 1
 
 
 async def test_cutover_refuses_unverified_inventory_or_outstanding_http(delivery_env):
