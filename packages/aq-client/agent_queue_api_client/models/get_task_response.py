@@ -7,6 +7,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.get_task_response_display_state_type_0 import GetTaskResponseDisplayStateType0
+from ..models.get_task_response_status import GetTaskResponseStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     from ..models.get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
     from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
     from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+    from ..models.get_task_response_delivery_condition_type_0 import GetTaskResponseDeliveryConditionType0
     from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
     from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
     from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
@@ -41,7 +43,7 @@ class GetTaskResponse:
         descendant_state_counts (GetTaskResponseDescendantStateCountsType0 | None | Unset):
         claim_readiness (ClaimReadiness | None | Unset):
         description (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (GetTaskResponseStatus | Unset):  Default: GetTaskResponseStatus.VALUE_0.
         priority (int | Unset):  Default: 0.
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
@@ -73,6 +75,7 @@ class GetTaskResponse:
         reroute (None | TaskReroute | Unset):
         provider_hold (None | ProviderHoldDetail | Unset):
         held_batch (HeldBatchSummary | None | Unset):
+        delivery_condition (GetTaskResponseDeliveryConditionType0 | None | Unset):
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
         prefer_target (None | str | Unset):
@@ -90,7 +93,7 @@ class GetTaskResponse:
     descendant_state_counts: GetTaskResponseDescendantStateCountsType0 | None | Unset = UNSET
     claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: GetTaskResponseStatus | Unset = GetTaskResponseStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -122,6 +125,7 @@ class GetTaskResponse:
     reroute: None | TaskReroute | Unset = UNSET
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
     held_batch: HeldBatchSummary | None | Unset = UNSET
+    delivery_condition: GetTaskResponseDeliveryConditionType0 | None | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
     prefer_target: None | str | Unset = UNSET
@@ -135,6 +139,7 @@ class GetTaskResponse:
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_delivery_condition_type_0 import GetTaskResponseDeliveryConditionType0
         from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
@@ -189,7 +194,9 @@ class GetTaskResponse:
 
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -355,6 +362,14 @@ class GetTaskResponse:
         else:
             held_batch = self.held_batch
 
+        delivery_condition: dict[str, Any] | None | Unset
+        if isinstance(self.delivery_condition, Unset):
+            delivery_condition = UNSET
+        elif isinstance(self.delivery_condition, GetTaskResponseDeliveryConditionType0):
+            delivery_condition = self.delivery_condition.to_dict()
+        else:
+            delivery_condition = self.delivery_condition
+
         route_source: None | str | Unset
         if isinstance(self.route_source, Unset):
             route_source = UNSET
@@ -480,6 +495,8 @@ class GetTaskResponse:
             field_dict["provider_hold"] = provider_hold
         if held_batch is not UNSET:
             field_dict["held_batch"] = held_batch
+        if delivery_condition is not UNSET:
+            field_dict["delivery_condition"] = delivery_condition
         if route_source is not UNSET:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
@@ -502,6 +519,7 @@ class GetTaskResponse:
         from ..models.get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
         from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+        from ..models.get_task_response_delivery_condition_type_0 import GetTaskResponseDeliveryConditionType0
         from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
@@ -597,7 +615,12 @@ class GetTaskResponse:
 
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: GetTaskResponseStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = GetTaskResponseStatus(_status)
 
         priority = d.pop("priority", UNSET)
 
@@ -856,6 +879,23 @@ class GetTaskResponse:
 
         held_batch = _parse_held_batch(d.pop("held_batch", UNSET))
 
+        def _parse_delivery_condition(data: object) -> GetTaskResponseDeliveryConditionType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_condition_type_0 = GetTaskResponseDeliveryConditionType0.from_dict(data)
+
+                return delivery_condition_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GetTaskResponseDeliveryConditionType0 | None | Unset, data)
+
+        delivery_condition = _parse_delivery_condition(d.pop("delivery_condition", UNSET))
+
         def _parse_route_source(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -968,6 +1008,7 @@ class GetTaskResponse:
             reroute=reroute,
             provider_hold=provider_hold,
             held_batch=held_batch,
+            delivery_condition=delivery_condition,
             route_source=route_source,
             class_hint=class_hint,
             prefer_target=prefer_target,

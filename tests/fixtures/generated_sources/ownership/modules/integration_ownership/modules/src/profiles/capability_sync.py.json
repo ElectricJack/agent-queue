@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/profiles/capability_sync.py::publish_sync_result": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/capability_sync.py::sync_shipped_capabilities": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

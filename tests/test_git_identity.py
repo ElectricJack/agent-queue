@@ -845,6 +845,40 @@ async def test_a_published_stacked_prerequisite_is_not_judged(push_env, identity
     assert _ident(env.work, head) == "Claude <noreply@anthropic.com>|Claude <noreply@anthropic.com>"
 
 
+@pytest.mark.parametrize("foreign_commit", [False, True])
+async def test_a_retained_stack_source_survives_branch_cleanup(push_env, foreign_commit):
+    from src.database.tables import task_branch_origins
+
+    env = push_env
+    await env.session(JACK.digest)
+    await env.db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.LINK, source_path=str(env.work),
+    ))
+    await env.db.update_task("t1", repo_id="r")
+    head = await _source_head(env)
+    await _declare_prerequisite(env, repo_id="r")
+    base = _git(env.work, "rev-parse", "origin/main")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="prepared", task_id="t1", repository_id="r", branch_name="aq/t1",
+            parent_ref="main", base_sha=base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+            stack_snapshot={"prerequisites": {"prerequisite": {
+                "retained": True, "repository_id": "r", "checkpoint_sha": head,
+            }}},
+        ))
+    _git(env.work, "push", "origin", ":aq/source")
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge retained source", head, env=JACK.env())
+    env.commit("new-work", CLAUDE if foreign_commit else JACK.env())
+    result = await env.push()
+    if foreign_commit:
+        assert "refusing to publish: 1 new commit(s)" in result["error"], result
+        assert not env.pushed()
+    else:
+        assert result.get("oid") == _git(env.work, "rev-parse", "HEAD"), result
+        assert env.pushed()
+
+
 async def test_a_prerequisite_tracking_ref_cannot_hide_a_new_foreign_commit(push_env):
     env = push_env
     await env.session(JACK.digest)
