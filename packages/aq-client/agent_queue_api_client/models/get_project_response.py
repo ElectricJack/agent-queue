@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.effective_git_identity import EffectiveGitIdentity
+
 
 T = TypeVar("T", bound="GetProjectResponse")
 
@@ -26,9 +30,11 @@ class GetProjectResponse:
         total_tokens_used (int | Unset):  Default: 0.
         tokens_used_recent (int | Unset):  Default: 0.
         budget_limit (int | None | Unset):
-        discord_channel_id (None | str | Unset):
-        default_profile_id (None | str | Unset):
         assignment_playbook_id (None | str | Unset):
+        supervisor_enabled (bool | Unset):  Default: False.
+        git_identity_name (None | str | Unset):
+        git_identity_email (None | str | Unset):
+        git_identity (EffectiveGitIdentity | None | Unset):
     """
 
     id: str
@@ -42,12 +48,16 @@ class GetProjectResponse:
     total_tokens_used: int | Unset = 0
     tokens_used_recent: int | Unset = 0
     budget_limit: int | None | Unset = UNSET
-    discord_channel_id: None | str | Unset = UNSET
-    default_profile_id: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
+    supervisor_enabled: bool | Unset = False
+    git_identity_name: None | str | Unset = UNSET
+    git_identity_email: None | str | Unset = UNSET
+    git_identity: EffectiveGitIdentity | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.effective_git_identity import EffectiveGitIdentity
+
         id = self.id
 
         name = self.name
@@ -78,23 +88,33 @@ class GetProjectResponse:
         else:
             budget_limit = self.budget_limit
 
-        discord_channel_id: None | str | Unset
-        if isinstance(self.discord_channel_id, Unset):
-            discord_channel_id = UNSET
-        else:
-            discord_channel_id = self.discord_channel_id
-
-        default_profile_id: None | str | Unset
-        if isinstance(self.default_profile_id, Unset):
-            default_profile_id = UNSET
-        else:
-            default_profile_id = self.default_profile_id
-
         assignment_playbook_id: None | str | Unset
         if isinstance(self.assignment_playbook_id, Unset):
             assignment_playbook_id = UNSET
         else:
             assignment_playbook_id = self.assignment_playbook_id
+
+        supervisor_enabled = self.supervisor_enabled
+
+        git_identity_name: None | str | Unset
+        if isinstance(self.git_identity_name, Unset):
+            git_identity_name = UNSET
+        else:
+            git_identity_name = self.git_identity_name
+
+        git_identity_email: None | str | Unset
+        if isinstance(self.git_identity_email, Unset):
+            git_identity_email = UNSET
+        else:
+            git_identity_email = self.git_identity_email
+
+        git_identity: dict[str, Any] | None | Unset
+        if isinstance(self.git_identity, Unset):
+            git_identity = UNSET
+        elif isinstance(self.git_identity, EffectiveGitIdentity):
+            git_identity = self.git_identity.to_dict()
+        else:
+            git_identity = self.git_identity
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -122,17 +142,23 @@ class GetProjectResponse:
             field_dict["tokens_used_recent"] = tokens_used_recent
         if budget_limit is not UNSET:
             field_dict["budget_limit"] = budget_limit
-        if discord_channel_id is not UNSET:
-            field_dict["discord_channel_id"] = discord_channel_id
-        if default_profile_id is not UNSET:
-            field_dict["default_profile_id"] = default_profile_id
         if assignment_playbook_id is not UNSET:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
+        if supervisor_enabled is not UNSET:
+            field_dict["supervisor_enabled"] = supervisor_enabled
+        if git_identity_name is not UNSET:
+            field_dict["git_identity_name"] = git_identity_name
+        if git_identity_email is not UNSET:
+            field_dict["git_identity_email"] = git_identity_email
+        if git_identity is not UNSET:
+            field_dict["git_identity"] = git_identity
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.effective_git_identity import EffectiveGitIdentity
+
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -170,24 +196,6 @@ class GetProjectResponse:
 
         budget_limit = _parse_budget_limit(d.pop("budget_limit", UNSET))
 
-        def _parse_discord_channel_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        discord_channel_id = _parse_discord_channel_id(d.pop("discord_channel_id", UNSET))
-
-        def _parse_default_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
-
         def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -196,6 +204,43 @@ class GetProjectResponse:
             return cast(None | str | Unset, data)
 
         assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
+
+        supervisor_enabled = d.pop("supervisor_enabled", UNSET)
+
+        def _parse_git_identity_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        git_identity_name = _parse_git_identity_name(d.pop("git_identity_name", UNSET))
+
+        def _parse_git_identity_email(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        git_identity_email = _parse_git_identity_email(d.pop("git_identity_email", UNSET))
+
+        def _parse_git_identity(data: object) -> EffectiveGitIdentity | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                git_identity_type_0 = EffectiveGitIdentity.from_dict(data)
+
+                return git_identity_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EffectiveGitIdentity | None | Unset, data)
+
+        git_identity = _parse_git_identity(d.pop("git_identity", UNSET))
 
         get_project_response = cls(
             id=id,
@@ -209,9 +254,11 @@ class GetProjectResponse:
             total_tokens_used=total_tokens_used,
             tokens_used_recent=tokens_used_recent,
             budget_limit=budget_limit,
-            discord_channel_id=discord_channel_id,
-            default_profile_id=default_profile_id,
             assignment_playbook_id=assignment_playbook_id,
+            supervisor_enabled=supervisor_enabled,
+            git_identity_name=git_identity_name,
+            git_identity_email=git_identity_email,
+            git_identity=git_identity,
         )
 
         get_project_response.additional_properties = d

@@ -13,7 +13,7 @@ export class TerminalSocketMock {
   closed = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string | ArrayBuffer }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   send = vi.fn<(data: string | Uint8Array) => void>();
   constructor(public url: string, public protocols?: string[]) { TerminalSocketMock.instances.push(this); }
@@ -28,7 +28,7 @@ export class TerminalSocketMock {
   message(data: string | Uint8Array) {
     this.onmessage?.({ data: typeof data === "string" ? data : Uint8Array.from(data).buffer });
   }
-  serverClose() { this.readyState = 3; this.closed = true; this.onclose?.(); }
+  serverClose(code = 1001) { this.readyState = 3; this.closed = true; this.onclose?.({ code }); }
   close = vi.fn(() => this.serverClose());
   inputs() { return this.send.mock.calls.map(([data]) => data).filter((data): data is Uint8Array => typeof data !== "string"); }
   controls() { return this.send.mock.calls.flatMap(([data]) => typeof data === "string" ? [JSON.parse(data)] : []); }
@@ -49,7 +49,14 @@ export class TerminalMock {
   resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
   keyHandler?: (event: KeyboardEvent) => boolean;
   pendingWrites: (() => void)[] = [];
-  parser = { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) };
+  parser = {
+    registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })),
+    registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })),
+  };
+  /** Scrollback position: `viewportY < baseY` means scrolled back. */
+  buffer = { active: { viewportY: 0, baseY: 0 } };
+  scrollHandlers = new Set<(y: number) => void>();
+  writeParsedHandlers = new Set<() => void>();
   constructor(options: ITerminalOptions) { this.options = options; TerminalMock.instances.push(this); }
   loadAddon(addon: FitAddonMock) { addon.activate(this); }
   open(host: HTMLElement) {
@@ -71,12 +78,26 @@ export class TerminalMock {
     this.resizeHandlers.add(handler);
     return { dispose: () => this.resizeHandlers.delete(handler) };
   }
+  onScroll(handler: (y: number) => void) {
+    this.scrollHandlers.add(handler);
+    return { dispose: () => this.scrollHandlers.delete(handler) };
+  }
+  onWriteParsed(handler: () => void) {
+    this.writeParsedHandlers.add(handler);
+    return { dispose: () => this.writeParsedHandlers.delete(handler) };
+  }
+  scrollLines = vi.fn((lines: number) => {
+    const active = this.buffer.active;
+    active.viewportY = Math.max(0, Math.min(active.baseY, active.viewportY + lines));
+    this.scrollHandlers.forEach((handler) => handler(active.viewportY));
+  });
+  scrollToBottom = vi.fn(() => this.scrollLines(this.buffer.active.baseY));
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { this.keyHandler = handler; }
   emitData(data: string) { this.dataHandlers.forEach((handler) => handler(data)); }
   emitBinary(data: string) { this.binaryHandlers.forEach((handler) => handler(data)); }
-  write = vi.fn((data: Uint8Array, processed: () => void) => {
-    if (this.output) this.output.textContent += new TextDecoder().decode(data);
-    this.pendingWrites.push(processed);
+  write = vi.fn((data: Uint8Array | string, processed?: () => void) => {
+    if (this.output) this.output.textContent += typeof data === "string" ? data : new TextDecoder().decode(data);
+    if (processed) this.pendingWrites.push(processed);
   });
   flushWrites() { this.pendingWrites.splice(0).forEach((done) => done()); }
   resize(cols: number, rows: number) {
@@ -88,6 +109,7 @@ export class TerminalMock {
   dispose = vi.fn(() => {
     this.disposed = true; this.element?.remove();
     this.dataHandlers.clear(); this.binaryHandlers.clear(); this.resizeHandlers.clear();
+    this.scrollHandlers.clear(); this.writeParsedHandlers.clear();
   });
 }
 

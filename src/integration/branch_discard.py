@@ -25,7 +25,10 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import shutil
+import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,8 +36,10 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 
 from src.database.tables import integration_branch_owners, task_branch_origins
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
+from src.integration.branch_backup import _bundle, _record_deletions
+from src.models import RepoSourceType
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +51,13 @@ RETRY_MAX_SECONDS = 3600.0
 #: about the remote, not about the transport.
 MAX_ATTEMPTS = 8
 
-
 class BranchDiscardResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     outcome: Literal["complete", "conflict", "failed", "retryable", "wait", "stale"]
     origin_id: str
     task_id: str
-    branch: str
+    branch: str | None
     attempts: int
     error: str | None = None
 
@@ -67,16 +71,18 @@ class BranchDiscardService:
         *,
         data_dir: str | Path,
         git_manager: Any | None = None,
-        app_client_factory: Any | None = None,
-        repository_binding_resolver: Any | None = None,
+        github_client_factory: Any | None = None,
+        github_repository_binding_resolver: Any | None = None,
+        retirement_service: Any | None = None,
         clock=time.time,
     ) -> None:
         self.db = db
         self.data_dir = Path(data_dir)
         self.git = git_manager
-        self.app_client_factory = app_client_factory
-        self.repository_binding_resolver = repository_binding_resolver
+        self.github_client_factory = github_client_factory
+        self.github_repository_binding_resolver = github_repository_binding_resolver
         self.clock = clock
+        self.retirement_service = retirement_service
 
     # -- draining -------------------------------------------------------
 
@@ -169,13 +175,18 @@ class BranchDiscardService:
     # -- the actual removal ---------------------------------------------
 
     async def _perform(self, row: dict[str, Any]) -> tuple[str, str | None]:
+        if self.retirement_service is not None:
+            return await self.retirement_service.discard_origin(row)
         branch = self._branch(row)
+        if not branch:
+            return "failed", "origin branch is unknown; restore its exact ref before re-arming"
+        if not branch.startswith("aq/"):
+            return "conflict", "origin branch is outside the task branch namespace"
         repository = await self.db.get_repo(row["repository_id"])
         if repository is None:
             return "failed", "discard repository is unavailable"
         if branch == repository.default_branch:
-            # Unreachable through the guard (a task branch is always
-            # ``aq/<task-id>``), and catastrophic if it ever became reachable.
+            # A corrupt origin must never authorize deletion of the default ref.
             return "conflict", "default branch discard is forbidden"
         owner = await self._live_owner(row["repository_id"], branch)
         if owner is not None:
@@ -186,17 +197,28 @@ class BranchDiscardService:
         binding = await self._binding(repository)
         if binding is None:
             return "retryable", "repository binding is unavailable"
-        client = await self._app_client(binding)
+        client = await self._github_client(binding)
         if client is None or self.git is None:
             return "retryable", "authenticated discard transport is unavailable"
         head = await client.exact_head_ref(branch)
         if head is None:
             return "complete", None
+        main_head = await client.exact_head_ref(repository.default_branch)
+        if not main_head:
+            # Cannot assess reachability without the default branch head, and a
+            # thin ``--not <main>`` bundle needs it; refuse rather than guess.
+            return "retryable", f"cannot back up without the {repository.default_branch} head"
+        await self._backup_before_delete(
+            row,
+            binding=binding,
+            branch=branch,
+            head=head,
+            main_head=main_head,
+        )
         try:
-            await self.git.adelete_ref_with_app_auth(
-                str(self.retained_store(row["repository_id"])),
+            await self.git.adelete_repository_ref(
+                str(await self.resolved_store(row["repository_id"])),
                 repository=binding,
-                token=await client.installation_token(),
                 branch=branch,
                 expected_old_oid=head,
             )
@@ -226,22 +248,139 @@ class BranchDiscardService:
             )
 
     async def _binding(self, repository) -> GitHubRepositoryBinding | None:
-        if self.repository_binding_resolver is None:
+        if self.github_repository_binding_resolver is None:
             return None
-        binding = self.repository_binding_resolver(repository)
+        binding = self.github_repository_binding_resolver(repository)
         if inspect.isawaitable(binding):
             binding = await binding
         return binding
 
-    async def _app_client(self, binding: GitHubRepositoryBinding):
-        if self.app_client_factory is None:
+    async def _github_client(self, binding: GitHubRepositoryBinding):
+        if self.github_client_factory is None:
             return None
-        client = self.app_client_factory(binding)
+        client = self.github_client_factory(binding)
         if inspect.isawaitable(client):
             client = await client
         if client is None or client.repository != binding:
             return None
         return client
+
+    # -- the pre-delete backup ------------------------------------------
+
+    async def _backup_before_delete(
+        self,
+        row: dict[str, Any],
+        *,
+        binding: GitHubRepositoryBinding | None,
+        branch: str,
+        head: str,
+        main_head: str,
+        fetch_oid: Callable[..., Awaitable[str]] | None = None,
+    ) -> Path | None:
+        """Bundle a doomed head and record the row *before* the ref is deleted.
+
+        Nothing is deleted that cannot be put back: the head (and its commits
+        not on the default branch) is written to a verified bundle under
+        ``<data_dir>/backups/branch-deletions/`` and a TSV log line is
+        appended.  Any failure raises, which parks the discard as retryable;
+        the delete must not run without a restorable copy.
+        Retirement can supply a local exact-object fetch while sharing this
+        same backup and audit sequence.
+        """
+        repository_id = row["repository_id"]
+        now = self.clock()
+        store = await self.resolved_store(repository_id)
+        repository = await self.db.get_repo(repository_id)
+        if repository is None:
+            raise GitError("discard repository is unavailable")
+        await self._ensure_store(store, repository)
+        # The retained store may not hold the head or the default-branch head
+        # yet; both must be local before anything can be proven, bundled or
+        # deleted against.
+        fetch_oid = fetch_oid or self.git.afetch_repository_oid
+        await fetch_oid(
+            str(store),
+            repository=binding,
+            oid=head,
+            destination_ref=f"refs/aq/discard-backup/heads/{branch}",
+        )
+        await fetch_oid(
+            str(store),
+            repository=binding,
+            oid=main_head,
+            destination_ref="refs/aq/discard-backup/default",
+        )
+        from src.projects.storage_binding import repository_path
+
+        backup_dir = await repository_path(self.db, repository_id, self.backup_dir)
+        bundle = None
+        if not await self.git.ais_ancestor(str(store), head, main_head):
+            # ``False`` covers "already on the default branch" and "could not
+            # be established"; bundling the unknown case is the one that keeps
+            # the deletion restorable.
+            bundle = await _bundle(
+                self._run_git,
+                store,
+                {branch: head},
+                main_head=main_head,
+                backup_dir=backup_dir,
+                repository_id=repository_id,
+                now=now,
+            )
+        _record_deletions(
+            backup_dir,
+            {branch: {"head": head, "reason": f"task {row['task_id']} discarded"}},
+            bundled={branch} if bundle is not None else set(),
+            bundle=bundle,
+            repository_id=repository_id,
+            now=now,
+        )
+        return bundle
+
+    @property
+    def backup_dir(self) -> Path:
+        return self.data_dir / "backups" / "branch-deletions"
+
+    async def _run_git(self, store: Path, *args: str) -> str:
+        result = await self.git.arun_git_result(list(args), cwd=str(store))
+        if result.returncode:
+            raise GitError(result.stderr or result.stdout or "Git command failed")
+        return result.stdout.strip()
+
+    async def _ensure_store(self, store: Path, repository) -> None:
+        from src.integration.repository_recovery import ensure_retained_origin
+
+        origin = repository.url
+        if not origin:
+            if (repository.source_type is not RepoSourceType.LINK
+                    or not repository.source_path or not Path(repository.source_path).is_dir()):
+                raise GitError("discard repository origin is not configured")
+            origin = await self._run_git(Path(repository.source_path), "remote", "get-url", "origin")
+        store.parent.mkdir(parents=True, exist_ok=True)
+        if store.exists():
+            await ensure_retained_origin(self.git, store, origin)
+            return
+        # Concurrent discard passes can all find the store missing, and two
+        # ``git init`` runs on one directory race on its config lock.  Each
+        # initializes a private directory; the first rename publishes the store
+        # and a later one fails against the non-empty store and is discarded.
+        staging = Path(tempfile.mkdtemp(prefix=f".{store.stem}.", dir=store.parent))
+        try:
+            result = await self.git.arun_git_result(
+                ["init", "--bare", "--template=", str(staging)], cwd=str(store.parent)
+            )
+            if result.returncode != 0:
+                raise GitError(result.stderr or "retained store initialization failed")
+            await ensure_retained_origin(self.git, staging, origin)
+            try:
+                staging.rename(store)
+            except OSError:
+                if not store.exists():
+                    raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+        await ensure_retained_origin(self.git, store, origin)
 
     # -- bookkeeping ----------------------------------------------------
 
@@ -280,8 +419,8 @@ class BranchDiscardService:
         return min(RETRY_BASE_SECONDS * (2 ** max(attempts - 1, 0)), RETRY_MAX_SECONDS)
 
     @staticmethod
-    def _branch(row: dict[str, Any]) -> str:
-        return f"aq/{row['task_id']}"
+    def _branch(row: dict[str, Any]) -> str | None:
+        return row["branch_name"]
 
     def _result(
         self, outcome: str, row: dict[str, Any], *, error: str | None = None
@@ -294,6 +433,11 @@ class BranchDiscardService:
             attempts=int(row["discard_attempts"]),
             error=error,
         )
+
+    async def resolved_store(self, repository_id: str) -> Path:
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.retained_store(repository_id))
 
     def retained_store(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()
