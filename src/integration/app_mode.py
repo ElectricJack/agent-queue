@@ -52,6 +52,7 @@ ITEM_IDS = (
     "variables",
     "protection",
     "audit_workflow",
+    "branch_origins",
 )
 #: Items that can only warn: a missing audit never blocks readiness.
 WARN_ONLY = frozenset({"audit_workflow"})
@@ -165,6 +166,7 @@ class AppModeContext:
     policy_path: str | None = None
     repository_arg: str | None = None
     promotion_flow: list[dict] | None = None
+    missing_origins: tuple[str, ...] = ()
 
 
 def required_protection(mode: str | None) -> str | None:
@@ -412,6 +414,15 @@ async def _manifest(
             attestation_app_id=ctx.identity.app_id,
             checks=required.names,
             check_version=required.version,
+            promotion_attestation_names=trust_manifest.flow_attestation_names(
+                ctx.promotion_flow or ()
+            ),
+        )
+    except trust_manifest.TrustManifestRefusal as exc:
+        return (
+            AppModeItem("manifest", FAIL, (exc.code,), observed={"error": str(exc)},
+                        fix="review the stored promotion flow's attestation identities"),
+            None,
         )
     except ValidationError as exc:
         # The App would be its own producer: no manifest can express the policy.
@@ -664,6 +675,13 @@ async def evaluate(ctx: AppModeContext) -> AppModeReport:
     items.append(
         await _audit_workflow(ctx, branch) if readable else _unchecked("audit_workflow", credential)
     )
+    items.append(AppModeItem(
+        "branch_origins", FAIL if ctx.missing_origins else OK,
+        ("branch_origins_missing",) if ctx.missing_origins else (),
+        expected="a live origin for every open or undelivered task",
+        observed={"task_ids": list(ctx.missing_origins)},
+        fix="aq doctor --check integration.branch_origins --fix" if ctx.missing_origins else None,
+    ))
     return AppModeReport(tuple(items), expected=_expected(ctx, manifest_expected))
 
 

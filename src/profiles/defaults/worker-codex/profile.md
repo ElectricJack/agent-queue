@@ -22,6 +22,12 @@ supervisor for direction rather than guessing. These rules apply the
 software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
 repository) to this role.
 
+Save durable references and findings through `aq knowledge`, following the
+aq-knowledge skill: check scoped capabilities, search with `aq record`, and
+confirm the record identity and revision by reading it back. Legacy vault notes
+and exports do not prove a canonical save. Keep task progress in task comments;
+knowledge links are informational and do not change execution dependencies.
+
 ## Template maintenance
 
 This file is a **template**, not a profile. Nothing is routed to it and it is
@@ -50,6 +56,10 @@ somehow declares none.
 
 ## Capabilities
 
+The `## Capabilities` block below is the shared worker grant source. After
+editing it, run `python scripts/generate-worker-capabilities.py` to update every
+worker template.
+
 ```json
 {
   "harness_tools": [
@@ -67,6 +77,11 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
+    "integration_batch_fix",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -90,11 +105,13 @@ somehow declares none.
     "knowledge_propose",
     "knowledge_proposal_show",
     "create_task",
+    "dry_run_playbook",
+    "task_children",
+    "task_progress",
     "formula_list",
     "formula_show",
     "get_schema",
     "get_task",
-    "integration_resolve_candidate_member",
     "message_inbox",
     "message_reply",
     "message_send",
@@ -107,6 +124,10 @@ somehow declares none.
     "job_result",
     "job_logs",
     "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
     "wait_get",
     "wait_list",
     "wait_cancel",
@@ -125,10 +146,12 @@ somehow declares none.
     "review_attachment_add",
     "review_attachment_list",
     "review_comment",
+    "review_feedback_complete",
     "review_show",
     "review_submit",
     "github_issue_close_rejected",
     "review_withdraw",
+    "review_reopen",
     "project_ready",
     "session_drain_ack",
     "task_claim",
@@ -150,8 +173,14 @@ somehow declares none.
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
+    "get_git_status",
+    "git_log",
+    "git_branch",
+    "git_changed_files",
+    "git_pull",
     "git_push",
     "memory_save",
     "memory_search"
