@@ -495,7 +495,7 @@ def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     # controls are instead refused by the transport's real scope gate below.
     assert sorted(_unpinnable_session_commands() - _gate_refused_session_commands()) == [
         "rebind_workspace", "session_drain_ack", "session_kill", "session_logs", "session_peek",
-        "supervisor_restart",
+        "supervisor_restart", "task_claim_abort",
     ]
 
 
