@@ -314,6 +314,11 @@ function scheduleCoalescedInvalidation(
 function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   const type = event.event_type;
 
+  if (type.startsWith("wait.") || type.startsWith("continuation.") || type.startsWith("reservation.") || type.startsWith("task.")) {
+    scheduleCoalescedInvalidation(queryClient, ["wait-explain"], 250);
+    scheduleCoalescedInvalidation(queryClient, ["wait-graph"], 250);
+  }
+
   // The metrics sampler ticks once a second and owns no query cache of
   // its own — the Metrics page subscribes to the raw frame directly.
   if (type.startsWith("metrics.")) return;
@@ -346,14 +351,30 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   }
 
   if (type.startsWith("pool.")) {
+    if (type === "pool.renamed" || type === "pool.deleted") {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+      queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    }
+    if (type === "pool.deleted") {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    }
     queryClient.invalidateQueries({ queryKey: ["pools"] });
     queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
+    // The Providers view groups the same profiles and supply by provider.
+    queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
     return;
   }
 
   if ((type as string) === "dashboard_state.changed.v1") {
     queryClient.invalidateQueries({ queryKey: ["dashboard-state"] });
     return;
+  }
+
+  // Events are hints, never replacement state; even stale/replayed versions refetch.
+  if (/^(ask|review|project)\./.test(type)) {
+    void queryClient.invalidateQueries({ queryKey: ["asks"] });
   }
 
   // Prefix-based invalidation for the wave-4 event families (gate.*,
@@ -382,13 +403,16 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     const sid = (event as { session_id?: string }).session_id;
     if (sid) queryClient.invalidateQueries({ queryKey: ["session", sid] });
-    // A pool's supply is its live sessions; its status row counts them.
+    // A pool's supply is its live sessions; its status row counts them, and
+    // so does each provider's supply in the Providers view.
     scheduleCoalescedInvalidation(queryClient, ["pools"], ROSTER_INVALIDATE_MS);
+    scheduleCoalescedInvalidation(queryClient, ["providers", "allocation"], ROSTER_INVALIDATE_MS);
     return;
   }
   if (type.startsWith("task.")) {
     const tid = (event as { task_id?: string }).task_id;
     queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    queryClient.invalidateQueries({ queryKey: ["records"] });
     if (tid) {
       queryClient.invalidateQueries({ queryKey: ["task", tid] });
       queryClient.invalidateQueries({ queryKey: ["explain", tid] });
@@ -408,10 +432,21 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
     return;
   }
+  if (type === "project.paused" || type === "project.resumed") {
+    queryClient.invalidateQueries({ queryKey: ["projects"] });
+    queryClient.invalidateQueries({ queryKey: ["project", event.project_id] });
+    queryClient.invalidateQueries({ queryKey: ["reviews"] });
+    queryClient.invalidateQueries({ queryKey: ["review"] });
+    queryClient.invalidateQueries({ queryKey: ["escalations"] });
+    queryClient.invalidateQueries({ queryKey: ["escalation"] });
+    return;
+  }
   if (type.startsWith("review.")) {
     const reviewId = (event as { review_id?: string }).review_id;
     queryClient.invalidateQueries({ queryKey: ["reviews"] });
     if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+    queryClient.invalidateQueries({ queryKey: ["gates"] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
     return;
   }
 
@@ -422,6 +457,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     case "notify.task_blocked":
     case "notify.task_stopped":
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
       queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
       scheduleCoalescedInvalidation(queryClient, ["agents"], ROSTER_INVALIDATE_MS);
       break;
@@ -429,6 +465,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     case "notify.agent_question":
     case "notify.plan_awaiting_approval":
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
       queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
       break;
 
@@ -437,6 +474,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     case "notify.push_failed":
       queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
       break;
 
     case "notify.budget_warning":

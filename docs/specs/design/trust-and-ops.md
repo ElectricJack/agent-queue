@@ -248,7 +248,8 @@ doctor never hangs and never dies on one bad check.
 | `harness.drift` | `vault/harnesses/*.md` vs the shipped defaults, using the manifest of every hash each shipped file has ever had (`src/sessions/harness_manifest.py`). A copy that matches an *older* shipped version is `stale` (startup seeding refreshes it, so this only shows between upgrade and restart); one that matches nothing is `edited` — an operator's, never touched, but a shipped fix cannot reach it. `aq vault reset-harness <name>` restores the shipped file on request | warn (stale; edited copy that parses with errors/warnings) / info (edited, missing) | yes — seed missing + refresh stale copies only; edited copies are never overwritten |
 | `tmux.server` | tmux socket probe (contributed by [session-runtime](session-runtime.md)) | error when sessions enabled; info otherwise | no |
 | `sessions.stale` | session rows vs process table (contributed by [session-runtime](session-runtime.md)) | warn | yes — reconcile rows through the exit classifier |
-| `sessions.stuck_composer` | live sessions whose composer still holds a nudge the provider typed and could **not** confirm submitted (`src/doctor/session_checks.py`). Enter races the composer's repaint; text left behind then blocks every later nudge on `TmuxProvider._require_empty_composer`, so the stall ladder stops climbing and the message is never seen. Read of provider state plus one screen capture per suspect session — never a scan of every pane, and never a key press | warn | yes — presses Enter, gated on the composer still showing that nudge's marker, so a human draft is never submitted |
+| `sessions.stuck_composer` | live sessions whose composer still holds a nudge the provider typed and could **not** confirm submitted (`src/doctor/session_checks.py`). Enter races the composer's repaint; text left behind then blocks every later nudge on `TmuxProvider._require_empty_composer`, so the stall ladder stops climbing and the message is never seen. Read of provider state plus one screen capture per suspect session — never a scan of every pane, and never a key press. A recorded injection whose composer the guard cannot read at all is reported too, as `unreadable`: it blocks every later wake the same way | warn | yes — presses Enter, gated on the composer still showing that nudge's marker, so a human draft is never submitted; never on an `unreadable` one |
+| `sessions.stop_intent_pending` | live sessions carrying a recorded stop intent (`desired_state='stopped'`) or a spent claim budget that hold no open task and are still `running` past `sessions.stop_intent_report_seconds` (`src/doctor/session_checks.py`). The harness was asked to leave — its task closed, or its budget ran out — and did not, so it holds a pool slot, an agent and a worktree; two OpenCode verifiers sat in that state for 18 and 26 minutes on 2026-10-03. The reconciler stops it within `sessions.idle_stop_grace_seconds`, so this says the graceful path did not run. Aged from the session's own `task_session_attempts.ended_at`, which unlike `last_activity` does not move while a TUI repaints | warn | no — `aq session kill <id>` returns the slot; the fix is to find why the grace did not apply |
 | `messages.idle_worker_backlog` | task/session messages undelivered for more than five minutes whose live recipient the delivery engine's session lens reads as **idle** (`src/doctor/session_checks.py`). The cascade nudges idle recipients every pass, so these are failed wakes; each entry carries the lens's last refused-nudge reason. Without the daemon's lens it lists old mail as info | warn | no |
 | `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [worktree-execution](worktree-execution.md)). **As landed:** slot worktrees whose `.aq-worktree.json` names a task no longer in `tasks` — a released slot stays on its last task's branch (worktree-execution §3.4), so a deleted task leaves `aq/<task_id>` checked out and git refuses it to every other slot. Report-only: `git worktree prune` does not clear a live worktree's own checkout, and resetting a slot off a branch is an operator call | warn | no — see "as landed" |
 | `leases.stale` | leases past TTL with no live session | warn | yes — clear lease, task re-enters stall handling |
@@ -256,7 +257,7 @@ doctor never hangs and never dies on one bad check.
 | `profiles.system_drift` | each vault copy of a shipped system profile (ids under `src/profiles/defaults/`) still matches the shipped default on the semantic `## Config` fields (`read_only`, `harness`, `lifecycle`, `needs_workspace`), has not lost a section, and has every `## Capabilities` grant (per namespace: `harness_tools`, `aq_commands`, `plugin_tools`) the shipped default carries. `ensure_default_profiles()` is write-if-absent, so an old vault copy keeps old semantics — and old grants — forever: a stale `read_only: false` on `reviewer` re-arms the require-a-PR close gate in `git_ops._task_produces_no_code()`, and a missing `aq_commands` entry denies a command prime tells the worker to run. Cosmetic config keys, operator-added sections and grants beyond what ships are not drift | warn (divergence) / error (vault copy no longer parses) | no — overwriting or merging would discard/reorder operator edits; repair with `aq agent profile-reseed --profile-id <id> --grants-only` (additive — merges only the missing grants) or the plain form (full overwrite) |
 | `profiles.supervisor_capability_drift` | the vault copy of the `supervisor` profile grants every `## Capabilities` name its shipped default does. The daemon merges missing shipped supervisor grants on every start and vault reload (`src/profiles/capability_sync.py`), so this shows between an upgrade and the next start, or while the vault copy opts out with `capability_sync: false` in its frontmatter. Grants only the vault lists are never drift | warn (missing grants; also a vault copy with no `## Capabilities` block or one that does not parse) / info (missing but opted out, or not seeded) | yes — the same additive merge as `profile-reseed --grants-only` (appends only missing names, keeps `.bak-<epoch>`, atomic), then syncs the DB row; never runs on an opted-out copy |
 | `profiles.project_overrides` | project-scoped profile files (`vault/projects/<pid>/agent-types/<type>/profile.md`, or the legacy colon-encoded `vault/agent-types/project:<pid>:<type>/`) and `project:` rows in `agent_profiles`. Project-scoped profiles were retired — agents are shared between projects, so pool lifecycle and sizing live on the system profile — and anything left no longer resolves, which silently stops applying rather than failing loudly | warn | yes — promotes each override's `## Config` into its system profile (last writer wins, per-key diff logged), deletes the file and drops the row; prose sections are reported, never merged |
-| `playbooks.reviewed_bundles` | each reviewed playbook bundle the daemon ships (`src/prompts/reviewed_playbooks/<id>/`) is byte-identical in `vault/reviewed-playbooks/<id>/`, the only place `playbook_v2_import` reads from. A reviewed artifact freezes the capability fingerprint of every profile it names, so a copy an older release seeded stops validating once a shipped profile's grants move and leaves its activation at `stale_contract` (for `default-assignment-routing`, `/health` 503). Startup seeding refreshes a drifted copy, so this only shows between an upgrade and a restart, or after a hand edit. These directories are daemon-owned; an id AQ does not ship is never looked at | warn | yes — moves the old directory aside to `<id>.bak-<epoch>` and copies the shipped bundle in, carrying over any file the operator kept beside the recording; inside the daemon it then re-runs the required-playbook reconcile, which re-points an enabled system activation that no longer validates |
+| `playbooks.reviewed_bundles` | each reviewed playbook bundle the daemon ships (`src/prompts/reviewed_playbooks/<id>/`) is byte-identical in `vault/reviewed-playbooks/<id>/`, the only place `playbook_v2_import` reads from. A reviewed artifact freezes the capability fingerprint of every profile it names, so a copy an older release seeded stops validating once a shipped profile's grants move and leaves its activation at `stale_contract` (for `default-assignment-routing`, `/health` 503). Startup never refreshes installed bundles. This check covers only already-installed shipped ids; optional bundles remain absent until deliberately installed | warn | yes — moves the old directory aside to `<id>.bak-<epoch>` and copies the shipped bundle in, carrying over any file the operator kept beside the recording; inside the daemon its explicit fix repairs required activations after refreshing bundles, including re-enabling required rows; optional activation choices are preserved |
 | `db.wal_size` | SQLite WAL above threshold | warn | yes — `PRAGMA wal_checkpoint(TRUNCATE)` |
 | `logs.llm_size` | `logs/llm/` size / dirs older than retention | warn | yes — `LLMLogger.cleanup_old_logs()` (enforces configured retention) |
 | `tasks.stuck` | tasks past `monitoring.stuck_task_threshold_seconds` | warn | no |
@@ -329,6 +330,46 @@ A `--check <id>` filter naming an id that is neither registered nor reserved is 
 **error result** for that id (exit 2), not an empty table with exit 0. A CI gate
 pinned to a misspelled check id must fail loudly; silently passing is the worst
 possible answer for a health command.
+
+### 5.7 Read-only observations
+
+`doctor_catalog` exposes registered checks' scope, read-only audit, identity and
+payload versions, finding schemas, coverage contracts, timeouts and versioned
+groups. Unported checks remain visible as unsupported. `doctor_run` selects
+exactly one `check_id` or `group`, with optional `project_id`, numeric `now` and
+bounded `timeout_s`. Unknown fields and `fix` are rejected. Both commands use
+the command descriptor surface; the existing `doctor` repair path is unchanged.
+
+`task_observations_v1` contains only `claims.holder_consistency` and `stall.sweep`.
+Both are system-only: project principals are rejected before any probe, including
+when they have a command grant. Nested `explain_task` calls retain the caller's
+principal and capabilities. Repository observations use cached evidence without
+fetching or repairing; missing evidence invalidates the affected coverage.
+
+An unhealthy result can be a successful observation. `execution_status` describes
+execution separately from health severity and `exit_code` (0/1/2). Each coverage
+partition identifies check, kind/version and project, with completeness, counts
+and reasons. Partial responses retain valid findings; failed partitions cannot
+authorize clearing. Legacy checks default to unknown execution and incomplete
+coverage. The sweep reports the four task kinds `unclaimed_work`,
+`undelivered_blocker`, `restore_branch` and `worker_relaunch_loop` independently.
+Bounded log tails and unavailable repository/provider context never prove absence.
+
+Producer adapters supply explicit task/project provenance. Finding keys hash the
+canonical tuple of identity version, check, kind/version, project and subject;
+wording, age and observation time are excluded. Multiple pieces of evidence for
+one subject/kind share one identity. Missing project identity for a task makes its
+kind incomplete. Holder observations retain up to 10,000 identities / 8 MiB from
+the shared producer, while legacy `data.tasks` stays capped at 50. Producer limits
+are explicit, and the sweep also bounds its combined observation model.
+
+`src.doctor.observations.collect_observations` is the full bounded model interface
+for C2 snapshot materialization. Inline transport refuses responses above 262,144
+bytes with `doctor.response_too_large`. Snapshot arguments are validated but return
+`doctor.snapshot_unavailable` until C2 installs durable paging; a continuation is
+never silently rerun as a live scan. Raw check data remains in `checks`; normalized
+findings, coverage, frozen observation time/scan ID and compact identity manifest
+are separate fields.
 
 ---
 
