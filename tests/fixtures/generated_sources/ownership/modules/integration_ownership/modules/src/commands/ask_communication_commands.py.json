@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/commands/ask_communication_commands.py::AskCommunicationCommandsMixin._cmd_ask_show": "Generic audience-scoped human request, review evidence and notification-transport display for all ask sources. delivery_status describes external messages; integration source authorization and adapters remain independently charged."
+  }
+}

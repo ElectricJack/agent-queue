@@ -293,6 +293,7 @@ class TaskDetail(TaskDisplayFields):
     reroute: TaskReroute | None = None
     provider_hold: ProviderHoldDetail | None = None
     held_batch: HeldBatchSummary | None = None
+    delivery_condition: dict[str, Any] | None = None
     # Mandatory routing (spec 2026-09-28 §3): who wrote ``profile_id``
     # (unrouted | router | override | role | legacy), the filer's
     # intelligence-class hint, and the router's record of the route.  Set by
@@ -840,6 +841,18 @@ class TaskProgressResponse(TaskDisplayFields):
     depth: int
 
 
+class TaskSplitResponse(BaseModel):
+    success: bool
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
+    code: str | None = None
+    error: str | None = None
+    owner: dict[str, Any] | None = None
+    safe_continuation: str | None = None
+
+
 class ReparentTaskResponse(BaseModel):
     success: bool
     task_id: str
@@ -1174,6 +1187,40 @@ class TaskBatchValidateResponse(BaseModel):
     gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TaskBatchReviewRecordResponse(BaseModel):
+    """The durable fidelity receipt, including a scope ask when one was raised."""
+
+    success: bool = True
+    batch_id: str
+    state: Literal["reviewing", "needs_scope"]
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
+
+
+class TaskBatchReleaseResponse(BaseModel):
+    """The original atomic release receipt is returned on every successful replay."""
+
+    success: bool = True
+    batch_id: str
+    already_released: bool
+    release_receipt: dict[str, Any]
+
+
+class TaskBatchRetireResponse(BaseModel):
+    success: bool = True
+    batch_id: str
+    state: Literal["retired"]
+    already_retired: bool
+
+
+class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
+    """Adoption replays a held batch receipt or retains the proposal's human gate."""
+
+    left_gated: bool = False
+
+
 class ClaimSessionSummary(BaseModel):
     """The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."""
 
@@ -1465,6 +1512,17 @@ class PoolRenameResponse(BaseModel):
     error: str | None = None
 
 
+class PoolDeleteResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    deleted: str | None = None
+    retired: bool = False
+    depth: str | None = None
+    sessions: list[str] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1525,6 +1583,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_children": TaskChildrenResponse,
     "task_progress": TaskProgressResponse,
     "reparent_task": ReparentTaskResponse,
+    "task_split": TaskSplitResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "task_recent_activity": TaskRecentActivityResponse,
@@ -1537,6 +1596,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
+    "spec_ingest_legacy_adopt": SpecIngestLegacyAdoptResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,
@@ -1545,10 +1605,14 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
     "task_batch_validate": TaskBatchValidateResponse,
+    "task_batch_review_record": TaskBatchReviewRecordResponse,
+    "task_batch_release": TaskBatchReleaseResponse,
+    "task_batch_retire": TaskBatchRetireResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_rename": PoolRenameResponse,
+    "pool_delete": PoolDeleteResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,
