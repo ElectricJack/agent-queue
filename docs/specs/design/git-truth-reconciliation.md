@@ -17,6 +17,18 @@ starve later rows. A restart safely revisits rows. The service bounds each
 pass and prevents overlapping instances. Each source has a 60-second budget;
 source order rotates so repeated timeouts cannot starve later sources.
 
+Every completed, failed or cancelled pass emits one structured
+`git truth reconciliation timing` log with `git_truth_timing`. Its phase entries
+include elapsed seconds, outcome, repository/project fan-out, Git proof counters,
+SQL statement and pool-checkout time, graph-lock wait/hold time, shared-observation
+waits, snapshot-lock waits, and Git operations (including authenticated network
+operations and their credential cleanup). `wait.git_read_budget_scope` measures
+the inclusive bounded read, not a separate queue. These timings overlap and must
+not be summed as disjoint wall time; shared producers can run in another caller's
+context. Work that outlives a cancelled phase cannot change its recorded profile.
+Diagnostics record no SQL text, parameters, command arguments or credentials,
+and do not change admission, budgets, cursor order or repair decisions.
+
 For a completed source, the shared Git observer proves containment at the
 configured final or promotion-chain target. Containment at just the immediate
 parent is insufficient to retire a child's collection inputs. Before changing
@@ -31,6 +43,12 @@ An idempotent receipt records this historical observation and the first time
 AQ observed it. This timestamp is explicitly **not** an invented original
 landing time. The witness and receipt are historical evidence; current
 delivery decisions still evaluate Git against the current target.
+
+When that exact receipt already exists and no live origin, checkpoint or
+unreleased owner remains for its task and repository, reconciliation has no
+mutation to make. A single SQL existence probe ends that visit before remote
+freshness and writer-lock checks. Newly created projections are revisited on
+the next pass; every actual repair retains the checks below.
 
 After rechecking task identity, completion, target freshness and writer
 exclusion, the reconciler:

@@ -2629,6 +2629,113 @@ async def test_abort_batch_preview_apply(world):
     assert await fixture_batches(db).pending(MAIN, await snapshot(world)) is None
 
 
+async def missing_target_batch(world, *, refresh=False, candidate=False):
+    source = await completed(world, "a")
+    target = TrainTarget("p", "r", "refs/heads/aq/deleted-target", "epic")
+    git(world.origin.clone, "push", "-q", "origin", f"main:{target.target_ref}")
+    batch = Batch("train-epic-refresh-missing" if refresh else "missing", "p", "r",
+                  target.target_ref)
+    store = BatchStore(world.db)
+    await store.freeze(batch, (BatchMember("a", source, source),),
+                       trees={"a": tree(world, source)})
+    if candidate:
+        git(world.origin.clone, "push", "-q", "origin", f"{source}:{candidate_ref(batch.id)}")
+    git(world.origin.clone, "push", "-q", "origin", "--delete", target.target_ref)
+    return batch, target
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+@pytest.mark.parametrize("candidate", [False, True])
+async def test_abort_batch_missing_target_preview_apply(world, refresh, candidate):
+    batch, target = await missing_target_batch(world, refresh=refresh, candidate=candidate)
+    store, controls = BatchStore(world.db), TrainControls(world.db)
+    before = await world.db.get_integration_batch(batch.id)
+    members = await store.members(batch.id)
+    preview = await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
+    assert preview["target_missing"] is True and preview["target_sha"] is None
+    assert bool(preview["candidate_sha"]) is candidate
+    assert await world.db.get_integration_batch(batch.id) == before
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await controls.abort_batch(batch.id, dry_run=False, operator_id="operator", reason=" ")
+    applied = await controls.abort_batch(batch.id, dry_run=False, operator_id="operator",
+                                        reason="orphaned target")
+    assert applied["outcome"] == "aborted" and applied["target_missing"] is True
+    after = await world.db.get_integration_batch(batch.id)
+    assert (after["intent"], after["lifecycle"], after["human_abort_reason"]) == (
+        "aborted", "aborted", "orphaned target")
+    assert await store.members(batch.id) == members
+    assert after["policy_snapshot"] == before["policy_snapshot"]
+    assert (await snapshot(world, target)).error == "target_ref_missing"
+
+
+@pytest.mark.parametrize("guard", ["promoted", "unavailable", "recreated", "identity"])
+async def test_abort_batch_missing_target_keeps_guards(world, guard):
+    batch, target = await missing_target_batch(world, refresh=True)
+
+    async def observed(db, requested):
+        snap = await snapshot(world, requested)
+        if guard == "unavailable":
+            return replace(snap, observation=replace(snap.observation, error="snapshot_git_error"))
+        if guard == "recreated":
+            git(world.origin.clone, "push", "-q", "origin", f"main:{target.target_ref}")
+        if guard == "identity":
+            async with db.immediate() as conn:
+                await conn.execute(update(integration_batches).where(
+                    integration_batches.c.id == batch.id).values(
+                        repair_attempt_count=integration_batches.c.repair_attempt_count + 1))
+        return snap
+
+    if guard == "promoted":
+        async with world.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id).values(lifecycle="promoted"))
+    controls = TrainControls(world.db, snapshot=observed)
+    expected = {"promoted": "promoted batch", "unavailable": "cannot be observed",
+                "recreated": "target or candidate changed", "identity": "identity changed"}[guard]
+    for dry_run in (True, False):
+        with pytest.raises(ValueError, match=expected):
+            await controls.abort_batch(batch.id, dry_run=dry_run, operator_id="operator",
+                                       reason="orphan")
+        assert (await BatchStore(world.db).get(batch.id)).intent == "open"
+        if guard == "recreated":
+            git(world.origin.clone, "push", "-q", "origin", "--delete", target.target_ref)
+
+
+async def test_epic_refresh_missing_target_retires_and_stops_fixer(world):
+    from src.integration.fixers import BatchFixerService
+    from tests.test_integration_fixers import register
+
+    batch, target = await missing_target_batch(world, refresh=True, candidate=True)
+    runtime = SimpleNamespace(start=AsyncMock(return_value={"work_dir": "/retained/fixer"}),
+                              alive=AsyncMock(return_value=True))
+    fixers = BatchFixerService(world.db, runtime)
+    source = (await BatchStore(world.db).members(batch.id))[0].source_sha
+    await fixers.allocate(batch.id, target_ref=candidate_ref(batch.id), head_sha=source,
+                          authorize=AsyncMock(return_value=True))
+    state = (await world.db.get_integration_batch(batch.id))["fixer_state"]
+    await register(world.db, state, "running")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), target=target)
+    assert target in await DatabaseTargets(world.db).targets(time.time())
+    visit = await train.visit(target)
+    assert visit.detail["reason"] == "epic_refresh_target_missing"
+    row = await world.db.get_integration_batch(batch.id)
+    assert row["intent"] == row["lifecycle"] == "aborted"
+    assert row["fixer_state"] == {**state, "status": "aborted",
+        "abort_reason": "Epic refresh target ref is missing: " + target.target_ref}
+    assert (await world.db.get_session(state["session_id"])).desired_state == "stopped"
+    async with world.db._engine.connect() as conn:
+        from src.database.tables import messages
+
+        notices = (await conn.execute(select(messages.c.body).where(
+            messages.c.to_id == state["session_id"]))).scalars().all()
+    assert len(notices) == 1 and "Stop editing and pushing" in notices[0]
+    assert "target ref is missing" in notices[0]
+    assert await DatabaseBatches(world.db).current(target) is None
+    await TrainControls(world.db).abort_batch(batch.id, dry_run=False,
+        operator_id="operator", reason="repeat")
+    runtime.start.assert_awaited_once()
+
+
 async def test_settle_batch_records_promotion_of_contained_members(world):
     db = world.db
     source = await completed(world, "a", land=True)
@@ -8567,7 +8674,9 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         integration_check_evidence,
         integration_cleanup_items,
     )
+    from src.integration.delivery_branches import train_cleanup_hold
     from src.integration.root_pull_requests import EpicPullRequestService
+    from src.integration.truth_reconciler import GitTruthReconciler
 
     case = collected_epic
     db, origin, train, github = case.db, case.origin, case.train, case.github
@@ -8661,6 +8770,17 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         git(origin.url, "merge-base", "--is-ancestor", source, repaired)
     train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await db.get_task("epic")).pr_url == url
+
+    # Epic deletion waits for each child's current completion to be retained,
+    # even after the repaired parent has reached main (branch-retirement.md).
+    async with db._engine.connect() as conn:
+        hold = await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
+    assert hold and "child" in hold and "has no retained completion witness" in hold
+    assert git(origin.url, "rev-parse", "aq/epic") == head
+    reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
+    await reconciler.tick(case.now[0])
+    async with db._engine.connect() as conn:
+        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])
@@ -11429,3 +11549,86 @@ async def test_root_pr_recovery_changed_head_uses_current_budget(world, earlier)
     assert history["heads"] == (["f" * 40, source] if earlier == "root_pr" else [source])
     assert (await train.visit(MAIN, seal_now=True)).state == "idle"
     assert (await world.db.get_task_meta("root", RECOVERY_KEY)) == history
+
+
+@pytest.mark.parametrize("change", ["restart", "default_advance", "source_rewrite", "hold",
+                                    "git_unavailable"])
+async def test_retained_epic_fixer_publication_refreshes_authority_after_restart(
+    collected_epic, tmp_path, change,
+):
+    from src.integration.fixer_runtime import DaemonFixerRuntime
+    from src.integration.fixers import BatchFixerService
+    from src.integration.lock import PublishWithdrawn
+    from src.integration.stacked_branches import EpicRefresh
+    from src.models import SessionRecord
+    from tests.test_integration_fixers import principal_for
+
+    case = collected_epic
+    await collect_epic(case)
+    default = commit(case.origin.clone, {"new-default.txt": "first advance\n"}, base=case.base)
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    started = await EpicRefresh(case.db).start("epic")
+    visit = await case.train.visit(case.target)
+    assert visit.state == "testing" and visit.batch_id == started["batch_id"], visit
+    batch_id, candidate = visit.batch_id, visit.candidate_sha
+    ref = candidate_ref(batch_id)
+    path = tmp_path / "fixer"
+    git(case.origin.clone, "worktree", "add", "-b", ref[11:], str(path), candidate)
+    fixed = commit(path, {"tests/test_fix.py": "assert True\n"})
+
+    # Construct the new daemon's production lanes, with no previous visit cache.
+    batches = DatabaseBatches(case.db)
+    lanes = DaemonLanes(case.train.lane_for.orchestrator, batches=batches)
+    runtime = DaemonFixerRuntime(lanes.orchestrator, lanes=lanes)
+    runtime.start = AsyncMock(return_value={"work_dir": str(path)})
+    service = BatchFixerService(case.db, runtime)
+    result = await service.allocate(batch_id, target_ref=ref, head_sha=candidate,
+                                    authorize=AsyncMock(return_value=True))
+    bound = (await case.db.get_integration_batch(batch_id))["fixer_state"]
+    session = SessionRecord(
+        id=result["session_id"], project_id="p", profile_id="fixer", harness="codex",
+        provider="fake", name=bound["session_name"], lifecycle="named", work_dir=str(path),
+        epoch="before-restart", instance_token=bound["instance_token"], started_at=1,
+        state="running", desired_state="running",
+    )
+    await case.db.create_session(session)
+    if change == "default_advance":
+        latest = commit(case.origin.clone, {"later.txt": "second advance\n"}, base=default)
+        git(case.origin.clone, "push", "origin", f"{latest}:main")
+    elif change == "source_rewrite":
+        git(case.origin.clone, "push", "--force", "origin", f"{case.base}:main")
+    elif change == "hold":
+        await case.db.add_task_label("epic", "hold:operator")
+    elif change == "git_unavailable":
+        observed = await snapshot(case.world, case.target)
+        lanes.truth.snapshot = AsyncMock(return_value=replace(observed,
+            observation=replace(observed.observation, error="snapshot_git_error:unavailable")))
+    assert batches._refresh_snapshots == {}
+    before = await case.db.get_integration_batch(batch_id)
+    if change in {"source_rewrite", "hold", "git_unavailable"}:
+        error = GitError if change == "git_unavailable" else PublishWithdrawn
+        reason = ("Git evidence is unavailable" if change == "git_unavailable"
+                  else "source or policy authority changed")
+        with pytest.raises(error, match=reason):
+            await service.command(principal_for(session), action="push")
+        with pytest.raises(error, match=reason):
+            await runtime.rebind_authority(before, operator_id="human:local-operator",
+                                           reason="restart", dry_run=False)
+        assert git(case.origin.url, "rev-parse", ref) == candidate
+    else:
+        preview = await runtime.rebind_authority(before, operator_id="human:local-operator",
+                                                 reason="restart")
+        assert preview["outcome"] == "preview"
+        assert (await case.db.get_integration_batch(batch_id))["fixer_state"] == bound
+        rebound = await runtime.rebind_authority(before, operator_id="human:local-operator",
+                                                 reason="restart", dry_run=False)
+        assert rebound["outcome"] == "rebound"
+        published = await service.command(principal_for(session), action="push")
+        assert published["head_sha"] == fixed
+        assert git(case.origin.url, "rev-parse", ref) == fixed
+        after = await case.db.get_integration_batch(batch_id)
+        assert after["repair_attempt_count"] == before["repair_attempt_count"]
+        assert after["fixer_state"]["session_id"] == session.id
+        assert after["fixer_state"]["starting_sha"] == candidate
+    assert git(path, "rev-parse", "HEAD") == fixed
+    assert batches._refresh_snapshots == {}

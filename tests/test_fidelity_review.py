@@ -7,6 +7,7 @@ the live reviewer of that batch.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -15,6 +16,7 @@ from sqlalchemy import delete, func, select, update
 from src.api.auth import RequestScope
 from src.api.scope import check_request_scope
 from src.asks.operations import FIDELITY_REVIEW_DISPATCH, get_operation
+from src.commands import task_changes
 from src.commands.fidelity_review_commands import (
     FIDELITY_REVIEW_MAX_DISPATCHES,
     FIDELITY_REVIEW_MAX_RETRIES,
@@ -82,6 +84,59 @@ async def _holds(handler, task_ids):
         return set((await conn.execute(select(tasks.c.held_batch_id).where(
             tasks.c.id.in_(task_ids),
         ))).scalars().all())
+
+
+@pytest.mark.parametrize("phase", ["preflight", "creation"])
+async def test_dispatch_waits_for_graph_writer_without_locking_batch(handler, monkeypatch, phase):
+    batch, _ = await _held_batch(handler)
+    source = await _batch_row(handler, batch["batch_id"])
+    db = handler.db
+    create_ready, start_create = asyncio.Event(), asyncio.Event()
+    hierarchy_attempted, continue_dispatch = asyncio.Event(), asyncio.Event()
+    original_create = handler._cmd_create_task
+    original_lock = db.lock_hierarchy_project
+
+    async def create(args):
+        create_ready.set()
+        await start_create.wait()
+        return await original_create(args)
+
+    async def lock(conn, project_id):
+        if asyncio.current_task() is dispatch:
+            hierarchy_attempted.set()
+            await continue_dispatch.wait()
+        await original_lock(conn, project_id)
+
+    # Pause after the preflight to also exercise the separate transaction
+    # whose before-create hook must obey the same order as graph replay.
+    monkeypatch.setattr(handler, "_cmd_create_task", create)
+    dispatch = None
+    if phase == "creation":
+        dispatch = asyncio.create_task(_ensure(handler, batch))
+        await asyncio.wait_for(create_ready.wait(), timeout=10)
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock)
+    try:
+        async with task_changes.boundary(db, "p1") as conn:
+            if dispatch is None:
+                dispatch = asyncio.create_task(_ensure(handler, batch))
+            start_create.set()
+            await asyncio.wait_for(hierarchy_attempted.wait(), timeout=10)
+            # A replay owns the graph locks and must still be able to lock
+            # its batch. Previously dispatch held the batch while waiting
+            # for this transaction's hierarchy/task-table locks.
+            await conn.execute(select(func.set_config("lock_timeout", "2s", True)))
+            row = await batches.find_batch_by_source(
+                conn, "p1", source["source_review_id"], source["source_revision"],
+                source["source_content_sha256"], lock=True,
+            )
+            assert row["batch_id"] == batch["batch_id"]
+    finally:
+        continue_dispatch.set()
+        result = await asyncio.wait_for(dispatch, timeout=10)
+    assert result["success"] and result["created"], result
+    replay = await _ensure(handler, batch)
+    assert replay["task_id"] == result["task_id"] and not replay["created"], replay
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
 
 
 async def _retire_batch_tasks(handler, batch, *, skip=None):

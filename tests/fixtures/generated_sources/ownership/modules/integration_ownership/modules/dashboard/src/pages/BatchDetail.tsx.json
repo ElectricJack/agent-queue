@@ -1,0 +1,32 @@
+{
+  "shared": {
+    "dashboard/src/pages/BatchDetail.tsx::export interface BatchMember {": {
+      "current_span": [
+        21,
+        24
+      ],
+      "reason": "Integration batch member schema moved from FocusBatch; remains charged."
+    },
+    "dashboard/src/pages/BatchDetail.tsx::function referencesBatch(delivery: EpicDeliveryStatus | null | undefined, batchId: string) {": {
+      "current_span": [
+        51,
+        54
+      ],
+      "reason": "Integration batch reference helper replaces Focus formatting helpers; remains charged."
+    },
+    "dashboard/src/pages/BatchDetail.tsx::function useBatchScan(batchId: string, projectIds: string[]) {": {
+      "current_span": [
+        30,
+        48
+      ],
+      "reason": "Integration batch scan moved from FocusBatch and simplified; remains charged."
+    },
+    "dashboard/src/pages/BatchDetail.tsx::import type { EpicDeliveryStatus, LayoutNode } from \"@aq/ts-client\";": {
+      "current_span": [
+        4,
+        4
+      ],
+      "reason": "Integration batch projection types moved from FocusBatch; remains charged."
+    }
+  }
+}
