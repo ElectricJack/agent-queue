@@ -24,15 +24,26 @@ from pydantic import BaseModel, Field, create_model
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
-from src.api.models import get_all_response_models
+from src.api.models.ask import ASK_ARGS, AskErrorResponse
+from src.api.models import get_all_request_models, get_all_response_models
+from src.api.models.dashboard import (
+    DashboardStateConflictResponse,
+    DashboardStateErrorResponse,
+)
 from src.api.models.escalation import EscalationErrorResponse
-from src.api.models.system import EditIntelligenceClassConflictResponse
+from src.api.models.job import JobErrorResponse
+from src.api.models.supervisor_inbox import SupervisorInboxErrorResponse
+from src.api.models.system import (
+    DeleteIntelligenceClassConflictResponse,
+    EditIntelligenceClassConflictResponse,
+)
+from src.api.models.task import HierarchyRefusalResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
+from src.routing.filing import GUARDED_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_CHOICE_FORBIDDEN
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
     _TOOL_CATEGORIES,
 )
@@ -44,6 +55,20 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+
+    "ask_intake", "ask_button",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
+    "reconcile_agent_waits",  # internal scan; never callable over HTTP
+    "reconcile_collaborations",  # daemon-only expiry and retention
+    "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
+    "job_reconcile",
+    "job_submit_integration",
+
     "load_tools",
     "reply_to_user",
     # Runs an LLM-authored string through /bin/sh on the daemon host
@@ -55,6 +80,14 @@ API_EXCLUDED = {
     # ``POST /api/sessions/{name}/message`` (src/api/messages.py); the
     # codegen route would duplicate it and confuse the dashboard chat page.
     "message_send",
+    # Gateway-authenticated conversation provenance is never an HTTP body.
+    "supervisor_inbox_post",
+    # Daemon-internal compatibility hook for the retired blocked-task
+    # subscriber. ``task_failure_triage_notify`` is the reviewed successor.
+    "task_recovery_notify",
+    "task_failure_triage_notify",
+    # Provider state-change notice; the daemon and its playbook call it.
+    "provider_availability_notify",
 }
 
 
@@ -68,6 +101,202 @@ API_EXCLUDED = {
 # the compiler set it; serializing the unset fields as ``null`` would fill the
 # dashboard's node inspector with empty rows (design spec §3.4).
 RESPONSE_EXCLUDE_NONE: frozenset[str] = frozenset({"playbook_graph_view"})
+
+DASHBOARD_STATE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+    }
+)
+
+#: Commands whose *refusal body* is part of their contract, not just prose.
+#: The generic typed-route error envelope is ``{"error": "<prose>"}``, which
+#: drops every other key the handler returned; for these commands the surface
+#: branches on a stable ``code``/``error_code`` and renders the refusal's
+#: detail keys, so that envelope would make the response unusable. Adding a
+#: command here is what makes its full result survive the HTTP boundary.
+#:
+#: ``delete_task``/``archive_task`` are here for the hierarchy refusals: the
+#: dashboard's delete dialog asks about the branches named by
+#: ``hierarchy.branch_discard_required`` and explains
+#: ``hierarchy.integration_owned`` instead of reporting it, and neither is
+#: possible from prose alone.
+DETAILED_ERROR_COMMANDS: frozenset[str] = (
+    frozenset(
+        {
+            "list_project_roots",
+            "browse_project_root",
+            "get_github_auth_status",
+            "list_github_owners",
+            "search_github_repositories",
+            "onboard_project",
+            "get_project_onboarding",
+            "escalation_create",
+            "escalation_list",
+            "escalation_get",
+            "escalation_reply",
+            "escalation_update",
+            "escalation_resolve",
+            "escalation_apply_reply",
+            "supervisor_inbox_reply",
+            "supervisor_inbox_post",
+            "supervisor_inbox_status",
+            "supervisor_inbox_history",
+            "digest_preview",
+            "digest_status",
+            "digest_facts",
+            "digest_post",
+            "digest_request",
+            "test_select",
+            "test_selection_recheck",
+            "test_selection_observe",
+            "test_selection_show",
+            "test_selection_list",
+            "test_selection_policy_show",
+            "test_selection_promote",
+            "test_selection_revoke",
+            "job_submit",
+            "message_wait",
+            "job_get",
+            "job_list",
+            "job_cancel",
+            "job_result",
+            "job_logs",
+            "job_retain",
+            "report_request",
+            "report_reconcile",
+            "morning_report_preview",
+            "morning_report_tick",
+            "report_get",
+            "report_list",
+            "report_brief",
+            "report_submit",
+            "delete_task",
+            "remove_task",
+            "archive_task",
+            "delete_project",
+            "provider_allocation_apply",
+            "policy_export",
+            "policy_diff",
+            "policy_apply",
+            "wait_register", "wait_get", "wait_list", "wait_cancel",
+            "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+            "wait_decide", "wait_lift", "wait_legacy_bridge",
+        }
+    )
+    | DASHBOARD_STATE_COMMANDS
+    | frozenset(ASK_ARGS)
+)
+
+#: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
+#: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
+HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
+    {"delete_task", "remove_task", "archive_task", "delete_project"}
+)
+
+# Non-default statuses keyed by the command and its stable command error code.
+ERROR_STATUS: dict[tuple[str, str], int] = {
+    ("review_reopen", "unauthorized"): 403,
+    ("edit_intelligence_class", "revision_conflict"): 409,
+    ("delete_intelligence_class", "revision_conflict"): 409,
+    ("delete_intelligence_class", "class_referenced"): 409,
+    **{(command, "human_required"): 403 for command in DASHBOARD_STATE_COMMANDS},
+    ("dashboard_state_put", "revision_conflict"): 409,
+    # Re-preview (or review what landed) rather than resend: the body carries
+    # the fresh preview or every row of the failed apply.
+    **{
+        ("provider_allocation_apply", code): 409
+        for code in (
+            "preview_unknown",
+            "preview_stale",
+            "pinned_wait_unacknowledged",
+            "allocation_rolled_back",
+            "allocation_partial",
+        )
+    },
+}
+
+#: Worker-safe knowledge/record commands (plan §7, K03).  Their stable error
+#: codes share one HTTP status regardless of the specific verb: a missing
+#: record is always 404, a conflict always 409, a missing precondition always
+#: 428, and so on — so the mapping is per code, not per command.
+_KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
+    "knowledge_create",
+    "knowledge_list",
+    "knowledge_show",
+    "knowledge_cite",
+    "knowledge_context_deliver",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    "knowledge_retire",
+    "knowledge_restore",
+    "knowledge_export",
+    "knowledge_propose",
+    "knowledge_proposal_show",
+    "knowledge_proposal_decide",
+    "knowledge_verify",
+    "knowledge_authority_grant",
+    "knowledge_authority_revoke",
+    "knowledge_share",
+    "knowledge_redact",
+    "knowledge_import",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "record_repair",
+    "link_create",
+    "link_list",
+    "link_remove",
+)
+
+_ERROR_STATUS_BY_CODE: dict[str, int] = {
+    "context.disabled": 409,
+    "context.execution_unavailable": 409,
+    "context.execution_changed": 409,
+    "context.invalidated": 409,
+    "context.expired": 410,
+    "context.required_over_budget": 422,
+    "context.over_budget": 422,
+    "context.digest_mismatch": 409,
+    "record.not_found": 404,
+    "record.forbidden": 403,
+    "knowledge.cross_project_forbidden": 403,
+    "knowledge.proposal_conflict": 409,
+    "knowledge.proposal_decided": 409,
+    "knowledge.review_required": 409,
+    "knowledge.review_binding_invalid": 409,
+    "knowledge.verification_required": 409,
+    "knowledge.read_only": 409,
+    "record.stale_claim": 409,
+    "record.revision_conflict": 409,
+    "record.idempotency_conflict": 409,
+    "record.export_diverged": 409,
+    "knowledge.disabled": 409,
+    "record.revision_unavailable": 410,
+    "record.revision_redacted": 410,
+    "record.precondition_required": 428,
+    "record.retryable": 503,
+    "record.hash_divergence": 503,
+    "record.integrity_conflict": 409,
+    "knowledge_import.forbidden": 403,
+    "knowledge_import.disabled": 409,
+    "knowledge_import.invalid_input": 422,
+    "knowledge_import.manifest_changed": 409,
+    "knowledge_import.mapping_conflict": 409,
+    "knowledge_import.source_conflict": 409,
+    "knowledge_import.source_unavailable": 410,
+}
+
+ERROR_STATUS.update(
+    {
+        (command, code): status
+        for command in _KNOWLEDGE_RECORD_COMMANDS
+        for code, status in _ERROR_STATUS_BY_CODE.items()
+    }
+)
 
 
 def _category_to_api_path(cat_name: str) -> str:
@@ -96,7 +325,8 @@ def _json_schema_type_to_python(prop_schema: dict) -> type:
     if "$ref" in prop_schema:
         return dict
     branches = [
-        b for b in prop_schema.get("anyOf") or prop_schema.get("oneOf") or []
+        b
+        for b in prop_schema.get("anyOf") or prop_schema.get("oneOf") or []
         if b.get("type") != "null"
     ]
     if branches:
@@ -182,6 +412,9 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         # typed routes.  Strip any client-supplied ``_scope`` before we
         # inject the middleware-derived one — clients cannot spoof identity.
         args = body.model_dump(exclude_none=True)
+        if cmd_name == "test_select" and "workspace" in body.model_fields_set:
+            # Any caller-supplied worker workspace is spoofing, including null.
+            args["workspace"] = body.workspace
         if cmd_name == "task_set":
             # Explicit null is invalid, not omission. Preserve it so the
             # command rejects before writing any accompanying legacy field.
@@ -193,11 +426,27 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             # operator request into a no-op.
             for field in {"min", "max"} & body.model_fields_set:
                 args[field] = getattr(body, field)
-        if cmd_name == "edit_task":
-            # Explicit null clears routing; omitted option defaults must not.
-            for field in {"profile_id", "intelligence_class"} & body.model_fields_set:
-                if getattr(body, field) is None:
-                    args[field] = None
+        if (
+            cmd_name == "edit_task"
+            and "intelligence_class" in body.model_fields_set
+            and getattr(body, "intelligence_class", None) is None
+        ):
+            # Explicit null clears the class hint; omitted option defaults must not.
+            args["intelligence_class"] = None
+        if cmd_name in GUARDED_COMMANDS and request is not None:
+            # The request model no longer declares the routing arguments, so
+            # validation silently drops them.  Forward what the caller sent
+            # so ``CommandHandler.execute`` refuses it (routing.choice_forbidden)
+            # instead of filing a task that quietly ignored the choice.
+            try:
+                raw_body = await request.json()
+            except ValueError:
+                raw_body = None
+            if isinstance(raw_body, dict):
+                for field in REFUSED_ROUTING_ARGS:
+                    if field in raw_body and field not in args:
+                        args[field] = raw_body[field]
+        args = {key: value for key, value in args.items() if not key.startswith("_")}
         for _key in SERVER_OWNED_ARG_KEYS:
             args.pop(_key, None)
 
@@ -205,7 +454,10 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
         )
         scope_err = await check_request_scope(
-            cmd_name, args, scope, db=getattr(ch, "db", None),
+            cmd_name,
+            args,
+            scope,
+            db=getattr(ch, "db", None),
         )
         if scope_err is not None:
             return JSONResponse({"error": scope_err}, status_code=403)
@@ -222,41 +474,34 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         }
 
         result = await ch.execute(cmd_name, args)
-        if cmd_name == "edit_intelligence_class" and result.get("error_code") == "revision_conflict":
+        status = ERROR_STATUS.get((cmd_name, result.get("error_code", "")))
+        if cmd_name == "edit_intelligence_class" and status == 409:
             return JSONResponse(
-                {"error": result["error"], "error_code": "revision_conflict",
-                 "current_revision": result["current_revision"]},
+                {
+                    "error": result["error"],
+                    "error_code": "revision_conflict",
+                    "current_revision": result["current_revision"],
+                },
                 status_code=409,
             )
+        if status is not None:
+            return JSONResponse(result, status_code=status)
         if "error" in result:
+            if result.get("code") == ROUTING_CHOICE_FORBIDDEN:
+                # The refusal names what was refused and the hints to pass
+                # instead; the generic envelope below would drop both.
+                return JSONResponse(result, status_code=422)
             if result.get("error_code") == "capability_denied":
                 return JSONResponse(
                     {"error": result["error"], "error_code": "capability_denied"},
                     status_code=403,
                 )
-            # Onboarding has a documented recovery contract: its dashboard
-            # attaches stable error codes, phases, surviving resources and
-            # field errors to the form.  The generic route used to discard
-            # that data and made the generated client incapable of rendering
-            # a useful retry state.  JSONResponse deliberately bypasses the
-            # success response model for this non-2xx payload.
-            if cmd_name in {
-                "list_project_roots",
-                "browse_project_root",
-                "get_github_auth_status",
-                "list_github_owners",
-                "search_github_repositories",
-                "onboard_project",
-                "get_project_onboarding",
-                "escalation_create",
-                "escalation_list",
-                "escalation_get",
-                "escalation_reply",
-                "escalation_update",
-                "escalation_apply_reply",
-                "digest_preview",
-                "digest_status",
-            }:
+            # These commands' refusals carry data the surface acts on (see
+            # DETAILED_ERROR_COMMANDS); the generic envelope below would
+            # discard it and leave the generated client unable to render a
+            # useful state.  JSONResponse deliberately bypasses the success
+            # response model for this non-2xx payload.
+            if cmd_name in DETAILED_ERROR_COMMANDS:
                 return JSONResponse(result, status_code=422)
             return JSONResponse(
                 {"error": result["error"]},
@@ -277,38 +522,22 @@ def build_category_routers() -> list[APIRouter]:
     Returns a list of routers ready to be included in the FastAPI app.
     """
     response_models = get_all_response_models()
+    request_models = get_all_request_models()
 
-    # Build complete tool map
-    tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    # All generated routes expose the legacy transport view of the shared
+    # descriptor snapshot; dedicated request DTOs remain authoritative below.
+    from src.commands.command_inventory import command_snapshot
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
-            if name not in tool_map:
-                tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions
-    plugin_categories: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-    except Exception:
-        pass
-
-    # ``_discover_all_commands`` already stamps ``_FALLBACK_INPUT_SCHEMAS``
-    # onto the commands that have no ``_ALL_TOOL_DEFINITIONS`` entry, so every
-    # definition in ``tool_map`` carries the real properties by the time it
-    # gets here (src/tools/definitions.py).  Plugin definitions ship their own.
+    snapshot = command_snapshot()
+    plugin_names = {plugin.name for plugin in snapshot.plugins}
+    tool_map = {
+        name: descriptor.tool_definition() for name, descriptor in snapshot.commands.items()
+        if name in snapshot.handler_names or name in snapshot.explicit_names
+        or name in plugin_names
+    }
+    plugin_categories = {
+        plugin.name: plugin.category for plugin in snapshot.plugins if plugin.category
+    }
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
@@ -337,7 +566,9 @@ def build_category_routers() -> list[APIRouter]:
         for cmd_name, defn in sorted(tools):
             try:
                 input_schema = defn.get("input_schema", {})
-                input_model = _make_input_model(cmd_name, input_schema)
+                input_model = request_models.get(cmd_name) or _make_input_model(
+                    cmd_name, input_schema
+                )
                 response_model = response_models.get(cmd_name)
 
                 stripped = _strip_category_prefix(cmd_name, cat_name)
@@ -355,20 +586,73 @@ def build_category_routers() -> list[APIRouter]:
                     description=defn.get("description", ""),
                     operation_id=cmd_name,
                     responses={
-                        **({409: {
-                            "description": "Intelligence class changed since it was loaded",
-                            "model": EditIntelligenceClassConflictResponse,
-                        }} if cmd_name == "edit_intelligence_class" else {}),
+                        **(
+                            {
+                                409: {
+                                    "description": "Intelligence class changed since it was loaded",
+                                    "model": EditIntelligenceClassConflictResponse,
+                                }
+                            }
+                            if cmd_name == "edit_intelligence_class"
+                            else {}
+                        ),
+                        **(
+                            {
+                                409: {
+                                    "description": "Intelligence class is referenced or changed",
+                                    "model": DeleteIntelligenceClassConflictResponse
+                                    | EditIntelligenceClassConflictResponse,
+                                }
+                            }
+                            if cmd_name == "delete_intelligence_class"
+                            else {}
+                        ),
+                        **(
+                            {
+                                409: {
+                                    "description": "Dashboard state changed since it was loaded",
+                                    "model": DashboardStateConflictResponse,
+                                }
+                            }
+                            if cmd_name == "dashboard_state_put"
+                            else {}
+                        ),
+                        **(
+                            {
+                                403: {
+                                    "description": "A human principal is required",
+                                    "model": DashboardStateErrorResponse,
+                                }
+                            }
+                            if cmd_name in DASHBOARD_STATE_COMMANDS
+                            else {}
+                        ),
                         422: {
                             "description": "Command error",
-                            **({"model": EscalationErrorResponse} if cmd_name.startswith(("escalation_", "digest_")) else {"content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {"error": {"type": "string"}},
+                            **(
+                                {"model": AskErrorResponse}
+                                if cmd_name in ASK_ARGS
+                                else {"model": DashboardStateErrorResponse}
+                                if cmd_name in DASHBOARD_STATE_COMMANDS
+                                else {"model": JobErrorResponse}
+                                if cmd_name.startswith("job_")
+                                else {"model": EscalationErrorResponse}
+                                if cmd_name.startswith(("escalation_", "digest_"))
+                                else {"model": SupervisorInboxErrorResponse}
+                                if cmd_name.startswith("supervisor_inbox_")
+                                else {"model": HierarchyRefusalResponse}
+                                if cmd_name in HIERARCHY_REFUSAL_COMMANDS
+                                else {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {"error": {"type": "string"}},
+                                            }
+                                        }
                                     }
                                 }
-                            }}),
+                            ),
                         },
                     },
                 )
