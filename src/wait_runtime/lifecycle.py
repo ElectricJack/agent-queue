@@ -59,10 +59,10 @@ class WaitLifecycle:
                                       "project_id": scope.project_id, "session_id": scope.session_id}])
         await lock_graph(conn)
         anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
-        if scope.project_id not in self.medians:
-            self.medians[scope.project_id] = await measurement_medians(
-                conn, scope.project_id, now=now,
-            )
+        medians = self.medians.get(scope.project_id)
+        if medians is None:
+            medians = await measurement_medians(conn, scope.project_id, now=now)
+            self.medians[scope.project_id] = medians
         task_profile = await conn.scalar(select(tasks.c.profile_id).where(
             tasks.c.id == scope.owner_id,
         )) if scope.owner_kind == 'task' else None
@@ -71,7 +71,7 @@ class WaitLifecycle:
         )
         def measured_decision(cond, evidence):
             return decide_sleep(measured_inputs(
-                cond, evidence, policy=policy, medians=self.medians[scope.project_id],
+                cond, evidence, policy=policy, medians=medians,
                 pressure=pressure, anchor=anchor, now=now,
             ))
 

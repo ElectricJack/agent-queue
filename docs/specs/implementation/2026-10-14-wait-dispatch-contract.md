@@ -1,5 +1,31 @@
 # Wait outcome integration contract
 
+## Temporary CI observation failures — 2026-10-25
+
+A train visit that cannot freshly observe a disappearing pending wait preserves
+that subscription, records the observation error in `dispatch.wait_errors`, and
+continues reconciling other waits. An unavailable observation is not evidence
+that the subscription is obsolete and must not abort publication maintenance.
+
+When source dispatch cannot obtain an observation, it leaves the outbox event's
+`dispatched_at` unset, but advances the leased main cursor so unrelated later
+events can proceed. Before draining new events, the listener retries at most 20
+such earlier events per pass, each under its normal graph, lease, source and
+owner fences. Provider retry intervals defer repeat attempts in process; after
+restart, the durable undispatched rows remain eligible. A retry never moves the
+main cursor backwards. This recovers unchanged CI conclusions without requiring
+a new provider result or cache revision. Deferred observations log source sequence,
+source key, retry interval and event age; successful replays log their sequence.
+Other transaction failures retain the existing rollback and cursor semantics.
+
+## Dedicated listener connection arguments — 2026-10-24
+
+The listener opens a dedicated asyncpg connection using the SQLAlchemy engine
+URL. It omits unset URL fields and merges query parameters into one argument
+dictionary, with query values taking precedence. Unix-socket query hosts and
+ports must reach asyncpg without duplicate keyword arguments; ordinary TCP
+fields and other query parameters pass through unchanged.
+
 ## Cancelled transaction recovery — 2026-10-24
 
 Graph-lock watchdog cleanup uses local connection-lifetime state, without
