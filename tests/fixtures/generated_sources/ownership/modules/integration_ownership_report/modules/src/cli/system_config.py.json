@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/cli/system_config.py::config_tune": {
+      "baseline_span": [
+        261,
+        394
+      ],
+      "landing_span": [
+        261,
+        394
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

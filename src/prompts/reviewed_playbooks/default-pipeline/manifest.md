@@ -1,17 +1,20 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:7d48f95da0d74c368d2271ef99a367c23ceac40fd67291c9ab02081491fa25dd
-source_sha256: sha256:e626ced6fc6a9bf2d2c6994ff1c189c788ea920b3cbb069f54eac8a976858f14
-contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
+artifact_sha256: sha256:010e99575e6c37e9705e0e803adc282ae46073750bc3866bca937093e431c513
+source_sha256: sha256:a76721da12bb0f554af7a6ca6e0ea10192d0240d4223ed3983df94583fb091c1
+contract_fingerprint: sha256:3098cb7e8701d5ff63d7727d9ae32d1f817dac5fe499236c2c451104e1ff437d
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
+  - ensure_fidelity_review
   - ensure_spec_ingest
   - gate_create
   - task_batch_commit
+  - task_batch_release
   harness_tools: []
   plugin_tools: []
 profiles_referenced:
+- fidelity-reviewer
 - spec-ingest
 ---
 
@@ -39,3 +42,49 @@ Missing accounting or unsigned drops are reported to the supervisor before
 affected implementation work is committed. This adds agent instructions,
 not a new command-level semantic approval gate; the three rules and their
 success/refusal transitions are unchanged.
+
+Updated for `wise-forge-11`: explicitly declare the three typed command
+capabilities and retain the complete executable graph. No collection, scan,
+notification episode or script replaces any existing operation. Decision and
+graph receipts remain owned by their commands; the spec-ingest role retains
+feedback and supersession accounting, including Jack's sign-off for drops.
+
+The supervisor identified installed-source drift: the installed 2026-10-06
+source (`a34ae4f0…`) still uses path-based `ensure_task` ingestion. The authorized
+baseline for this port is the shipped decision-receipt source
+`sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02`,
+artifact `sha256:0064f7e4b84733ae2d190fa6a420d48a8de100b13b5c406a0e770db5f893cafb`.
+It is captured unchanged in
+`tests/fixtures/playbooks/scenarios/default-pipeline/before.artifact.json`.
+`tests/test_default_pipeline_equivalence.py` compares its dispatch, command
+arguments, receipts and outcomes with this bundle. Existing intake tests cover
+real handler effects, decision replay after closure/archive and supersession
+instructions. This recording does not install or activate the new policy.
+The installed drift is deliberate: the supervisor's H08-OPS cutover remains
+under a human hold. Publication of this bundle does not release that hold.
+
+Updated 2026-10-20 for `sound-flare-53`: explicitly retain the decision's
+ingestion task receipt after completion, closure as obsolete, and archive.
+Rebuilt against the current command contracts, including `gate_create`;
+the three rules and their transitions are unchanged. Approval paths remain
+display mirrors, while immutable decision receipts establish deduplication.
+
+Updated 2026-10-22 for `nimble-lantern-37.2` (spec ingestion held batches,
+L5.2): approved implementation specs are materialized held, so the pipeline
+gains two rules. `fidelity-review-on-held` answers `batch.held` with
+`ensure_fidelity_review` (role profile `fidelity-reviewer`), and
+`release-on-receipt` answers `batch.receipt_recorded` with `task_batch_release`
+for exactly the attested revision and digest. A release refused `needs_scope`
+ends `completed` without release, the batch waiting on its scope ask; every
+other release refusal reaches the `failed` terminal. The spec-ingest,
+proposal-gate and commit rules and their transitions are unchanged apart from
+the spec-ingest step text; ordinary proposals keep the human gate.
+
+Updated for frozen batch `train-31a98356ec721e765b3d7375a315a8b4`:
+compose the durable wait grants from `swift-willow-88` with the retained
+held-ingestion policy from `bright-quest-30`. Only the spec-ingest capability
+fingerprint and compilation timestamp change from the held-policy artifact;
+all five rules, steps, command contracts and the fidelity-reviewer fingerprint
+remain identical. Both independent artifact histories and the exact combined
+transition are pinned in the wait-grant contract evidence and equivalence tests.
+This recording does not install or activate the playbook.
