@@ -16,13 +16,11 @@ from __future__ import annotations
 import json
 
 import pytest
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import insert, select, update
 
 from src.database.tables import (
     events,
     integration_batches,
-    integration_candidate_ref_mutations,
-    integration_candidate_revisions,
     integration_outbox,
     integration_repair_operations,
     project_integration_leases,
@@ -31,9 +29,7 @@ from src.database.tables import (
 )
 
 from src.integration.release import IntegrationReleaseService
-from src.integration.scheduler import IntegrationScheduler
-from src.integration.settling import note_approval
-from src.integration.stale_schedule import (
+from src.integration.release import (
     RELEASED_EVENT,
     classify_outstanding_request_on,
 )
@@ -176,31 +172,18 @@ async def _classify(db, now: float):
 
 async def _wedged(db, lifecycle: str = "aborted") -> dict:
     """The incident's shape: one manual sweep whose batch then ended unreleased."""
-    scheduler = IntegrationScheduler(db)
-    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
-    first = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
+    first = {"request_id": "integration-sweep:p:1"}
+    async with db.immediate() as conn:
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=True, interval_seconds=300,
+            next_due_at=300.0, request_sequence=1,
+            outstanding_request_id=first["request_id"], outstanding_trigger="manual",
+            outstanding_requested_at=10.0, updated_at=10.0,
+        ))
     await _batch(db, first["request_id"], lifecycle)
     return first
 
 
-async def test_flush_after_an_aborted_batch_schedules_a_new_request(db):
-    first = await _wedged(db)
-    await _hold_lease(db)
-
-    flushed = await IntegrationScheduler(db).mark_due(project_id="p", now=20.0, trigger="manual")
-
-    assert flushed["outcome"] == "due"
-    assert flushed["request_id"] == "integration-sweep:p:2"
-    assert flushed["request_sequence"] == 2
-    assert await _lease(db) is None
-    assert await _outbox_ids(db) == []
-    [released] = await _released_events(db)
-    assert released["request_id"] == first["request_id"]
-    assert released["batch_id"] == "batch-1"
-    assert released["verdict"] == "stale"
-    assert released["released_by"] == "integration_scheduler:manual"
-    assert released["lease_released"] is True
-    assert released["catchup_request_id"] is None
 
 
 @pytest.mark.parametrize("lifecycle", ("aborted", "empty", "failed"))
@@ -211,104 +194,10 @@ async def test_ended_lifecycles_are_stale(db, lifecycle):
     assert state.lifecycle == lifecycle
 
 
-async def test_periodic_tick_frees_a_stale_request_before_the_settling_gate(db):
-    """A pending settling window must not retain a stale sweep request."""
-    first = await _wedged(db)
-    scheduler = IntegrationScheduler(db)
-    async with db.immediate() as conn:
-        await note_approval(conn, project_id="p", now=400.0)
-
-    unarmed = await scheduler.mark_due(project_id="p", now=400.0, trigger="periodic")
-
-    assert unarmed == {"outcome": "not_due", "project_id": "p", "reason": "settling"}
-    row = await _schedule(db)
-    assert row["outstanding_request_id"] is None
-    assert row["next_due_at"] == 300.0
-    assert [event["request_id"] for event in await _released_events(db)] == [
-        first["request_id"]
-    ]
-
-    async with db.immediate() as conn:
-        await note_approval(conn, project_id="p", now=400.0)
-    due = await scheduler.mark_due(project_id="p", now=700.0, trigger="periodic")
-    assert due["outcome"] == "due"
-    assert due["request_id"] == "integration-sweep:p:2"
-    assert due["next_due_at"] == 900.0
 
 
-async def test_catchup_recorded_while_active_becomes_the_next_request(db):
-    scheduler = IntegrationScheduler(db)
-    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
-    first = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
-    await _batch(db, first["request_id"], "human_blocked")
-    coalesced = await scheduler.mark_due(project_id="p", now=20.0, trigger="manual")
-    assert coalesced["outcome"] == "coalesced"
-    assert (await _schedule(db))["catchup_trigger"] == "manual"
-
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_batches).values(lifecycle="aborted"))
-    # Not due and unarmed: only the recorded catch-up can make this tick schedule.
-    caught_up = await scheduler.mark_due(project_id="p", now=30.0, trigger="periodic")
-
-    assert caught_up["outcome"] == "due"
-    assert caught_up["request_id"] == "integration-sweep:p:2"
-    assert caught_up["trigger"] == "manual"
-    assert caught_up["requested_at"] == 20.0
-    row = await _schedule(db)
-    assert row["catchup_trigger"] is None
-    assert await _outbox_ids(db) == []
-    [released] = await _released_events(db)
-    assert released["catchup_request_id"] == "integration-sweep:p:2"
 
 
-async def test_unresolved_write_evidence_blocks_the_release(db):
-    first = await _wedged(db)
-    await _hold_lease(db)
-    await _operation(db, state="active")
-
-    coalesced = await IntegrationScheduler(db).mark_due(project_id="p", now=20.0, trigger="manual")
-    assert coalesced["outcome"] == "coalesced"
-    assert coalesced["request_id"] == first["request_id"]
-    state = await _classify(db, now=20.0)
-    assert state.verdict == "blocked"
-    assert [blocker["code"] for blocker in state.blockers] == ["live_operation"]
-
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_repair_operations).values(state="cancelled"))
-        await conn.execute(
-            insert(integration_candidate_revisions).values(
-                batch_id="batch-1",
-                revision=0,
-                construction_base_sha="a" * 40,
-                state="constructing",
-                created_at=10.0,
-                updated_at=10.0,
-            )
-        )
-        await conn.execute(
-            insert(integration_candidate_ref_mutations).values(
-                id="write", batch_id="batch-1", revision=0,
-                purpose="candidate_partial", repository_id="repo",
-                branch="refs/heads/aq/integration/batch-1",
-                target_branch="refs/heads/aq/integration/batch-1",
-                expected_old_sha="a" * 40, desired_sha="c" * 40,
-                operation_id="repair-batch-1", operation_episode_id="batch-1",
-                operation_stage=0, lease_owner_id="sealer-batch-1", lease_fence_token=3,
-                branch_owner_id="repair-batch-1", branch_owner_role="collector",
-                branch_fence_token=1, nonce="nonce", state="reserved",
-                expires_at=100.0, created_at=10.0, updated_at=10.0,
-            )
-        )
-    assert [b["code"] for b in (await _classify(db, now=20.0)).blockers] == ["ref_mutation"]
-    assert (await _lease(db)) is not None
-
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_candidate_ref_mutations).values(state="applied", remote_sha="c" * 40)
-        )
-    due = await IntegrationScheduler(db).mark_due(project_id="p", now=30.0, trigger="manual")
-    assert due["outcome"] == "due"
-    assert await _lease(db) is None
 
 
 async def test_another_batchs_lease_blocks_the_release(db):
@@ -323,23 +212,6 @@ async def test_another_batchs_lease_blocks_the_release(db):
     },)
 
 
-async def test_promoted_batch_is_stale_only_once_its_lease_is_gone(db):
-    first = await _wedged(db, "promoted")
-    await _hold_lease(db)
-    assert (await _classify(db, now=20.0)).verdict == "active"
-    coalesced = await IntegrationScheduler(db).mark_due(project_id="p", now=20.0, trigger="manual")
-    assert coalesced["outcome"] == "coalesced"
-
-    # ``release-stale-owners`` drops an expired lease once cleanup completes;
-    # after that only this scheduler can free the request.
-    async with db.immediate() as conn:
-        await conn.execute(delete(project_integration_leases))
-    assert (await _classify(db, now=30.0)).verdict == "stale"
-    # The catch-up recorded by the coalesced flush becomes the next request.
-    due = await IntegrationScheduler(db).mark_due(project_id="p", now=30.0, trigger="periodic")
-    assert due["outcome"] == "due"
-    assert due["request_id"] == "integration-sweep:p:2"
-    assert (await _released_events(db))[0]["request_id"] == first["request_id"]
 
 
 
@@ -423,11 +295,21 @@ def reconciler_primitive_authority(monkeypatch):
     authorize_root_primitives(monkeypatch)
 
 
-async def test_pending_request_survives_restart_without_a_playbook_event(db):
-    scheduler = IntegrationScheduler(db)
-    await scheduler.configure(project_id="p", now=0, enabled=True, interval_seconds=300)
-    due = await scheduler.mark_due(project_id="p", now=300, trigger="periodic")
-    restarted = IntegrationScheduler(db)
-    assert (await _classify(db, now=100_000)).verdict == "active"
-    assert (await restarted.mark_due("p", 100_000, "periodic"))["request_id"] == due["request_id"]
+
+
+async def test_retired_release_discards_catchup_without_minting_a_request(db):
+    first = await _wedged(db)
+    await _operation(db, state="cancelled")
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_schedules).values(
+            catchup_trigger="manual", catchup_requested_at=15.0, catchup_after_sequence=1,
+        ))
+    result = await IntegrationReleaseService(db).release("batch-1", 20.0)
+    assert result.outcome == "stale"
+    assert result.request_id == first["request_id"]
+    assert result.catchup_request_id is None
+    schedule = await _schedule(db)
+    assert schedule["outstanding_request_id"] is None
+    assert schedule["catchup_trigger"] is None
+    assert schedule["request_sequence"] == 1
     assert await _outbox_ids(db) == []
