@@ -1,0 +1,2 @@
+Fetch {{decision_ref}} and merge the pinned commit {{decision_sha}} into the candidate starting at {{starting_sha}}. Merge this exact commit even if the default branch moves afterwards; do not substitute an unverified head.
+Resolve conflicts while preserving every frozen member:
