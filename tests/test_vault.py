@@ -8,6 +8,8 @@ import hashlib
 from pathlib import Path
 import time
 
+import pytest
+
 import src.vault as vault_module
 from src.vault import (
     SUPERVISOR_PROFILE,
@@ -931,26 +933,52 @@ def test_starter_knowledge_covers_expected_types():
 # ---------------------------------------------------------------------------
 
 
+def test_bundled_default_playbooks_are_required_or_active():
+    """Bootstrap sources must belong to the required or live system catalog."""
+    import yaml
+
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS,
+        REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    # The operator catalog confirmed morning-report enabled and ready on
+    # 2026-10-11. It remains an explicitly activated policy on fresh installs.
+    active_system_playbooks = {"morning-report"}
+    expected_ids = (
+        set(REQUIRED_SYSTEM_PLAYBOOK_IDS)
+        | set(DEFAULT_SYSTEM_PLAYBOOK_IDS)
+        | active_system_playbooks
+    )
+    defaults_dir = Path(vault_module.__file__).parent / "prompts" / "default_playbooks"
+    bundled_ids = set()
+    for path in defaults_dir.glob("*.md"):
+        frontmatter = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1])
+        assert frontmatter["id"] == path.stem
+        assert frontmatter["scope"] == "system"
+        bundled_ids.add(frontmatter["id"])
+
+    assert bundled_ids == expected_ids
+
+
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
-    `memory-consolidation.md`, the control-plane `default-pipeline.md` and
-    `default-assignment-routing.md`, and the disabled-by-default
-    `hierarchical-delivery.md` / `root-integration-train.md` policies ship
-    installed by default.  Other playbooks that used to auto-install have
-    been moved to ``docs/example_playbooks/`` as opt-in reference material.
+    The default pipeline, assignment, provider and supervisor policies leave
+    the opt-in stuck-task watches absent. Retired playbooks stay absent so bootstrap
+    cannot recreate a catalog entry that an operator deleted. Their reviewed
+    recordings remain available separately for audit and explicit import.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     expected_files = [
-        "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
-        "hierarchical-delivery.md",
-        "memory-consolidation.md",
+        "morning-report.md",
+        "provider-failover.md",
         "provider-usage-probe.md",
-        "root-integration-train.md",
+        "supervisor-failure-triage.md",
     ]
 
     # All expected files must exist on disk
@@ -964,35 +992,96 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     # No extra files should be present (only .md files from the defaults dir)
     installed = sorted(f.name for f in playbooks_dir.iterdir() if f.suffix == ".md")
     assert installed == expected_files
+    assert not (playbooks_dir / "stuck-task-watch.md").exists()
+    assert not (playbooks_dir / "stuck-task-watch-reminder.md").exists()
 
 
-def test_ensure_default_playbooks_creates_memory_consolidation(tmp_path):
-    """ensure_default_playbooks installs memory-consolidation.md — the only default."""
-    result = ensure_default_playbooks(str(tmp_path))
+def test_ensure_default_playbooks_does_not_reseed_retired_sources(tmp_path):
+    """Deleting a retired catalog source survives repeated daemon startup."""
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+    retired = (
+        "blocked-task-escalation.md",
+        "supervisor-digest.md",
+        "supervisor-hourly-report.md",
+    )
+    for filename in retired:
+        path = playbooks_dir / filename
+        path.write_text("# previously installed retired policy\n", encoding="utf-8")
+        path.unlink()
 
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    assert playbook_path.is_file()
-    assert "memory-consolidation.md" in result["created"]
-    assert len(result["skipped"]) == 0
+    for _ in range(2):
+        ensure_vault_layout(str(tmp_path))
+        assert not any((playbooks_dir / filename).exists() for filename in retired)
+
+
+def test_reviewed_report_playbooks_remain_disabled_for_explicit_import():
+    """Report recordings remain importable without seeding their catalog sources."""
+    import yaml
+
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS,
+        REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    reviewed_dir = Path(vault_module.__file__).parent / "prompts" / "reviewed_playbooks"
+    for playbook_id in ("morning-report", "supervisor-hourly-report", "supervisor-digest"):
+        content = (reviewed_dir / playbook_id / "source.md").read_text(encoding="utf-8")
+        frontmatter = yaml.safe_load(content.split("---", 2)[1])
+        assert frontmatter["id"] == playbook_id
+        assert frontmatter["enabled"] is False, f"{playbook_id} must ship disabled"
+        assert playbook_id not in REQUIRED_SYSTEM_PLAYBOOK_IDS
+        assert playbook_id not in DEFAULT_SYSTEM_PLAYBOOK_IDS
+
+
+def test_legacy_seed_uses_reviewed_source_when_packaged_markdown_is_stale(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    defaults = package / "prompts/default_playbooks"
+    reviewed = package / "prompts/reviewed_playbooks/default-assignment-routing"
+    defaults.mkdir(parents=True)
+    reviewed.mkdir(parents=True)
+    (defaults / "default-assignment-routing.md").write_text("obsolete packaged policy")
+    (reviewed / "source.md").write_text("reviewed current policy")
+    monkeypatch.setattr(vault_module, "__file__", str(package / "vault.py"))
+    data = tmp_path / "data"
+
+    result = ensure_default_playbooks(str(data))
+
+    assert result["created"] == ["default-assignment-routing.md"]
+    assert (data / "vault/system/playbooks/default-assignment-routing.md").read_text() == (
+        "reviewed current policy"
+    )
+
+
+@pytest.mark.parametrize("identifier", [
+    "blocked-task-escalation", "supervisor-digest", "supervisor-hourly-report",
+])
+def test_retired_playbook_sources_are_preserved_but_never_reseeded(tmp_path, identifier):
+    path = tmp_path / "vault/system/playbooks" / f"{identifier}.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("operator custom source")
+    ensure_default_playbooks(str(tmp_path))
+    assert path.read_text() == "operator custom source"
+    path.unlink()
+    ensure_default_playbooks(str(tmp_path))
+    ensure_default_playbooks(str(tmp_path))
+    assert not path.exists()
 
 
 def test_ensure_default_playbooks_idempotent(tmp_path):
     """Calling ensure_default_playbooks twice does not overwrite existing files."""
     ensure_default_playbooks(str(tmp_path))
 
-    playbook_path = (
-        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    )
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md"
     custom_content = (
-        "---\nid: memory-consolidation\ntriggers:\n"
-        "  - timer.24h\nscope: system\n---\n# user-customised\n"
+        "---\nid: default-pipeline\nkind: pipeline\nscope: system\n---\n# user-customised\n"
     )
     playbook_path.write_text(custom_content)
 
     result = ensure_default_playbooks(str(tmp_path))
 
     assert playbook_path.read_text() == custom_content
-    assert "memory-consolidation.md" in result["skipped"]
+    assert "default-pipeline.md" in result["skipped"]
 
 
 def test_ensure_default_playbooks_upgrades_known_legacy_pipeline(tmp_path, monkeypatch):
@@ -1059,41 +1148,14 @@ def test_ensure_default_playbooks_partial_existing(tmp_path):
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     playbooks_dir.mkdir(parents=True)
 
-    # Pre-create the memory-consolidation playbook with custom content
-    existing = playbooks_dir / "memory-consolidation.md"
+    # Pre-create a bundled playbook with custom content.
+    existing = playbooks_dir / "default-pipeline.md"
     existing.write_text("# customised\n")
 
     result = ensure_default_playbooks(str(tmp_path))
 
-    assert "memory-consolidation.md" in result["skipped"]
+    assert "default-pipeline.md" in result["skipped"]
     assert existing.read_text() == "# customised\n"
-
-
-def test_memory_consolidation_playbook_has_valid_frontmatter():
-    """The bundled memory-consolidation.md has valid YAML frontmatter."""
-    import os
-
-    import yaml
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "memory-consolidation.md",
-    )
-    content = open(playbook_path, encoding="utf-8").read()
-
-    assert content.startswith("---")
-    lines = content.strip().splitlines()
-    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
-    fm_text = "\n".join(lines[1:end_idx])
-    fm = yaml.safe_load(fm_text)
-
-    assert fm["id"] == "memory-consolidation"
-    assert isinstance(fm["triggers"], list)
-    assert "timer.24h" in fm["triggers"]
-    assert fm["scope"] == "system"
 
 
 def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
@@ -1111,19 +1173,15 @@ def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
     """ensure_vault_layout installs the minimal default playbook set."""
     ensure_vault_layout(str(tmp_path))
 
-    assert (
-        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    ).is_file()
+    assert (tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md").is_file()
 
 
 def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):
     """ensure_vault_layout does not overwrite user-customised playbooks."""
     ensure_vault_layout(str(tmp_path))
 
-    playbook_path = (
-        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    )
-    custom = "# User's custom memory-consolidation playbook\n"
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md"
+    custom = "# User's custom default pipeline\n"
     playbook_path.write_text(custom)
 
     ensure_vault_layout(str(tmp_path))
@@ -1715,22 +1773,17 @@ def test_ensure_vault_layout_does_not_seed_legacy_claude_profiles(tmp_path):
     were genuinely wrong after 156315f2, which deliberately dropped the
     ``ensure_claude_opus_profile`` / ``ensure_claude_sonnet_profile`` /
     ``ensure_shared_claude_memory_dir`` calls from ``ensure_vault_layout``.
-    The hardcoded model-per-profile pairs were superseded by the 3-tier x
-    4-thinking intelligence-class matrix plus the provider-explicit
-    ``worker-{fast,standard,deep}-<level>-claude`` profiles (bdf4d19e); the helper
-    functions and ``CLAUDE_*_PROFILE`` constants survive only as an
-    opt-in migration seam, covered by their own tests above.
+    The hardcoded model-per-profile pairs were superseded by the intelligence
+    classes plus one generic worker per harness (``worker-claude``,
+    ``worker-codex``); the helper functions and ``CLAUDE_*_PROFILE`` constants
+    survive only as an opt-in migration seam, covered by their own tests above.
     """
     ensure_vault_layout(str(tmp_path))
 
     agent_types = tmp_path / "vault" / "agent-types"
     # The shipped defaults are seeded from src/profiles/defaults/.
     assert (agent_types / "supervisor" / "profile.md").is_file()
-    for worker in (
-        "worker-fast-medium-claude",
-        "worker-standard-medium-claude",
-        "worker-deep-high-claude",
-    ):
+    for worker in ("worker-claude", "worker-codex"):
         assert (agent_types / worker / "profile.md").is_file(), worker
 
     # None of the legacy hardcoded claude-* profiles are auto-installed.

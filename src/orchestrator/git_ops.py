@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
-from src.git.manager import GitError
+from src.task_templates import render_task_template
+from src.git.manager import GitError, RemoteRefState
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
     MergeConflictEvent,
@@ -15,10 +19,8 @@ from src.models import (
     INTEGRATION_MODE_PULL_REQUEST,
     PhaseResult,
     PipelineContext,
-    RepoConfig,
     Task,
     TaskStatus,
-    resolve_integration_mode,
 )
 from src.orchestrator.merge_slot import (
     acquire_merge_slot,
@@ -40,6 +42,11 @@ WORK_OUTCOME_NO_OP = "no-op"
 #: guard reads the same ids, and the two must not drift apart.
 NO_CODE_PROFILE_IDS = REVIEW_PROFILE_IDS
 
+#: Task metadata holding the subject/evidence state of the last aggregate
+#: verifier close refused for absent trusted verification evidence.  It is the
+#: deduplication key for that refusal: an unchanged replay is a proven stall.
+TRUSTED_EVIDENCE_WAIT_KEY = "integration_trusted_evidence_wait"
+
 
 @dataclass(frozen=True)
 class _DeliveryResolution:
@@ -50,6 +57,7 @@ class _DeliveryResolution:
     checked_refs: tuple[str, ...]
     no_work: bool = False
     error: str | None = None
+    infrastructure_failure: bool = False
 
 
 class GitOpsMixin:
@@ -69,6 +77,174 @@ class GitOpsMixin:
         ctx.verification_feedback = message
         return PhaseResult.STOP
 
+    async def _development_delivery_refusal(self, ctx: PipelineContext, exc: Exception) -> None:
+        """Refuse a development-mode close, separating fixable from escalating.
+
+        Every delivery precondition used to come back through the one
+        "issues you can still fix from this workspace" refusal, including
+        the ones no agent command can satisfy — a workspace locked by
+        another task, a task bound to the wrong repository, a task with no
+        integration workspace at all.  The worker then either loops on a
+        precondition it cannot move or closes ``--outcome fail`` on work
+        that actually passed.  A refusal the workspace cannot fix is flagged
+        for an operator here and says so in its own text.
+        """
+        context = dict(getattr(exc, "context", None) or {})
+        message = str(exc)
+        if context.get("fixable_by") == "operator":
+            precondition = str(context.get("precondition") or "delivery_precondition")
+            reason = f"delivery_{precondition}"
+            ctx.verification_escalated = True
+            try:
+                await self.db.set_task_meta(ctx.task.id, "needs_attention", reason)
+                await self.bus.emit(
+                    "task.needs_attention",
+                    {
+                        "task_id": ctx.task.id,
+                        "project_id": ctx.task.project_id,
+                        "title": ctx.task.title,
+                        "reason": reason,
+                    },
+                )
+            except Exception:
+                # Flagging is best-effort; the refusal itself is the contract.
+                logger.warning(
+                    "Task %s: could not flag delivery precondition %s for attention",
+                    ctx.task.id,
+                    precondition,
+                    exc_info=True,
+                )
+            message = (
+                f"{message}\nThis is daemon-side delivery state, not something this "
+                f"workspace can change. The task has been flagged for an operator "
+                f"(needs_attention={reason}); it stays yours and IN_PROGRESS. Do not "
+                f"close --outcome fail to get past it — report the blocker with "
+                f"`aq message send --to user:dashboard`."
+            )
+            if context.get("remedy"):
+                message = f"{message}\nOperator remedy: {context['remedy']}"
+        elif context.get("remedy"):
+            message = f"{message}\nRun: {context['remedy']}"
+        self._aggregate_verifier_retry(ctx, message)
+
+    async def _trusted_evidence_refusal(
+        self, ctx: PipelineContext, parent_id: str, completion: dict
+    ) -> PhaseResult:
+        """Refuse an aggregate-verifier close that is waiting on trusted CI.
+
+        The verifier's own aggregate proof already passed; what is missing is
+        the trusted integration check evidence for this exact generation and
+        head, which only the daemon's parent CI producer and the
+        parent-integration playbook may record.  Answering that with a fixable
+        in-session issue is what sent every retry back through the whole local
+        suite while no evidence had changed (calm-grove-25 generation 5 ran the
+        450-test focused/schema sweep twice on an unchanged aggregate).
+
+        So the refusal names the missing binding, keeps the claim and the
+        fenced checkout, and records the subject/evidence state it refused on.
+        A replay of that *identical* state is the proven stall: it escalates
+        once (deduplicated by the recorded fingerprint) so the worker stops
+        re-running instead of looping, and the operator gets the exact next
+        action.
+        """
+        reason = str(completion.get("reason") or "verification_not_recorded")
+        head = str(completion.get("head_sha") or "")
+        generation = completion.get("generation")
+        fingerprint = hashlib.sha256(
+            ":".join(
+                [
+                    parent_id,
+                    str(generation),
+                    head,
+                    reason,
+                    str(completion.get("verified_generation")),
+                    str(completion.get("verified_sha")),
+                    str(completion.get("verification_id")),
+                    json.dumps({key: completion.get(key) for key in (
+                        "required_producer_id", "required_check_version",
+                        "required_check_names", "recorded_evidence_ids",
+                        "recorded_conclusions", "recorded_classifications", "next_owner",
+                    )}, sort_keys=True),
+                ]
+            ).encode()
+        ).hexdigest()[:16]
+        recorded = await self.db.get_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY)
+        previous = recorded if isinstance(recorded, dict) else {}
+        repeated = bool(previous) and previous.get("fingerprint") == fingerprint
+        refusals = int(previous.get("refusals") or 0) + 1 if repeated else 1
+        wait_state = {
+            "fingerprint": fingerprint,
+            "reason": reason,
+            "parent_task_id": parent_id,
+            "generation": generation,
+            "head_sha": head,
+            "required_producer_id": completion.get("required_producer_id"),
+            "required_check_version": completion.get("required_check_version"),
+            "required_check_names": completion.get("required_check_names"),
+            "recorded_evidence_ids": completion.get("recorded_evidence_ids") or [],
+            "recorded_conclusions": completion.get("recorded_conclusions") or [],
+            "next_owner": completion.get("next_owner"),
+            "refusals": refusals,
+            "project_id": ctx.task.project_id,
+            "attention_emitted": repeated and bool(previous.get("attention_emitted")),
+        }
+        await self.db.set_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY, wait_state)
+        checks = ", ".join(completion.get("required_check_names") or []) or "the required checks"
+        recorded_ids = completion.get("recorded_evidence_ids") or []
+        subject = (
+            f"parent {parent_id} generation {generation} at {head or 'its collected head'}"
+        )
+        evidence = (
+            f"Trusted check evidence is already recorded for {subject} "
+            f"({', '.join(completion.get('recorded_conclusions') or [])}, "
+            f"{len(recorded_ids)} row(s)) but no verification binds it"
+            if recorded_ids
+            else f"Trusted integration check evidence is not recorded for {subject}"
+        )
+        message = (
+            f"Parent integration completion was refused: awaiting_trusted_verification "
+            f"({reason}). {evidence}; required producer "
+            f"{completion.get('required_producer_id') or 'unknown'} version "
+            f"{completion.get('required_check_version') or 'unknown'} covering {checks}. "
+            f"Trusted CI evidence cannot be produced from this workspace: re-running the "
+            f"test suite does not change this refusal. Next owner: "
+            f"{completion.get('next_owner') or 'parent_ci_producer'}. "
+            f"{completion.get('next_action') or ''}"
+        ).strip()
+        if repeated:
+            ctx.verification_escalated = True
+            flag = f"awaiting_trusted_verification:{reason}"
+            if not wait_state["attention_emitted"]:
+                try:
+                    await self.db.set_task_meta(ctx.task.id, "needs_attention", flag)
+                    await self.bus.emit(
+                        "task.needs_attention",
+                        {
+                            "task_id": ctx.task.id,
+                            "project_id": ctx.task.project_id,
+                            "title": ctx.task.title,
+                            "reason": flag,
+                        },
+                    )
+                    wait_state["attention_emitted"] = True
+                    await self.db.set_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY, wait_state)
+                except Exception:
+                    # Flagging is best-effort; the refusal itself is the contract.
+                    logger.warning(
+                        "Task %s: could not flag the trusted-evidence wait for attention",
+                        ctx.task.id,
+                        exc_info=True,
+                    )
+            message += (
+                f"\nRefusal {refusals} on the same subject and the same absent evidence, "
+                f"so the wait is stalled rather than pending: the task has been flagged "
+                f"for an operator (needs_attention={flag}) and stays yours and "
+                f"IN_PROGRESS. Do not re-run the suite and do not close --outcome fail to "
+                f"escape it — report the blocker with `aq message send "
+                f"--to user:dashboard`."
+            )
+        return self._aggregate_verifier_retry(ctx, message)
+
     async def _phase_verify_aggregate_verifier(
         self, ctx: PipelineContext, operation: dict,
     ) -> PhaseResult:
@@ -79,14 +255,17 @@ class GitOpsMixin:
         That task is deliberately not an ordinary source-branch producer:
         requiring a PR for it would create a spurious parent-to-main merge.
         Prove its real checkout instead, retain the normal reserved-path
-        guard, and let :class:`ParentCompletion` re-check the generation,
+        guard, and let :class:`ParentEpisodeRecords` re-check the generation,
         trusted check evidence, receipt chain, and owner fence atomically.
         """
         from src.git.manager import is_valid_git_oid
         from src.integration.hierarchy import resolve_workspace_checkpoint
         from src.integration.models import BranchKey
         from src.integration.ownership import BranchOwnership
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import (
+            AWAITING_TRUSTED_VERIFICATION,
+            ParentEpisodeRecords,
+        )
 
         task = ctx.task
         workspace = ctx.workspace_path
@@ -105,14 +284,21 @@ class GitOpsMixin:
             )
 
         parent = await self.db.get_task(parent_id)
+        parent_identity = None
+        if parent is None:
+            from src.database.queries.task_identity import resolve_task_identity_on
+
+            async with self.db._engine.connect() as conn:
+                parent_identity = await resolve_task_identity_on(conn, parent_id)
         checkpoint = await self.db.get_integration_checkpoint(parent_id)
         repo = await self.db.get_repo(task.repo_id or "")
         if (
-            parent is None
+            (parent is None and parent_identity is None)
             or checkpoint is None
             or repo is None
-            or parent.repo_id != task.repo_id
-            or parent.branch_name != task.branch_name
+            or (parent.repo_id if parent is not None else parent_identity.repo_id) != task.repo_id
+            or (parent.branch_name if parent is not None else parent_identity.branch_name)
+            != task.branch_name
             or checkpoint.get("episode_id") != operation.get("episode_id")
             or checkpoint.get("repository_id") != task.repo_id
             or checkpoint.get("branch") != task.branch_name
@@ -169,9 +355,11 @@ class GitOpsMixin:
         if delivery_failure:
             return self._aggregate_verifier_retry(ctx, delivery_failure[0])
 
-        completion = await ParentCompletion(self.db).complete_parent(
+        completion = await ParentEpisodeRecords(self.db, git_manager=self.git).complete_parent(
             parent_id, int(checkpoint["generation"]), head
         )
+        if completion["outcome"] == AWAITING_TRUSTED_VERIFICATION:
+            return await self._trusted_evidence_refusal(ctx, parent_id, completion)
         if completion["outcome"] not in {"completed", "already_completed"}:
             return self._aggregate_verifier_retry(
                 ctx,
@@ -278,206 +466,6 @@ class GitOpsMixin:
                 return False
         return True
 
-    async def _merge_and_push(
-        self,
-        task: Task,
-        repo: RepoConfig,
-        workspace: str,
-        *,
-        _max_retries: int = 3,
-    ) -> None:
-        """Merge the task branch into default and push.
-
-        .. deprecated::
-            No longer called by the completion pipeline.  The agent now
-            handles merging and pushing via its prompt instructions.  Kept
-            for manual recovery use cases.
-        """
-        has_remote = await self.git.ahas_remote(workspace)
-
-        if has_remote:
-            # sync_and_merge handles fetch, hard-reset, merge, and push
-            # with retry.  max_retries counts *retries* after the first
-            # attempt, so subtract 1 from _max_retries (total attempts).
-            success, error = await self.git.async_and_merge(
-                workspace,
-                task.branch_name,
-                repo.default_branch,
-                max_retries=max(_max_retries - 1, 0),
-            )
-            if not success:
-                if error == "merge_conflict":
-                    await self._emit_notify(
-                        "notify.merge_conflict",
-                        MergeConflictEvent(
-                            task=build_task_detail(task),
-                            branch=task.branch_name or "",
-                            target_branch=repo.default_branch,
-                            project_id=task.project_id,
-                        ),
-                    )
-                else:
-                    # error starts with "push_failed: …"
-                    await self._emit_notify(
-                        "notify.push_failed",
-                        PushFailedEvent(
-                            task=build_task_detail(task),
-                            branch=repo.default_branch,
-                            error_detail=(
-                                f"Could not push after {_max_retries} attempts. "
-                                f"Workspace may be diverged. Details: {error}"
-                            ),
-                            project_id=task.project_id,
-                        ),
-                    )
-                # Recovery: reset workspace to origin state so it's clean
-                # for the next task.  After a failed push the local default
-                # branch may contain un-pushed merge commits; hard-resetting
-                # to origin discards them.
-                try:
-                    await self.git.arecover_workspace(workspace, repo.default_branch)
-                except Exception:
-                    pass  # best-effort recovery
-                return
-        else:
-            # LINK / INIT repos have no remote — just merge locally.
-            merged = await self.git.amerge_branch(
-                workspace,
-                task.branch_name,
-                repo.default_branch,
-            )
-            if not merged:
-                # Rebase fallback: rebase the task branch onto the default
-                # branch and retry the merge.  This resolves conflicts caused
-                # by the task branch being based on a stale snapshot.
-                rebased = await self.git.arebase_onto(
-                    workspace,
-                    task.branch_name,
-                    repo.default_branch,
-                )
-                if rebased:
-                    merged = await self.git.amerge_branch(
-                        workspace,
-                        task.branch_name,
-                        repo.default_branch,
-                    )
-            if not merged:
-                await self._emit_notify(
-                    "notify.merge_conflict",
-                    MergeConflictEvent(
-                        task=build_task_detail(task),
-                        branch=task.branch_name or "",
-                        target_branch=repo.default_branch,
-                        project_id=task.project_id,
-                    ),
-                )
-                # Recovery: ensure we're on the default branch so the
-                # workspace is clean for the next task.  merge_branch()
-                # already aborts the merge, but we make sure we're on the
-                # right branch as a safety net.
-                try:
-                    await self.git._arun(
-                        ["checkout", repo.default_branch],
-                        cwd=workspace,
-                    )
-                except Exception:
-                    pass  # best-effort recovery
-                return
-
-            # Clean up the task branch after successful local merge
-            try:
-                await self.git.adelete_branch(
-                    workspace,
-                    task.branch_name,
-                    delete_remote=False,
-                )
-            except Exception:
-                pass  # branch cleanup is best-effort
-            return
-
-        # Clean up the task branch after successful merge + push
-        try:
-            await self.git.adelete_branch(
-                workspace,
-                task.branch_name,
-                delete_remote=has_remote,
-            )
-        except Exception:
-            pass  # branch cleanup is best-effort
-
-    async def _create_pr_for_task(
-        self,
-        task: Task,
-        repo: RepoConfig,
-        workspace: str,
-    ) -> str | None:
-        """Push the task branch and create a PR. Returns the PR URL or None.
-
-        .. deprecated::
-            No longer called by the completion pipeline.  The agent now
-            creates PRs via its prompt instructions.  Kept for manual use.
-
-        Uses ``force_with_lease=True`` when pushing the task branch so that
-        retries (e.g. after a failed PR creation where the push succeeded)
-        don't fail with a non-fast-forward error.  ``--force-with-lease`` is
-        safe here because the task branch is owned exclusively by this agent —
-        no other user is expected to push to it (resolves **G5**).
-        """
-        if not await self.git.ahas_remote(workspace):
-            # No remote — notify user to review the branch locally
-            await self._emit_text_notify(
-                f"**Review needed:** Task `{task.id}` — {task.title}\n"
-                f"Branch `{task.branch_name}` is ready for review in `{workspace}` "
-                f"(no remote — no PR was opened). Merge it locally when accepted.",
-                project_id=task.project_id,
-            )
-            return None
-
-        try:
-            # Use --force-with-lease so the push succeeds even when the
-            # branch was previously pushed (e.g. task retries or subtask
-            # chains that push intermediate results).  Task branches are
-            # owned by a single agent, so force-pushing is safe.
-            await self.git.apush_validated_delivery(
-                workspace,
-                f"origin/{repo.default_branch}",
-                task.branch_name,
-                task.branch_name,
-                force_with_lease=True,
-                event_bus=self.bus,
-                project_id=task.project_id,
-            )
-        except Exception as e:
-            await self._emit_notify(
-                "notify.push_failed",
-                PushFailedEvent(
-                    task=build_task_detail(task),
-                    branch=task.branch_name or "",
-                    error_detail=str(e),
-                    project_id=task.project_id,
-                ),
-            )
-            return None
-
-        try:
-            pr_url = await self.git.acreate_pr(
-                workspace,
-                branch=task.branch_name,
-                title=task.title,
-                body=f"Automated PR for task `{task.id}`.\n\n{task.description[:500]}",
-                base=repo.default_branch,
-                event_bus=self.bus,
-                project_id=task.project_id,
-            )
-            return pr_url
-        except Exception as e:
-            await self._emit_text_notify(
-                f"**PR Creation Failed:** Task `{task.id}` — {e}\n"
-                f"Branch `{task.branch_name}` has been pushed. Create a PR manually.",
-                project_id=task.project_id,
-            )
-            return None
-
     async def _task_has_code_changes(
         self, workspace: str, min_files: int = 3, min_lines: int = 50
     ) -> bool:
@@ -578,12 +566,15 @@ class GitOpsMixin:
     async def _task_produces_no_code(self, ctx: PipelineContext) -> bool:
         """Return whether task metadata declares no code was intended.
 
-        Two signals, either is enough:
+        Three signals, any is enough:
 
         * the agent closed with ``--work-outcome no-op`` — its own statement
           that nothing was produced;
         * its effective profile declares ``read_only: true``: such profiles
-          do not commit, push, or open a PR on their own task branch.
+          do not commit, push, or open a PR on their own task branch;
+        * its effective profile declares ``needs_workspace: false``: a role
+          such as ``spec-ingest`` or ``triage`` writes database rows, not
+          source, and holds no ``git_push`` grant to publish its slot branch.
 
         Profile resolution follows the regular task path, including a
         project-scoped override.  The legacy review ids are retained only
@@ -603,7 +594,7 @@ class GitOpsMixin:
             )
             profile = None
         if profile is not None:
-            return bool(profile.read_only)
+            return bool(profile.read_only) or not profile.needs_workspace
         return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
 
     async def _task_uses_git(self, ctx: PipelineContext) -> bool:
@@ -631,6 +622,75 @@ class GitOpsMixin:
                     exc,
                 )
         return ctx.repo is not None
+
+    async def _preserve_non_source_drafts(self, ctx: PipelineContext) -> bool:
+        """Refuse document/no-code closes for an already-proven dirty Git checkout.
+
+        Review submission copies the draft to the vault but leaves the local
+        file intact. Publishing that duplicate as source would manufacture
+        delivery work and a PR requirement for a document-only task.
+        """
+        from src.deliverables import resolve_task_deliverables
+
+        items = await resolve_task_deliverables(self.db, ctx.task)
+        review_only = bool(items) and all(item["kind"] == "review" for item in items)
+        if not review_only and not await self._task_produces_no_code(ctx):
+            return False
+        message = (
+            "Document-only/no-code task has uncommitted source-checkout files. "
+            "Drafts were preserved without committing or publishing them. "
+            "Submit the review to the vault, then move any local draft outside the "
+            "source checkout and retry close. A clean unchanged source branch needs "
+            "no source PR or CI; actual source changes require normal delivery."
+        )
+        ctx.verification_issues = [message]
+        ctx.verification_feedback = message
+        ctx.verification_retry_in_session = True
+        return True
+
+    async def _vault_only_delivery(self, ctx: PipelineContext) -> bool:
+        """Recognize an explicit vault-only task with a usable vault attachment.
+
+        A pool worker still runs in its reserved source slot even when the
+        task requests only the vault.  The explicit requirement, rather than
+        the automatically attached vault on every code task, is the intent
+        that permits a source branch without a remote task ref.
+        """
+        requirements = await self.db.fetch_task_workspace_requirements(ctx.task.id)
+        if len(requirements) != 1 or requirements[0].kind_id != "vault":
+            return False
+        kind = await self.db.resolve_workspace_kind(ctx.task.project_id, "vault")
+        if kind is None or kind.is_git_repo:
+            return False
+        return await self.db.first_workspace_of_kind(
+            project_id=ctx.task.project_id, kind_id="vault"
+        ) is not None
+
+    async def _vault_only_source_unchanged(self, ctx: PipelineContext) -> bool:
+        """Prove a pool source slot contains no task code before vault close."""
+        if not ctx.workspace_path:
+            # A task with a recorded source branch must still own its slot;
+            # a lost lock must not look like a workspace-free vault task.
+            return not bool(ctx.task.branch_name)
+        if not await self._task_uses_git(ctx):
+            return True
+        workspace = ctx.workspace_path
+        branch = ctx.task.branch_name
+        if not branch or not await self.git.avalidate_checkout(workspace):
+            return False
+        if await self.git.ahas_remote(workspace, strict=True) is not True:
+            return False
+        current = await self.git.aget_current_branch(workspace, strict=True)
+        if current != branch.removeprefix("refs/heads/"):
+            return False
+        proved = await self._task_proves_no_work(
+            ctx, current_branch=current, has_remote=True
+        )
+        if proved:
+            # This proof is about the source slot, not the vault artifact.
+            # A shipped vault commit must not emit a no-code completion.
+            ctx.no_work_proven = False
+        return proved
 
     async def _commits_ahead_of_default(
         self,
@@ -683,6 +743,7 @@ class GitOpsMixin:
                 None,
                 (current_ref,),
                 error=f"Could not verify delivery commits on `{current_branch}`.",
+                infrastructure_failure=True,
             )
 
         if not assigned_branch or assigned_branch == current_branch:
@@ -708,6 +769,7 @@ class GitOpsMixin:
                 None,
                 (current_ref,),
                 error=ref_error,
+                infrastructure_failure=True,
             )
         if not assigned_ref:
             if current_count > 0:
@@ -739,6 +801,7 @@ class GitOpsMixin:
                 None,
                 checked_refs,
                 error=f"Could not verify delivery commits on `{assigned_ref}`.",
+                infrastructure_failure=True,
             )
         if current_count > 0 and assigned_count > 0:
             return _DeliveryResolution(
@@ -823,7 +886,9 @@ class GitOpsMixin:
         ctx.no_work_proven = True
         return True
 
-    async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
+    async def _sweep_uncommitted_before_skip(
+        self, ctx: PipelineContext, *, has_uncommitted: bool | None
+    ) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
 
         A task that bypasses git verification must still not leave dirty
@@ -834,7 +899,9 @@ class GitOpsMixin:
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return
         try:
-            if await self.git.ahas_uncommitted_changes(workspace):
+            if has_uncommitted is None:
+                has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if has_uncommitted:
                 current = await self.git.aget_current_branch(workspace)
                 await self._auto_remediate_uncommitted(
                     workspace,
@@ -859,26 +926,71 @@ class GitOpsMixin:
         ``integration.default_mode``.  Every git-pipeline decision that used
         to read the ``requires_approval`` flag goes through here, so a task
         in ``pull_request`` mode can never fall into a direct-merge path.
+        A repository that cannot host a pull request (a bare local remote)
+        does not inherit ``pull_request`` from the system default
+        (:mod:`src.integration.delivery_path`).
         """
-        parent_mode: str | None = None
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            parent_mode = parent.integration_mode if parent else None
-        project = await self.db.get_project(task.project_id)
-        return resolve_integration_mode(
-            task.integration_mode,
-            parent_task_mode=parent_mode,
-            project_mode=project.integration_mode if project else None,
-            default_mode=self.config.integration.default_mode,
+        from src.integration.delivery_path import effective_integration_mode
+
+        mode, _source = await effective_integration_mode(
+            self.db, task, default_mode=self.config.integration.default_mode
         )
+        return mode
 
     async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok).
+
+        Every commit the pipeline makes (auto-remediation, merges, rebases)
+        carries the task's project identity (git-identity spec).
+        """
+        from src.git.identity import resolve_git_identity
+        from src.git.manager import commit_identity
+
+        project = await self.db.get_project(ctx.task.project_id)
+        with commit_identity(resolve_git_identity(self.config, project).identity):
+            return await self._run_completion_phases(ctx, project)
+
+    async def _run_completion_phases(
+        self, ctx: PipelineContext, project
+    ) -> tuple[str | None, bool]:
+        """The pipeline body.
 
         Phase execution strategy:
         - **verify**: Critical — if it crashes or returns STOP, the task
           cannot be marked completed.
         """
+        if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
+            # Published work is complete; aggregate/root delivery is asynchronous.
+            if await self._vault_only_delivery(ctx):
+                if await self._vault_only_source_unchanged(ctx):
+                    return (ctx.pr_url, True)
+                await self._development_delivery_refusal(
+                    ctx, ValueError("vault-only task has uncommitted or undelivered source work")
+                )
+                return (ctx.pr_url, False)
+            if not ctx.workspace_path or not await self._task_uses_git(ctx):
+                return (ctx.pr_url, True)
+            if await self._task_produces_no_code(ctx) and await self._task_proves_no_work(ctx):
+                return (ctx.pr_url, True)  # completion provenance rechecks containment
+            try:
+                from src.integration.hierarchy import resolve_workspace_checkpoint
+                from src.database.queries.hierarchy_queries import HierarchyError
+                repo = await self.db.get_repo(ctx.task.repo_id or project.integration_repository_id or "")
+                if repo is None:
+                    raise ValueError("development task has no repository")
+                await resolve_workspace_checkpoint(self.db, self.git,
+                    {"id": ctx.task.id, "repo_id": repo.id,
+                     "branch_name": ctx.task.branch_name}, repo)
+                failure = await self._reserved_delivery_failure(ctx.workspace_path,
+                    repo.default_branch, "refs/heads/" + ctx.task.branch_name.removeprefix("refs/heads/"),
+                    has_remote=True)
+                if failure:
+                    raise ValueError(failure[0])
+                return (ctx.pr_url, True)
+            except (ValueError, RuntimeError, HierarchyError) as exc:
+                await self._development_delivery_refusal(ctx, exc)
+                return (ctx.pr_url, False)
+
         # Phase 1: Git verification (critical)
         try:
             result = await self._phase_verify(ctx)
@@ -937,6 +1049,15 @@ class GitOpsMixin:
         workspace = ctx.workspace_path
         task = ctx.task
 
+        uses_git = bool(workspace) and await self._task_uses_git(ctx)
+        # Share the initial status between draft protection and remediation;
+        # cleanliness is checked again after remediation.
+        has_uncommitted = (
+            await self.git.ahas_uncommitted_changes(workspace, strict=True) if uses_git else None
+        )
+        if has_uncommitted is True and await self._preserve_non_source_drafts(ctx):
+            return PhaseResult.STOP
+
         # Skip verification if the agent exited with an error — bad git state
         # is a symptom, not the root cause.  Let normal error handling deal
         # with the task instead of reopening for git fixes.
@@ -949,10 +1070,10 @@ class GitOpsMixin:
             # Still auto-remediate uncommitted changes so the workspace is
             # clean for the next task.  Without this, a crashed agent leaves
             # dirty state that bleeds into subsequent tasks.
-            await self._sweep_uncommitted_before_skip(ctx)
+            await self._sweep_uncommitted_before_skip(ctx, has_uncommitted=has_uncommitted)
             return PhaseResult.CONTINUE
 
-        if not workspace or not await self._task_uses_git(ctx):
+        if not uses_git:
             return PhaseResult.CONTINUE
 
         if not await self.git.avalidate_checkout(workspace):
@@ -962,7 +1083,6 @@ class GitOpsMixin:
         default_branch = ctx.default_branch or "main"
         has_remote = await self.git.ahas_remote(workspace, strict=True)
         current_branch = await self.git.aget_current_branch(workspace, strict=True)
-        has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_remote is None or not current_branch or has_uncommitted is None:
             logger.error("Task %s: required Git state could not be verified", task.id)
             return PhaseResult.STOP
@@ -1074,6 +1194,7 @@ class GitOpsMixin:
                     has_remote=has_remote,
                 )
             except Exception as exc:
+                ctx.verification_infrastructure_failure = True
                 resolution = _DeliveryResolution(
                     None,
                     None,
@@ -1081,6 +1202,8 @@ class GitOpsMixin:
                     error=f"Could not resolve the task delivery ref: {exc}",
                 )
             if resolution.error:
+                if resolution.infrastructure_failure:
+                    ctx.verification_infrastructure_failure = True
                 failures.append((resolution.error, False))
                 delivery_guard_blocked = True
             for relevant_ref in resolution.checked_refs:
@@ -1091,6 +1214,8 @@ class GitOpsMixin:
                     has_remote=has_remote,
                 )
                 if delivery_failure:
+                    if not delivery_failure[1]:
+                        ctx.verification_infrastructure_failure = True
                     failures.append(delivery_failure)
                     delivery_guard_blocked = True
             if resolution.delivery_ref:
@@ -1138,6 +1263,7 @@ class GitOpsMixin:
             else None
         )
         if pr_mode and not pr_delivery_branch and not delivery_guard_blocked:
+            ctx.verification_infrastructure_failure = True
             failures.append(("Could not determine the task delivery branch.", False))
 
         if (
@@ -1165,6 +1291,7 @@ class GitOpsMixin:
                     workspace, strict=True
                 )
                 if has_uncommitted is None:
+                    ctx.verification_infrastructure_failure = True
                     failures.append(("Could not verify workspace status after merge.", False))
                     has_uncommitted = True
                 elif has_uncommitted:
@@ -1214,6 +1341,7 @@ class GitOpsMixin:
         # ── Auto-remediate: push unpushed commits ───────────────────────
         # After auto-committing/merging (or if agent committed but forgot
         # to push), push to the remote to avoid unnecessary retries.
+        confirmed_merged_pr_url = None
         if has_remote and not has_uncommitted and not delivery_guard_blocked:
             # Determine the expected branch for this task type
             if is_intermediate or pr_mode:
@@ -1222,27 +1350,85 @@ class GitOpsMixin:
                 expected_push_branch = default_branch
             if current_branch == expected_push_branch:
                 try:
-                    ahead_output = await self.git._arun(
-                        [
-                            "rev-list",
-                            f"refs/remotes/origin/{current_branch}..HEAD",
-                            "--count",
-                        ],
-                        cwd=workspace,
-                    )
-                    if ahead_output.strip() != "0":
+                    repository_url = None
+                    if not is_intermediate:
+                        # An exact-OID push does not update this checkout's
+                        # remote-tracking ref. Observe the remote head for
+                        # both PR branches and direct delivery to default.
+                        if pr_mode:
+                            repo = await self.db.get_repo(task.repo_id) if task.repo_id else None
+                            project = await self.db.get_project(task.project_id)
+                            repository_url = (
+                                repo.url if repo and repo.project_id == task.project_id
+                                else project.repo_url if project and not task.repo_id else None
+                            )
+                            if not repository_url:
+                                raise GitError("authorized PR repository URL is unavailable")
+                        local_oid = await self.git.arev_parse(workspace, "HEAD")
+                        if not local_oid:
+                            raise GitError("could not resolve local delivery HEAD")
+                        remote_ref = await self.git.als_remote_ref(
+                            workspace,
+                            current_branch,
+                            **({"repository_url": repository_url} if repository_url else {}),
+                        )
+                        if remote_ref.state is RemoteRefState.PRESENT:
+                            if not remote_ref.oid:
+                                raise GitError("remote head observation returned no OID")
+                            needs_push = remote_ref.oid != local_oid
+                        elif remote_ref.state is RemoteRefState.ABSENT:
+                            needs_push = True
+                        else:
+                            raise GitError(remote_ref.error or "remote head observation failed")
+                    else:
+                        ahead_output = await self.git._arun(
+                            [
+                                "rev-list",
+                                f"refs/remotes/origin/{current_branch}..HEAD",
+                                "--count",
+                            ],
+                            cwd=workspace,
+                        )
+                        needs_push = ahead_output.strip() != "0"
+                    if needs_push and pr_mode:
+                        # A merged PR may have deleted its remote head. Match
+                        # the exact delivery tip before treating that absence
+                        # as a branch that needs publishing again.
+                        repository = await self.git.bind_github_repository(repository_url)
+                        candidate_pr_url = await self.git.afind_open_pr(
+                            workspace,
+                            pr_delivery_branch,
+                            head_ref=pr_delivery_ref,
+                            include_workspace_head=False,
+                            repository=repository,
+                        )
+                        if candidate_pr_url and await self.git.acheck_pr_merged(
+                            workspace, candidate_pr_url, repository=repository
+                        ) is True:
+                            confirmed_merged_pr_url = candidate_pr_url
+                            needs_push = False
+                            logger.info(
+                                "Task %s: PR %s is merged; skipping delivery branch push",
+                                task.id,
+                                candidate_pr_url,
+                            )
+                    if needs_push:
                         await self.git.apush_validated_delivery(
                             workspace,
                             f"refs/remotes/origin/{default_branch}",
                             "HEAD",
                             current_branch,
+                            **({"repository_url": repository_url} if repository_url else {}),
                             event_bus=self.bus,
                             project_id=task.project_id,
+                            identity_policy=await self._publish_policy(task, workspace),
+                            inherited_oids=await self.db.list_source_ci_inherited_oids(
+                                task.id
+                            ),
                         )
                         logger.info(
-                            "Task %s: auto-pushed %s commit(s) on branch '%s'",
+                            "Task %s: auto-pushed delivery on branch '%s'",
                             task.id,
-                            ahead_output.strip(),
                             current_branch,
                         )
                 except Exception as e:
@@ -1259,6 +1445,7 @@ class GitOpsMixin:
                             False,
                         )
                     )
+                    ctx.verification_infrastructure_failure = True
 
         # ── Final safety net: one last remediation sweep ─────────────────
         # Intermediate steps (merge, merge-abort, push attempts) may have
@@ -1267,11 +1454,13 @@ class GitOpsMixin:
         # building the failure list.
         has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_uncommitted is None:
+            ctx.verification_infrastructure_failure = True
             failures.append(("Could not verify final workspace status.", False))
             has_uncommitted = True
         elif has_uncommitted:
             latest_branch = await self.git.aget_current_branch(workspace, strict=True)
             if not latest_branch:
+                ctx.verification_infrastructure_failure = True
                 failures.append(("Could not verify the final checked-out branch.", False))
             else:
                 current_branch = latest_branch
@@ -1316,12 +1505,40 @@ class GitOpsMixin:
             if pr_delivery_branch:
                 ctx.delivery_branch = pr_delivery_branch
                 if has_remote and not delivery_guard_blocked:
-                    pr_url = await self.git.afind_open_pr(
-                        workspace,
-                        pr_delivery_branch,
-                        head_ref=pr_delivery_ref,
-                        include_workspace_head=False,
+                    repo = await self.db.get_repo(task.repo_id or "") if task.repo_id else None
+                    project = await self.db.get_project(task.project_id)
+                    repository_url = repo.url if repo and repo.project_id == task.project_id else (
+                        project.repo_url if project and not task.repo_id else ""
                     )
+                    try:
+                        repository = await self.git.bind_github_repository(repository_url)
+                    except Exception as exc:
+                        from src.integration.delivery_path import lacks_pull_request_host
+
+                        message = f"Could not authorize PR repository: {exc}"
+                        if lacks_pull_request_host(repository_url):
+                            # An inherited default resolves to direct on a
+                            # repository on disk; an explicit pull_request, or
+                            # a hosted remote other than github.com, gets here.
+                            message += (
+                                f". {repository_url} cannot host a pull request, but this "
+                                "task's integration mode is pull_request. Enable the "
+                                "development publisher for the project (`aq integration "
+                                "develop`), then deliver the pushed branch with "
+                                f"`aq task deliver --task-id {task.id} --reason ...`."
+                            )
+                        failures.append((message, False))
+                        ctx.verification_infrastructure_failure = True
+                        repository = None
+                    pr_url = confirmed_merged_pr_url
+                    if repository is not None and not pr_url:
+                        pr_url = await self.git.afind_open_pr(
+                            workspace,
+                            pr_delivery_branch,
+                            head_ref=pr_delivery_ref,
+                            include_workspace_head=False,
+                            repository=repository,
+                        )
                     if pr_url:
                         ctx.pr_url = pr_url
                     else:
@@ -1339,6 +1556,7 @@ class GitOpsMixin:
                             default_branch,
                         )
                     elif not pr_url and integrated is None:
+                        ctx.verification_infrastructure_failure = True
                         failures.append(
                             (
                                 f"Could not verify whether `{pr_delivery_branch}` is already "
@@ -1393,85 +1611,35 @@ class GitOpsMixin:
                     )
                 if has_remote:
                     try:
-                        behind = await self.git._arun(
-                            [
-                                "rev-list",
-                                f"HEAD..refs/remotes/origin/{default_branch}",
-                                "--count",
-                            ],
-                            cwd=workspace,
-                        )
-                        if behind.strip() != "0":
-                            # Auto-pull when the agent made no changes (no-op task).
-                            # Being behind origin is not the agent's fault — other
-                            # agents may have pushed while this task ran.
-                            if not has_uncommitted:
-                                try:
-                                    await self.git._arun(
-                                        ["pull", "--ff-only", "origin", default_branch],
-                                        cwd=workspace,
-                                    )
-                                    logger.info(
-                                        "Task %s: auto-pulled %s commit(s) on '%s' "
-                                        "(no-change task was behind origin)",
-                                        task.id,
-                                        behind.strip(),
-                                        default_branch,
-                                    )
-                                except Exception as pull_err:
-                                    logger.warning(
-                                        "Task %s: auto-pull failed: %s",
-                                        task.id,
-                                        pull_err,
-                                    )
-                                    failures.append(
-                                        (
-                                            f"Local `{default_branch}` is behind "
-                                            f"`origin/{default_branch}` and auto-pull "
-                                            f"failed. Please `git pull origin "
-                                            f"{default_branch}`.",
-                                            False,  # unfixable
-                                        )
-                                    )
-                            else:
-                                failures.append(
-                                    (
-                                        f"Local `{default_branch}` is behind "
-                                        f"`origin/{default_branch}`. "
-                                        f"Please `git pull origin {default_branch}`.",
-                                        False,  # unfixable — external changes
-                                    )
-                                )
-                    except GitError as e:
-                        failures.append(
-                            (
-                                f"Could not verify whether `{default_branch}` is behind "
-                                f"`origin/{default_branch}`: {e}",
-                                False,
-                            )
-                        )
-                    try:
-                        ahead = await self.git._arun(
-                            [
-                                "rev-list",
-                                f"refs/remotes/origin/{default_branch}..HEAD",
-                                "--count",
-                            ],
-                            cwd=workspace,
-                        )
-                        if ahead.strip() != "0":
+                        local_oid = await self.git.arev_parse(workspace, "HEAD")
+                        if not local_oid:
+                            raise GitError("could not resolve local default HEAD")
+                        remote_ref = await self.git.als_remote_ref(workspace, default_branch)
+                        if remote_ref.state is RemoteRefState.ERROR:
+                            raise GitError(remote_ref.error or "remote head observation failed")
+                        if remote_ref.state is RemoteRefState.ABSENT:
                             failures.append(
                                 (
-                                    f"Local `{default_branch}` has unpushed commits. "
-                                    f"Please `git push origin {default_branch}`.",
-                                    True,  # fixable — agent can push
+                                    f"Remote `{default_branch}` is absent after delivery.",
+                                    False,
+                                )
+                            )
+                        elif not remote_ref.oid:
+                            raise GitError("remote head observation returned no OID")
+                        elif remote_ref.oid != local_oid:
+                            failures.append(
+                                (
+                                    f"Remote `{default_branch}` is at {remote_ref.oid}, "
+                                    f"but local HEAD is {local_oid}; inspect the remote "
+                                    "before retrying delivery.",
+                                    False,
                                 )
                             )
                     except GitError as e:
+                        ctx.verification_infrastructure_failure = True
                         failures.append(
                             (
-                                f"Could not verify whether `{default_branch}` has unpushed "
-                                f"commits: {e}",
+                                f"Could not verify remote `{default_branch}` head: {e}",
                                 False,
                             )
                         )
@@ -1497,6 +1665,7 @@ class GitOpsMixin:
         fixable = [(msg, f) for msg, f in failures if f]
         unfixable = [(msg, f) for msg, f in failures if not f]
         all_msgs = [msg for msg, _ in failures]
+        ctx.verification_issues = all_msgs
 
         if unfixable:
             # Unfixable issues present — block immediately, don't waste retries
@@ -1544,7 +1713,9 @@ class GitOpsMixin:
                 len(fixable),
             )
             return PhaseResult.STOP
-        reopened = await self._reopen_with_verification_feedback(task, fixable)
+        reopened = await self._reopen_with_verification_feedback(
+            task, fixable, accepted_close=ctx.accepted_close
+        )
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
 
@@ -1764,19 +1935,20 @@ class GitOpsMixin:
         # Build feedback message
         bullet_list = "\n".join(f"- {msg}" for msg, _ in failures)
         closing = (
-            "Please fix these issues when the task restarts."
+            render_task_template("git-verification-restart")
             if restart_wording
             else (
-                "Fix these issues in this workspace, then run `aq task close` again. "
-                "The task is still yours — it stays IN_PROGRESS under your claim."
+                render_task_template("git-verification-held")
             )
         )
         feedback = (
-            f"**Git Verification Feedback (auto-retry "
-            f"{retry_count + 1}/{max_retries}):**\n"
-            f"The system verified the git state after your work and found "
-            f"issues:\n{bullet_list}\n"
-            f"{closing}"
+            render_task_template(
+                "git-verification-feedback",
+                attempt=retry_count + 1,
+                max_retries=max_retries,
+                bullet_list=bullet_list,
+                closing=closing,
+            )
         )
 
         separator = "\n\n---\n"
@@ -1794,6 +1966,8 @@ class GitOpsMixin:
         self,
         task,
         failures: list[tuple[str, bool]],
+        *,
+        accepted_close: dict | None = None,
     ) -> bool:
         """Reopen a task with git verification feedback.
 
@@ -1809,6 +1983,9 @@ class GitOpsMixin:
         (``PipelineContext.close_session_live`` is False) — otherwise
         ``_phase_verify`` refuses the close in place and the worker retries
         without a session restart.
+
+        ``accepted_close`` is the close's identity: this reopen is the status
+        write that accepts that close, so it records it in its transaction.
         """
         contexts = await self.db.get_task_contexts(task.id)
         retry_count = sum(1 for c in contexts if c.get("type") == "verification_feedback")
@@ -1826,6 +2003,7 @@ class GitOpsMixin:
             retry_count=0,
             assigned_agent_id=None,
             pr_url=None,
+            accepted_close=accepted_close,
         )
         await self._emit_text_notify(
             f"🔄 **Verification reopen:** Task `{task.id}` — "
@@ -1843,7 +2021,11 @@ class GitOpsMixin:
     # ── worktree-mode integration ─────────────────────────────────────────
 
     async def _task_is_worktree_mode(self, ctx: PipelineContext) -> bool:
-        """True when the task's workspace kind is in worktree mode.
+        """True when the task's workspace kind is in worktree mode."""
+        return await self._workspace_is_worktree_mode(getattr(ctx, "workspace_id", None))
+
+    async def _workspace_is_worktree_mode(self, ws_id: str | None) -> bool:
+        """Shared worktree-mode detection for prompts and the completion pipeline.
 
         Worktree-execution spec §6.5: the integrate phase runs whenever
         the task's project-repo kind is configured as worktree mode —
@@ -1856,7 +2038,6 @@ class GitOpsMixin:
 
         if not getattr(self.config, "worktrees", None) or not self.config.worktrees.enabled:
             return False
-        ws_id = getattr(ctx, "workspace_id", None)
         if not ws_id:
             return False
         try:
@@ -1899,9 +2080,14 @@ class GitOpsMixin:
            release the slot, return STOP.
         3. Push the merged branch — a plain push, since nothing was
            rewritten; never ``--force`` to *default*.
-        4. In the base: merge the task branch into default and push
-           (skipped in ``pull_request`` mode — the agent opens a PR
-           on the pushed branch).
+        4. ``direct`` mode: push the merged slot tip to default as a
+           fast-forward; without a remote, merge the task branch into
+           default in the base instead.  The base is never reset while a
+           remote exists — it may be the operator's own working tree.  A
+           default that someone outside AQ moved after step 2's fetch is
+           refused (``push_failed``), not merged again.
+           Skipped in ``pull_request`` mode — the agent opens a PR on the
+           pushed branch.
         5. Emit ``merge.succeeded``, record ``merged_at`` metadata,
            release the slot, return CONTINUE.
 
@@ -2004,8 +2190,22 @@ class GitOpsMixin:
             # ── Step 2: fetch + merge default into the slot branch ────
             if has_remote:
                 try:
-                    await self.git._arun(["fetch", "origin"], cwd=workspace)
-                except GitError as e:
+                    repo = await self.db.get_repo(task.repo_id) if task.repo_id else None
+                    project = await self.db.get_project(task.project_id)
+                    repository_url = (
+                        repo.url if repo and repo.project_id == task.project_id
+                        else project.repo_url if project and not task.repo_id else ""
+                    )
+                    if not repository_url:
+                        local_origin = await self.git.aget_remote_url(workspace)
+                        if local_origin and Path(local_origin).exists():
+                            repository_url = local_origin
+                    if not repository_url:
+                        raise GitError("task has no authorized repository for origin fetch")
+                    await self.git.afetch_origin(
+                        workspace, repository_url=repository_url
+                    )
+                except Exception as e:
                     logger.error("Task %s: fetch origin failed: %s", task.id, e)
                     return PhaseResult.STOP
 
@@ -2113,6 +2313,10 @@ class GitOpsMixin:
                         force_with_lease=False,
                         event_bus=self.bus,
                         project_id=task.project_id,
+                        identity_policy=await self._publish_policy(task, workspace),
+                        inherited_oids=await self.db.list_source_ci_inherited_oids(
+                            task.id
+                        ),
                     )
                 except Exception as e:
                     logger.warning("Task %s: push %s failed: %s", task.id, branch, e)
@@ -2137,10 +2341,56 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-            # ── Step 4: local merge in the base (skip for PR workflow) ─
+            # ── Step 4: deliver to default (skip for PR workflow) ──────
             merged_at: float | None = None
             pr_url = ctx.pr_url
-            if not pr_mode:
+            if not pr_mode and has_remote:
+                # Step 2 merged origin/<default> into the slot branch, so its
+                # tip is a fast-forward of the remote default: push that exact
+                # tip.  The base checkout is never switched, reset or merged
+                # into -- for a linked project it is the operator's own working
+                # tree (agile-ridge: local-remote projects deliver this way).
+                # Lease-guarded (finding #1): another task may own the slot
+                # once the lease expires, so renew immediately before pushing.
+                if not await renew_merge_slot(self.db, task.project_id, task.id, ttl):
+                    logger.warning(
+                        "Task %s: merge slot lease lost before pushing to %s; aborting",
+                        task.id, default_branch,
+                    )
+                    return PhaseResult.STOP
+                try:
+                    # No force: a remote default that moved since the fetch is
+                    # not an ancestor of the tip, and the push is refused.
+                    await self.git.apush_validated_delivery(
+                        workspace,
+                        f"refs/remotes/origin/{default_branch}",
+                        "HEAD",
+                        default_branch,
+                        event_bus=self.bus,
+                        project_id=task.project_id,
+                        identity_policy=await self._publish_policy(task, workspace),
+                        inherited_oids=await self.db.list_source_ci_inherited_oids(
+                            task.id
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Task %s: push %s failed: %s", task.id, default_branch, e
+                    )
+                    reason = f"push_failed: {default_branch}: {e}"
+                    try:
+                        await self.db.set_task_meta(
+                            task.id, "rejection_reason", reason
+                        )
+                    except Exception as meta_err:
+                        logger.warning(
+                            "Task %s: failed to record push_failed meta: %s",
+                            task.id, meta_err,
+                        )
+                    return PhaseResult.STOP
+            elif not pr_mode:
+                # No remote: the base checkout's default branch *is* the
+                # delivery target, so the merge happens there.
                 base_ws = None
                 if ctx.workspace_id:
                     try:
@@ -2160,9 +2410,7 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-                merged = await self.git.amerge_branch(
-                    base_path, branch, default_branch
-                )
+                merged = await self.git.amerge_branch(base_path, branch, default_branch)
                 if not merged:
                     # Should be rare after a successful merge, but treat
                     # like a conflict rather than force-anything.
@@ -2193,47 +2441,7 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-                if has_remote:
-                    # Lease-guarded push (finding #1): renew immediately
-                    # before pushing to default — if the local merge took
-                    # long enough for the lease to expire, another task
-                    # may now own the slot and be about to push too.
-                    if not await renew_merge_slot(
-                        self.db, task.project_id, task.id, ttl
-                    ):
-                        logger.warning(
-                            "Task %s: merge slot lease lost before pushing to %s; aborting",
-                            task.id, default_branch,
-                        )
-                        return PhaseResult.STOP
-                    try:
-                        # Regular push — no force here. The base has just
-                        # merged origin/<default> forward, and the manager
-                        # pushes the exact revalidated merge tip.
-                        await self.git.apush_validated_delivery(
-                            base_path,
-                            f"refs/remotes/origin/{default_branch}",
-                            "HEAD",
-                            default_branch,
-                            event_bus=self.bus,
-                            project_id=task.project_id,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Task %s: push %s failed: %s", task.id, default_branch, e
-                        )
-                        reason = f"push_failed: {default_branch}: {e}"
-                        try:
-                            await self.db.set_task_meta(
-                                task.id, "rejection_reason", reason
-                            )
-                        except Exception as meta_err:
-                            logger.warning(
-                                "Task %s: failed to record push_failed meta: %s",
-                                task.id, meta_err,
-                            )
-                        return PhaseResult.STOP
-
+            if not pr_mode:
                 import time as _time
 
                 merged_at = _time.time()
@@ -2266,6 +2474,28 @@ class GitOpsMixin:
                     task.project_id,
                     e,
                 )
+
+    async def _publish_policy(self, task: Task, workspace: str):
+        """The Git identity a publication of *task*'s work is held to.
+
+        The same rule the worker's ``aq git push`` applies (git identity spec
+        §5): new commits must be committed as the project's resolved identity
+        or a launch identity of a session that worked the task, so a worker
+        that skipped ``aq git push`` cannot have the close publish commits it
+        attributed itself.
+        """
+        from src.git.identity import task_publish_policy
+
+        project = await self.db.get_project(task.project_id)
+        if task.repo_id:
+            repo = await self.db.get_repo(task.repo_id)
+            repository_url = repo.url if repo and repo.project_id == task.project_id else None
+        else:
+            repository_url = project.repo_url if project else None
+        return await task_publish_policy(
+            self.config, project, self.db, self.git, task.id,
+            checkout_path=workspace, repository_url=repository_url,
+        )
 
     async def _emit_bus(self, event_type: str, payload: dict) -> None:
         """Best-effort event emission — never fail the pipeline on a bus hiccup."""

@@ -28,6 +28,7 @@ import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
 from .envelope import emit
+from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 
 #: Poll interval for `aq chat` while waiting on a reply.
 _POLL_INTERVAL = 1.0
@@ -139,14 +140,16 @@ def message() -> None:
 @click.option("--to-id", default=None, help="Recipient id")
 @click.option("-b", "--body", required=True, help="Markdown message body")
 @click.option("-s", "--subject", default=None, help="Optional subject line")
-@click.option("--from-id", default="cli", help="Sender id (default: cli)")
+@click.option("--from-id", default=None, help="Explicit sender id (server validates ownership)")
 @click.option(
     "--from-kind",
-    default="user",
+    default=None,
     type=click.Choice(VALID_FROM_KINDS),
-    help="Sender kind (default: user)",
+    help="Explicit sender kind (default: authenticated session, or local user:cli)",
 )
 @click.option("--thread-id", default=None, help="Conversation grouping key")
+@click.option("--client-key", default=None, help="Collaboration send retry key (up to 128 characters)")
+@claim_epoch_option
 @click.option("--priority", default=100, type=int, help="Delivery ordering, lower first")
 @click.option(
     "--archive-after-inject",
@@ -173,26 +176,38 @@ def message_send(
     to_id: str | None,
     body: str,
     subject: str | None,
-    from_id: str,
-    from_kind: str,
+    from_id: str | None,
+    from_kind: str | None,
     thread_id: str | None,
+    client_key: str | None,
+    claim_epoch: int | None,
     priority: int,
     archive_after_inject: bool,
     pane_open_json: str | None,
 ) -> None:
     """Queue a message to a session, task, profile, or user."""
-    kind, ident = _split_recipient(to, to_kind, to_id)
+    from src.collaboration import is_collaboration_thread
+
+    fanout = is_collaboration_thread(thread_id) and not (to or to_kind or to_id)
+    kind, ident = (None, None) if fanout else _split_recipient(to, to_kind, to_id)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     params: dict[str, Any] = {
-        "to_kind": kind,
-        "to_id": ident,
         "body": body,
-        "from_kind": from_kind,
-        "from_id": from_id,
         "priority": priority,
         "archive_after_inject": archive_after_inject,
     }
+    if from_kind is not None:
+        params["from_kind"] = from_kind
+    if from_id is not None:
+        params["from_id"] = from_id
+    if not fanout:
+        params.update(to_kind=kind, to_id=ident)
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        params["claim_epoch"] = epoch
+    if client_key is not None:
+        params["client_key"] = client_key
     if project_id:
         params["project_id"] = project_id
     if subject:
@@ -217,7 +232,7 @@ def message_send(
     def _render(data: dict) -> None:
         console.print(
             f"[bold green]Message queued:[/] [bold bright_cyan]{data.get('message_id')}[/] "
-            f"→ {kind}:{ident}"
+            f"→ {thread_id if fanout else f'{kind}:{ident}'}"
         )
 
     emit(ctx, result, render=_render)
@@ -228,11 +243,23 @@ def message_send(
 # ---------------------------------------------------------------------------
 
 
-def _do_reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> None:
+def _do_reply(
+    ctx: click.Context,
+    message_id: str,
+    body: str,
+    via: str | None,
+    claim_epoch: int | None = None,
+    client_key: str | None = None,
+) -> None:
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     params: dict[str, Any] = {"message_id": message_id, "body": body}
     if via:
         params["via"] = via
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        params["claim_epoch"] = epoch
+    if client_key is not None:
+        params["client_key"] = client_key
 
     async def _reply():
         async with _get_client(api_url) as client:
@@ -253,25 +280,43 @@ def _do_reply(ctx: click.Context, message_id: str, body: str, via: str | None) -
 @click.argument("message_id")
 @click.argument("body")
 @click.option("--via", default=None, help="Delivery marker, e.g. transcript_tail")
+@click.option("--client-key", default=None, help="Collaboration reply retry key")
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
-def message_reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> None:
+def message_reply(
+    ctx: click.Context,
+    message_id: str,
+    body: str,
+    via: str | None,
+    client_key: str | None,
+    claim_epoch: int | None,
+) -> None:
     """Reply to a message by id."""
-    _do_reply(ctx, message_id, body, via)
+    _do_reply(ctx, message_id, body, via, claim_epoch, client_key)
 
 
 @cli.command("reply")
 @click.argument("message_id")
 @click.argument("body")
 @click.option("--via", default=None, help="Delivery marker, e.g. transcript_tail")
+@click.option("--client-key", default=None, help="Collaboration reply retry key")
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
-def reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> None:
+def reply(
+    ctx: click.Context,
+    message_id: str,
+    body: str,
+    via: str | None,
+    client_key: str | None,
+    claim_epoch: int | None,
+) -> None:
     """Reply to a message (alias for `aq message reply`).
 
     This is the reply protocol agents are taught: `aq reply <msg-id> "…"`.
     """
-    _do_reply(ctx, message_id, body, via)
+    _do_reply(ctx, message_id, body, via, claim_epoch, client_key)
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +334,12 @@ def reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> No
     default=False,
     help="Mark the returned messages delivered (prompt-boundary injection)",
 )
+@click.option(
+    "--include-consumed",
+    is_flag=True,
+    default=False,
+    help="Also show messages already delivered to this recipient (read-only)",
+)
 @click.option("--limit", default=None, type=int, help="Max rows")
 @click.pass_context
 @_handle_errors
@@ -298,6 +349,7 @@ def message_inbox(
     to_kind: str | None,
     to_id: str | None,
     inject: bool,
+    include_consumed: bool,
     limit: int | None,
 ) -> None:
     """Show a recipient's pending (undelivered) messages."""
@@ -306,7 +358,10 @@ def message_inbox(
     kind, ident = resolved
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}
+    params: dict[str, Any] = {
+        "to_kind": kind, "to_id": ident, "inject": inject,
+        "include_consumed": include_consumed,
+    }
     if limit is not None:
         params["limit"] = limit
 
@@ -315,15 +370,28 @@ def message_inbox(
             return await client.execute("message_inbox", params)
 
     result = _run(_inbox())
+    items = result.get("messages", [])
+    consumed = result.get("consumed_messages") or []
 
-    def _render(data: dict) -> None:
-        items = data.get("messages", [])
-        if not items:
+    def _render(render_items: list[dict]) -> None:
+        if not render_items and not consumed:
             console.print(f"[dim]No pending messages for {kind}:{ident}.[/]")
             return
-        _render_message_table(items, f"Inbox — {kind}:{ident}")
+        if render_items:
+            _render_message_table(render_items, f"Inbox — {kind}:{ident}")
+        if consumed:
+            _render_message_table(
+                consumed, f"Already consumed — {kind}:{ident} (read-only)"
+            )
 
-    emit(ctx, result, render=_render)
+    emit(
+        ctx,
+        items,
+        entity="message",
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render,
+    )
 
 
 @message.command("status")
@@ -357,6 +425,12 @@ def message_status(ctx: click.Context, message_id: str) -> None:
     default=False,
     help="Mark the returned messages delivered (prompt-boundary injection)",
 )
+@click.option(
+    "--include-consumed",
+    is_flag=True,
+    default=False,
+    help="Also show messages already delivered to this recipient (read-only)",
+)
 @click.option("--limit", default=None, type=int, help="Max rows")
 @click.pass_context
 def inbox(
@@ -365,6 +439,7 @@ def inbox(
     to_kind: str | None,
     to_id: str | None,
     inject: bool,
+    include_consumed: bool,
     limit: int | None,
 ) -> None:
     """Show pending messages (alias for ``aq message inbox``).
@@ -376,6 +451,13 @@ def inbox(
     all exit 0 with no stdout — so the hook never blocks the agent's next
     prompt and never leaks tracebacks into the prompt window.  Use
     ``aq message inbox`` for the interactive form that surfaces errors.
+
+    ``--include-consumed`` re-reads bodies this recipient already consumed.
+    It exists for the crashed-inject case: ``--inject`` marks rows delivered
+    before the agent ever sees them, so when the agent's own output dies the
+    bodies are otherwise gone with nothing pending left to ask for. It is
+    opt-in and never runs on the bare hook, which would re-print consumed
+    mail on every prompt.
     """
     from .exceptions import CommandError, DaemonNotRunningError
 
@@ -396,7 +478,10 @@ def inbox(
             return
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
-    params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}
+    params: dict[str, Any] = {
+        "to_kind": kind, "to_id": ident, "inject": inject,
+        "include_consumed": include_consumed,
+    }
     if limit is not None:
         params["limit"] = limit
 
@@ -417,7 +502,11 @@ def inbox(
         return
     if result.get("error"):
         return
-    items = result.get("messages") or []
+    # A consumed re-read is opt-in, so its rows render only when asked for and
+    # never displace a pending body: pending mail is what the next turn acts on.
+    items = list(result.get("messages") or [])
+    if include_consumed:
+        items.extend(result.get("consumed_messages") or [])
     if not items:
         return
 
@@ -480,15 +569,22 @@ def message_list(
             return await client.execute("message_list", params)
 
     result = _run(_list())
+    items = result.get("messages", [])
 
-    def _render(data: dict) -> None:
-        items = data.get("messages", [])
-        if not items:
+    def _render(render_items: list[dict]) -> None:
+        if not render_items:
             console.print("[dim]No messages.[/]")
             return
-        _render_message_table(items, "Messages")
+        _render_message_table(render_items, "Messages")
 
-    emit(ctx, result, render=_render)
+    emit(
+        ctx,
+        items,
+        entity="message",
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +861,9 @@ def chat(
     session = supervisor_session_name(project)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
+    if once is None and (ctx.obj or {}).get("json"):
+        raise click.UsageError("chat is interactive without --once and does not support JSON mode")
+
     if once is not None:
 
         async def _once():
@@ -785,6 +884,16 @@ def chat(
                     f"([dim]message {data.get('message_id')} still queued[/])"
                 )
 
+        if result.get("state") != "replied":
+            if (ctx.obj or {}).get("json"):
+                from .envelope import emit_error
+
+                emit_error(
+                    "command_error",
+                    f"no reply within {timeout:.0f}s",
+                    result,
+                )
+                raise SystemExit(1)
         emit(ctx, result, render=_render)
         if result.get("state") != "replied":
             raise SystemExit(1)

@@ -9,8 +9,59 @@ from dataclasses import dataclass, field
 
 from src.agents.routing import resolve_agent_profile, resolve_task_profile, task_agent_mismatch
 from src.database import Database
+from src.models import SessionRecord
+from src.routing.sources import ROLE
 
 logger = logging.getLogger(__name__)
+
+
+def project_live_session_counts(sessions: list[SessionRecord]) -> dict[str, int]:
+    """Count execution capacity independently of transient agent task pointers."""
+    counts: dict[str, int] = {}
+    for session in sessions:
+        if session.project_id and session.state in {"starting", "running", "draining"}:
+            counts[session.project_id] = counts.get(session.project_id, 0) + 1
+    return counts
+
+
+async def reset_stale_busy_agent(
+    db: Database, agent, *, bus=None, reset_state: bool = True
+) -> None:
+    """Reset a BUSY agent with no live session to IDLE, clearing its task pin.
+
+    Import path: ``src.orchestrator.agent_reconciler.reset_stale_busy_agent``.
+
+    ``agent`` may be an :class:`~src.models.Agent` instance or a bare agent
+    id string, so this is callable from contexts (e.g. a doctor ``--fix``
+    check) that never build a full ``Agent``. ``bus`` is optional — a caller
+    with no event bus (e.g. an offline doctor check) can still perform the
+    reset; when a bus is given, one ``agent.updated`` event is emitted after
+    the write.
+
+    ``reset_state=False`` clears the pointer alone and leaves the agent's
+    state exactly as it was. Only a BUSY agent is *supposed* to become IDLE:
+    production sets ERROR, and RETIRED while the agent still owns the task,
+    without clearing ``current_task_id``, and RETIRED is what gates workspace
+    reclaim, so a caller that sweeps agents in any state (the
+    ``agents.dangling_current_task`` doctor fix) must not write IDLE over
+    them. The reconciler's own rescue rule only ever sees BUSY agents and
+    keeps the default.
+
+    Never touches ``tasks.assigned_agent_id`` or any integration-owner row:
+    a retained claim keeps its evidence on the task side, not the agent's
+    transient pointer.
+    """
+    from src.models import AgentState
+
+    agent_id = agent.id if hasattr(agent, "id") else agent
+    fields = {"current_task_id": None}
+    if reset_state:
+        fields["state"] = AgentState.IDLE
+    await db.update_agent(agent_id, **fields)
+    if bus is not None:
+        await bus.emit("agent.updated", {
+            "event_type": "agent.updated", "agent_id": agent_id,
+        })
 
 
 @dataclass
@@ -20,10 +71,6 @@ class ReconcileReport:
     created: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, profile_id)]
     reassigned: list[tuple[str, str, str]] = field(default_factory=list)  # [(agent_id, old, new)]
     skipped: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, reason)]
-    # Projects whose NULL default_profile_id was backfilled this pass.
-    defaults_backfilled: list[tuple[str, str]] = field(  # [(project_id, profile_id)]
-        default_factory=list
-    )
 
 
 class AgentReconciler:
@@ -33,17 +80,24 @@ class AgentReconciler:
     supply matches demand subject to project.max_concurrent_agents.
     """
 
-    def __init__(self, db: Database, *, worktrees_enabled: bool = False):
+    def __init__(
+        self, db: Database, *, worktrees_enabled: bool = False, data_dir: str | None = None,
+        bus=None,
+    ):
         self._db = db
-        self._warned_projects: dict[str, str] = {}
         # Rollout gate (worktree-execution §5).  While False the workspace
         # gate below counts inventory exactly as it does today.
         self._worktrees_enabled = worktrees_enabled
+        self._data_dir = data_dir
+        # Optional: announces agent.updated after each stale-BUSY reset.
+        # None is fine (e.g. tests that don't care about the event).
+        self._bus = bus
 
     async def reconcile(
-        self, *, provider_cooldowns: dict[str, float] | None = None,
+        self, *, suppressed_profile_ids: frozenset[str] | None = None,
+        suppressed_agent_ids: frozenset[str] | None = None,
         harness_registry=None, intelligence_classes: dict | None = None,
-        ready_tasks=None,
+        ready_tasks=None, launching_agent_ids: set[str] | None = None,
     ) -> ReconcileReport:
         """Supply durable global workers without changing any existing definition."""
         import time
@@ -51,27 +105,48 @@ class AgentReconciler:
         from src.models import Agent, AgentState, ProjectStatus, TaskStatus
 
         report = ReconcileReport()
-        cooldowns = provider_cooldowns or {}
-        now = time.time()
+        # Workers and profiles whose provider is unavailable
+        # (provider-failover D11): neither idle supply nor grown here.
+        suppressed_profiles = suppressed_profile_ids or frozenset()
+        suppressed_agents = suppressed_agent_ids or frozenset()
         projects = await self._db.list_projects()
-        tasks = await self._db.list_tasks()
         agents = await self._db.list_agents()
+        # Only the agents' current tasks are looked up for the stale-BUSY
+        # check; the scheduler passes ``ready_tasks``.
+        # Reading the whole table here was one of the scheduler cycle's two
+        # longest event-loop stalls on a 10k-task install (wise-ember.16).
+        tasks = await self._db.list_tasks(
+            task_ids={agent.current_task_id for agent in agents if agent.current_task_id}
+        )
         profiles = {p.id: p for p in await self._db.list_profiles()}
+        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
+
+        active_catalog_ids = (
+            active_catalog_profile_ids(self._data_dir) if self._data_dir else None
+        )
+        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
         live = await self._db.list_sessions(live_only=True)
+        live_counts = project_live_session_counts(live)
         live_agents = {row.agent_id for row in live if row.agent_id}
+        live_agents.update(launching_agent_ids or ())
         # Legacy task sessions may not have been linked before adoption.
         live_tasks = {row.task_id for row in live if row.task_id}
         by_task = {task.id: task for task in tasks}
         for agent in agents:
             if agent.state != AgentState.BUSY or agent.id in live_agents:
                 continue
-            if agent.current_task_id in by_task or agent.current_task_id in live_tasks:
+            if agent.current_task_id in live_tasks:
+                continue
+            task = by_task.get(agent.current_task_id)
+            if task is not None and task.status in (
+                TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+            ):
                 continue
             # Pool launch reservations have no task yet; do not steal an
             # identity while its provider is still starting the process.
             if agent.last_heartbeat and time.time() - agent.last_heartbeat < 120:
                 continue
-            await self._db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
+            await reset_stale_busy_agent(self._db, agent, bus=self._bus)
             agent.state = AgentState.IDLE
             agent.current_task_id = None
 
@@ -82,17 +157,19 @@ class AgentReconciler:
             and agent.current_task_id is None
             and agent.enabled
             and agent.role == "worker"
-            and cooldowns.get(agent.profile_id, 0) <= now
+            and agent.profile_id not in suppressed_profiles
+            and agent.id not in suppressed_agents
             and agent.id not in live_agents
             and agent.profile_id in profiles
         ]
+        if ready_tasks is None and any(p.status == ProjectStatus.ACTIVE for p in projects):
+            ready_tasks = await self._db.list_tasks(status=TaskStatus.READY)
         for project in projects:
             if project.status != ProjectStatus.ACTIVE:
                 continue
-            ready_source = ready_tasks if ready_tasks is not None else tasks
             ready = [
                 task
-                for task in ready_source
+                for task in ready_tasks
                 if task.project_id == project.id and task.status == TaskStatus.READY
                 and not task.is_blocked
             ]
@@ -102,7 +179,7 @@ class AgentReconciler:
             # execution identity. An idle triage worker cannot suppress supply
             # for an explicitly routed Codex/deep task.
             def supplied(task):
-                profile = resolve_task_profile(task, project, profiles)
+                profile = resolve_task_profile(task, profiles)
                 if task.profile_id and profile is None:
                     return False
                 return any(
@@ -116,41 +193,53 @@ class AgentReconciler:
                 )
 
             uncovered = [task for task in ready if not supplied(task)]
-            if not uncovered:
-                # Keep a missing project default missing when existing workers
-                # can supply their own defaults.
-                continue
-            default_pid = project.default_profile_id
-            if not default_pid and any(not task.profile_id for task in uncovered):
-                default_pid = await self._backfill_project_default(project, profiles, report)
+            # A routed task names its profile (mandatory routing §8: no
+            # project default); the orchestrator hands over routed work only.
             needed = {
-                (task.profile_id or default_pid, task.intelligence_class or ""): task
-                for task in uncovered if task.profile_id or default_pid
+                (task.profile_id, task.intelligence_class or ""): task
+                for task in uncovered if task.profile_id
             }
             if not needed:
-                reason = "no resolvable profile_id (no usable agent profiles are registered)"
-                self._warn_once(project.id, reason)
-                report.skipped.append((project.id, reason))
                 continue
-            busy = sum(
-                1
-                for agent in agents
-                if agent.current_task_id in by_task
-                and by_task[agent.current_task_id].project_id == project.id
-            )
+            busy = live_counts.get(project.id, 0)
             remaining = max(0, project.max_concurrent_agents - busy)
             for profile_id, task_class in sorted(needed):
                 requested = needed[(profile_id, task_class)]
                 profile = profiles.get(profile_id)
                 if not profile or getattr(profile, "lifecycle", "task") == "pool":
                     continue
-                if max(cooldowns.get(profile_id, 0), cooldowns.get(profile.id, 0)) > now:
+                if requested.route_source == ROLE and any(
+                    agent.profile_id == profile_id for agent in agents
+                ):
+                    # A saved role definition is persistent. Unavailability
+                    # (including an operator disabling it) is not demand for
+                    # a duplicate, even in another project or intelligence class.
+                    report.skipped.append((project.id, f"waiting for role agent {profile_id}"))
+                    continue
+                if (
+                    active_catalog_ids is not None
+                    and profile_id in catalog_ids
+                    and profile_id not in active_catalog_ids
+                ):
+                    report.skipped.append(
+                        (project.id, f"profile {profile_id} is unavailable; rerun aq install after provider setup")
+                    )
+                    continue
+                if profile_id in suppressed_profiles or profile.id in suppressed_profiles:
                     continue
                 # The named supervisor is seeded separately; no per-project
                 # or task-demand duplicates of that global identity.
                 if profile_id == "supervisor" or profile.runtime == "supervisor":
                     continue
                 if remaining <= 0:
+                    if busy >= project.max_concurrent_agents:
+                        reason = (
+                            f"project agent cap reached: {busy}/{project.max_concurrent_agents} "
+                            f"live sessions (max_concurrent_agents={project.max_concurrent_agents})"
+                        )
+                    else:
+                        reason = "waiting for newly created agent supply"
+                    report.skipped.append((project.id, reason))
                     break
                 if self._runtime_requires_workspace(profile):
                     count = await self._db.count_available_workspaces(
@@ -164,9 +253,18 @@ class AgentReconciler:
                             (project.id, f"no available workspace for {profile_id}")
                         )
                         continue
+                used_names = {
+                    agent.name for agent in agents
+                    if agent.enabled and agent.profile_id == profile_id
+                }
+                name = profile.name
+                suffix = 2
+                while name in used_names:
+                    name = f"{profile.name} {suffix}"
+                    suffix += 1
                 agent = Agent(
                     id=f"agent-{uuid.uuid4().hex[:12]}",
-                    name=f"{profile_id}-{len(agents) + 1}",
+                    name=name,
                     profile_id=profile_id,
                     intelligence_class=task_class or None,
                 )
@@ -178,12 +276,11 @@ class AgentReconciler:
                 if mismatch:
                     report.skipped.append((project.id, mismatch))
                     continue
-                # A deletion means the user sized this global roster. Keep
-                # reusing its workers, but never grow it back automatically;
-                # untouched registries retain their normal lazy bootstrap.
+                # Create a fresh identity when existing workers cannot serve demand.
+                # Deleted identities remain historical records, not scaling policy.
                 if not await self._db.create_automatic_agent(agent):
                     report.skipped.append(
-                        (project.id, "roster was manually sized; add an agent explicitly")
+                        (project.id, "automatic worker creation declined")
                     )
                     break
                 agents.append(agent)
@@ -191,49 +288,6 @@ class AgentReconciler:
                 report.created.append((project.id, profile_id))
                 remaining -= 1
         return report
-
-    async def _backfill_project_default(
-        self, project, profiles: dict, report: ReconcileReport
-    ) -> str | None:
-        """Pick and persist a ``default_profile_id`` for *project*.
-
-        Called only when the project has READY tasks that carry no
-        explicit ``profile_id`` and the project has no default of its
-        own.  Persisting (rather than resolving on the fly each tick)
-        matters for two reasons: the choice stays stable across daemon
-        restarts, and ``Orchestrator._resolve_profile`` reads the same
-        column — so the profile the task actually executes under matches
-        the one its agent row was created for.
-
-        Returns the chosen profile id, or ``None`` when no profile is
-        eligible (empty/unsynced ``agent_profiles`` table).
-        """
-        from src.profiles.default_selection import select_default_profile_id
-
-        chosen = select_default_profile_id(profiles)
-        if not chosen:
-            return None
-        try:
-            await self._db.update_project(project.id, default_profile_id=chosen)
-        except Exception:
-            # A failed write must not take down the tick; we simply retry
-            # next pass.  Returning the id anyway would desync the DB
-            # from the agent rows we are about to create.
-            logger.exception(
-                "reconciler: failed to backfill default_profile_id=%s for project=%s",
-                chosen,
-                project.id,
-            )
-            return None
-        project.default_profile_id = chosen
-        report.defaults_backfilled.append((project.id, chosen))
-        logger.info(
-            "reconciler: project=%s had READY tasks with no resolvable profile_id; "
-            "backfilled default_profile_id=%s",
-            project.id,
-            chosen,
-        )
-        return chosen
 
     def _runtime_requires_workspace(self, profile) -> bool:
         """Always True: no Runtime class decides workspace needs any more.
@@ -244,9 +298,3 @@ class AgentReconciler:
         the in-process Supervisor was the one exception.
         """
         return True
-
-    def _warn_once(self, project_id: str, reason: str) -> None:
-        if self._warned_projects.get(project_id) == reason:
-            return
-        self._warned_projects[project_id] = reason
-        logger.warning("reconciler: project=%s has READY tasks but %s", project_id, reason)
