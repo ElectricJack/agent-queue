@@ -5,6 +5,7 @@ escalation deadlines to this handler through wait_deadline_fire. No task/session
 is woken here and no activation configuration is written.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -17,6 +18,7 @@ from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
     admission_reservations, tasks, wait_deadlines, wait_escalations, wait_records,
 )
+from src.integration.stacked_branches import shared_stack_inputs
 from src.waits.admission import AdmissionReader, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
 from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
@@ -48,9 +50,8 @@ class SchedulerWaitService:
     def authorize(self, principal):
         if principal is None or principal.kind != PrincipalKind.SERVICE:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
-        if not enabled(self.orchestrator.config):
-            raise WaitError("wait.disabled", "scheduler waits are disabled")
 
+    @shared_stack_inputs()
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]
@@ -63,7 +64,8 @@ class SchedulerWaitService:
             await lock_graph(conn)
             candidates = (await conn.execute(select(tasks).where(
                 tasks.c.project_id == project_id,
-                or_(tasks.c.status == "READY", exists(select(wait_records.c.id).where(
+                or_(tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
+                    if args.get("initial_audit") else tasks.c.status == "READY", exists(select(wait_records.c.id).where(
                     wait_records.c.origin == "scheduler", wait_records.c.owner_id == tasks.c.id,
                     wait_records.c.outcome == "pending",
                 )), exists(select(admission_reservations.c.id).where(
@@ -78,6 +80,7 @@ class SchedulerWaitService:
             reservations = {r["task_id"]: dict(r) for r in (await conn.execute(
                 select(admission_reservations).where(
                     admission_reservations.c.project_id == project_id,
+                    admission_reservations.c.task_id.is_not(None),
                     admission_reservations.c.state.in_(("pending", "overdue", "granted")),
                 ).order_by(admission_reservations.c.id).with_for_update()
             )).mappings()}
@@ -86,8 +89,19 @@ class SchedulerWaitService:
                 wait_deadlines.c.deadline_type == "reservation",
             ))).mappings()]
             desired = set()
+            if not enabled(self.orchestrator.config, project_id):
+                for reservation in reservations.values():
+                    await conn.execute(update(admission_reservations).where(
+                        admission_reservations.c.id == reservation["id"],
+                    ).values(state="cancelled"))
             for task in candidates:
-                observation = await self.reader.observe_task(conn, task["id"])
+                if not enabled(self.orchestrator.config, project_id):
+                    continue
+                audit = bool(args.get('initial_audit') or any(
+                    r['owner_id'] == task['id'] and
+                    (r['decision_inputs'] or {}).get('legacy_audit') for r in previous))
+                observation = await self.reader.observe_task(
+                    conn, task["id"], migration_audit=audit)
                 reservation = reservations.get(task["id"])
                 if reservation and (observation is None
                         or reservation["scope"] != observation.binding["scope"]
@@ -153,6 +167,9 @@ class SchedulerWaitService:
                             continue
                     changed.add(f"task:{task['id']}")
                     if (row["outcome"] == "pending" and observation.owns_branch
+                            and (not audit or (task['status'] == 'READY'
+                                and not any(observation.constraints[key]['blocked'] for key in (
+                                    'policy_hold', 'batch_hold', 'backoff', 'budget', 'provider'))))
                             and condition.parameters["blocker"] == "slot"):
                         first_due = min([
                             d["due_at"] for d in prior_deadlines
@@ -177,6 +194,11 @@ class SchedulerWaitService:
                                     outcome="satisfied" if observed.state == "satisfied"
                                     else "source_unavailable", result_ref=observed.result_ref))
                     changed.add(f"task:{row['owner_id']}")
+            if args.get("initial_audit"):
+                from src.wait_runtime.legacy_audit import audit_scheduler_age
+
+                await audit_scheduler_age(conn, project_id, now=now,
+                    deadline_seconds=self.orchestrator.config.wait_policy.branch_admission_deadline_seconds)
             if changed:
                 await recompute_from(conn, changed, now=now)
         return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
@@ -217,8 +239,8 @@ class SchedulerWaitService:
 
     async def deadline_locked(self, conn, due, row, *, now, handler):
         """Compose with the listener's lease/task/wait/deadline transaction."""
-        if not enabled(self.orchestrator.config):
-            raise WaitError("wait.disabled", "scheduler waits are disabled")
+        if not enabled(self.orchestrator.config, row["project_id"]):
+            return {"success": True, "fired": False, "reason": "disabled"}
         task = (await conn.execute(select(tasks).where(
             tasks.c.id == row["owner_id"],
         ).with_for_update())).mappings().first()
@@ -292,9 +314,46 @@ class SchedulerWaitService:
                 **({'escalation_event': event_payload} if event_payload else {})}
 
 
+# One project's sync holds the global graph fence and row locks while it
+# observes admission on further pooled connections. Unbounded, a slow project
+# held them for 500s+ and convoyed the pool (2026-10-22). The cancelled
+# transaction rolls back whole; the next cycle re-scans from authoritative rows.
+SCHEDULER_SYNC_TIMEOUT = 30.0
+
+
+async def bounded_sync(handler, args, *, timeout=None):
+    timeout = SCHEDULER_SYNC_TIMEOUT if timeout is None else timeout
+    try:
+        async with asyncio.timeout(timeout):
+            result = await handler.execute("scheduler_wait_sync", args)
+    except TimeoutError:
+        logger.warning("scheduler_wait_sync for project %s exceeded %.0fs; rolled back, "
+                       "retrying next cycle", args["project_id"], timeout)
+        return {"success": True, "timed_out": True}
+    if result.get("error_code") == "wait.graph_busy":
+        # A busy fence defers this project, like a timeout; it is no failure.
+        logger.warning("scheduler_wait_sync for project %s deferred: wait graph busy",
+                       args["project_id"])
+        return {"success": True, "timed_out": True}
+    return result
+
+
+_rotation = 0
+
+
+def _rotated(projects):
+    """Start each tick one project later, so a bounded stage that keeps
+    running out of time on the first projects cannot starve the rest."""
+    global _rotation
+    if not projects:
+        return projects
+    _rotation = (_rotation + 1) % len(projects)
+    return projects[_rotation:] + projects[:_rotation]
+
+
 async def scheduler_tick(handler):
     o = getattr(handler, "orchestrator", None)
-    if o is None or not enabled(getattr(o, "config", None)):
+    if o is None:
         return
     service = getattr(o, "wait_scheduler_service", None) or SchedulerWaitService(o)
     handlers = getattr(o, "wait_v2_handlers", None)
@@ -306,8 +365,8 @@ async def scheduler_tick(handler):
     handlers.setdefault("wait_deadline_fire", service.deadline)
     with principal_context(ExecutionPrincipal.service("scheduler-waits")):
         cycle_id = str(uuid.uuid4())
-        for project in await o.db.list_projects():
-            result = await handler.execute("scheduler_wait_sync", {
+        for project in _rotated(await o.db.list_projects()):
+            result = await bounded_sync(handler, {
                 "project_id": project.id, "blockers": [], "cycle_id": cycle_id,
             })
             if not result.get("success"):

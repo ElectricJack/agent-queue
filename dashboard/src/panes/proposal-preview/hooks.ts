@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getProposalApiProposalsProposalIdGet, gateShow, askPrepareDecision, askDecide } from "../../api/client";
 import { useGates, type GateSummary } from "../../api/hooks";
+import { randomUUID } from "../../randomUUID";
 
 export interface ProposalTask {
   tempId: string;
@@ -73,7 +74,7 @@ export function usePrepareProposalDecision() {
       const { data } = await askPrepareDecision({ body: args });
       if (!data?.success) throw new Error("The request changed; reload it before deciding.");
       const choices = ask.context.choices as Array<{ key: string; effect: string }>;
-      return { args, preview_id: data.preview.id, idempotency_key: crypto.randomUUID(),
+      return { args, preview_id: data.preview.id, idempotency_key: randomUUID(),
         effect: choices.find((choice) => choice.key === input.option_key)?.effect ?? "" };
     },
   });
