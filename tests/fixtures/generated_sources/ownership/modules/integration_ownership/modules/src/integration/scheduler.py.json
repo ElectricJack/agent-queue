@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/scheduler.py::TrainService._record_admission_on::99c8d906722fdf4828580fefd91b18631fa12234e63ad861424971cb79eaddaa": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1043,
+      "owner": "TrainService._record_admission_on",
+      "owner_fingerprint": "895d5e11835fe04d3b748842785b4a73086111d05a7e1df82b585a24dc0c2181",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/scheduler.py::TrainService._record_migration_deferral_on::3473483ade12497212f0afab553ee0b0f0efff548eabff6dba8dc26aaee72348": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 968,
+      "owner": "TrainService._record_migration_deferral_on",
+      "owner_fingerprint": "5b38b6370ddcd41eed7c0c22d9b6e75d5b53af653a78323b9ec3b229649ddf39",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

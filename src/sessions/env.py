@@ -21,15 +21,18 @@ A pool launch (§11.2) adds its own ``extra_env`` markers instead:
 ``AQ_SESSION_KIND=pool``, ``AQ_AGENT_ID``, ``AQ_PROFILE_ID``, and
 ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` so commits made by a long-lived pool
 worker attribute to its profile rather than the operator's own git identity.
-See :func:`src.sessions.spec.SessionSpecBuilder.build_pool_spec`.
+See :func:`src.sessions.spec.SessionSpecBuilder.build_pool_spec`.  Task and
+pool launches both also carry :data:`src.sessions.spec.WORKER_TOOL_ENV`
+(``GRAFT_NO_SEED``, ``GRAFT_NO_REFRESH``, ``DO_NOT_TRACK``), so graft never
+copies its index into a worker slot.
 
 Scrubbing is **not** implemented here.  :func:`src.env_scrub.scrub_env` owns
 the policy (trust-and-ops R6); this module supplies the ``explicit`` map it
 merges last and passes the daemon config through so the
 ``security.env_scrub_enabled`` kill switch and ``security.env_allowlist``
-are actually honoured at the launch site.  ``CLAUDECODE`` /
-``CLAUDE_CODE_ENTRYPOINT`` stripping comes free from ``STRIP_ALWAYS`` there
-— this module does not repeat it.
+are actually honoured at the launch site. Inherited ``CLAUDE*`` controls are
+stripped there regardless of the scrub kill switch; deliberate launch
+settings (such as the worker compact window) are supplied explicitly.
 """
 
 from __future__ import annotations
@@ -227,6 +230,9 @@ def build_session_env(
     """
     explicit: dict[str, str] = {}
     explicit.update(session_db_isolation(work_dir))
+    from src.build_cache import cache_environment
+
+    explicit.update(cache_environment(config, project_id))
     if harness_env:
         harness_explicit = {str(k): str(v) for k, v in harness_env.items()}
         # A harness file cannot restore a marker inherited from its enclosing
