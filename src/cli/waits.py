@@ -103,20 +103,7 @@ def wait_register(
     """Register one condition and end the turn until its result pointer arrives."""
     if not kind and not condition and not producer_task:
         raise click.UsageError("--kind or --condition is required")
-    version = (
-        int(schema_version)
-        if schema_version
-        else 2
-        if (
-            condition
-            or producer_task
-            or sha
-            or claimed is not None
-            or escalate_after_seconds is not None
-            or kind not in {"task", "job", "message", "timer"}
-        )
-        else 1
-    )
+    version = int(schema_version) if schema_version else 2
     if version == 1 and any(
         value is not None
         for value in (
@@ -248,7 +235,7 @@ def wait_list(ctx, project_id, limit, offset, schema_version):
 @click.pass_context
 @_handle_errors
 def wait_cancel(ctx, wait_id, claim_epoch, schema_version):
-    """Cancel a wait held by the current claim, preserving the result."""
+    """Cancel a held wait, or let a supervisor retire an orphaned task wait."""
     params = {"wait_id": wait_id}
     if schema_version:
         params["schema_version"] = int(schema_version)
@@ -256,6 +243,80 @@ def wait_cancel(ctx, wait_id, claim_epoch, schema_version):
     if epoch is not None:
         params["claim_epoch"] = epoch
     emit(ctx, _execute(ctx, "wait_cancel", params))
+
+
+def _render_wait(record):
+    lifecycle = record.get("lifecycle") or record.get("outcome", "pending")
+    click.echo(f"Wait {record.get('wait_id', '—')} · {lifecycle}")
+    owner = record.get("owner", {})
+    if owner:
+        click.echo(f"Owner: {owner.get('kind')}:{owner.get('id')}")
+    age_seconds = record.get("age_seconds")
+    age = (
+        "age_unknown"
+        if record.get("age_unknown") or age_seconds is None
+        else f"{age_seconds:.0f}s"
+    )
+    click.echo(f"Age: {age}")
+    click.echo("Verified evidence:")
+    click.echo(json.dumps(record.get("verified", record.get("evidence", {})), indent=2))
+    click.echo("Agent commentary:")
+    click.echo(record.get("claimed") or "None")
+    for label, key in (
+        ("Sleep decision", "sleep"),
+        ("Effective priority", "effective_priority"),
+        ("Deadlines", "deadlines"),
+        ("Blocker chain", "chain"),
+        ("Escalation", "escalation"),
+        ("Reservations", "reservations"),
+        ("Continuation", "continuation"),
+    ):
+        if record.get(key):
+            click.echo(f"{label}: {json.dumps(record[key], sort_keys=True)}")
+    click.echo(f"Policy layer: {record.get('policy_layer', 'default')}")
+    if record.get("chain_truncated"):
+        click.echo("Blocker chain truncated.")
+
+
+def _render_explain(payload):
+    if payload.get("task"):
+        task = payload["task"]
+        click.echo(f"Task {task['id']}: {task['lifecycle']}")
+        click.echo(f"Priority: base {task['base_priority']}, effective {task['effective_priority']}")
+        if task.get("donor_task_id"):
+            click.echo(f"Donor: {task['donor_task_id']} via {json.dumps(task.get('donor_path', []))}")
+    records = [payload["explanation"]] if payload.get("explanation") else payload.get("waits", [])
+    for record in records:
+        _render_wait(record)
+    if not records:
+        click.echo("No active wait records.")
+    if payload.get("truncated"):
+        click.echo(f"Waits truncated: showing {len(records)} of {payload.get('total', 'unknown')}.")
+
+
+def _render_graph(payload):
+    graph = payload.get("graph") or payload
+    for project in graph.get("projects", []):
+        click.echo(f"Project {project['project_id']}: {project.get('total_waits', 0)} pending waits")
+        for record in project.get("waits", []):
+            _render_wait(record)
+        for label, key in (
+            ("Counts by kind and decision", "counts"),
+            ("Longest chains", "longest_chains"),
+            ("Deadlocks", "deadlocks"),
+            ("Escalated waits", "escalated_waits"),
+            ("Branch blockers and reservations", "branch_blockers"),
+            ("Held message backlog", "held_message_backlog"),
+        ):
+            if project.get(key):
+                click.echo(f"{label}: {json.dumps(project[key], sort_keys=True)}")
+        truncated = [key for key, value in project.get("truncated", {}).items() if value]
+        if truncated:
+            click.echo(f"Project results truncated: {', '.join(truncated)}.")
+    if not graph.get("projects"):
+        click.echo("No project waits.")
+    if graph.get("truncated"):
+        click.echo("Project list truncated.")
 
 
 @wait.command("explain")
@@ -272,31 +333,25 @@ def wait_explain(ctx, wait_id, task_id, project_id, history):
     params = {"wait_id": wait_id, "task_id": task_id, "project_id": project_id, "history": history}
     result = _execute(ctx, "wait_explain", {k: v for k, v in params.items() if v is not None})
 
-    def render(payload):
-        for record in (
-            [payload["explanation"]] if payload.get("explanation") else payload.get("waits", [])
-        ):
-            click.echo("Verified evidence:")
-            click.echo(json.dumps(record.get("verified", record.get("evidence", {})), indent=2))
-            click.echo("Agent commentary:")
-            click.echo(record.get("claimed") or "None")
-
-    emit(ctx, result, render=render)
+    emit(ctx, result, render=_render_explain)
 
 
 @wait.command("graph")
 @click.option("--project", "project_id", default=None)
 @click.option("--fleet", is_flag=True)
+@click.option("--costs", is_flag=True, help="Include measured wait and resume costs.")
 @click.pass_context
 @_handle_errors
-def wait_graph(ctx, project_id, fleet):
+def wait_graph(ctx, project_id, fleet, costs):
     """Read project blockers or the redacted fleet summary."""
     if fleet and project_id:
         raise click.UsageError("--project and --fleet are mutually exclusive")
     params = {"fleet": fleet}
+    if costs:
+        params["costs"] = True
     if project_id:
         params["project_id"] = project_id
-    emit(ctx, _execute(ctx, "wait_graph", params))
+    emit(ctx, _execute(ctx, "wait_graph", params), render=_render_graph)
 
 
 @wait.command("checkpoint")
@@ -393,13 +448,18 @@ def wait_lift(ctx, **params):
 
 
 @wait.command("bridge")
+@click.option("--mode", type=click.Choice(["project", "agent-waits"]), default="agent-waits")
 @click.option("--project", "project_id", default=None)
 @click.option("--apply", is_flag=True)
 @click.pass_context
 @_handle_errors
-def wait_bridge(ctx, project_id, apply):
-    """Operator-only projection of legacy waits; implementation must be installed."""
-    params = {"apply": apply}
+def wait_bridge(ctx, project_id, apply, mode):
+    """Preview legacy adoption; --apply commits the guarded migration.
+
+    agent-waits adopts v1 waits and WAITING_INPUT tasks, including the first
+    scheduler audit. project projects legacy sources and performs that audit.
+    """
+    params = {"apply": apply, "mode": mode}
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_legacy_bridge", params))

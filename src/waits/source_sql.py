@@ -112,4 +112,15 @@ def task_transition_statement(statement, previous_status):
     )
     source_rows = union_all(task_rows, edge_rows).cte("wait_source_rows")
     inserted = _insert_sources(source_rows)
-    return select(changed).where(_notified(inserted))
+    result = select(changed).where(_notified(inserted))
+    if previous_status == "READY":
+        from sqlalchemy import update
+        from src.database.tables import admission_reservations
+
+        cancelled = update(admission_reservations).where(
+            admission_reservations.c.task_id == changed.c.id,
+            changed.c.status != "READY",
+            admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+        ).values(state="cancelled").cte("wait_reservations_cancelled")
+        result = result.add_cte(cancelled)
+    return result

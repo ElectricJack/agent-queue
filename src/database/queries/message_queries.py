@@ -25,15 +25,76 @@ import uuid
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.waits.sources import insert_message_with_source_event
-from src.waits.holding import (
-    message_is_held, reply_window_start, stale_wait_wake, wake_already_delivered,
+from src.database.tables import (
+    agent_questions,
+    escalations,
+    messages,
+    projects,
+    sessions,
+    tasks,
+    wait_records,
 )
-from src.database.tables import messages, projects, sessions, tasks, wait_records
+from src.escalations.facts import TERMINAL_STATES
 from src.models import Message
-
+from src.waits.holding import (
+    message_is_held,
+    reply_window_start,
+    stale_wait_wake,
+    wake_already_delivered,
+)
+from src.waits.sources import insert_message_with_source_event
 
 GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD = 50
+
+
+def _obsolete_notice():
+    """Use producer-owned identities, never task names guessed from message bodies."""
+    prefixes = (
+        ("task_recovery", "Task recovery: "),
+        ("stale_open", "Stale BLOCKED task: "),
+        ("stale_open", "Stale PAUSED task: "),
+    )
+    subject_task = case(*(
+        (and_(messages.c.body_kind == kind, messages.c.subject.startswith(prefix)),
+         func.substr(messages.c.subject, len(prefix) + 1))
+        for kind, prefix in prefixes
+    ))
+    unfinished = select(tasks.c.id).where(
+        tasks.c.id == subject_task, tasks.c.project_id == messages.c.project_id,
+        tasks.c.status != "COMPLETED",
+    ).exists()
+    escalation = select(escalations.c.id).where(
+        escalations.c.id == messages.c.thread_id,
+        escalations.c.project_id == messages.c.project_id,
+        or_(
+            escalations.c.state.in_(tuple(TERMINAL_STATES)),
+            select(tasks.c.id).where(
+                tasks.c.id == escalations.c.task_id,
+                tasks.c.project_id == escalations.c.project_id,
+                tasks.c.status == "COMPLETED",
+            ).exists(),
+        ),
+    ).exists()
+    question = select(agent_questions.c.id).where(
+        messages.c.id == "msg-" + agent_questions.c.id,
+        agent_questions.c.project_id == messages.c.project_id,
+        or_(
+            agent_questions.c.state != "supervisor",
+            select(tasks.c.id).where(
+                tasks.c.id == agent_questions.c.task_id,
+                tasks.c.project_id == agent_questions.c.project_id,
+                tasks.c.status == "COMPLETED",
+            ).exists(),
+        ),
+    ).exists()
+    return or_(
+        and_(messages.c.from_kind == "system", subject_task.is_not(None), ~unfinished),
+        and_(messages.c.body_kind.in_((
+            "supervisor_delivery", "escalation_reply", "escalation_owner_reminder",
+        )), escalation),
+        and_(messages.c.from_kind == "system", messages.c.body_kind == "agent_question",
+             question),
+    )
 
 
 def _global_supervisor_mailbox():
@@ -95,6 +156,7 @@ def _row_to_message(row) -> Message:
         created_seq=row["created_seq"],
         last_notified_at=row["last_notified_at"],
         notification_attempts=row["notification_attempts"],
+        provenance=row["provenance"],
     )
 
 
@@ -149,10 +211,116 @@ def _competing_delivery(msg: Message, window: float, *, window_start=None):
 
 
 class MessageQueriesMixin:
+    async def supervisor_requests(self, row) -> list[Message]:
+        """Oldest unanswered requests, including consumed worker questions.
+
+        Include prior instance UUIDs: a fresh supervisor inherits obligations
+        sent to an immutable predecessor address as well as its logical mailbox.
+        """
+        prior = select(sessions.c.id).where(
+            sessions.c.name == row.name, sessions.c.profile_id == "supervisor",
+            sessions.c.project_id.is_not_distinct_from(row.project_id),
+        )
+        address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+        reply = messages.alias("supervisor_reply")
+        answered = select(reply.c.id).where(reply.c.reply_to_id == messages.c.id).exists()
+        completed = (row.supervisor_health or {}).get("last_completed_at") or 0
+        # A consumed status report is handled by a successful turn. An
+        # explicit reply wait or native question remains an obligation.
+        waiting = select(wait_records.c.id).where(
+            wait_records.c.condition_kind == "message", wait_records.c.outcome == "pending",
+            wait_records.c.verification_state == "verified",
+            wait_records.c.cleared_at.is_(None),
+            wait_records.c.project_id == messages.c.project_id,
+            wait_records.c.session_id == messages.c.from_id,
+            wait_records.c.condition["thread_id"].astext == messages.c.thread_id,
+        ).correlate(messages).exists()
+        statement = select(messages).where(
+            messages.c.to_kind == "session",
+            or_(messages.c.to_id.in_((address, row.name)), messages.c.to_id.in_(prior)),
+            messages.c.reply_to_id.is_(None), ~answered,
+            ~func.coalesce(_obsolete_notice(), False),
+            or_(and_(messages.c.from_kind == "session", waiting),
+                messages.c.body_kind == "agent_question",
+                messages.c.created_at > completed),
+        ).order_by(messages.c.provenance["supervisor_escalated_at"].is_not(None),
+                   messages.c.created_at, messages.c.id).limit(100)
+        async with self._engine.begin() as conn:
+            return [_row_to_message(item) for item in (await conn.execute(statement)).mappings()]
+
+    async def escalate_supervisor_request(self, msg, row, *, now: float) -> bool:
+        """One global notice per request, without fabricating a worker reply."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(messages).where(
+                messages.c.id == msg.id,
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return False
+            provenance = dict(current["provenance"] or {})
+            if provenance.get("supervisor_escalated_at"):
+                return False
+            if (await conn.execute(_reply_covering(msg))).first() is not None:
+                return False
+            provenance["supervisor_escalated_at"] = now
+            await conn.execute(update(messages).where(messages.c.id == msg.id).values(
+                provenance=provenance,
+            ))
+            await self.create_message_in_transaction(
+                conn, project_id=msg.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                thread_id=msg.thread_id,
+                body=f"Unanswered worker request {msg.id} to {row.name} after "
+                     f"{int(now - msg.created_at)} seconds. Sender: {msg.from_kind}:{msg.from_id}. "
+                     f"Reply explicitly to the original request; its wait remains active.\n{msg.body[:2000]}",
+                body_kind="supervisor_health",
+            )
+        return True
+
+    async def supervisor_recovery_notice(self, row, health, requests, *, reason, now):
+        """Persist handoff and alert atomically with a recovery-attempt fence."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(sessions).where(
+                sessions.c.id == row.id, sessions.c.instance_token == row.instance_token,
+                sessions.c.desired_state == "running",
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return
+            saved = dict(current["supervisor_health"] or {})
+            if saved.get("notified_attempt") == health["attempts"]:
+                return
+            saved.update(health, notified_attempt=health["attempts"])
+            await conn.execute(update(sessions).where(sessions.c.id == row.id).values(
+                supervisor_health=saved,
+            ))
+            address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+            handoff = (f"Supervisor recovery handoff: {reason}. Previous session {row.id}, "
+                       f"conversation {row.session_key}, harness {row.harness}, model {row.model}. "
+                       f"Last completed turn: {health.get('last_completed_at')}. "
+                       f"Pending request IDs: {', '.join(msg.id for msg in requests)}. "
+                       "Inspect those originals and reply explicitly; do not infer answers from delivery.")
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session", to_id=address, body=handoff, body_kind="supervisor_handoff",
+            )
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                body=f"Restarting {row.name} fresh after {health['attempts']} recovery attempts. "
+                     + handoff, body_kind="supervisor_health",
+            )
+
     """Query mixin for ``messages``.  Expects ``self._engine``."""
 
     async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
         """Resolve opt-in routing without changing the sender's project context."""
+        if to_kind == "session" and to_id.startswith("supervisor-"):
+            suffix = to_id.removeprefix("supervisor-")
+            if suffix != "global" and not await conn.scalar(
+                    select(projects.c.id).where(projects.c.id == suffix)):
+                if project_id:
+                    to_id = "supervisor-" + project_id
         recipient_project = None
         if to_kind == "profile" and to_id == "supervisor":
             recipient_project = project_id
@@ -233,7 +401,40 @@ class MessageQueriesMixin:
         reply_to_id: str | None = None,
         body_kind: str | None = None,
         pane_open: str | None = None,
+        provenance: dict | None = None,
         conn=None,
+    ) -> Message:
+        """Compatibility send: own the transaction around the shared insert."""
+        async def write(connection):
+            return await self.create_message_in_transaction(
+                connection, project_id=project_id, from_kind=from_kind, from_id=from_id,
+                to_kind=to_kind, to_id=to_id, body=body, subject=subject, thread_id=thread_id,
+                priority=priority, archive_after_inject=archive_after_inject,
+                reply_to_id=reply_to_id, body_kind=body_kind, pane_open=pane_open,
+                provenance=provenance,
+            )
+        if conn is not None:
+            return await write(conn)
+        async with self._engine.begin() as owned:
+            return await write(owned)
+
+    async def create_message_in_transaction(
+        self, conn,
+        *,
+        project_id: str | None,
+        from_kind: str,
+        from_id: str,
+        to_kind: str,
+        to_id: str,
+        body: str,
+        subject: str | None = None,
+        thread_id: str | None = None,
+        priority: int = 100,
+        archive_after_inject: bool = False,
+        reply_to_id: str | None = None,
+        body_kind: str | None = None,
+        pane_open: str | None = None,
+        provenance: dict | None = None,
     ) -> Message:
         """Insert one message row and return the materialised dataclass."""
         msg = Message(
@@ -252,48 +453,41 @@ class MessageQueriesMixin:
             reply_to_id=reply_to_id,
             body_kind=body_kind,
             pane_open=pane_open,
+            provenance=provenance,
         )
-        async def write(conn):
-            if msg.reply_to_id is not None:
-                # Serialise with the transcript-tail sweep, which re-checks
-                # for a reply under the same lock before fabricating one.
-                await conn.execute(
-                    select(messages.c.id)
-                    .where(messages.c.id == msg.reply_to_id)
-                    .with_for_update()
-                )
-            msg.to_kind, msg.to_id = await self._supervisor_recipient(
-                conn, msg.to_kind, msg.to_id, msg.project_id,
+        if msg.reply_to_id is not None:
+            # Share the transcript-tail sweep's lock before recording a reply.
+            await conn.execute(
+                select(messages.c.id).where(messages.c.id == msg.reply_to_id).with_for_update()
             )
-            result = await insert_message_with_source_event(conn,
-                insert(messages).values(
-                    id=msg.id,
-                    project_id=msg.project_id,
-                    from_kind=msg.from_kind,
-                    from_id=msg.from_id,
-                    to_kind=msg.to_kind,
-                    to_id=msg.to_id,
-                    thread_id=msg.thread_id,
-                    subject=msg.subject,
-                    body=msg.body,
-                    priority=msg.priority,
-                    created_at=msg.created_at,
-                    delivered_at=None,
-                    read_at=None,
-                    archive_after_inject=int(msg.archive_after_inject),
-                    archived_at=None,
-                    reply_to_id=msg.reply_to_id,
-                    via=None,
-                    body_kind=msg.body_kind,
-                    pane_open=msg.pane_open,
-                ).returning(messages.c.created_seq)
-            )
-            msg.created_seq = result.scalar_one()
-        if conn is None:
-            async with self._engine.begin() as owned:
-                await write(owned)
-        else:
-            await write(conn)
+        msg.to_kind, msg.to_id = await self._supervisor_recipient(
+            conn, msg.to_kind, msg.to_id, msg.project_id,
+        )
+        result = await insert_message_with_source_event(conn,
+            insert(messages).values(
+                id=msg.id,
+                project_id=msg.project_id,
+                from_kind=msg.from_kind,
+                from_id=msg.from_id,
+                to_kind=msg.to_kind,
+                to_id=msg.to_id,
+                thread_id=msg.thread_id,
+                subject=msg.subject,
+                body=msg.body,
+                priority=msg.priority,
+                created_at=msg.created_at,
+                delivered_at=None,
+                read_at=None,
+                archive_after_inject=int(msg.archive_after_inject),
+                archived_at=None,
+                reply_to_id=msg.reply_to_id,
+                via=None,
+                body_kind=msg.body_kind,
+                pane_open=msg.pane_open,
+                provenance=msg.provenance,
+            ).returning(messages.c.created_seq)
+        )
+        msg.created_seq = result.scalar_one()
         return msg
 
     async def get_message(self, message_id: str) -> Message | None:
@@ -332,8 +526,10 @@ class MessageQueriesMixin:
                     messages.c.to_kind == to_kind,
                     messages.c.to_id == to_id,
                     messages.c.delivered_at.is_(None),
+                    messages.c.read_at.is_(None),
                     messages.c.archived_at.is_(None),
                     ~message_is_held(),
+                    ~_obsolete_notice(),
                 )
             )
             .order_by(
@@ -362,32 +558,15 @@ class MessageQueriesMixin:
             return [_row_to_message(r) for r in result.mappings().fetchall()]
 
     async def expire_finished_task_notices(self) -> int:
-        """Archive obsolete internal notices without fabricating a recipient read.
-
-        These producers use exact subject prefixes followed by the full task id.
-        Never infer a task from free-form user mail or expire an unfinished task.
-        """
-        prefixes = (
-            ("task_recovery", "Task recovery: "),
-            ("stale_open", "Stale BLOCKED task: "),
-            ("stale_open", "Stale PAUSED task: "),
-        )
-        subject_task = case(*(
-            (and_(messages.c.body_kind == kind, messages.c.subject.startswith(prefix)),
-             func.substr(messages.c.subject, len(prefix) + 1))
-            for kind, prefix in prefixes
-        ))
-        unfinished = select(tasks.c.id).where(
-            tasks.c.id == subject_task,
-            tasks.c.project_id == messages.c.project_id,
-            tasks.c.status != "COMPLETED",
-        ).exists()
+        """Archive obsolete task, question and escalation notices without a fake read."""
         async with self._engine.begin() as conn:
             result = await conn.execute(update(messages).where(
-                messages.c.from_kind == "system",
                 messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
-                subject_task.is_not(None), ~unfinished,
-            ).values(archived_at=time.time(), via="expired-task-notice"))
+                _obsolete_notice(),
+            ).values(archived_at=time.time(), via=case(
+                (messages.c.body_kind.in_(("task_recovery", "stale_open")), "expired-task-notice"),
+                else_="expired-source-notice",
+            )))
             return int(result.rowcount or 0)
 
     async def alert_global_supervisor_backlog(self) -> Message | None:
@@ -469,7 +648,9 @@ class MessageQueriesMixin:
             .where(
                 and_(
                     messages.c.delivered_at.is_(None),
+                    messages.c.read_at.is_(None),
                     messages.c.archived_at.is_(None),
+                    ~_obsolete_notice(),
                 )
             )
             .distinct()
@@ -535,6 +716,7 @@ class MessageQueriesMixin:
                 ~message_is_held(),
                 ~wake_already_delivered(),
                 ~stale_wait_wake(),
+                ~_obsolete_notice(),
                 or_(messages.c.last_notified_at.is_(None),
                     messages.c.last_notified_at <= now - retry_delay),
             ).values(
@@ -564,6 +746,20 @@ class MessageQueriesMixin:
                 wait_records.c.wake_delivered_at.is_(None),
             ).values(wake_delivered_at=now))
 
+    async def message_notification_is_pending(self, message_id: str) -> bool:
+        """A cold start can inject or settle mail after notification reservation."""
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(select(messages.c.id).where(
+                messages.c.id == message_id,
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_(None),
+                messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                ~wake_already_delivered(),
+                ~stale_wait_wake(),
+                ~_obsolete_notice(),
+            ).exists())))
+
     async def escalate_unread_message(self, message_id: str) -> Message | None:
         """Copy an unanswered notification to supervision or the user exactly once.
 
@@ -576,6 +772,7 @@ class MessageQueriesMixin:
                 messages.c.delivered_at.is_(None),
                 messages.c.read_at.is_(None),
                 messages.c.archived_at.is_(None),
+                ~_obsolete_notice(),
                 messages.c.notification_attempts >= 3,
             ).with_for_update())).mappings().first()
             if source is None or source["body_kind"] == "delivery_alert":

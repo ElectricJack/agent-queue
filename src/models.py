@@ -260,7 +260,7 @@ WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
 class DepType(Enum):
     """Typed dependency edge kinds on ``task_dependencies.dep_type``.
 
-    See docs/specs/design/work-graph.md §3.  The first four are *blocking*
+    See docs/specs/design/work-graph.md §3.  The first five are *blocking*
     edges — they feed the ``tasks.is_blocked`` projection, each with its own
     satisfaction rule.  The rest are provenance/association only and never
     affect readiness.
@@ -279,12 +279,16 @@ class DepType(Enum):
     ``CONDITIONAL_BLOCKS``
         satisfied only on *terminal* failure of the dependency: status
         BLOCKED, or FAILED with ``retry_count >= max_retries``.
+    ``DELIVERY_OF``
+        satisfied by a verified landed delivery receipt for the code leaf,
+        independently of task completion (held-ingestion design §3.1).
     """
 
     BLOCKS = "blocks"
     PARENT_CHILD = "parent-child"
     WAITS_FOR = "waits-for"
     CONDITIONAL_BLOCKS = "conditional-blocks"
+    DELIVERY_OF = "delivery-of"
     DISCOVERED_FROM = "discovered-from"
     RELATED = "related"
     DUPLICATES = "duplicates"
@@ -300,6 +304,7 @@ BLOCKING_DEP_TYPES = frozenset(
         DepType.PARENT_CHILD.value,
         DepType.WAITS_FOR.value,
         DepType.CONDITIONAL_BLOCKS.value,
+        DepType.DELIVERY_OF.value,
     }
 )
 """Edge kinds that gate readiness — everything else is informational."""
@@ -463,6 +468,7 @@ class Project:
     git_identity_name: str | None = None
     git_identity_email: str | None = None
     supervisor_enabled: bool = False
+    storage_binding: dict | None = None
 
 
 @dataclass
@@ -707,6 +713,7 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    generation: int = 0  # incremented on acquisition; fences preparation against reassignment
     # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
     disabled_reason: str | None = None
     disabled_at: float | None = None
@@ -771,6 +778,8 @@ class WorkspaceKind:
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)
+    # Optional per-kind bound; the project concurrency limit still applies.
+    max_slots: int | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -1094,6 +1103,7 @@ class Message:
     created_seq: int | None = None  # server sequence for typed message waits
     last_notified_at: float | None = None
     notification_attempts: int = 0
+    provenance: dict | None = None
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
@@ -1511,6 +1521,9 @@ class SessionRecord:
     failed_preparation: dict | None = None
     #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
     claim_refusal: dict | None = None
+
+    #: Turn health and recovery backoff for named supervisors; instance-fenced.
+    supervisor_health: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None

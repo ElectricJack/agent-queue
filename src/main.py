@@ -261,6 +261,7 @@ async def run(
     # A daemon launched by an interactive Claude Code or Codex session must
     # not retain that session's control variables.  Remove them before setup,
     # config loading, or constructing any child-launching subsystem.
+    inherited_aq_keys = sorted(key for key in os.environ if key.startswith("AQ_"))
     stripped_harness_markers = strip_harness_session_markers(os.environ)
     # The daemon owns the schema: this is what lets ``run_schema_setup``
     # migrate the production database.  ``AQ_DB_SCOPE=worker`` in the
@@ -278,6 +279,13 @@ async def run(
         logger.warning(
             "Stripped inherited harness session marker(s) at daemon startup: %s",
             ", ".join(stripped_harness_markers),
+        )
+    if inherited_aq_keys:
+        logger.warning(
+            "Inherited AQ_* variable(s) at daemon startup: %s. "
+            "Worker launches discard inherited AQ_* and inject fresh session values; "
+            "restart the daemon from a clean operator environment.",
+            ", ".join(inherited_aq_keys),
         )
 
     config = load_config(config_path, profile=profile)
@@ -514,7 +522,7 @@ async def run(
             ).run(),
             name="aq-review-notifier",
         )
-        from src.waits.service import WaitService
+        from src.wait_runtime.service import WaitService
 
         orch.wait_service = WaitService(orch)
         wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")
@@ -625,6 +633,15 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     else:
         required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
     checks["required_playbooks"] = required_playbooks
+
+    # Routing needs protected storage even when every activation is healthy.
+    # Inspect the loaded key ring, rather than a newly configured environment.
+    from src.playbooks.private_values import private_value_key_health
+
+    checks["playbook_private_value_key"] = private_value_key_health(
+        orch.config.playbooks,
+        service=orch.db.playbook_private_values() if orch.config.playbooks.enabled else None,
+    )
 
     # Agent status
     try:

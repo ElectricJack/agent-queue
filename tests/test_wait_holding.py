@@ -101,3 +101,17 @@ async def test_registration_race_audit_grants_no_exemption(env):
     env.registry.observe = original
     assert receipt["code"] == "wait.already_satisfied"
     assert await active_wait_for(env.db, await env.db.get_session("s")) is None
+
+
+async def test_wait_registered_after_notification_reservation_blocks_terminal_delivery(env):
+    message = await mail(env.db, "s", kind="session")
+    assert await env.db.claim_message_notification(message.id, now=NOW, retry_delay=0)
+    assert await env.db.message_notification_is_pending(message.id)
+
+    await register(env)
+    assert not await env.db.message_notification_is_pending(message.id)
+    assert not await env.db.mark_delivered(message.id)
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(cleared_at=NOW + 1))
+    assert await env.db.message_notification_is_pending(message.id)

@@ -36,7 +36,11 @@ export interface StatusPillModel {
  * A container's rolled-up activity replaces a lifecycle that only says "a
  * child is unfinished"; a batch in flight still outranks it.
  */
-export function statusPillFor({ status, isBlocked, delivery = null, reviewBlock = null, subtasks, display_state, display_reason }: StatusPillInput & EpicActivity): StatusPillModel {
+export function statusPillFor({ status, isBlocked, delivery = null, reviewBlock = null, subtasks, display_state, display_reason, claim_readiness, child_state_counts }: StatusPillInput & EpicActivity): StatusPillModel {
+  if (status === "READY" && !child_state_counts && claim_readiness && !claim_readiness.claimable) {
+    return { cardStatus: "WAITING", treatment: treatmentFor("WAITING", false),
+      text: claim_readiness.label, title: `${claim_readiness.reason} · task status READY`, working: false };
+  }
   const rolled = rolledState({ display_state }, delivery);
   const cardStatus = rolled ? DISPLAY_STATUS[rolled] : deliveryCardStatus(delivery, status);
   const treatment = treatmentFor(cardStatus, !rolled && Boolean(isBlocked || reviewBlock));
@@ -66,6 +70,7 @@ export function pillForCard(data: Pick<TaskNodeData, "task" | "delivery" | "revi
   return statusPillFor({
     status: data.task.status, isBlocked: data.task.is_blocked, delivery: data.delivery ?? null,
     display_state: data.task.display_state, display_reason: data.task.display_reason,
+    claim_readiness: data.task.claim_readiness, child_state_counts: data.task.child_state_counts,
     reviewBlock, subtasks: data.subtasks,
   });
 }
