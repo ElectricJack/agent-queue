@@ -20,7 +20,11 @@ from typing import Any
 from sqlalchemy import and_, case, func, insert, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
-from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
+from src.database.queries.claim_queries import (
+    _frontier_predicates,
+    pool_primary_kind,
+    route_claimable_in,
+)
 from src.database.tables import messages, sessions, task_reroutes, tasks
 from src.models import TaskStatus
 
@@ -373,7 +377,7 @@ class TaskRerouteQueryMixin:
             blocked = tasks.c.status == TaskStatus.BLOCKED.value
             conditions.append(ready | blocked | paused)
         stmt = (
-            select(tasks)
+            select(tasks, pool_primary_kind().label("workspace_kind"))
             .where(and_(*conditions))
             .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc(), tasks.c.id.asc())
         )
@@ -415,6 +419,7 @@ class TaskRerouteQueryMixin:
                 tasks.c.intelligence_class,
                 tasks.c.provider_intent,
                 tasks.c.route,
+                pool_primary_kind().label("workspace_kind"),
             )
             .where(
                 tasks.c.status == TaskStatus.READY.value,

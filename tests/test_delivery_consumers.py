@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import subprocess
 import time
 from unittest.mock import AsyncMock
@@ -24,7 +23,7 @@ from sqlalchemy import insert, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import events, projects, tasks
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.delivery_truth import DeliveryState
 from src.integration.development import DevelopmentPrimitives
@@ -42,45 +41,18 @@ def git(path, *args) -> str:
     ).strip()
 
 
-def _disable_auto_maintenance(repo) -> None:
-    # Keep the shared seed immutable during copytree, including receive-pack:
-    # local transport does not propagate command-line -c to the bare origin.
-    for key, value in (
-        ("maintenance.auto", "false"),
-        ("gc.auto", "0"),
-        ("receive.autogc", "false"),
-    ):
-        git(repo, "config", key, value)
-
-
 class Origin:
-    def __init__(self, tmp_path, *, template=None):
+    def __init__(self, tmp_path):
         self.url = str(tmp_path / "origin.git")
         self.clone = tmp_path / "clone"
-        if template is not None:
-            shutil.copytree(template.url, self.url)
-            shutil.copytree(template.clone, self.clone)
-            git(self.clone, "remote", "set-url", "origin", self.url)
-            return
         init_bare_seed(self.url)
-        self._disable_auto_maintenance(self.url)
         clone_seed(self.url, self.clone)
-        self._disable_auto_maintenance(self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-q", "-m", "base")
         git(self.clone, "push", "-q", "origin", "main")
-
-    @staticmethod
-    def _disable_auto_maintenance(repo) -> None:
-        # Detached maintenance can remove objects/maintenance.lock while copytree
-        # walks the seed. Local receive-pack needs its own repository config too.
-        for key, value in (
-            ("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"),
-        ):
-            git(repo, "config", "--local", key, value)
 
     def work(self, tid: str, name: str = "work") -> str:
         git(self.clone, "fetch", "-q", "origin")
@@ -100,22 +72,22 @@ class Origin:
         git(self.clone, "push", "-q", "origin", "main")
 
 
-def test_origin_template_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+def test_fresh_origins_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
     trace = tmp_path / "git-trace.json"
     config = tmp_path / "empty-git-config"
     config.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
-    seed_root = tmp_path / "seed"
-    seed_root.mkdir()
-    seed = Origin(seed_root)
-    seed_head = git(seed.url, "rev-parse", "main")
-    copied = Origin(tmp_path, template=seed)
-    copied_head = copied.work("private-copy")
-    assert git(seed.url, "rev-parse", "main") == seed_head
-    assert git(seed.url, "for-each-ref", "refs/heads/aq/private-copy") == ""
-    assert git(copied.url, "rev-parse", "aq/private-copy") == copied_head
+    first_root = tmp_path / "first"
+    first_root.mkdir()
+    first = Origin(first_root)
+    first_head = git(first.url, "rev-parse", "main")
+    second = Origin(tmp_path)
+    second_head = second.work("private-work")
+    assert git(first.url, "rev-parse", "main") == first_head
+    assert git(first.url, "for-each-ref", "refs/heads/aq/private-work") == ""
+    assert git(second.url, "rev-parse", "aq/private-work") == second_head
     commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
     assert not [
         args for args in commands
@@ -141,15 +113,9 @@ async def close(db, tid: str, commits: list[str], *, close_id: str | None = None
     await db.transition_task(tid, TaskStatus.COMPLETED)
 
 
-@pytest.fixture(scope="session")
-def origin_template(tmp_path_factory):
-    """Reuse only the starting Git history; refs and working files remain private."""
-    return Origin(tmp_path_factory.mktemp("delivery-git-template"))
-
-
 @pytest.fixture
-async def world(tmp_path, reuse_database, origin_template):
-    origin = Origin(tmp_path, template=origin_template)
+async def world(tmp_path, reuse_database):
+    origin = Origin(tmp_path)
     db = await reuse_database("delivery-consumers.db")
     await db.create_project(Project(id="p", name="Development"))
     await db.create_repo(
@@ -1019,7 +985,7 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
                                 truth=GitTruth(transport))
     missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
     observer.truth.snapshot = AsyncMock(wraps=observer.truth.snapshot)
-    assert (await observer.snapshot(missing)).observation.error == "missing_target"
+    assert (await observer.snapshot(missing)).observation.error == "target_ref_missing"
     observer.truth.snapshot.assert_awaited_once()
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     # A fetched peer ref warms its observation, but diagnostics cannot build
@@ -1030,10 +996,34 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     assert warm.satisfied("done")
     assert (await observer.snapshot(missing, max_age=30, cached_only=True)
-            ).observation.error == "missing_target"
+            ).observation.error == "target_ref_missing"
     observer.truth.snapshot.assert_awaited_once()
-    assert (await observer.snapshot(missing, max_age=30)).observation.error == "missing_target"
+    assert (await observer.snapshot(missing, max_age=30)).observation.error == "target_ref_missing"
     assert observer.truth.snapshot.await_count == 2
+
+
+async def test_integrity_absence_never_replaces_a_peer_with_an_incomplete_inventory(world, tmp_path):
+    from src.integration.delivery_observer import DeliveryTarget, _for_target
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "incomplete-inventory",
+                                truth=GitTruth(transport))
+    main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+    missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
+    assert (await observer.snapshot(main)).target_oid
+    warm = observer._recent[main]
+    failure = "retained Git object integrity is unavailable"
+    transport.afetch_origin = AsyncMock(side_effect=GitError(failure))
+    absent = (await observer.snapshot(missing)).observation
+    assert absent.error == "target_ref_missing"
+    assert absent.acquisition_error == "snapshot_git_error: " + failure
+    assert observer._recent[main] is warm
+    peer = _for_target(absent, main)
+    assert peer.error == "snapshot_git_error: " + failure
+    assert peer.target_oid is None
+    assert _for_target(peer, missing).error == "target_ref_missing"
 
 
 async def test_frontier_cache_uncertainty_preserves_known_delivery_exclusions(world, tmp_path):
@@ -1210,6 +1200,154 @@ async def test_git_first_mutation_rejects_unknown_proof_without_receipts(active_
     assert (await db.get_task("wrong")).status is TaskStatus.COMPLETED
 
 
+async def reopen_command(db, task_id):
+    from src.commands.task_commands import TaskCommandsMixin
+
+    handler = TaskCommandsMixin()
+    handler.db, handler._current_scope = db, {}
+    return await handler._cmd_reopen_with_feedback({
+        "task_id": task_id, "feedback": "Recover the unlabelled completion; retain the branch",
+    })
+
+
+@pytest.mark.parametrize("caller", [
+    "operator", "supervisor", "reviewer", "service", "stopped_supervisor", "foreign_supervisor",
+])
+async def test_missing_provenance_reopen_requires_operator_control(
+    active_git_world, monkeypatch, caller,
+):
+    from types import SimpleNamespace
+
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    db, origin, _observer = active_git_world
+    head = origin.work("missing")
+    if caller.endswith("supervisor"):
+        monkeypatch.setattr(db, "get_session", AsyncMock(return_value=SimpleNamespace(
+            id=caller, profile_id="supervisor", lifecycle="named",
+            state="stopped" if caller == "stopped_supervisor" else "running",
+            desired_state="running", project_id="other" if caller == "foreign_supervisor" else "p",
+        )))
+    principal = ExecutionPrincipal(
+        kind=(PrincipalKind.LOCAL if caller == "operator" else
+              PrincipalKind.SERVICE if caller == "service" else PrincipalKind.SESSION),
+        policy=DENY_ALL, session_id=caller, project_id="p", elevated=caller.endswith("supervisor"),
+    )
+    before = await db.get_task("missing")
+    # Generic lifecycle writes still cannot make the missing close claimable.
+    with pytest.raises(HierarchyError, match="delivery_unknown"):
+        await db.transition_task("missing", TaskStatus.READY, context="reopen_with_feedback")
+    with principal_context(principal):
+        if caller in {"operator", "supervisor"}:
+            assert (await reopen_command(db, "missing"))["status"] == "READY"
+        else:
+            refused = await reopen_command(db, "missing")
+            assert refused["success"] is False
+            assert refused["code"] == "hierarchy.delivery_unknown"
+            assert "delivery_unknown" in refused["error"]
+    task = await db.get_task("missing")
+    assert task.status is (TaskStatus.READY if caller in {"operator", "supervisor"}
+                           else TaskStatus.COMPLETED)
+    assert task.branch_name == before.branch_name
+    if caller not in {"operator", "supervisor"}:
+        assert task.description == before.description
+        assert task.retry_count == before.retry_count
+    assert git(origin.url, "rev-parse", "aq/missing") == head
+    assert (await db.get_task_completion("missing")).id == "close-missing"
+
+
+async def test_unlabelled_subepic_reopens_preserving_collected_children(active_git_world):
+    from src.database.tables import task_integration_checkpoints
+
+    db, origin, observer = active_git_world
+    origin.work("subepic")
+    await db.create_task(Task(
+        id="subepic", project_id="p", repo_id="r", title="Subepic", description="",
+        branch_name="aq/subepic", parent_task_id="epic", status=TaskStatus.COMPLETED,
+    ))
+    child_head = git(origin.clone, "rev-parse", "origin/aq/reopened")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "Collect child", "origin/aq/reopened")
+    git(origin.clone, "push", "-q", "origin", "aq/subepic")
+    head = git(origin.clone, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "reopened").values(
+            parent_task_id="subepic",
+        ))
+        for tid in ("epic", "subepic"):
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=tid, repository_id="r", branch=f"aq/{tid}", checkpoint_sha=head,
+                generation=4, verified_sha=head, verified_generation=4, updated_at=1.0,
+            ))
+    view = await observer.observe(["subepic", "reopened"])
+    assert view.get("subepic").reason == "missing_git_provenance"
+    assert view.get("reopened").state is DeliveryState.CONTAINED
+    assert (await reopen_command(db, "subepic"))["status"] == "READY"
+    assert (await db.get_task("subepic")).status is TaskStatus.READY
+    assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
+    assert git(origin.url, "rev-parse", "aq/subepic") == head
+    assert git(origin.url, "rev-parse", "aq/reopened") == child_head
+    for tid in ("epic", "subepic"):
+        checkpoint = await db.get_integration_checkpoint(tid)
+        assert checkpoint["generation"] == 5
+        assert checkpoint["verified_sha"] is None
+        assert checkpoint["verified_generation"] is None
+    # Reopening has not manufactured provenance or a passing new completion.
+    assert await db.get_task_completion("subepic") is None
+
+
+@pytest.mark.parametrize("obstacle", ["stale", "wrong_repository", "descendant"])
+async def test_missing_provenance_recovery_preserves_delivery_fences(
+    active_git_world, obstacle,
+):
+    db, origin, _observer = active_git_world
+    origin.work("missing")
+    view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    if obstacle == "stale":
+        await db.update_task("epic", branch_name="aq/retargeted")
+    elif obstacle == "wrong_repository":
+        await db.update_task("missing", repo_id="web")
+        view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    elif obstacle == "descendant":
+        await db.create_task(Task(
+            id="unknown-child", project_id="p", repo_id="r", title="Child", description="",
+            branch_name="aq/unknown-child", parent_task_id="missing", status=TaskStatus.COMPLETED,
+        ))
+        view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    with pytest.raises(HierarchyError) as refused:
+        await db.transition_task(
+            "missing", TaskStatus.READY, context="reopen_with_feedback",
+            integration_delivery=view, allow_missing_provenance_reopen=True,
+        )
+    assert refused.value.code == "delivery_unknown"
+    assert (await db.get_task("missing")).status is TaskStatus.COMPLETED
+
+
+async def test_historical_receipt_does_not_fix_missing_source_identity(active_git_world):
+    from sqlalchemy import select
+
+    from src.database.tables import task_delivery_receipts
+
+    db, origin, _observer = active_git_world
+    origin.work("missing")
+    view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    # Roll back the audit row after proving it has no eligibility authority.
+    with pytest.raises(RuntimeError, match="rollback audit fixture"):
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="external", domain_key="external", source_task_id="missing",
+                target_task_id="epic", repository_id="r", target_branch="aq/epic",
+                disposition="code", created_at=1.0,
+            ))
+            await db._apply_transition(
+                conn, "missing", TaskStatus.READY, context="reopen_with_feedback",
+                integration_delivery=view, allow_missing_provenance_reopen=True,
+            )
+            assert await conn.scalar(select(tasks.c.status).where(tasks.c.id == "missing")) == "READY"
+            raise RuntimeError("rollback audit fixture")
+
+
+
 async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(active_git_world):
     """Completed work fixes the target even before the delivery evidence fence."""
     from src.integration.hierarchy import HierarchyIntegration
@@ -1239,8 +1377,7 @@ async def test_git_first_child_redrive_reads_parent_without_receipts(active_git_
     assert result["outcome"] == "nothing_to_redrive"
     assert ("already delivered" if contained else "train owns delivery") in result["reason"]
     delivery.collect.assert_not_awaited()
-    with pytest.raises(HierarchyError, match="never reissues receipts"):
-        await delivery._reissue_receipt({}, "old")
+    assert not hasattr(delivery, "_reissue_receipt")
 
 
 async def _make_delivered_root(db, origin):
@@ -1338,7 +1475,7 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
     db.set_prerequisite_observer(None)
     await db.claim_frontier_exclusions("done")
     assert "No Git prerequisite observer" in caplog.text
-    assert "invalid when integration.git_first is active" in caplog.text
+    assert "unavailable without receipt fallback" in caplog.text
 
 
 # --- Shared store observations -------------------------------------------------
@@ -1390,7 +1527,7 @@ class ControlledFetches:
         oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
         return DeliverySnapshot(git, str(store), project_id, repository_id, repository_url,
                                 target_ref, oid, MappingProxyType(heads),
-                                None if oid else "missing_target")
+                                None if oid else "target_ref_missing")
 
 
 def oid(n: int) -> str:
@@ -1406,9 +1543,14 @@ async def settle() -> None:
 @pytest.fixture
 def shared_store(tmp_path, monkeypatch):
     from src.integration import delivery_observer as module
+    from src.projects import storage_binding
 
     fetches = ControlledFetches()
     monkeypatch.setattr(module, "delivery_snapshot", fetches)
+    # These concurrency tests isolate store acquisition and use no database.
+    monkeypatch.setattr(storage_binding, "repository_path", AsyncMock(
+        side_effect=lambda db, repository_id, fallback: fallback,
+    ))
 
     def make(git=None, data_dir=None):
         observer = DeliveryObserver(None, git=git or object(),
@@ -1506,7 +1648,7 @@ async def test_one_observation_covers_other_refs_of_the_same_repository(shared_s
     assert fetches.count == 1
     assert (main.target_ref, main.target_oid, main.error) == ("refs/heads/main", oid(1), None)
     assert (epic.target_ref, epic.target_oid, epic.error) == ("refs/heads/aq/epic", oid(101), None)
-    assert (absent.target_oid, absent.error) == (None, "missing_target")
+    assert (absent.target_oid, absent.error) == (None, "target_ref_missing")
     # A name its own fetch would have rejected stays unknown, never "missing".
     for refused in (malformed, tag):
         assert refused.target_oid is None
@@ -1549,11 +1691,11 @@ async def test_moved_and_vanished_refs_are_seen_by_the_observation_after_them(sh
     fetches.release(2)
     assert (await held).target_oid == oid(2)
     # The vanished ref's cached evidence is retired by the covering fetch.
-    assert observer._recent[x][1].error == "missing_target"
+    assert observer._recent[x][1].error == "target_ref_missing"
     await fetches.started[3].wait()
     fetches.release(3)
-    assert ((await moved).target_oid, (await moved).error) == (None, "missing_target")
-    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "missing_target"
+    assert ((await moved).target_oid, (await moved).error) == (None, "target_ref_missing")
+    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "target_ref_missing"
     assert fetches.count == 3
 
 
@@ -1577,7 +1719,7 @@ async def test_failed_observation_is_unknown_for_every_joiner_until_recovery(
     assert fetches.count == 1
     for result in results:
         assert result.target_oid is None
-        assert result.error not in {None, "missing_target"}
+        assert result.error not in {None, "target_ref_missing"}
     assert observer._recent == {}
     fetches.release(2)
     recovered = await observer.snapshot(_target("refs/heads/aq/epic"))
@@ -1764,3 +1906,254 @@ async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
         assert refused.value.code == "delivery_target_fixed"
     assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
 
+
+async def test_strict_shared_observation_ignores_disposition_and_receipts(world):
+    from dataclasses import replace
+
+    from src.integration.delivery_truth import (
+        DeliveryDisposition, delivered, load_delivery_requests,
+    )
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    source = git(origin.clone, "rev-parse", "origin/aq/reopened")
+    disposition = DeliveryDisposition(
+        "p", "r", "reopened", "close-reopened-2", "refs/heads/main", source,
+        git(origin.clone, "rev-parse", "origin/main"), "operator historical evidence", "a" * 64,
+    )
+    requests = await load_delivery_requests(db, CHILDREN, repository_id="r",
+                                            target_ref="refs/heads/main")
+    # Exercise the evaluator's lifecycle/ancestry separation. Persistence and
+    # operator authorization are covered by test_integration_containment_cutover.
+    requests["reopened"] = replace(requests["reopened"], disposition=disposition)
+    observed = await GitTruth(GitManager()).snapshot(
+        str(origin.clone), project_id="p", repository_id="r", repository_url=origin.url,
+        target_ref="refs/heads/main",
+    )
+    answers = {tid: await delivered(request, request.target_ref, observation=observed)
+               for tid, request in requests.items()}
+    assert answers["done"].state is DeliveryState.CONTAINED
+    assert answers["wrong"].state is DeliveryState.UNKNOWN
+    assert answers["missing"].state is DeliveryState.UNKNOWN
+    assert answers["reopened"].state is DeliveryState.PENDING
+    assert answers["reopened"].disposition == disposition
+    assert len({answer.observation_token for answer in answers.values()}) == 1
+    assert len({answer.observed_at for answer in answers.values()}) == 1
+    assert (await delivered(replace(requests["reopened"], completion_id="next-generation"),
+                            "refs/heads/main", observation=observed)).disposition is None
+    assert (await delivered(replace(requests["reopened"], target_ref="refs/heads/other"),
+                            "refs/heads/other", observation=observed)).disposition is None
+    # Lifecycle retirement is separate even when consumers receive legacy settlements.
+    settled = replace(requests["reopened"], settled_repository_id="r",
+                      settled_target_ref="refs/heads/main", settled_completion_id="close-reopened-2",
+                      settled_reason="historical settlement")
+    assert (await observed.delivered(settled)).state is DeliveryState.PENDING
+
+
+async def test_strict_disposition_parser_never_widens_damaged_identity():
+    from src.integration.delivery_truth import delivery_disposition
+
+    for value in (None, "broken json", {}, {"completion_id": None}, {"unknown": "field"}):
+        assert delivery_disposition(value) is None
+
+
+def test_receipt_consumer_inventory_covers_every_direct_source_reference():
+    """Keep the S1 section 2 inventory exhaustive while legacy authority retires."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    inventory = (root / "docs/specs/design/strict-git-containment.md").read_text()
+    references = {
+        str(path.relative_to(root))
+        for path in (root / "src").rglob("*.py")
+        if any(marker in path.read_text() for marker in (
+            "task_delivery_receipts", "list_integration_delivery_receipts",
+        ))
+    }
+    missing = sorted(path for path in references if f"`{path}`" not in inventory)
+    assert not missing, f"Assign receipt reader/writer retirement owners: {missing}"
+
+
+async def test_delivery_edge_uses_immutable_view_and_rechecks_rewind(world, tmp_path):
+    from dataclasses import FrozenInstanceError
+
+    from src.integration.admission import observe_admission
+    from src.integration.git_truth import GitTruth
+
+    db, origin, observer, service = world
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=observer.git, data_dir=tmp_path / "strict-admission", truth=GitTruth(observer.git),
+    ))
+    for tid in ("waiting", "independent"):
+        await db.create_task(Task(
+            id=tid, project_id="p", title=tid, description="", status=TaskStatus.READY,
+        ))
+    await db.add_dependency("waiting", "done", "delivery-of")
+    assert not (await db.get_task("waiting")).is_blocked  # Structural projection only.
+    view = await observe_admission(db, ["waiting", "independent"], service)
+    assert view.allowed == {"waiting", "independent"}
+    with pytest.raises(FrozenInstanceError):
+        view.allowed = frozenset()
+    with pytest.raises(TypeError):
+        view.reasons["waiting"] = ()
+    base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    git(origin.clone, "push", "--force", "origin", f"{base}:main")
+    assert not await view.is_fresh("waiting")
+    current = await observe_admission(db, ["waiting", "independent"], service)
+    assert current.allowed == {"independent"}
+    assert current.reasons["waiting"][0]["ref"] == "done"
+    assert "independent" not in current.reasons
+
+
+async def test_unavailable_delivery_observer_withholds_only_edge_consumers(world):
+    from src.integration.admission import observe_admission
+
+    db, _origin, _observer, service = world
+    db.set_prerequisite_observer(None)
+    for tid in ("waiting", "independent"):
+        await db.create_task(Task(
+            id=tid, project_id="p", title=tid, description="", status=TaskStatus.READY,
+        ))
+    await db.add_dependency("waiting", "done", "delivery-of")
+    view = await observe_admission(db, ["waiting", "independent"], service)
+    assert view.allowed == {"independent"}
+    assert view.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
+
+
+async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp_path):
+    from src.integration.cleanup import IntegrationCleanupService
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "cleanup-proof",
+                                truth=GitTruth(transport))
+    db.set_prerequisite_observer(observer)
+    completion = await db.get_task_completion("done")
+    source = completion.commits[-1]
+    base = git(origin.clone, "rev-parse", source + "^")
+    service = IntegrationCleanupService(db, data_dir=tmp_path)
+    row = {"target_ref": "refs/heads/aq/done", "expected_sha": source}
+    batch = {"id": "historical-batch", "project_id": "p", "repository_id": "r"}
+    assert await service._delivery_hold(row, batch) is None
+    git(origin.clone, "push", "--force", "origin", base + ":main")
+    assert "unknown or pending" in await service._delivery_hold(row, batch)
+    db.set_prerequisite_observer(None)
+    assert "requires current Git" in await service._delivery_hold(row, batch)
+@pytest.mark.parametrize("prerequisite_policy", [None, "wait-for-parent"])
+@pytest.mark.parametrize("cross_epic", [False, True])
+@pytest.mark.parametrize("proof", ["current", "missing", "reopened", "held"])
+async def test_resume_uses_git_prerequisites_without_legacy_receipts(
+    world, tmp_path, proof, cross_epic, prerequisite_policy, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.config import AppConfig
+    from src.database.tables import continuations, task_branch_origins, wait_records
+    from src.integration.git_truth import GitTruth
+    from src.models import AgentProfile, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    import src.integration.stacked_branches as stacks
+    import src.wait_runtime.resume as resume
+
+    # This verifies Git admission, not whether shared CI finishes inside the
+    # two-second advisory cache TTL. Exercise expiry separately below.
+    cache_now = time.monotonic()
+    monkeypatch.setattr(stacks, "time", SimpleNamespace(monotonic=lambda: cache_now))
+    if proof == "expired":
+        locked = resume.locked_suspension
+
+        async def after_observation_expires(*args, **kwargs):
+            nonlocal cache_now
+            cache_now += 3
+            return await locked(*args, **kwargs)
+
+        monkeypatch.setattr(resume, "locked_suspension", after_observation_expires)
+    db, origin, _, _ = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "resume-proof",
+                                truth=GitTruth(transport))
+    db._prerequisite_observer = observer
+    await db.create_profile(AgentProfile(id="worker", name="Worker", lifecycle="pool"))
+    await db.create_workspace(Workspace(id="free", project_id="p", kind_id="project-repo",
+                                        source_type=RepoSourceType.CLONE,
+                                        workspace_path=str(tmp_path / "free")))
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", branch_name="aq/dependent",
+                              profile_id="worker", route_source="override"))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    if cross_epic:
+        await db.create_task(Task(id="upstream-epic", project_id="p", title="Upstream",
+                                  description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent("done", "upstream-epic", conn=conn)
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy",
+        hierarchical_integration_policy={"prerequisite_branches": prerequisite_policy}
+        if prerequisite_policy else {},
+    )
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    head = git(origin.clone, "rev-parse", "main")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(
+            branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status="RESUME_PENDING", held_batch_id="held" if proof == "held" else None))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=head, creation_generation=0,
+            reserved=True, materialized=True, created_at=now,
+        ))
+        await conn.execute(insert(wait_records).values(
+            id="finished-wait", project_id="p", owner_kind="task", owner_id="dependent",
+            origin="agent", condition_kind="message", condition={}, source_key="message:reply",
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="message:reply", verified_at=now, created_at=now,
+            request_hash="test", outcome="satisfied", sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="dependent", wait_id="finished-wait",
+            suspension_generation=1, facts={"workspace_released_at": now},
+            branch="aq/dependent", saved_head=head, stopped_at=now,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="queued", created_at=now,
+        ))
+    if proof in {"missing", "expired"}:
+        # The source exists, but is absent from the parent delivery target.
+        base = git(origin.clone, "rev-list", "--max-parents=0", "main")
+        git(origin.clone, "push", "--force", "origin", f"{base}:aq/epic")
+    elif proof == "reopened":
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "done").values(
+                status="IN_PROGRESS", claim_epoch=tasks.c.claim_epoch + 1))
+            await db.recompute_blocked({"done", "dependent"}, conn=conn)
+    config = AppConfig()
+    orch = SimpleNamespace(db=db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch))
+    action = await ResumeTransaction(service).reserve("resume", 1)
+    async with db._engine.connect() as conn:
+        observed = await service.scheduler.reader.observe_task(
+            conn, "dependent", continuation_id="resume")
+    # The saved continuation already contains the completed source. Stacking
+    # permits that source before parent delivery; the authored opt-out does not.
+    admitted = proof == "current" or (proof == "missing" and prerequisite_policy is None)
+    assert (action is not None) == admitted, observed
+    if proof == "expired":
+        assert "epic_refresh_pending" in observed.constraints["batch_hold"]["reasons"]
+    async with db._engine.connect() as conn:
+        state = await conn.scalar(select(continuations.c.resume_state).where(
+            continuations.c.id == "resume"))
+    assert state == ("reserved" if admitted else "queued")
+
+
+async def test_resume_withholds_expired_stack_observation(world, tmp_path, monkeypatch):
+    await test_resume_uses_git_prerequisites_without_legacy_receipts(
+        world, tmp_path, "expired", True, None, monkeypatch,
+    )
