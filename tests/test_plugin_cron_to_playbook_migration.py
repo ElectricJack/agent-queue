@@ -315,6 +315,9 @@ class TestVaultInstallation:
             f"Missing playbooks: {expected - installed}, "
             f"Extra playbooks: {installed - expected}"
         )
+        playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+        assert not (playbooks_dir / "stuck-task-watch.md").exists()
+        assert not (playbooks_dir / "stuck-task-watch-reminder.md").exists()
 
 
 # ===================================================================
