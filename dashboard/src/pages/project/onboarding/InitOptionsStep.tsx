@@ -21,7 +21,7 @@ export function InitOptionsStep() {
         if (!active) return;
         if (status.credential_mode === "app") {
           setAppMode(true);
-          setSetupMessage("This GitHub App cannot create repositories. Create one outside AQ, then paste its URL in Clone from GitHub.");
+          setSetupMessage("This GitHub App cannot create repositories. Create one outside AQ, then enter its URL below or use Clone from GitHub.");
           dispatch({ type: "update_source", mode: "init", patch: { createGithub: false } });
           return;
         }
@@ -49,7 +49,12 @@ export function InitOptionsStep() {
   return (
     <div className="space-y-5">
       <label className="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" checked={initSource.createReadme} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { createReadme: event.target.checked } })} /> Create initial README and commit</label>
-      <label className="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" checked={initSource.createGithub} disabled={appMode} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { createGithub: event.target.checked } })} /> Create GitHub repository</label>
+      <label className="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" checked={initSource.createGithub} disabled={appMode} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { createGithub: event.target.checked, repoUrl: "" } })} /> Create GitHub repository</label>
+      {!initSource.createGithub && <div>
+        <label htmlFor={`${uid}-existing-repo`} className="block text-sm font-medium text-gray-200">Existing empty GitHub repository URL</label>
+        <input id={`${uid}-existing-repo`} value={initSource.repoUrl ?? ""} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { repoUrl: event.target.value } })} className="mt-1 w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-100" />
+        <p className="mt-1 text-sm text-gray-400">AQ verifies access, authorizes this remote, and pushes the initial commit. For a repository with existing files, use Clone from GitHub.</p>
+      </div>}
       {setupMessage && !initSource.createGithub && <p role="status" className="text-sm text-amber-200">{setupMessage}</p>}
       {initSource.createGithub && <div className="space-y-4 rounded border border-gray-700 p-4">
         {setupMessage && <p role="status" className="text-sm text-amber-200">{setupMessage}</p>}

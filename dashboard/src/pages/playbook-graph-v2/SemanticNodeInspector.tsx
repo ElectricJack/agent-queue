@@ -226,7 +226,7 @@ export default function SemanticNodeInspector({
         <Block name={node.step_kind === "agent_task" ? "Delegated agent" : "AI"}>
           <Pairs
             pairs={[
-              ["profile", <span className="font-mono">{node.ai.profile_id}</span>],
+              ["profile", <span className="font-mono">{node.ai.profile_id ?? "Chosen by router"}</span>],
               ...(node.ai.intelligence_class
                 ? ([["intelligence class", node.ai.intelligence_class]] as [string, React.ReactNode][])
                 : []),
@@ -264,7 +264,7 @@ export default function SemanticNodeInspector({
               <h6 className="text-[10px] uppercase tracking-wide text-gray-500">Delegation policy</h6>
               <Pairs
                 pairs={[
-                  ["child profile", <span className="font-mono">{node.ai.delegation.child_profile_id}</span>],
+                  ["child profile", <span className="font-mono">{node.ai.delegation.child_profile_id ?? "Chosen by router"}</span>],
                   ["wait for completion", node.ai.delegation.wait_for_completion ? "yes" : "no"],
                   ["cancel child", node.ai.delegation.cancel_child ? "yes" : "no"],
                   ...(node.ai.delegation.narrowed_from
@@ -273,7 +273,9 @@ export default function SemanticNodeInspector({
                 ]}
               />
               <p className="mt-1 text-[10px] text-gray-500">
-                The child principal is parent ∩ child profile ∩ this narrowing.
+                {node.ai.delegation.child_profile_id
+                  ? "The child principal is parent ∩ child profile ∩ this narrowing."
+                  : "Every eligible worker must fit the parent permissions and this narrowing."}
               </p>
               {node.ai.delegation.capability_narrowing ? (
                 <Namespaces capabilities={node.ai.delegation.capability_narrowing} nullable />
@@ -285,6 +287,22 @@ export default function SemanticNodeInspector({
         </Block>
       )}
 
+      {node.script && (
+        <section aria-label="Script program" className="space-y-2">
+          <h3 className="text-xs font-semibold">Script program</h3>
+          <p className="text-xs text-gray-400">Ordinary process. Output is protected; ambiguous execution requires an operator decision.</p>
+          <pre className="overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-xs">{JSON.stringify(node.script.program, null, 2)}</pre>
+          <dl className="space-y-1 break-all text-xs">
+            <dt>Program digest</dt><dd>{node.script.program_sha256 ?? "Unresolved"}</dd>
+            <dt>Runtime digest</dt><dd>{node.script.runtime_sha256 ?? "Unresolved"}</dd>
+            <dt>Executable digest</dt><dd>{node.script.executable_sha256 ?? "Unresolved"}</dd>
+            <dt>Source revision</dt><dd>{node.script.source_revision ?? "Unresolved"}</dd>
+            <dt>Environment names</dt><dd>{node.script.environment_names?.join(", ") || "None"}</dd>
+          </dl>
+          <pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(node.script.input_pins, null, 2)}</pre>
+        </section>
+      )}
+
       {node.loop && (
         <Block name="Loop">
           <Pairs
@@ -292,6 +310,7 @@ export default function SemanticNodeInspector({
               ["collection", <Value value={node.loop.collection} />],
               ["item binding", <span className="font-mono">{node.loop.item_binding}</span>],
               ["failure policy", node.loop.failure_policy],
+              ["maximum iterations", node.loop.max_iterations ?? 500],
               ["body entry", <span className="font-mono">{node.loop.body_entry_step_id}</span>],
               ["continuation", <span className="font-mono">{node.loop.continuation_step_id ?? "—"}</span>],
             ]}
