@@ -1,5 +1,75 @@
 # Wait outcome integration contract
 
+## Resume admission during source backlogs — 2026-10-25
+
+Each resume attempt captures fresh delivery and Git observations for its own
+task before joining the graph-lock queue. It replaces any inherited admission
+pass and revalidates the same task's graph, routing and policy under the fence.
+Unrelated candidates and the source listener's cursor do not participate in
+that snapshot. Expired or changed evidence still refuses admission.
+Stack ref checks under the graph fence use only the existing two-second cache;
+even a freshly prepared writer view cannot perform Git I/O there.
+
+The listener batches contiguous unsubscribed known source events, including
+messages, dependency changes, nonterminal task transitions and resource
+invalidations without resource subscriptions. Terminal task events and provider
+invalidations always retain their retirement and recovery callbacks. Unknown
+source types and subscribed events retain individual dispatch. Prefix selection,
+dispatched stamps and the leased cursor commit under the same graph fence;
+batching never skips a relevant event or changes retry ownership.
+
+## Recoverable listener failures — 2026-10-25
+
+Outcome measurements are idempotent by measurement id. A duplicate preserves
+the existing sample, including any later resume-cost updates, and does not
+roll back outcome delivery or source-cursor progress.
+
+Graph contention is a local retry, never a reason to restart the listener's
+TaskGroup. A refused deadline remains unfired and uncancelled and retries with
+per-deadline exponential backoff from one second up to thirty seconds. Heap
+rebuilds preserve that cadence; other due deadlines can proceed. Restart may
+retry immediately from durable deadlines. This applies to graph-busy refusals
+from deadline effects and quarantine as well as firing itself. Source dispatch
+preserves the graph-busy classification and rolls back the attempted batch,
+then retries on the listener's existing graph-contention cadence. Unknown
+failures and lease loss retain their existing recovery behavior.
+
+## Previously dispatched CI evidence — 2026-10-25
+
+The listener also reconciles pending verified CI check/run waits whose latest
+dispatched source event is newer than their registration watermark. Older
+dispatch stamps do not prove that a wait consumed an observation. Reconciliation
+shares the bounded retry budget and the normal lease, graph, source and owner
+fences, observes the current exact-head condition, and never moves the main
+cursor backwards. A dispatched hint cannot itself prove success. Pending or
+unavailable observations retain the wait, respect provider retry intervals, and
+remain eligible after restart without a new provider revision. Successful
+settlement uses ordinary outcome delivery and remains idempotent.
+
+Forward dispatch and dispatched-hint reconciliation share the pending-progress
+safety cadence. A fresh unfinished observation during forward dispatch defers
+another observation of that source until the cadence expires; recovery then
+visits sources within its per-pass retry budget. A terminal hint bypasses the
+pending-progress cadence and still requires an authenticated current observation.
+
+## Temporary CI observation failures — 2026-10-25
+
+A train visit that cannot freshly observe a disappearing pending wait preserves
+that subscription, records the observation error in `dispatch.wait_errors`, and
+continues reconciling other waits. An unavailable observation is not evidence
+that the subscription is obsolete and must not abort publication maintenance.
+
+When source dispatch cannot obtain an observation, it leaves the outbox event's
+`dispatched_at` unset, but advances the leased main cursor so unrelated later
+events can proceed. Before draining new events, the listener retries at most 20
+such earlier events per pass, each under its normal graph, lease, source and
+owner fences. Provider retry intervals defer repeat attempts in process; after
+restart, the durable undispatched rows remain eligible. A retry never moves the
+main cursor backwards. This recovers unchanged CI conclusions without requiring
+a new provider result or cache revision. Deferred observations log source sequence,
+source key, retry interval and event age; successful replays log their sequence.
+Other transaction failures retain the existing rollback and cursor semantics.
+
 ## Dedicated listener connection arguments — 2026-10-24
 
 The listener opens a dedicated asyncpg connection using the SQLAlchemy engine

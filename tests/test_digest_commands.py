@@ -185,7 +185,7 @@ class TestPreview:
         result = await handler.execute("digest_preview", {"now": NOW})
         # §6.1: the digest's one link is the needs-you inbox, on its own last
         # line, so it is the same string a delivery carries.
-        assert result["text"].rstrip().endswith("<https://queue.ts.example/focus/inbox>")
+        assert result["text"].rstrip().endswith("<https://queue.ts.example/inbox>")
         assert "8081" not in result["text"]
 
         service = DigestScheduleService(
