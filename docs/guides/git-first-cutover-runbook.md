@@ -1,5 +1,11 @@
 # Git-first integration cutover: transfer, upgrade, restart, canary
 
+> Historical cutover procedure: C1 and the 2026-10-12 consumer retirement removed
+> the subject publishers and Development transfer command. The steps below document
+> that earlier rollout; use the [current train runbook](git-first-train-runbook.md)
+> and [consumer audit](../reports/2026-10-12-legacy-consumer-retirement.md) for the
+> retained runtime and safety boundaries.
+
 Operator procedure for selecting `integration.git_first: active`, the
 five-table protocol that replaces the old subject runtime as the delivery path
 for a project. The design is `projects/agent-queue/specs/2026-10-04-git-first-integration-train.md`
@@ -20,7 +26,7 @@ mode beside `reconciler_shadow` / `reconciler_active`.
 | `git_first` | What runs |
 |---|---|
 | `shadow` (default) | the old subject protocol stays authoritative; one read-only comparison of git-first facts against fetched git is logged per visit. It has no writer, no action port and no policy effect. |
-| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all, the integration outbox is not dispatched, and no green continuation is emitted. |
+| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all. Only promotion policy events are dispatched from the integration outbox; legacy events and green continuations remain stopped. |
 
 The selector refuses `IntegrationService` a train beside any subject runtime, so
 the two engines can never run concurrently.
@@ -108,8 +114,11 @@ out of every batch. Record the ones git proves are already on the default branch
 For each such task it locates exact candidate sources (reported completion commits,
 origin branch tip, old batch members and delivery receipts, the pull request
 head), and writes an `integration_legacy_deliveries` row only when a candidate is
-an ancestor of the tip (`development_delivery`) or merging it changes nothing
-(`content_equivalent`). It never writes provenance, moves a ref or edits a task;
+an ancestor of the tip (`development_delivery`) or merging it changes only
+generated artifacts (`content_equivalent`). The latter ignores differences and
+conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
+attributes; other differences or conflicts remain unproven.
+It never writes provenance, moves a ref or edits a task;
 anything unproven is listed and left alone for an explicit decision. A reopened
 task's new completion is not covered by the old row.
 
@@ -193,10 +202,36 @@ resource-job provider; both are proven separately in the disposable smoke run,
 and the project's actual configured mode is proven only by the live evidence
 above.
 
+For an epic canary, finish two children and observe both delivery boundaries.
+The child batch first collects their exact completion sources onto the epic
+branch. The train then evaluates recursive readiness: all required child work
+is complete and contained, the exact collected epic head has green required
+checks, and any required review approves its tree. Only then does it retain
+Git provenance and append the container's ordinary completion record with
+that head as its source. A completed task status or an uncollected branch tip
+does not supply this record.
+
+The root lane batches that epic completion and checks its own merge candidate
+before landing it on the default branch. Record the child sources, collected
+epic head, epic completion id, review evidence (when required), root candidate
+and final default-branch OID. Verify that the final OID contains the epic and
+both child sources. Green checks on the epic head alone do not authorize the
+different root candidate.
+
+If the child batch has landed but a head check or tree review is pending, the
+epic target reports readiness blockers in `aq integration status`. Idle epic
+visits retry readiness, including after a restart; repeated visits reuse the
+same completion identity while its inputs are unchanged. Root admission and
+publication recheck the current task graph, required checks and tree review;
+changed readiness inputs require a fresh collected completion. No operator
+completion record or manual merge is needed. The two-child regression fixture
+is `tests/test_integration_train_sources.py::test_collected_two_child_epic_gets_completion_and_lands_via_root`.
+
 ## 6. Confirm old-event isolation
 
-Under `active` the scheduler, the outbox and the green continuations are stopped
-for owned projects, and pending legacy events stay pending. After the restart:
+Under `active` the scheduler, legacy outbox dispatch and the green continuations
+are stopped for owned projects. Promotion policy events continue to dispatch;
+pending legacy events stay pending. After the restart:
 
 ```sql
 SELECT event_type, count(*), sum(attempts) FROM integration_outbox GROUP BY 1;

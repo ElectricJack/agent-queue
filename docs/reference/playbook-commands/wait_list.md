@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:83d7721d71ea24a7715ae4b3edba2084a6ff0bf9cf49d4c3cf142faf19c829ca` |
+| Contract fingerprint | `sha256:6c152419a1d81504913f1e03d5f6d2ef469b8d0012427c647d5c1c6feb9c9090` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `schema_version` | `1 \| 2` | no | `1` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
@@ -30,7 +31,7 @@
 
 | Field | Type | Description |
 |---|---|---|
-| `waits` | `AgentWaitRecord[]` | — |
+| `waits` | `(AgentWaitRecord \| object)[]` | — |
 | `count` | `integer` | — |
 
 ## Nested objects
@@ -73,7 +74,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, task_id, session_id, limit, offset | — | always |
+| Read using schema_version, project_id, task_id, session_id, limit, offset | — | always |
 
 <!-- aq:generated:end -->
 
