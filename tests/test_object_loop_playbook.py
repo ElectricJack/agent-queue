@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.contracts.registry import CONTRACTS, ContractRegistry
+from src.commands.contracts.models import CommandResult
 from src.commands.principal import (
     TRUSTED_LOCAL,
     ExecutionPrincipal,
@@ -24,9 +28,11 @@ from src.database.tables import doc_review_revisions, doc_reviews, object_loops,
 from src.integration.development import _publishable_object_task
 from src.models import Project, TaskStatus
 from src.object_loop.inputs import SCORE_PREFIX
-from src.playbooks.definition import load_definition_json
+from src.playbooks.authority import bind
+from src.playbooks.definition import TrustedExecutionMetadata, load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
+from src.playbooks.invocation import _invocation_context
 from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_PLAYBOOK_IDS
 from src.profiles.capabilities import CapabilityPolicy
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
@@ -47,10 +53,155 @@ COMMANDS = (
     "object_loop_inputs", "object_loop_start", "object_loop_reconcile",
     "object_score_record", "object_checkpoint_read",
 )
+PORT_FIXTURES = ROOT / "tests/fixtures/playbooks/object-loop-port"
+PORT_SCENARIOS = json.loads((PORT_FIXTURES / "scenarios.json").read_text())
 
 
 def artifact():
     return load_definition_json((BUNDLE / "artifact.json").read_text())
+
+
+def test_port_preserves_installed_graph_and_authority():
+    raw = (PORT_FIXTURES / "installed.artifact.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == PORT_SCENARIOS["installed_artifact_sha256"]
+    # The exact pre-port repository bytes are also pinned by the legacy digest
+    # guard. The installed copy differs only in its compilation timestamp.
+    repository = json.loads((PORT_FIXTURES / "repository.artifact.json").read_text())
+    installed = json.loads(raw)
+    repository.pop("compiled_at")
+    installed.pop("compiled_at")
+    assert repository == installed
+    old = load_definition_json(raw.decode())
+    new = artifact()
+    # required_capabilities changes checkpoint authority (amber-crest-92).
+    # Retain legacy metadata until that compatibility work is reviewed.
+    assert new.trusted_execution is old.trusted_execution is None
+    assert new.compiled_against == old.compiled_against
+    assert new.scope == old.scope
+    # Source references move when authoring clauses are added. Executable rules,
+    # inputs, conditions, retries, limits and edges must otherwise stay identical.
+    for key in ("rules", "steps"):
+        before = old.model_dump(mode="json")[key]
+        after = new.model_dump(mode="json")[key]
+        for items in (before, after):
+            for item in (items.values() if isinstance(items, dict) else items):
+                item.pop("source", None)
+        assert before == after
+
+
+@pytest.mark.parametrize("rule", [
+    "on-formula", "on-completion", "on-failure", "on-review", "recover",
+])
+@pytest.mark.parametrize("scenario", PORT_SCENARIOS["scenarios"], ids=lambda s: s["name"])
+async def test_port_matches_installed_scenarios(scenario, rule):
+    """Run both frozen graphs through typed previews; no live handler is invoked.
+
+    Only the current-policy placeholder changes between graphs. This models
+    separately pinned attempts, never automatic adoption of an existing loop.
+    Compare all command arguments and node outcomes, including refusals.
+    """
+    old = load_definition_json((PORT_FIXTURES / "installed.artifact.json").read_text())
+    traces = []
+    for definition in (old, artifact()):
+        ref = artifact_ref_for(definition)
+
+        def bind_policy(value):
+            if isinstance(value, dict):
+                return {k: bind_policy(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [bind_policy(v) for v in value]
+            if value == "$POLICY":
+                return ref.artifact_sha256
+            if value == "$POLICY_HEX":
+                return ref.artifact_sha256.removeprefix("sha256:")
+            return value
+
+        remaining = bind_policy(scenario["calls"])
+        calls = []
+        registry = ContractRegistry()
+        for name in COMMANDS:
+            registration = CONTRACTS.require(name)
+
+            async def preview(args, _principal, name=name, registration=registration):
+                expected = remaining.pop(0)
+                assert name == expected["command"]
+                assert args.model_dump() == registration.contract.execution.args_model.model_validate(
+                    expected["args"],
+                ).model_dump()
+                calls.append((name, args.model_dump(), expected["outcome"]))
+                return CommandResult(
+                    outcome=expected["outcome"], summary=expected["outcome"],
+                    value=registration.contract.execution.result_model.model_validate(
+                        expected["value"],
+                    ),
+                )
+
+            async def forbidden_live(_args, _principal):
+                pytest.fail("Equivalence previews must never invoke a live command")
+
+            contract = registration.contract.model_copy(update={
+                "execution": registration.contract.execution.model_copy(
+                    update={"supports_preview": True},
+                ),
+            })
+            registry.register(replace(
+                registration, contract=contract, invoke=forbidden_live, preview=preview,
+            ))
+        store = InMemoryArtifactStore()
+        store.put(definition)
+        engine = PlaybookEngine(
+            services=EngineServices(contracts=registry, artifact_store=store, clock=lambda: 100),
+            runs=RecordingRunRepository(),
+        )
+        event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
+        tree = await engine.dry_run(ref, {
+            "event_type": event_type, "project_id": PROJECT, "event_id": "port-equivalence",
+        }, TRUSTED_LOCAL)
+        assert not tree.truncated and len(tree.paths) == 1
+        path = tree.paths[0]
+        assert not remaining, (remaining, path)
+        assert len(calls) == len(scenario["calls"]), path
+        assert path.completed, path  # Traversal completion, not business success.
+        terminal = "done" if scenario["completed"] else "failed"
+        assert path.nodes[-1].step_id == f"{rule}--{terminal}", path
+        assert all(n.outcome != "runtime_error" for n in path.nodes), path
+        # Remove only the per-artifact identity from argument comparison.
+        normalized_calls = json.dumps(calls, sort_keys=True).replace(
+            ref.artifact_sha256.removeprefix("sha256:"), "$POLICY_HEX",
+        )
+        traces.append((normalized_calls, [
+            (n.step_id, n.target, n.outcome) for n in path.nodes
+        ]))
+    assert traces[0] == traces[1]
+
+
+@pytest.fixture(params=[False, True], ids=["legacy", "run-bound"])
+def checkpoint_authority(request, monkeypatch):
+    """Replay the checkpoint traces with and without capability metadata."""
+    if request.param:
+        definition = artifact().model_copy(update={
+            "trusted_execution": TrustedExecutionMetadata(required_capabilities=COMMANDS),
+        })
+        monkeypatch.setattr(__name__ + ".artifact", lambda: definition)
+
+
+@contextmanager
+def checkpoint_invocation(*, invocation=True, declared=True, **identity):
+    definition = artifact().model_copy(update={
+        "trusted_execution": TrustedExecutionMetadata(required_capabilities=COMMANDS),
+    })
+    principal = replace(bind(TRUSTED_LOCAL, definition, "run", "checkpoint"), **identity)
+    ctx = SimpleNamespace(
+        run_id="run", dispatch_id="dispatch", rule_id="recover", step_id="checkpoint",
+        attempt=1, iteration_path="", artifact_ref=artifact_ref_for(definition),
+        artifact=definition if declared else None, services=SimpleNamespace(private_values=None),
+    )
+    with principal_context(principal):
+        if invocation:
+            with _invocation_context(ctx):
+                yield principal
+        else:
+            yield principal
 
 
 async def review(db, review_id="brief-review", kind="other", revision=1, digest=C,
@@ -421,7 +572,7 @@ async def test_failed_scorer_trace(setup, status):
 
 
 @pytest.mark.parametrize("verdict", ["rejected", "withdrawn", "changes_requested", "approved"])
-async def test_checkpoint_decision_trace(setup, verdict):
+async def test_checkpoint_decision_trace(setup, verdict, checkpoint_authority):
     await boot(setup)
     current = await complete_wave(setup)
     await score_packet(setup, current, action="checkpoint")
@@ -572,7 +723,7 @@ async def test_inputs_refuse_foreign_score_scope_and_missing_capability(setup):
         assert not denied["success"] and "capability" in denied["error"]
 
 
-async def test_new_review_revision_never_adopts_old_checkpoint(setup):
+async def test_new_review_revision_never_adopts_old_checkpoint(setup, checkpoint_authority):
     await boot(setup)
     current = await complete_wave(setup)
     await score_packet(setup, current, action="checkpoint")
@@ -589,6 +740,81 @@ async def test_new_review_revision_never_adopts_old_checkpoint(setup):
     assert current["state"]["round_id"] == 0
     assert current["state"]["checkpoint"]["revision"] == 1
     assert not current["approved"]
+
+
+@pytest.mark.parametrize("foreign_current_scope", [False, True],
+                         ids=["request-project", "foreign-current-scope"])
+async def test_project_playbook_reads_only_its_project_checkpoint(setup, foreign_current_scope):
+    await boot(setup)
+    before = await state(setup)
+    await setup.db.create_project(Project(id="foreign", name="Foreign"))
+    async with setup.db.immediate() as conn:
+        row = (await conn.execute(select(object_loops))).mappings().one()
+        await conn.execute(insert(object_loops).values(
+            **dict(row, object_id="foreign-rock", project_id="foreign",
+                   epic_task_id="foreign-epic", finalization_task_id="foreign-finalizer",
+                   terminal_gate_id="foreign-gate",
+                   state={**row.state, "object_id": "foreign-rock", "project_id": "foreign"}),
+        ))
+    with checkpoint_invocation():
+        result = await setup.execute("object_checkpoint_read", {
+            "project_id": PROJECT, "object_id": "rock",
+        })
+        assert result["success"], result
+        assert (result["state"], result["version"]) == (before["state"], before["version"])
+        foreign_args = {"project_id": "foreign", "object_id": "foreign-rock"}
+        if foreign_current_scope:
+            previous_scope = setup._current_scope
+            setup._current_scope = {"project_id": "foreign"}
+            try:
+                foreign = await setup._cmd_object_checkpoint_read(foreign_args)
+            finally:
+                setup._current_scope = previous_scope
+        else:
+            foreign = await setup.execute("object_checkpoint_read", foreign_args)
+        assert not foreign["success"] and "project_id mismatch" in foreign["error"], foreign
+        missing = await setup.execute("object_checkpoint_read", {
+            "project_id": PROJECT, "object_id": "foreign-rock",
+        })
+        assert not missing["success"], missing
+    assert await state(setup) == before
+
+
+@pytest.mark.parametrize("invalid", [
+    "unscoped", "missing_invocation", "missing_run", "missing_step",
+    "wrong_run", "wrong_step", "undeclared", "no_grant",
+    "session_identity", "task_identity", "task_selector", "session_selector",
+])
+async def test_playbook_checkpoint_read_refuses_unbound_or_borrowed_authority(setup, invalid):
+    identity = {
+        "unscoped": {"project_id": None},
+        "missing_run": {"parent_run_id": None},
+        "missing_step": {"parent_step_id": None},
+        "wrong_run": {"parent_run_id": "other"},
+        "wrong_step": {"parent_step_id": "other"},
+        "no_grant": {"policy": CapabilityPolicy.from_namespaces(aq_commands=[])},
+        "session_identity": {"session_id": "worker"},
+        "task_identity": {"task_id": "worker-task"},
+    }.get(invalid, {})
+    args = {"project_id": PROJECT, "object_id": "rock"}
+    if invalid in {"task_selector", "session_selector"}:
+        args["task_id" if invalid == "task_selector" else "session_id"] = "worker"
+    with checkpoint_invocation(invocation=invalid != "missing_invocation",
+                               declared=invalid != "undeclared", **identity):
+        refused = await setup.execute("object_checkpoint_read", args)
+    assert not refused["success"], refused
+    assert "out of scope" in refused.get("error", "") or "capability" in refused["error"]
+
+
+async def test_checkpoint_exception_does_not_widen_other_held_commands(setup):
+    from src.commands.resource_authorization import HELD_COMMANDS, authorize_resources
+
+    with checkpoint_invocation() as principal:
+        for command in HELD_COMMANDS - {"object_checkpoint_read"}:
+            refused = await authorize_resources(command, {}, principal, db=setup.db)
+            assert refused["success"] is False and refused["error_code"] == "session_required", (
+                command, refused,
+            )
 
 
 async def test_two_objects_recover_in_one_sweep(setup):

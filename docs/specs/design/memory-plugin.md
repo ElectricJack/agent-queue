@@ -12,6 +12,18 @@ tags: [design, memory, plugin, milvus, memsearch]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Historical architecture; loading fenced (audit 2026-10-23).** Extraction
+> to external `aq-memory` shipped; the in-tree memory manager is removed.
+> The Draft status below records the original proposal, not its rollout.
+> Startup now skips both `aq-memory` and `memory` via
+> `src/knowledge/legacy.py` pending the K07 versioned read-only adapter
+> handshake. Installing the package does not activate semantic memory.
+> External plugin permissions are metadata, not a sandbox; only `config`
+> and `vault_watcher` are allowed services. The canonical knowledge store is
+> PostgreSQL; optional semantic retrieval crosses `MemorySemanticPort`.
+> See [plugins and MCP](../../guides/plugins-and-mcp.md) and
+> [feature pauses](feature-pauses.md) for current operation.
+
 **Status:** Draft
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#8 plugins own their dependencies, #10 fewer moving parts)
 **Related:** [vault](vault.md), [memory-scoping](memory-scoping.md), [self-improvement](self-improvement.md), [specs/plugin-system](../plugin-system.md)

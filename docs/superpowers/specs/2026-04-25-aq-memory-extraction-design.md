@@ -12,6 +12,15 @@ topic: aq-memory plugin extraction
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
 
+> **Extraction complete; loading fenced (audit 2026-10-23).** Memory is
+> external and the in-tree memory manager is removed. Startup deliberately
+> skips `aq-memory` and `memory` pending the K07 versioned read-only adapter
+> handshake; installation does not enable the legacy writer. The sandbox
+> language below is historical: external plugins run in the daemon process,
+> with service access restricted to `config` and `vault_watcher`.
+> See the [current plugins guide](../../guides/plugins-and-mcp.md) and
+> [system spec](../../specs/systems/plugins-mcp-and-tools.md).
+
 ## 1. Goal
 
 Move the memory plugin (currently `src/plugins/internal/memory_v2/`) out of agent-queue2 and into a standalone repository at `/mnt/d/Dev/aq/aq-memory`, dropping the vestigial `V2`/`v2` suffix from all names along the way (V1 was deleted in roadmap 8.6 — there is no V1 to disambiguate from). After extraction:

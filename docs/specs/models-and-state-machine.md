@@ -11,6 +11,9 @@ tags: [spec, models, state-machine, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -272,6 +275,13 @@ identities; changed or unproved source identities (including legacy snapshots
 without these fences) fail closed, outside the bounded Git retries. An
 attached integration owner retains its workspace until its existing guarded
 handoff protocol releases it. A checkpoint alone does not prove cleanup complete.
+Automatic cleanup treats `PauseFenceError` as a terminal retained-for-recovery
+outcome for the exact persisted pause snapshot. It atomically records one task
+comment and a `manual_pause_cleanup_retained` receipt, leaves the hold and all
+resources intact, and skips further automatic attempts for that snapshot even
+after daemon restart. A changed pause/owner snapshot permits a fresh attempt;
+explicit Pause or guarded Resume can still perform recovery. Fence refusals log
+once without a traceback; ordinary transient stop failures remain retryable.
 The recorded task branch is part of the pause fence. When it is present, an
 attached checkout must match it before capture or partial salvage; a mismatch
 retains the source without publishing preservation evidence. A captured session

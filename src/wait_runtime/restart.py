@@ -33,16 +33,18 @@ def restart_lock(handler, task_id):
     return orch._task_control_lock(task_id) if orch is not None else nullcontext()
 
 
-async def readmit(handler, task, released):
+async def readmit(handler, task, released, *, hold_override=None):
     """Return *task* to READY; after a release, only from the generation released."""
     if not released:
         await handler.db.transition_task(task.id, TaskStatus.READY, context='restart_task',
-                                         retry_count=0, assigned_agent_id=None)
+                                         retry_count=0, assigned_agent_id=None,
+                                         _recovery_hold_override=hold_override)
         return True
     return await handler.db.transition_task_with_meta(
         task.id, TaskStatus.READY, meta={}, context='restart_task',
         from_statuses=(task.status,), extra_where=tasks.c.claim_epoch == task.claim_epoch,
         force=task.status in SUSPENDED_TASK_STATUSES, retry_count=0, assigned_agent_id=None,
+        _recovery_hold_override=hold_override,
     )
 
 

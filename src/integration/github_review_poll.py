@@ -32,6 +32,7 @@ from sqlalchemy import and_, select
 
 from src.database.tables import projects, repos, tasks
 from src.git.github import GitHubAccess
+from src.git.github_activity import check_background_budget, github_component
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
@@ -51,6 +52,16 @@ MERGEABILITY_RETRY_SECONDS = 15
 #: fetch queue. A visit waits this long for it, then defers that root and goes
 #: on; the recovery keeps running and a later visit takes its outcome.
 ROOT_PR_RECOVERY_WAIT_SECONDS = 30.0
+
+
+def _pull_fingerprint(pull):
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    if (not isinstance(head, dict) or not isinstance(base, dict)
+            or not isinstance(head.get("repo"), dict) or not isinstance(base.get("repo"), dict)
+            or not pull.get("updated_at") or not head.get("sha") or not base.get("ref")):
+        return None
+    return (pull.get("updated_at"), pull.get("state"), head.get("sha"), head.get("ref"),
+            head["repo"].get("id"), base.get("ref"), base.get("sha"), base["repo"].get("id"))
 
 
 def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
@@ -259,7 +270,8 @@ class RootPullRequestGate:
             self._recoveries[key] = task
             self._running.add(task)
             task.add_done_callback(self._settled)
-        if not task.done():
+            # Spend the bounded wait once. Later visits consult the same task
+            # without blocking every healthy root behind another 30-second wait.
             await asyncio.wait({task}, timeout=ROOT_PR_RECOVERY_WAIT_SECONDS)
         if not task.done():
             logger.info("root %s PR check recovery still running after %.0fs; deferring",
@@ -286,11 +298,13 @@ class _Observation:
     reviews_at: float = 0.0
     recorded: set[tuple] = field(default_factory=set)
     authorized: int | None = None
+    details: dict | None = None
+    details_at: float = 0.0
 
 
 @dataclass
 class _Repository:
-    """One tick's binding, client and open-PR numbers for a repository URL."""
+    """One tick's binding, client and open-PR inventory for a repository URL."""
 
     binding: Any
     client: Any
@@ -342,6 +356,16 @@ class GitHubReviewPoller:
         self._repository_failures: dict[str, _RepositoryFailure] = {}
 
     async def tick(self, now: float) -> None:
+        with github_component(__name__, background=True):
+            try:
+                check_background_budget(self.git)
+                await self._tick(now)
+            except GitHubAccessError as exc:
+                if exc.category != "rate_limited":
+                    raise
+                self.next_due_at = max(now + self.interval_seconds, exc.retry_at or 0)
+
+    async def _tick(self, now: float) -> None:
         if now < self.next_due_at:
             return
         self.next_due_at = now + self.interval_seconds
@@ -353,11 +377,15 @@ class GitHubReviewPoller:
         if self.after_id is None:
             self._start_cycle()
         for row in rows:
-            self.after_id = row["id"]
             self._cycle_seen.add(row["id"])
             try:
+                check_background_budget(self.git)
                 await self._poll(row, now)
+                check_background_budget(self.git)
             except (GitHubAccessError, GitError) as exc:
+                check_background_budget(self.git)
+                if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                    raise
                 self._report(
                     row["id"], ("failed", type(exc).__name__, str(exc)), logging.WARNING,
                     "GitHub PR review poll failed for epic %s in %s: %s",
@@ -368,6 +396,7 @@ class GitHubReviewPoller:
                     row["id"], ("failed", type(exc).__name__, str(exc)), logging.ERROR,
                     "GitHub PR review poll failed for epic %s", row["id"], exc_info=True,
                 )
+            self.after_id = row["id"]
 
     def _start_cycle(self) -> None:
         """Forget roots the finished cycle no longer listed; they re-observe in full."""
@@ -479,6 +508,8 @@ class GitHubReviewPoller:
             binding = await self.git.bind_github_repository(url)
             found = _Repository(binding, self.git._github_client(binding))
         except Exception as exc:  # noqa: BLE001 - repository adapter failures back off
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             delay = min(
                 failure.delay * 2 if failure else self.repository_retry_seconds,
                 self.repository_retry_max_seconds,
@@ -500,13 +531,15 @@ class GitHubReviewPoller:
             repository.open_numbers = await self._open_numbers(repository)
         return repository.open_numbers is not None and number not in repository.open_numbers
 
-    async def _open_numbers(self, repository: _Repository) -> frozenset[int] | None:
-        """Open PR numbers, or None when unreadable so each closed PR is fetched."""
+    async def _open_numbers(self, repository: _Repository) -> dict[int, dict] | None:
+        """One open-PR inventory, or None so unreadable listings never hide changes."""
         try:
             pulls = await repository.client.paged_list(
                 f"/repositories/{repository.binding.repository_id}/pulls?state=open&per_page=100"
             )
         except (GitHubAccessError, GitError) as exc:
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             logger.debug(
                 "Open pull request list unavailable for %s: %s",
                 repository.binding.full_name, " ".join(str(exc).split())[:1000],
@@ -515,7 +548,7 @@ class GitHubReviewPoller:
         except Exception:
             logger.debug("Open pull request list unavailable", exc_info=True)
             return None
-        numbers = set()
+        numbers = {}
         for pull in pulls:
             number = pull.get("number")
             if (
@@ -523,8 +556,8 @@ class GitHubReviewPoller:
                 or pull.get("state") != "open"
             ):
                 return None
-            numbers.add(number)
-        return frozenset(numbers)
+            numbers[number] = pull
+        return numbers
 
     async def _observe(self, row: dict[str, Any], source: dict[str, Any], now: float) -> None:
         identity = (row["url"], row["default_branch"], tuple(sorted(source.items())))
@@ -538,7 +571,18 @@ class GitHubReviewPoller:
         number = GitHubAccess.validate_pr_url(binding, source["pr_url"])
         if seen.open is False and await self._still_closed(repository, number):
             return
-        pull = await client.pull_request(source["pr_url"])
+        pull = None
+        if seen.open is True and seen.details is not None:
+            if repository.open_numbers is _UNREAD:
+                repository.open_numbers = await self._open_numbers(repository)
+            listed = (repository.open_numbers or {}).get(number)
+            if (listed is not None and _pull_fingerprint(listed) is not None
+                    and _pull_fingerprint(listed) == _pull_fingerprint(seen.details)
+                    and now - seen.details_at < self.review_refresh_seconds):
+                pull = seen.details
+        if pull is None:
+            pull = await client.pull_request(source["pr_url"])
+            seen.details, seen.details_at = pull, now
         seen.open = pull.get("state") == "open"
         head, base = pull.get("head"), pull.get("base")
         head_repo = head.get("repo") if isinstance(head, dict) else None

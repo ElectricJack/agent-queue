@@ -106,7 +106,7 @@ MEMBER_LIMIT = 200
 # Leave time in the visit deadline to freeze and advance an admitted prefix: a
 # cooperative quantum (not a fenced writer's deadline) that red roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
-_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted",
+_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
     "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
@@ -584,6 +584,7 @@ def _conflict_action(refusal, snapshot, *, epic: bool, refresh=None):
                            "a conflict-free PR with green exact-head checks",
                 "current": "the epic already contains the default branch; its PR still needs "
                            "green exact-head checks",
+                "skipped": "refresh skipped: delivered",
                 "unavailable": f"the epic refresh is unavailable ({refresh.get('reason')}); "
                                "the train will retry",
             }[refresh["outcome"]]
@@ -830,7 +831,7 @@ class DatabaseBatches:
                 refresh = {"outcome": "unavailable", "reason": type(exc).__name__,
                            "retry_at": self.clock() + delay, "retry_seconds": delay}
             # An ordinary child batch still owns the epic: try again next visit.
-            if refresh["outcome"] == "pending":
+            if refresh["outcome"] in {"pending", "skipped"}:
                 self._conflict_refreshes.pop(task_id, None)
             else:
                 self._conflict_refreshes[task_id] = (pair, refresh)
@@ -2983,7 +2984,7 @@ class DaemonLanes:
                     return ({"code": "epic_refresh_unavailable", "task_id": graph.epic_id,
                              "ref": target.target_ref, "reason": type(exc).__name__,
                              "detail": "Collected epic refresh will be retried"},)
-                if refreshed["outcome"] != "current":
+                if refreshed["outcome"] not in {"current", "skipped"}:
                     if refreshed["outcome"] == "started":
                         await self.db.log_event("integration.epic_refresh",
                             project_id=target.project_id, task_id=graph.epic_id,

@@ -18,6 +18,10 @@ tags: [design, self-improvement, memory, orchestrator, observability]
 
 ---
 
+> **Current status:** This is a design record, not a running autonomous loop.
+> No automatic reflection playbook ships; the former `coding-reflection` and
+> `task-outcome` policies are retired. See [current policy installation](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+
 ## 1. Overview
 
 The system improves over time through a closed loop: agents reflect on their work,

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and continuously improves through automated reflection. The core value proposition: the system gets better with use — every task feeds the reflection engine, insights accumulate in scoped memory, and future agents benefit automatically.
+Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and provides policy and knowledge tools for continuous improvement. Automatic reflection is an operator policy choice; no reflection playbook ships by default.
 
 **Core design principles:**
 1. Human-readable files as source of truth (vault, playbooks, profiles)
@@ -16,64 +16,35 @@ Agent Queue is a self-improving orchestration platform for AI coding agents. It 
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
+The daemon is a single Python asyncio process, composed in `src/main.py`.
+CLI, MCP, HTTP API and Discord commands share `CommandHandler`. SQLAlchemy Core
+and Alembic own PostgreSQL persistence; the in-process EventBus carries
+notifications, while durable services reconcile database records. The dashboard
+server is a separate process. See [Architecture](docs/concepts/architecture.md)
+and [daemon-core](docs/specs/systems/daemon-core.md) for current lifecycle details.
 
-```
-asyncio event loop
-├── Discord Bot / MCP Server     — control planes (human + machine)
-├── LLM direct path              — src/llm/: LLMClient.complete/run_tools, intelligence classes
-│   ├── PromptBuilder            — 5-layer context assembly (L0-L3 + tools)
-│   └── ToolRegistry             — tiered tool loading (core + on-demand)
-├── Orchestrator                 — deterministic task lifecycle
-│   ├── Scheduler                — proportional deficit-based assignment
-│   ├── State Machine            — formal task state transitions + DAG validation
-│   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
-│   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
-│   └── Playbook Engine          — compiled DAG workflows
-│       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
-│       ├── PlaybookRunner       — graph walker with conversation history
-│       └── PlaybookManager      — lifecycle, triggers, cooldown, concurrency
-├── Workflow Coordination        — multi-agent pipeline orchestration
-│   ├── Stage Resume Handler     — auto-resume on workflow.stage.completed events
-│   ├── Orphan Recovery          — detect & recover stale/crashed workflows
-│   └── Pipeline View            — dashboard-ready visualization
-├── Plugin Registry              — modular extensibility (tools, events, cron)
-│   ├── aq-files                 — file read/write/glob/grep (internal)
-│   ├── aq-git                   — branch, commit, push, PR, merge (internal)
-│   ├── aq-notes                 — project notes management (internal)
-│   ├── aq-vibecop               — static analysis for code quality (internal)
-│   └── aq-memory                — semantic search, KV, temporal facts (external; install via `aq plugin install`)
-├── Memory V2 Service            — Milvus-backed 4-tier knowledge
-│   ├── Semantic search          — multi-scope weighted vector search
-│   ├── KV store                 — fast scalar lookups per scope
-│   ├── Temporal facts           — validity-windowed facts with history
-│   └── Memory Extractor         — auto-extracts knowledge from events
-├── EventBus                     — async pub/sub with wildcard + payload filtering
-├── File Watcher                 — mtime-based change detection
-├── Workspace Spec Watcher       — syncs project specs to vault
-└── Adapters                     — agent backends (Claude Code, extensible)
+```text
+src/main.py — composition root, health, supervised API/MCP
+├── CommandHandler — common command boundary for all supported surfaces
+├── Orchestrator — startup recovery, deterministic cycle, shutdown
+│   ├── Scheduler and pool reconciliation
+│   ├── Session cascade — each stage has a bounded timeout
+│   └── Domain services — integration and message delivery have independent loops
+├── Verified waits, review notifier and pool-progress watchdog
+├── EventBus — sequential in-process notifications
+└── PostgreSQL — durable tasks, claims, sessions and service journals
+
+External coding CLIs run in tmux sessions through profile-selected harnesses.
 ```
 
 ### Task State Machine
 
-```
-DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
-                                  │
-                        ┌─────────┼──────────┐
-                        ▼         ▼          ▼
-                     PAUSED   WAITING    FAILED
-                     (auto-   _INPUT     (retry →
-                     resume)  (Discord)   BLOCKED)
-
-AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
-AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never auto-discovered;
-                         doctor check `tasks.awaiting_plan_approval` flags stranded rows)
-```
-
-- DEFINED → READY: all dependencies COMPLETED
-- PAUSED tasks always have `resume_after` — never stall permanently
-- Failed tasks retry up to configurable limit, then BLOCKED
-- Plan-generated tasks: agent produces `.claude/plan.md`; a human (or the requester) runs the `process_plan` command to read and store it for approval — the orchestrator no longer auto-discovers plan files during task completion (see `docs/specs/orchestrator.md` §12)
+The shared enum in `src/models.py` contains DEFINED, READY, ASSIGNED,
+IN_PROGRESS, WAITING, HIBERNATED, RESUME_PENDING, WAITING_INPUT, PAUSED,
+COMPLETED, FAILED and BLOCKED. `transition_task` enforces suspended-state
+transitions; other invalid legacy transitions warn unless
+`state_machine.enforce` is enabled. See [task-graph](docs/specs/systems/task-graph.md)
+for the transition graph, readiness, guarded overrides and terminal semantics.
 
 ### Memory Tiers
 
@@ -100,8 +71,8 @@ AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never
 | File | Purpose |
 |------|---------|
 | `src/main.py` | Entry point — CLI args, starts async loop |
-| `src/orchestrator.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
-| `src/commands/` | **Unified command execution** — 150+ commands, single entry point for Discord + MCP + CLI |
+| `src/orchestrator/core.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
+| `src/commands/` | **Unified command execution** — common entry point for CLI, MCP, API, Discord and playbooks |
 | `src/database/` | SQLAlchemy Core persistence — `tables.py` (schema), `queries/` (mixins), Alembic migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Workflow, AgentOutput |
 | `src/config.py` | YAML config with `${ENV_VAR}` substitution |
@@ -117,30 +88,30 @@ AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never
 | `src/prompt_builder.py` | 5-layer prompt assembly: L0 role → override → L1 facts → L2 context → identity → tools |
 | `src/tools/` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
 | `src/prompt_manager.py` | Manages prompt templates and variants from `src/prompts/` |
-| `src/llm_logger.py` | Logs all LLM API calls (`llm.jsonl`) — direct-path calls, agent sessions, prompt analytics |
+| `src/llm_logger.py` | Logs direct API attempts (`llm.jsonl`) and prompt analytics; session usage comes from transcripts |
 
 ### Playbook System
 
-| File | Purpose |
-|------|---------|
-| `src/playbooks/models.py` | Data models: CompiledPlaybook, PlaybookNode, PlaybookTransition, PlaybookRun |
-| `src/playbooks/compiler.py` | LLM-powered markdown → JSON graph compiler with retry/validation |
-| `src/playbooks/runner.py` | Graph walker — steps through nodes maintaining conversation history |
-| `src/playbooks/manager.py` | Lifecycle: compilation, versioning, trigger mapping, cooldown, concurrency |
-| `src/playbooks/store.py` | Disk storage with scope-mirrored directory structure |
-| `src/playbooks/handler.py` | Vault watcher — detects `.md` changes, dispatches to compiler |
-| `src/playbooks/state_machine.py` | Formal state machine for run lifecycle |
-| `src/playbooks/resume_handler.py` | Human-in-the-loop resume logic |
-| `src/playbooks/health.py` | Metrics computation for run analysis |
-| `src/playbooks/graph.py` | Graph rendering (ASCII + Mermaid visualization) |
-
-### Workflow Coordination
+Playbooks are V2 only. Read [the concepts](docs/concepts/playbooks.md),
+[system map](docs/specs/systems/playbooks.md) and [module catalog](docs/reference/modules/playbooks.md).
 
 | File | Purpose |
 |------|---------|
-| `src/workflow_stage_resume_handler.py` | Auto-resume paused playbooks on `workflow.stage.completed` events |
-| `src/orphan_workflow_recovery.py` | Detect & recover workflows whose coordination playbook died (startup + periodic) |
-| `src/workflow_pipeline_view.py` | Dashboard-ready pipeline visualization (stages, tasks, agents, progress) |
+| `src/playbooks/definition.py`, `validation.py`, `proposal.py` | Strict typed rules/steps, validation and server-derived artifact identity |
+| `src/playbooks/artifact_store.py`, `activation.py`, `required.py` | Immutable bytes, activation health, deliberate initial installation and explicit repair |
+| `src/playbooks/engine.py`, `runtime.py`, `services.py` | Event dispatch, step walking, waits, durable receipts and engine wiring |
+| `src/playbooks/run_state.py`, `recovery.py`, `authority.py` | Versioned run lifecycle, safe restart reconciliation and run-bound caller authority |
+| `src/playbooks/state.py`, `state_notify.py`, `private_values.py` | Persistent local state, notification episodes and encrypted execution data |
+| `src/playbooks/executors/` | Command, LLM, agent-task, script, decision, foreach, wait and terminal steps |
+| `src/playbooks/graph_projection.py`, `run_overlay.py` | Semantic graph and redacted run inspection pinned to the executed artifact |
+
+### Workflow Compatibility
+
+| File | Purpose |
+|------|---------|
+| `src/workflow_stage_resume_handler.py` | Bridges `workflow.stage.completed` to V2 runs referenced by legacy workflows |
+| `src/orphan_workflow_recovery.py` | Legacy V1 recovery class, not constructed by the orchestrator; current V2 recovery is `RestartReconciler` |
+| `src/workflow_pipeline_view.py` | Dashboard pipeline projection; does not execute policy |
 
 ### Hierarchy, Claims & Pools (Swarm Work Model)
 
@@ -194,7 +165,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/adapters/` | Agent adapter interface + Claude Code implementation |
+| `src/sessions/` | Harness registry, session providers, launch and reconciliation |
 | `src/discord/` | Notification-only Discord adapter: hourly digest and escalation post/thread delivery out, escalation-thread replies in. One explicit `/delete-task` operator action; the six legacy slash commands and channel routing remain retired |
 | `src/git/` | Clone, branch, worktree, push/pull, serialized shared-repo ops |
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
@@ -210,19 +181,28 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 ## Design Decisions
 
 ### Why zero LLM for orchestration?
-Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution (every agent runs as a tmux session, selected by `harness`), (2) playbook node/transition execution and compilation via the direct LLM path (`src/llm/`), (3) memory revision/merging, (4) reflection (a playbook, not a module), (5) knowledge extraction.
+Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution (every agent runs as a tmux session, selected by `harness`), (2) explicit playbook LLM steps (direct API or tool-free headless CLI); proposal construction and validation are deterministic, (3) memory revision/merging, (4) operator-authored reflection policy, if installed (no automatic reflection bundle ships), (5) knowledge extraction.
 
 ### Why playbooks over hooks/rules?
-Hooks were single-shot LLM calls with no context accumulation or multi-step reasoning. Playbooks model workflows as directed graphs: each node is a focused LLM decision point, transitions carry context forward, and human checkpoints enable oversight. Markdown authoring keeps them human-readable; LLM compilation makes them executable.
+Playbooks make event policy inspectable as typed rules and steps. Command outcomes
+and schema-checked model results select declared edges; human waits provide explicit
+checkpoints. Markdown remains the reviewed source, while a deliberately activated
+immutable artifact controls execution. Source edits do not enqueue compilation or
+replace that artifact, except the legacy pipeline `update-source` path described in
+the [operating guide](docs/concepts/playbooks.md#author-validate-import-and-activate).
 
 ### Why a 4-tier memory architecture?
 Not all knowledge is needed at all times. L0/L1 are cheap (always loaded, ~250 tokens). L2 activates on-demand when the task topic is detected. L3 requires explicit search. This keeps prompt size small while ensuring critical context is always available.
 
 ### Why files as source of truth?
-Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-queue/vault/`. This makes them browsable in Obsidian, editable by hand, diffable with git, and transparent. The database and Milvus are derived indexes, not canonical stores.
+Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-queue/vault/`. This makes them browsable in Obsidian, editable by hand, diffable with git, and transparent. PostgreSQL is canonical for durable operational state (tasks, claims, sessions
+and service journals). Milvus is a search index owned by the memory plugin.
 
 ### Why PostgreSQL only?
-Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
+PostgreSQL provides the row locking, JSONB operations and database guards used
+by concurrent claims and durable service journals. SQLAlchemy Core uses asyncpg;
+there is no SQLite backend or file-based fallback. Alembic owns schema changes,
+and workers verify the operator database rather than migrating it.
 
 ### Why Discord is *not* the control plane
 It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord is primarily the phone-shaped notification surface — one shared channel carrying an hourly activity digest and one thread per human decision. A reply in that thread is evidence for the owning project supervisor, never a direct task mutation. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
@@ -234,10 +214,10 @@ It was one, and the surface grew faster than it could be trusted: 122 mirrored s
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
 
 ### Why the self-improvement loop?
-The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Memory extraction captures patterns from events. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. Playbooks automate the consolidation cycle. No manual intervention needed — the loop is autonomous.
+The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Memory extraction captures patterns from events. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. Playbooks can automate a consolidation cycle when an operator supplies and activates policy. No automatic reflection playbook ships today; this is a design goal, not a default running loop.
 
 ### Why workflow coordination via playbooks?
-Multi-agent workflows (code → review → QA) are just playbooks with stage gates and agent affinity. The same execution model, same event system, same human-in-the-loop checkpoints. Workflows track stage progress and task assignments; orphan recovery handles daemon restarts and stale state. No separate workflow engine needed.
+V2 playbooks can delegate tasks and wait for declared outcomes. The shipped pipeline does not add automatic per-task or final-branch reviewers; integration owns validation and delivery. Legacy workflow rows and stage-resume bridges remain compatibility surfaces, while V2 run recovery uses durable snapshots and receipts.
 
 ### Why spec-driven development?
 Specs in `docs/specs/` are the source of truth. Flow: specs → implementation → tests → docs. When spec and code disagree, the spec is correct.
@@ -248,7 +228,7 @@ Specs in `docs/specs/` are the source of truth. Flow: specs → implementation �
 
 **Core:** `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`
 **Workflows:** `workflows` (multi-agent pipeline state, stages, task assignments, agent affinity)
-**Playbooks:** `playbook_runs`, `compiled_playbooks` (run state, node traces, compiled graphs)
+**Playbooks:** `playbook_artifacts`, `playbook_activations`, `playbook_v2_runs`, `playbook_step_receipts`, `playbook_waits`, `playbook_pending_events`, `playbook_private_values`, `playbook_state_*` (immutable policy, activation, runs, waits and protected state)
 **Supporting:** `task_criteria`, `task_context`, `task_tools`, `task_results`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`, `plugins`, `plugin_data`
 
 ## Configuration
@@ -262,7 +242,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 ```
 ~/.agent-queue/vault/
 ├── system/
-│   ├── playbooks/          # System-wide automation (e.g., task-outcome.md)
+│   ├── playbooks/          # System-wide policy sources (e.g., default-pipeline.md)
 │   ├── memory/             # System-wide knowledge
 │   └── facts.md            # System-level KV facts
 ├── orchestrator/
@@ -310,7 +290,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 
 - **Daemon:** Runs as a background process via `run.sh` (single Python asyncio process)
 - **Discord bot:** Primary human interface, requires bot token + guild ID + channel config
-- **MCP server:** Embedded in daemon, auto-exposes ~150 CommandHandler commands via streamable-http transport
+- **MCP server:** Embedded in daemon, exposes admitted commands via streamable-http transport
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, Ollama for LLM calls
 - **Plugin ecosystem:** Internal plugins + third-party plugins from git repos
@@ -318,7 +298,8 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 
 ## Known Architectural Notes
 
-- `state_machine.py` defines valid transitions but they're not enforced in production — all transitions use direct `db.update_task()`
+- `state_machine.py` enforces suspended-state transitions; other legacy moves
+  warn by default unless `state_machine.enforce` is enabled.
 - Plan-generated tasks can get stuck in DEFINED due to inherited approval settings blocking dependency chains
 - The system uses workspace isolation per task (git worktrees or separate clones)
 - Rules/hooks are deprecated; playbooks are the replacement (migration in progress)
