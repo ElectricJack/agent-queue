@@ -1,0 +1,33 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/result_queries.py::PENDING_COMPLETION_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/result_queries.py::ResultQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/result_queries.py::close_identity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/result_queries.py::completion_draft": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/result_queries.py::ResultQueryMixin.save_task_completion": {
+      "reason": "Queues an explicit branch retirement for a failed or abandoned close in the completion transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/result_queries.py::ResultQueryMixin.discard_pending_completion::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 312,
+      "owner": "ResultQueryMixin.discard_pending_completion",
+      "owner_fingerprint": "52f34094a21a86f869951d8361aab8b25ac502c0fff87dcfbae9f72f59a97d84",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/result_queries.py::ResultQueryMixin.recover_pending_completions::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 223,
+      "owner": "ResultQueryMixin.recover_pending_completions",
+      "owner_fingerprint": "972669f2709d00258b7f6c6e8aeed038fa41094a1d85931d41e7108a50eaf4c9",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
