@@ -333,9 +333,9 @@ class EscalationQueriesMixin:
             or incident["state"] not in OPEN_ESCALATION_STATES
         ):
             return
-        if incident["source_kind"] == "wait":
-            # Operational deadlines go to the supervisor. Only an explicit
-            # escalate_to_human decision creates a human delivery for this source.
+        if incident["source_kind"] in {"wait", "continuation"}:
+            # Operational deadlines and infrastructure holds go to the supervisor.
+            # Only an explicit escalate_to_human decision creates a human delivery.
             await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id="msg-" + incident["id"], project_id=incident["project_id"],
                 from_kind="system", from_id="wait-dispatcher", to_kind="session",
@@ -1507,7 +1507,11 @@ class EscalationQueriesMixin:
                 (
                     await conn.execute(
                         select(escalation_deliveries.c.id, escalation_deliveries.c.status)
-                        .where(due, ~_delivery_project_paused())
+                        .where(due, ~_delivery_project_paused(),
+                               ~select(escalations.c.id).where(
+                                   escalations.c.id == escalation_deliveries.c.escalation_id,
+                                   escalations.c.terminal_outcome == "legacy_discarded",
+                               ).exists())
                         .order_by(
                             escalation_deliveries.c.priority,
                             escalation_deliveries.c.next_attempt_at,

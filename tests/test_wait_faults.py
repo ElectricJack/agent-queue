@@ -27,8 +27,10 @@ from src.database.tables import (
     wait_escalations,
     wait_listener_cursors,
     wait_measurements,
+    wait_priority_projection,
     wait_records,
 )
+from src.integration.admission import observe_admission
 from src.messages.delivery import MessageDeliveryEngine
 from src.models import Task, TaskStatus
 from src.sessions.reconciler import SessionReconciler
@@ -522,6 +524,7 @@ async def test_matrix_eviction_reclaims_and_grants_reservation_in_same_call(
     config.swarm.global_max_active = 1
     config.wait_policy.v2_enabled = config.wait_policy.scheduler_waits_enabled = True
     arbiter = SimpleNamespace(db=env.db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
+                             _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
                              _worktrees_enabled=lambda: False,
                              _pool_quarantine_state=lambda *a: (None, None))
     scheduler = SchedulerWaitService(arbiter, clock=lambda: NOW)
@@ -580,7 +583,25 @@ async def test_matrix_manual_intervention_during_wake_retains_audit_without_laun
     assert await service.tick()
     outcome = await one_outcome(env, wakes=0)
     if change == "delete":
+        async with env.db._engine.begin() as conn:
+            for subject in ({"task_id": "owner"}, {"continuation_id": "c"}):
+                await conn.execute(insert(admission_reservations).values(
+                    id=f"reservation-{next(iter(subject))}", project_id="p", **subject,
+                    scope={}, effective_priority=20, provenance="resume", deadline_at=NOW + 60,
+                    state="pending", created_at=NOW + 30,
+                ))
+            await conn.execute(insert(wait_priority_projection).values(
+                task_id="owner", donor_path=[], graph_version=1, computed_at=NOW,
+            ))
         await env.db.delete_task("owner")
+        reservations = await records(env, admission_reservations)
+        assert len(reservations) == 2
+        # Admission audit keeps its task identity once the task is gone.
+        assert {r["id"]: (r["state"], r["task_id"]) for r in reservations} == {
+            "reservation-task_id": ("cancelled", "owner"),
+            "reservation-continuation_id": ("cancelled", None),
+        }
+        assert await records(env, wait_priority_projection) == []
     elif change == "gate":
         await env.db.create_gate("p", "human", "Approval revoked", waiter_task_ids=["owner"])
         service.orch._worktrees_enabled = lambda: False
@@ -602,6 +623,8 @@ async def test_matrix_manual_intervention_during_wake_retains_audit_without_laun
             "PAUSED" if change == "pause" else "RESUME_PENDING")
     assert await one_outcome(env, wakes=0) == outcome
     assert (await intent(env))["new_session_id"] is None
+    if change == "delete":
+        assert (await intent(env))["resume_state"] == "cancelled"
 
 
 async def test_matrix_two_launch_failures_then_provider_event_releases_without_relay(
@@ -630,9 +653,10 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
         await conn.execute(update(tasks).where(tasks.c.id == "owner").values(assigned_agent_id="a"))
     assert (await driver.failed(action, task, "second failure", handler=handler))["held"]
     assert (await driver.failed(action, task, "replayed failure", handler=handler))["held"]
-    assert len(await records(env, escalations)) == 1
-    assert (await records(env, escalations))[0]["source_identity"] == (
-        "continuation:c:1:resume_launch_failed")
+    incidents = await records(env, escalations)
+    assert len(incidents) == 1
+    assert incidents[0]["source_kind"] == "continuation"
+    assert incidents[0]["source_identity"] == "continuation:c:1:resume_launch_failed"
     assert len([m for m in await records(env, messages)
                 if m["body_kind"] == "wait_escalation"]) == 1
     await env.db.create_profile(AgentProfile(id="worker-codex", name="Worker"))
@@ -657,15 +681,51 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
     assert (await env.db.get_task("owner")).status is TaskStatus.RESUME_PENDING
 
 
+@pytest.mark.parametrize("mutation", ["public", "task", "project", "identity", "terminal"])
+async def test_continuation_hold_incident_rejects_invalid_binding(hibernation_env, mutation):
+    from src.waits.registry import build_registry
+
+    env = hibernation_env
+    await bound_resume(env)
+    env.registry = build_registry(clock=lambda: NOW)
+    service = service_for(env, [NOW + 30])
+    handler = service.orch._command_handler
+    row = await intent(env)
+    identity = f"continuation:{row['id']}:{row['suspension_generation']}:resume_launch_failed"
+    args = {
+        "project_id": "p", "task_id": "owner", "source_kind": "continuation",
+        "source_identity": identity, "incident_key": identity, "summary": "Hold",
+        "investigation": "Launch failed", "decision_requested": "Repair infrastructure",
+        "severity": "high",
+    }
+    if mutation == "public":
+        result = await handler.execute("escalation_create", args)
+    else:
+        async with env.db._engine.begin() as conn:
+            if mutation == "terminal":
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == row["id"],
+                ).values(resume_state="acknowledged"))
+            elif mutation == "identity":
+                args["incident_key"] = "unbound"
+            else:
+                args[f"{mutation}_id"] = "source" if mutation == "task" else "foreign"
+            result = await handler.wait_escalation_create(conn, args)
+    assert not result["success"]
+    assert await records(env, escalations) == []
+
+
 async def test_matrix_live_legacy_wait_and_waiting_input_restart_preserve_deadlines(env):
     from src.wait_runtime.legacy_human import adopt_waiting_input
     from tests.test_wait_legacy_bridge import legacy
 
     service = service_for(env, [NOW])
+    service.orch.config.wait_policy.hibernation_enabled = False
     bridge = service.legacy_bridge
     await legacy(bridge, created=NOW - 7000, expires=NOW + 17)
     first = await bridge.adopt_agent_wait("old", handler=service.orch._command_handler)
     service = service_for(env, [NOW + 10])
+    service.orch.config.wait_policy.hibernation_enabled = False
     replay = await service.legacy_bridge.adopt_agent_wait(
         "old", handler=service.orch._command_handler)
     assert first["wait_id"] == replay["wait_id"] and replay["replayed"]
@@ -755,7 +815,8 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
     monkeypatch.setattr(env.db, "update_workspace", AsyncMock())
     slots = SimpleNamespace(reprovision_slot=AsyncMock())
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(return_value=str(old)),
-                           _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots)
+                           _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
+                           _worktree_base_paths={})
     resume = ResumeTransaction(SimpleNamespace(orch=orch), clock=lambda: NOW + 30)
     action = AssignAction("a", "owner", "p", "c", 1)
     fresh = await resume.fresh_workspace(action, await env.db.get_task("owner"), None,
@@ -812,6 +873,152 @@ async def test_matrix_accounting_wait_duration_and_resume_cost_are_transition_de
     assert await records(env, wait_measurements) == [sample]
 
 
+@pytest.mark.parametrize("capacity_delay", [0, 600])
+async def test_matrix_accounting_from_park_through_sampler_api_and_display_contract(
+    hibernation_env, monkeypatch, capacity_delay,
+):
+    import json
+    from dataclasses import replace
+    from pathlib import Path
+
+    from src.api.models.metrics import MetricsSample
+    from src.config_wait_policy import parse_wait_policy
+    from src.database.queries.wait_metrics import slot_accounting, wait_metrics_snapshot
+    from src.metrics.sampler import MetricsSampler
+    from src.metrics.waits import with_wait_policy
+    from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord, Workspace
+    from src.wait_runtime.measurements import capture_costs
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.waits.registry import build_registry
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    env = hibernation_env
+    env.registry = build_registry(clock=lambda: NOW)
+    await capture(env)
+    before = await env.db.metrics_waits_snapshot(NOW + 100)
+    assert before["released_slot_seconds_24h"] == {"condition": 0, "capacity": 0}
+    driver, handler, clock, _ = await suspension_driver(env, monkeypatch)
+    clock.now = NOW + 120
+    assert (await driver.advance(env.wait_id, handler=handler))["parked"]
+    monkeypatch.undo()
+    assert (await intent(env))["stopped_at"] == clock.now
+    await env.db.create_profile(AgentProfile(id="worker-codex", name="Worker", lifecycle="pool",
+                                            max_active=1))
+    await env.db.create_repo(RepoConfig(id="repo", project_id="p", url="https://example.test/repo",
+        source_type=RepoSourceType.CLONE, checkout_base_path="/tmp/accounting-base"))
+    await env.db.update_project("p", integration_repository_id="repo")
+    await env.db.create_workspace(Workspace(id="available", project_id="p",
+        workspace_path="/tmp/accounting-fresh", source_type=RepoSourceType.CLONE,
+        kind_id="project-repo"))
+    service = service_for(env, [NOW + 7200])
+    service.orch.config.wait_policy.hibernation_enabled = True
+    service.orch._worktrees_enabled = lambda: False
+    service.orch._pool_quarantine_state = lambda *a: (None, None)
+    service.orch._task_control_lock = lambda _: asyncio.Lock()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            profile_id="worker-codex", route_source="override"))
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    # Rollback flags stop new admission, while this parked continuation drains.
+    service.orch.config.wait_policy.v2_enabled = False
+    service.orch.config.wait_policy.hibernation_enabled = False
+    service.orch.config.wait_policy.scheduler_waits_enabled = False
+    clock.now = NOW + 7200
+    resume = ResumeTransaction(service, clock=clock)
+    if capacity_delay:
+        # An actual running process owns the seat until its stop is observed.
+        # The production reserve path must retain this request boundary even
+        # when no seat can be granted yet; do not seed a synthetic reservation.
+        service.orch.config.swarm.global_max_active = 1
+        await env.db.create_session(SessionRecord(id="idle", project_id="p",
+            profile_id="worker-codex", harness="codex", provider="fake", name="idle",
+            lifecycle="pool", work_dir="/tmp/idle", epoch="boot", instance_token="idle-token",
+            state="running", desired_state="running", started_at=NOW, last_activity=NOW))
+        assert await resume.reserve("c", 1) is None
+        assert await resume.reserve("c", 1) is None
+        assert len(await records(env, admission_reservations)) == 1
+        assert (await env.db.get_session("idle")).desired_state == "stopped"
+        clock.now += capacity_delay
+        await env.db.update_session("idle", state="stopped")
+
+    async def prepare(*args):
+        clock.now += 5
+        return "/tmp/accounting-fresh"
+
+    async def launch(action, task, unused, path):
+        record = SessionRecord(id="new", project_id="p", task_id="owner", agent_id=action.agent_id,
+            profile_id="worker-codex", harness="codex", provider="fake", name="new",
+            lifecycle="task", work_dir=path, epoch="new-boot", instance_token="new-token",
+            state="running", desired_state="running", last_claim_epoch=task.claim_epoch,
+            started_at=clock.now)
+        await resume.bind_launch(action, record)
+        await env.db.create_session(record)
+
+    monkeypatch.setattr(resume, "fresh_workspace", prepare)
+    service.orch._launch_session_for_task_locked = launch
+    assert (await resume.dispatch({"continuation_id": "c", "generation": 1},
+        principal=None, scope=None, handler=service.orch._command_handler))["dispatched"]
+    clock.now = NOW + 7215 + capacity_delay
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id="c", session_id="new",
+                             instance_token="new-token", claim_epoch=2, now=clock.now)
+        await acknowledge(conn, {"wait_id": env.wait_id, "continuation_id": "c", "generation": 1},
+            scope=replace(env.scope, session_id="new", instance_token="new-token", claim_epoch=2),
+            now=clock.now)
+    config = AppConfig()
+    config.metrics.perf_enabled = False
+    config.wait_policy = parse_wait_policy({"metrics": {
+        "pre_rollout_turn_rate": 2, "pre_rollout_tokens_per_turn": 100,
+        "cohort": "synthetic-fault-matrix", "window": "disposable-fixture:0..7200",
+    }})
+    assert not config.wait_policy.validate()
+    raw = await env.db.metrics_waits_snapshot(clock.now)
+    assert raw["tokens_saved_counterfactual"] is None
+    assert with_wait_policy(raw, config.wait_policy)["tokens_saved_counterfactual"]["tokens"] is None
+    # Synthetic transcript readings enter through the production measurement
+    # path; an incomplete reading above cannot become claimed token savings.
+    monkeypatch.setattr("src.wait_runtime.measurements.session_turn_tokens",
+                        AsyncMock(side_effect=[7, 11]))
+    service.lifecycle.clock = clock
+    await capture_costs(service.lifecycle, env.wait_id)
+    await env.db.create_project(Project(id="q", name="Foreign"))
+    await env.db.create_task(Task(id="foreign", project_id="q", title="Foreign", description=""))
+    async with env.db._engine.begin() as conn:
+        await register_wait(conn, scope=Scope("q", "scheduler", "foreign", principal="service"),
+            condition={"kind": "timer", "due_at": NOW + 9000}, idempotency_key="foreign",
+            registry=env.registry, policy=Policy(), now=NOW + 6000, source_watermark=0,
+            decide_sleep=lambda *_: SleepDecision("in_place", "test"))
+        isolated = await wait_metrics_snapshot(conn, now=clock.now, project_id="p")
+        foreign = await wait_metrics_snapshot(conn, now=clock.now, project_id="q")
+        assert isolated["pending_in_place"] == 0 and foreign["pending_in_place"] == 1
+        assert foreign["released_slot_seconds_24h"] == {"condition": 0, "capacity": 0}
+        clipped = await slot_accounting(conn, now=clock.now, window_seconds=300, project_id="p")
+    sample = (await records(env, wait_measurements))[0]
+    assert (sample["waited_seconds"], sample["teardown_seconds"], sample["setup_seconds"],
+            sample["rebuild_seconds"]) == (7200, 120, 5, 10)
+    sampler = MetricsSampler(env.db, config, clock=clock)
+    payload = MetricsSample.model_validate(await sampler.collect()).model_dump(mode="json")
+    fixture = Path(__file__).resolve().parents[1] / (
+        "dashboard/src/pages/metrics/__tests__/waitFaultAccounting.json")
+    expected = json.loads(fixture.read_text())
+    expected["released_slot_seconds_1h"] = {"condition": 3585 - capacity_delay,
+                                             "capacity": capacity_delay}
+    expected["released_slot_seconds_24h"] = {"condition": 7080, "capacity": capacity_delay}
+    expected["wait_seconds_1h"] = 3585 - capacity_delay
+    expected["tokens_saved_counterfactual"]["tokens"] = 2 * (3585 - capacity_delay) / 60 * 100 - 18
+    assert {key: payload["waits"][key] for key in expected} == expected
+    assert clipped == {
+        "in_place_slot_seconds_1h": 0,
+        "released_slot_seconds_1h": {"condition": 0 if capacity_delay else 285,
+                                      "capacity": 285 if capacity_delay else 0},
+    }
+    reservations = await records(env, admission_reservations)
+    assert min(row["created_at"] for row in reservations) == NOW + 7200
+    assert min(row["granted_at"] for row in reservations if row["granted_at"] is not None) == (
+        NOW + 7200 + capacity_delay)
+
+
 @pytest.mark.tmux
 async def test_matrix_real_harness_wait_suppresses_mail_until_one_outcome_turn(
     env, harness_id, api, cli_home, socket_name, tmp_path,
@@ -854,3 +1061,94 @@ async def test_matrix_real_harness_wait_suppresses_mail_until_one_outcome_turn(
     finally:
         await provider.stop(handle)
 
+
+async def test_continuation_incident_rejects_forged_bindings(hibernation_env):
+    from src.waits.registry import build_registry
+
+    env = hibernation_env
+    env.registry = build_registry(clock=lambda: NOW)
+    service = service_for(env, [NOW])
+    handler = service.orch._command_handler
+    args = {
+        "project_id": "p", "task_id": "owner", "task_title": "Owner",
+        "source_kind": "continuation", "source_identity": "continuation:c:1:stop_uncertain",
+        "incident_key": "continuation:c:1:stop_uncertain", "severity": "high",
+        "summary": "Stop uncertain", "investigation": "Provider did not confirm stop",
+        "decision_requested": "Repair the retained writer",
+    }
+    for overrides in (
+        {"task_id": "source"},
+        {"source_identity": "continuation:missing:1:stop_uncertain"},
+        {"source_identity": "continuation:c:2:stop_uncertain"},
+        {"source_identity": "continuation:c:1:unsupported"},
+        {"incident_key": "different-incident"},
+    ):
+        async with env.db._engine.begin() as conn:
+            result = await handler.wait_escalation_create(conn, {**args, **overrides})
+        assert result["error_code"] == "invalid_binding", result
+    assert not await records(env, escalations)
+    # The public command cannot acquire internal wait-driver authority.
+    result = await handler.execute("escalation_create", args)
+    assert result["error_code"] == "invalid_binding", result
+
+
+@pytest.mark.parametrize("reason", [
+    "stop_uncertain", "push_failed", "detach_uncertain", "resume_launch_failed",
+    "resume_workspace_failed", "resume_stop_uncertain", "resume_detach_uncertain", "paused",
+])
+async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_env, reason):
+    from src.waits.registry import build_registry
+
+    env = hibernation_env
+    env.registry = build_registry(clock=lambda: NOW)
+    handler = service_for(env, [NOW]).orch._command_handler
+    identity = f"continuation:c:1:{reason}"
+    args = {
+        "project_id": "p", "task_id": "owner", "source_kind": "continuation",
+        "source_identity": identity, "incident_key": identity, "severity": "high",
+        "summary": reason, "investigation": "Retain the writer until recovery",
+        "decision_requested": "Repair the infrastructure hold",
+    }
+    async with env.db._engine.begin() as conn:
+        # A hold binds to the branch the continuation preserves.
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            branch_name="aq/owner"))
+        created = await handler.wait_escalation_create(conn, args)
+        replay = await handler.wait_escalation_create(conn, args)
+    assert created["success"] and created["created"], created
+    assert replay["success"] and not replay["created"], replay
+    assert len(await records(env, escalations)) == 1
+
+
+async def test_hung_project_sync_is_bounded_and_rotates_off_the_head(monkeypatch, caplog):
+    """A hung or fence-busy project sync cannot hold the tick, or starve later projects."""
+    from src.wait_runtime import scheduler
+
+    monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT", 0.05)
+    projects = [SimpleNamespace(id=pid) for pid in ("a", "b", "c")]
+    synced = []
+
+    async def execute(name, args):
+        assert name == "scheduler_wait_sync"
+        synced.append(args["project_id"])
+        if args["project_id"] == "b":
+            await asyncio.sleep(60)
+        if args["project_id"] == "c":
+            return {"success": False, "error_code": "wait.graph_busy", "error": "busy"}
+        return {"success": True}
+
+    orchestrator = SimpleNamespace(
+        db=SimpleNamespace(list_projects=AsyncMock(return_value=projects)),
+        wait_scheduler_service=SimpleNamespace(sync=AsyncMock(), deadline=AsyncMock()),
+    )
+    handler = SimpleNamespace(orchestrator=orchestrator, execute=execute)
+
+    await asyncio.wait_for(scheduler.scheduler_tick(handler), 5)
+    first = list(synced)
+    synced.clear()
+    await asyncio.wait_for(scheduler.scheduler_tick(handler), 5)
+
+    assert sorted(first) == sorted(synced) == ["a", "b", "c"]
+    assert first[0] != synced[0]
+    assert caplog.text.count("scheduler_wait_sync for project b exceeded") == 2
+    assert caplog.text.count("scheduler_wait_sync for project c deferred") == 2

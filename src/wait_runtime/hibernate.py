@@ -23,6 +23,12 @@ from src.waits.conditions import WaitError
 from src.waits.graph import lock_graph
 from src.waits.sources import execute_task_status_mutation
 
+#: Infrastructure holds the hibernation and resume transactions may record.
+HOLD_REASONS = frozenset({
+    "stop_uncertain", "push_failed", "detach_uncertain", "resume_launch_failed",
+    "resume_workspace_failed", "resume_stop_uncertain", "resume_detach_uncertain", "paused",
+})
+
 
 async def validate_hold_binding(conn, args):
     """Bind an internal incident to the current suspension, even after resolution.
@@ -33,11 +39,8 @@ async def validate_hold_binding(conn, args):
     """
     subject, separator, reason = args["source_identity"].rpartition(":")
     identity, generation_separator, generation = subject.rpartition(":")
-    reasons = {"push_failed", "stop_uncertain", "detach_uncertain", "resume_launch_failed",
-               "resume_stop_uncertain", "resume_detach_uncertain", "resume_workspace_failed",
-               "paused"}
     if (not separator or not generation_separator or not generation.isdecimal()
-            or reason not in reasons or not identity.startswith("continuation:")
+            or reason not in HOLD_REASONS or not identity.startswith("continuation:")
             or args["incident_key"] != args["source_identity"]):
         return False
     row = (await conn.execute(select(continuations, wait_records.c.project_id).join(
@@ -130,7 +133,7 @@ class HibernationTransaction:
         identity = f"continuation:{intent['id']}:{intent['suspension_generation']}:{reason}"
         result = await handler.wait_escalation_create(conn, {
             "project_id": task["project_id"], "task_id": task["id"],
-            "task_title": task["title"], "source_kind": "wait",
+            "task_title": task["title"], "source_kind": "continuation",
             "source_identity": identity,
             "incident_key": identity,
             "summary": f"Hibernation held: {reason}",
@@ -154,8 +157,6 @@ class HibernationTransaction:
         requires that proof. This also captures shell edits after checkpoint. The
         claim/epoch/token/folder remain owned until both stop AND push succeed.
         """
-        if not self.orch.config.wait_policy.hibernation_enabled:
-            raise WaitError("wait.disabled", "hibernation is disabled")
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(wait_records.c.owner_id).where(
                 wait_records.c.id == wait_id,

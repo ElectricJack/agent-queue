@@ -203,6 +203,15 @@ class EscalationCommandsMixin:
         if await self.db.get_project(project_id) is None:
             return _error("not_found", "project not found")
         task_id = args.get("task_id")
+        if args["source_kind"] == "continuation":
+            # Infrastructure holds may follow an already satisfied wait. They
+            # belong to the suspension intent, rather than a pending deadline.
+            if conn is None or principal.kind is not PrincipalKind.SERVICE:
+                return _error("invalid_binding", "continuation incidents require the wait transaction")
+            from src.wait_runtime.hibernate import validate_hold_binding
+
+            if not await validate_hold_binding(conn, args):
+                return _error("invalid_binding", "continuation incident does not match its intent")
         if args["source_kind"] == "wait":
             # Only the timer/loop command can bind an operational wait incident.
             # A caller cannot manufacture a wait escalation through the generic API.
@@ -211,21 +220,15 @@ class EscalationCommandsMixin:
             from sqlalchemy import select
             from src.database.tables import wait_records
 
-            if args["source_identity"].startswith("continuation:"):
-                from src.wait_runtime.hibernate import validate_hold_binding
-
-                if not await validate_hold_binding(conn, args):
-                    return _error("invalid_binding", "continuation incident binding changed")
-            else:
-                wait_id, separator, generation = args["source_identity"].rpartition(":")
-                wait = (await conn.execute(select(wait_records).where(
-                    wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
-                    wait_records.c.outcome == "pending",
-                ))).mappings().first()
-                if (not separator or not generation.isdecimal() or int(generation) < 1
-                        or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
-                        or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
-                    return _error("invalid_binding", "wait incident does not match its generation")
+            wait_id, separator, generation = args["source_identity"].rpartition(":")
+            wait = (await conn.execute(select(wait_records).where(
+                wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
+                wait_records.c.outcome == "pending",
+            ))).mappings().first()
+            if (not separator or not generation.isdecimal() or int(generation) < 1
+                    or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
+                    or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
+                return _error("invalid_binding", "wait incident does not match its generation")
         if args["source_kind"] == "question":
             question = await self.db.get_agent_question(args["source_identity"])
             if question is None or question["project_id"] != project_id:
@@ -300,7 +303,7 @@ class EscalationCommandsMixin:
                 "escalation.created.v1",
                 created_payload,
             )
-        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait"}:
+        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait", "continuation"}:
             from src.asks.models import SourceIdentity
             ask = await self._publish_source_ask(SourceIdentity(
                 project_id, "free_text", incident["id"], {"id": incident["id"]},
