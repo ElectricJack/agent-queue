@@ -213,6 +213,63 @@ async def test_reset_restarts_used_identity_sequences():
         await conn.close()
 
 
+async def test_reset_excludes_idle_and_reconnecting_writers(monkeypatch):
+    """A late writer must not leave rows behind while identities restart."""
+    import asyncpg
+
+    dsn = lease_dsn("late-writer")
+    stale = await db_fixtures._connect_admin(dsn)
+    other = await db_fixtures._connect_admin(lease_dsn("other-worker"))
+    scan = db_fixtures._non_empty_tables
+    insert = "INSERT INTO events (event_type, timestamp) VALUES ('probe', 0) RETURNING id"
+    await stale.fetchval(insert)
+
+    async def scan_without_writers(conn):
+        # Run at the vulnerable boundary: before DELETE chooses its tables.
+        with pytest.raises(
+            asyncpg.exceptions.ObjectNotInPrerequisiteStateError,
+            match="not currently accepting connections",
+        ):
+            late = await db_fixtures._connect_admin(dsn)
+            await late.close()
+        assert stale.is_closed()
+        assert await other.fetchval("SELECT 1") == 1
+        return await scan(conn)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(db_fixtures, "_non_empty_tables", scan_without_writers)
+            await db_fixtures.reset_all(dsn)
+        conn = await db_fixtures._connect_admin(dsn)
+        try:
+            assert await conn.fetchval("SELECT count(*) FROM events") == 0
+            assert await conn.fetchval(insert) == 1
+        finally:
+            await conn.close()
+    finally:
+        await stale.close()
+        await other.close()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_reset_restores_connections_after_failure(monkeypatch, failure):
+    dsn = lease_dsn("failed-reset")
+
+    async def fail_scan(_conn):
+        raise failure("reset interrupted")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db_fixtures, "_non_empty_tables", fail_scan)
+        with pytest.raises(failure, match="reset interrupted"):
+            await db_fixtures.reset_all(dsn)
+
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        assert await conn.fetchval("SELECT 1") == 1
+    finally:
+        await conn.close()
+
+
 async def test_reset_clears_relation_and_column_planner_stats():
     """Emptied tables read as never vacuumed, without an earlier fixture's samples.
 
@@ -335,12 +392,16 @@ async def test_reset_falls_back_to_truncate_when_the_row_reset_is_unavailable(
         await db_fixtures.reset_all("postgresql://u:p@h/leased")
     await db_fixtures.reset_all("postgresql://u:p@h/leased")
 
-    # End busy sessions before truncating, including after the fallback is cached.
+    # Fence writers on both paths, including after the fallback is cached.
     assert executed == [
-        db_fixtures._END_BUSY_SESSIONS,
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS false',
+        db_fixtures._END_TEST_SESSIONS,
         db_fixtures._TRUNCATE_ALL,
-        db_fixtures._END_BUSY_SESSIONS,
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS true',
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS false',
+        db_fixtures._END_TEST_SESSIONS,
         db_fixtures._TRUNCATE_ALL,
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS true',
     ]
 
 
