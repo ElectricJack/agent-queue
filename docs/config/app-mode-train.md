@@ -1,11 +1,17 @@
 # App-mode integration train: operator runbook
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Git-first train runbook](../guides/git-first-train-runbook.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 App credential mode is how a production AQ install runs the integration train.
 It is on when `~/.agent-queue/config.yaml` sets `integration.github_app`; on this
 install that is the App `agent-queue-train` (id 5075923, installation
 164874645). Existing-login credentials (`gh` as the daemon user) remain for
 development installs without an App
-([hierarchical-integration-trains.md §2](../guides/hierarchical-integration-trains.md#2-github-credentials-app-mode-or-existing-login)).
+([hierarchical-integration-trains.md §2](../concepts/integration.md#github-access-during-delivery)).
 
 In App mode the train trusts three things:
 
@@ -32,7 +38,7 @@ agent-queue; §9.7 covers every other project.
 ## Commands
 
 ```text
-aq integration trust-manifest PROJECT [--policy FILE] [--repository-id ID] (--write PATH | --check | --print) [--json]
+aq integration trust-manifest PROJECT [--policy FILE | --hosted-check-policy FILE] [--repository-id ID] (--write PATH | --check | --print) [--json]
 aq integration app-verify PROJECT [--policy FILE] [--repository-id ID] [--json]
 aq integration app-setup PROJECT [--policy FILE] [--repository-id ID] [--apply]
 aq integration onboard-train PROJECT [--write-policy PATH] [--write-trust-manifest PATH] [--write-audit-workflow PATH] [--write-ruleset PATH]
@@ -50,6 +56,11 @@ aq doctor --check integration.app_mode
 - Each takes the policy from `--policy FILE`, so the anchors can be prepared
   before the policy is bound, else the project's bound policy. `--repository-id`
   defaults to the project's designated integration repository.
+- For trust bootstrap without hierarchical routing artifacts, `trust-manifest`
+  also accepts a strictly validated CI-only `--hosted-check-policy FILE`.
+  See the [current bootstrap example](../guides/promotion-flow.md#a-realistic-example).
+  Repository and attestation App identities still come from the daemon;
+  this input never binds policy, changes integration mode or activates a flow.
 - `app-verify` reports one item per concern, each `ok`, `warn` or `fail` with
   a code, what was expected, what GitHub showed and the exact fix: `credential`,
   `repository`, `producer`, `manifest`, `variables`, `protection`,
@@ -73,11 +84,16 @@ generation() {
 - `integration.github_app` is configured (`app_id`, `installation_id`,
   `private_key_path`). The private key is readable only by the daemon user:
   `OwnerFilePrivateKeyProvider` refuses anything broader than 0600.
-- The App registration grants exactly `actions: read`, `actions_variables:
+- The App registration grants `actions: read` by default, `actions_variables:
   read`, `administration: read`, `checks: write`, `contents: write`, `issues:
   write`, `metadata: read`, `pull_requests: write` and `workflows: write`. The
   token mint refuses a grant that differs, and `app-verify` reports it as
   `credential` `app_token_unavailable`.
+- For stuck-job recovery, the operator grants and approves Actions write and
+  explicitly sets `integration.github_app.actions_permission: write`, then
+  restarts the daemon. Default-read installations need no change. Token minting
+  and validation require the configured level; denied job requests remain
+  pending with durable permission guidance and are never retried automatically.
 - The installation covers every repository a train will use.
 - The shared or project routes are imported and active
   ([train-onboarding.md §1](train-onboarding.md#1-the-shared-routes-once-per-install),
@@ -99,12 +115,15 @@ publisher, which pushes with the App's bypass on ruleset 24002443.
    ```
 
    ```text
-   wrote .github/agent-queue-integration.json (sha256 b175798d0ac43fa92e03fd0ee93b652242d4d8eb318c3c4bc3f232a2a23cb6c3) for ElectricJack/agent-queue (1160639300), App 5075923, argument policy
+   wrote .github/agent-queue-integration.json (sha256 1b0177af3d2fff5899720d336b6e31b497a9756347f337508f3be8fd99b48cee) for ElectricJack/agent-queue (1160639300), App 5075923, argument policy
    committed copy matches: .github/agent-queue-integration.json on main (<default-branch sha>)
    ```
 
-   For agent-queue this step is done: the operator committed the file as
-   `64fa07ad6`, byte-identical to the builder's output.
+   For agent-queue this step is done. The operator first committed the file as
+   `64fa07ad6`. Task `steady-falcon` regenerated it when the policy took the
+   planner's derived check-set version `ci-4c6e0c2a989c` (the same fifteen
+   names as the earlier `tests-yml-v3` label), byte-identical to the builder's
+   output.
    `tests/test_integration_trust_manifest.py` pins it to the reviewed policy,
    so a check-set change that does not regenerate it fails CI. `--check` is the
    read-only confirmation. It exits 1 on a missing file or an identity
@@ -124,7 +143,9 @@ publisher, which pushes with the App's bypass on ruleset 24002443.
 
 Preconditions: every node of the implementation epic is complete and on
 `main`, and the disposable-repository gate report shows S1-S10 passing, or each
-gap accepted by the operator.
+gap accepted by the operator. The 2026-09-28 run is
+[app-mode-train-2026-09-28.md](../gates/app-mode-train-2026-09-28.md), driven by
+`scripts/e2e-app-train.sh`.
 
 1. **Verify before touching anything:**
 
@@ -136,7 +157,7 @@ gap accepted by the operator.
      ok   producer
      ok   manifest
      fail variables       hosted_workflow_variables_unavailable
-          expected: {"AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "tests-yml-v3"}
+          expected: {"AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "ci-4c6e0c2a989c"}
           observed: {"unavailable": {"AQ_INTEGRATION_ATTESTATION_APP_ID": "absent", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "absent"}, "values": {"AQ_INTEGRATION_ATTESTATION_APP_ID": null, "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": null}}
           fix: aq integration app-setup agent-queue --policy docs/config/agent-queue-train-policy.json --repository-id agent-queue2 --apply (runbook §9.3 step 3)
      ok   protection      app_bypass

@@ -8,6 +8,10 @@ import pytest
 from tests import db_fixtures, pg_dsn
 from tests.db_fixtures import LeasePool, lease_dsn
 
+# Substrate regressions create real database clones and templates. Keep the
+# whole suite in migration-and-slow so default shards do not pay for that setup.
+pytestmark = pytest.mark.slow
+
 
 def test_initialized_database_survives_row_reset_and_new_event_loop(monkeypatch, request):
     """Reuse initialization, preserve seeds, and isolate adapters and pool options."""
@@ -209,8 +213,65 @@ async def test_reset_restarts_used_identity_sequences():
         await conn.close()
 
 
-async def test_reset_leaves_planner_stats_as_a_truncate_did():
-    """Emptied tables must read as never vacuumed, as a truncate left them.
+async def test_reset_excludes_idle_and_reconnecting_writers(monkeypatch):
+    """A late writer must not leave rows behind while identities restart."""
+    import asyncpg
+
+    dsn = lease_dsn("late-writer")
+    stale = await db_fixtures._connect_admin(dsn)
+    other = await db_fixtures._connect_admin(lease_dsn("other-worker"))
+    scan = db_fixtures._non_empty_tables
+    insert = "INSERT INTO events (event_type, timestamp) VALUES ('probe', 0) RETURNING id"
+    await stale.fetchval(insert)
+
+    async def scan_without_writers(conn):
+        # Run at the vulnerable boundary: before DELETE chooses its tables.
+        with pytest.raises(
+            asyncpg.exceptions.ObjectNotInPrerequisiteStateError,
+            match="not currently accepting connections",
+        ):
+            late = await db_fixtures._connect_admin(dsn)
+            await late.close()
+        assert stale.is_closed()
+        assert await other.fetchval("SELECT 1") == 1
+        return await scan(conn)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(db_fixtures, "_non_empty_tables", scan_without_writers)
+            await db_fixtures.reset_all(dsn)
+        conn = await db_fixtures._connect_admin(dsn)
+        try:
+            assert await conn.fetchval("SELECT count(*) FROM events") == 0
+            assert await conn.fetchval(insert) == 1
+        finally:
+            await conn.close()
+    finally:
+        await stale.close()
+        await other.close()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_reset_restores_connections_after_failure(monkeypatch, failure):
+    dsn = lease_dsn("failed-reset")
+
+    async def fail_scan(_conn):
+        raise failure("reset interrupted")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db_fixtures, "_non_empty_tables", fail_scan)
+        with pytest.raises(failure, match="reset interrupted"):
+            await db_fixtures.reset_all(dsn)
+
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        assert await conn.fetchval("SELECT 1") == 1
+    finally:
+        await conn.close()
+
+
+async def test_reset_clears_relation_and_column_planner_stats():
+    """Emptied tables read as never vacuumed, without an earlier fixture's samples.
 
     VACUUM records them as vacuumed-empty (``reltuples = 0``), which turns off
     the planner's minimum-size guess for fresh tables: a table the next test
@@ -229,6 +290,10 @@ async def test_reset_leaves_planner_stats_as_a_truncate_did():
             "INSERT INTO tasks (id, project_id, title, description, created_at, updated_at) "
             "SELECT 't' || g, 'p1', 't', '', 0, 0 FROM generate_series(1, 500) g"
         )
+        await conn.execute("ANALYZE tasks")
+        assert await conn.fetchval(
+            "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'tasks'"
+        ) > 0
     finally:
         await conn.close()
 
@@ -237,6 +302,9 @@ async def test_reset_leaves_planner_stats_as_a_truncate_did():
     conn = await db_fixtures._connect_admin(dsn)
     try:
         rows = [tuple(row) for row in await conn.fetch(stats)]
+        assert await conn.fetchval(
+            "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'tasks'"
+        ) == 0
     finally:
         await conn.close()
     assert rows == [
@@ -244,6 +312,30 @@ async def test_reset_leaves_planner_stats_as_a_truncate_did():
         ("tasks", 0, -1.0),
         ("tasks_pkey", 0, -1.0),
     ]
+
+
+async def test_reset_clears_column_stats_from_an_already_empty_table():
+    """A fixture can delete its own rows after ANALYZE, before the pool reset."""
+    dsn = lease_dsn("empty-stats")
+    stats = (
+        "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'projects'"
+    )
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p1', 0)")
+        await conn.execute("ANALYZE projects")
+        assert await conn.fetchval(stats) > 0
+        await conn.execute("DELETE FROM projects")
+    finally:
+        await conn.close()
+
+    await db_fixtures.reset_all(dsn)
+
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        assert await conn.fetchval(stats) == 0
+    finally:
+        await conn.close()
 
 
 @pytest.mark.parametrize(
@@ -300,7 +392,17 @@ async def test_reset_falls_back_to_truncate_when_the_row_reset_is_unavailable(
         await db_fixtures.reset_all("postgresql://u:p@h/leased")
     await db_fixtures.reset_all("postgresql://u:p@h/leased")
 
-    assert executed == [db_fixtures._TRUNCATE_ALL, db_fixtures._TRUNCATE_ALL]
+    # Fence writers on both paths, including after the fallback is cached.
+    assert executed == [
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS false',
+        db_fixtures._END_TEST_SESSIONS,
+        db_fixtures._TRUNCATE_ALL,
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS true',
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS false',
+        db_fixtures._END_TEST_SESSIONS,
+        db_fixtures._TRUNCATE_ALL,
+        'ALTER DATABASE "leased" ALLOW_CONNECTIONS true',
+    ]
 
 
 async def test_pool_dispose_drops_its_clones_together(monkeypatch):

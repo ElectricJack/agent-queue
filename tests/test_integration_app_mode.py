@@ -39,6 +39,9 @@ AUDIT_TEXT = (
     "name: Main attestation\n"
     "env:\n  APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}\n"
 )
+#: The reviewed policy's root check-set version: what
+#: ``AQ_INTEGRATION_REQUIRED_CHECK_VERSION`` must hold.
+CHECK_VERSION = json.loads(POLICY_PATH.read_text())["root"]["required_checks"]["version"]
 
 
 def _policy(**producers: str) -> dict:
@@ -82,7 +85,7 @@ class FakeGitHub:
         }
         self.variables = {
             app_mode.APP_ID_VARIABLE: str(APP_ID),
-            app_mode.CHECK_VERSION_VARIABLE: "tests-yml-v3",
+            app_mode.CHECK_VERSION_VARIABLE: CHECK_VERSION,
         }
         # The §8.1 ruleset app-verify renders, applied: GitHub's effective rules.
         self.rules = [
@@ -182,21 +185,12 @@ def _db(policy: dict) -> SimpleNamespace:
         default_branch="main",
         url="https://github.com/ElectricJack/agent-queue.git",
     )
-    parsed = HierarchicalIntegrationPolicy.model_validate(_policy())
-    profiles = {
-        profile
-        for boundary in (parsed.parent, parsed.root)
-        for profile in (
-            boundary.primary_profile_id,
-            boundary.repair.debug_profile_id,
-            boundary.verifier_profile_id,
-        )
-    }
+    # No list_profiles: preflight gates on the class hints only; the router
+    # assigns repair and verifier profiles.
     return SimpleNamespace(
         get_project=AsyncMock(return_value=_project(policy)),
         get_repo=AsyncMock(side_effect=lambda rid: repository if rid == "agent-queue2" else None),
         get_session=AsyncMock(return_value=None),
-        list_profiles=AsyncMock(return_value=[SimpleNamespace(id=value) for value in profiles]),
     )
 
 
@@ -524,6 +518,69 @@ async def test_every_item_is_ok_with_the_anchors_in_place(protected):
     assert all(f"?ref={SHA}" in path for path in client.paths if "/contents/" in path)
 
 
+async def test_app_verify_and_preflight_block_missing_origins_without_writing(protected, reuse_database):
+    from sqlalchemy import select
+    from src.database.tables import task_branch_origins
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+
+    db = await reuse_database("app-origin-readiness")
+    await db.create_project(Project(id="agent-queue", name="Queue"))
+    await db.create_repo(RepoConfig(id="agent-queue2", project_id="agent-queue", default_branch="main",
+                                    source_type=RepoSourceType.CLONE))
+    await db.create_task(Task(id="legacy", project_id="agent-queue", title="legacy", description="",
+                              status=TaskStatus.READY))
+    handler = _handler(FakeGitHub())
+    handler.db._engine = db._engine
+    verified = await handler._cmd_integration_app_verify({"project_id": "agent-queue"})
+    preflight = await daemon_functional_preflight(handler.orchestrator, "agent-queue", "agent-queue2")
+    assert verified["ready"] is False
+    assert verified["blockers"] == list(preflight) == ["branch_origins_missing"]
+    item = next(item for item in verified["items"] if item["id"] == "branch_origins")
+    assert item["observed"] == {"task_ids": ["legacy"]}
+    assert item["fix"] == "aq doctor --check integration.branch_origins --fix"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins))).all() == []
+
+
+@pytest.mark.parametrize("drift", [None, "missing", "another-attestation"])
+async def test_verify_and_preflight_compare_bound_promotion_identities(protected, monkeypatch, drift):
+    steps = [
+        {"id": "staging", "source": "main", "target": "staging",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (staging)"}},
+        {"id": "release", "source": "staging", "target": "production",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (release)"}},
+    ]
+    names = [step["gate"]["attestation"] for step in steps]
+    stored = AsyncMock(return_value=steps)
+    monkeypatch.setattr("src.integration.promotion_steps.read_stored_promotion_flow", stored)
+    client = FakeGitHub()
+    manifest = _manifest()
+    manifest["promotion_attestation_names"] = names.copy()
+    if drift == "missing":
+        manifest.pop("promotion_attestation_names")
+    elif drift == "another-attestation":
+        manifest["promotion_attestation_names"][1] = "Unconfigured release attestation"
+    client.files[trust_manifest.TRUST_MANIFEST_PATH] = trust_manifest.canonical_text(manifest)
+    result = await _handler(client)._cmd_integration_app_verify({"project_id": "agent-queue"})
+    item = next(item for item in result["items"] if item["id"] == "manifest")
+    preflight = await daemon_functional_preflight(
+        _orchestrator(client, _policy()), "agent-queue", "agent-queue2",
+    )
+    assert stored.await_count == 2
+    assert result["expected"]["manifest"]["promotion_attestation_names"] == names
+    if drift is None:
+        assert item["status"] == "ok"
+        assert "trust_manifest_mismatch" not in result["blockers"]
+        assert "trust_manifest_mismatch" not in preflight
+    else:
+        assert item["status"] == "fail"
+        assert [change["field"] for change in item["observed"]["diff"]] == [
+            "promotion_attestation_names",
+        ]
+        assert "trust_manifest_mismatch" in result["blockers"]
+        assert "trust_manifest_mismatch" in preflight
+
+
 async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(protected):
     result = await _handler(FakeGitHub())._cmd_integration_app_verify(
         {"project_id": "agent-queue"}
@@ -534,7 +591,7 @@ async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(prote
     assert expected["manifest_text"] == trust_manifest.canonical_text(_manifest())
     assert expected["variables"] == {
         "AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923",
-        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "tests-yml-v3",
+        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": CHECK_VERSION,
     }
     # Spec §8.1, pinned to this App, with no bypass.
     assert expected["ruleset"] == {
@@ -571,6 +628,49 @@ async def test_variables_answer_to_the_policy_not_the_manifest(protected):
     assert items["variables"]["status"] == "ok"
     assert items["manifest"]["status"] == "warn"
     assert items["manifest"]["codes"] == ["trust_manifest_check_set_differs"]
+
+
+RECORDED_VARIABLES = REPO / "tests/fixtures/app_mode"
+
+
+class RecordedVariables(FakeGitHub):
+    """Serves both Actions variables exactly as GitHub returned them to the fixture.
+
+    Recorded 2026-09-28 after the live proof's rotation switch (spec §10 S8):
+    ``GET /repos/ElectricJack/aq-gh615-app-fixture-20260923/actions/variables/<name>``.
+    """
+
+    async def request_json(self, method, path):
+        if "/actions/variables/" not in path:
+            return await super().request_json(method, path)
+        self.paths.append(path)
+        name = path.rsplit("/", 1)[-1]
+        return json.loads((RECORDED_VARIABLES / f"fixture-variable-{name}.json").read_text())
+
+
+async def test_recorded_variables_answer_to_the_bound_policy_version(protected):
+    """GitHub's payload carries timestamps beside the name and value; the item reads the
+    value and compares it with the policy alone, so the same recording is ok for the
+    policy the switch bound and a mismatch for one it did not."""
+    switched = _policy()
+    switched["root"]["required_checks"]["version"] = "fixture-v2"
+
+    ok = await _handler(RecordedVariables(), switched)._cmd_integration_app_verify(
+        {"project_id": "agent-queue"}
+    )
+    stale = await _handler(RecordedVariables())._cmd_integration_app_verify(
+        {"project_id": "agent-queue"}
+    )
+
+    variables = {item["id"]: item for item in ok["items"]}["variables"]
+    assert variables["status"] == "ok"
+    assert variables["observed"]["values"] == {
+        app_mode.APP_ID_VARIABLE: str(APP_ID),
+        app_mode.CHECK_VERSION_VARIABLE: "fixture-v2",
+    }
+    assert {item["id"]: item for item in stale["items"]}["variables"]["codes"] == [
+        "hosted_workflow_variables_mismatch"
+    ]
 
 
 async def test_a_slug_producer_leaves_the_manifest_compared_on_every_other_field(protected):
@@ -712,6 +812,7 @@ async def test_contract_is_a_typed_read():
             assert command == "integration_app_verify"
             assert payload == {
                 "project_id": "p", "policy": None, "repository_id": None, "policy_path": None,
+                "repository_access_only": False,
             }
             return report
 
@@ -734,10 +835,12 @@ async def test_status_contract_carries_warnings():
     register_integration_contracts(registry)
     registration = registry.require("integration_status")
     warning = {"code": "audit_workflow_missing", "detail": "d", "ref": "agent-queue2"}
+    activity = {"scope": "daemon", "api_calls_per_minute": {"GET repos/acme/widgets": 3}}
 
     class StubHandler:
         async def execute(self, command, payload):
-            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning]}
+            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning],
+                    "github": activity}
 
     set_handler_provider(StubHandler)
     try:
@@ -747,6 +850,7 @@ async def test_status_contract_carries_warnings():
     finally:
         set_handler_provider(None)
     assert result.value.ready is True and result.value.warnings == (warning,)
+    assert result.value.github == activity
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +942,7 @@ def test_app_setup_apply_sets_only_the_differing_variables_and_reverifies(protec
     # The App id was already right, so gh never touched it.
     assert runs == [[
         "gh", "variable", "set", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
-        "--repo", "ElectricJack/agent-queue", "--body", "tests-yml-v3",
+        "--repo", "ElectricJack/agent-queue", "--body", CHECK_VERSION,
     ]]
     # Verified, applied, then verified again through the App.
     assert [command for command, _args in calls] == ["integration_app_verify"] * 2
@@ -857,7 +961,7 @@ def test_app_setup_apply_sets_both_when_both_are_unset(protected):
 
     assert outcome.exit_code == 0, outcome.output
     assert [argv[3] for argv in runs] == list(app_mode.HOSTED_VARIABLES)
-    assert [argv[7] for argv in runs] == ["5075923", "tests-yml-v3"]
+    assert [argv[7] for argv in runs] == ["5075923", CHECK_VERSION]
 
 
 def test_app_setup_apply_touches_nothing_when_the_variables_are_correct(protected):
@@ -906,7 +1010,7 @@ def test_app_setup_without_apply_prints_commands_manifest_and_ruleset_steps():
     ) in output
     assert (
         "gh variable set AQ_INTEGRATION_REQUIRED_CHECK_VERSION --repo "
-        "ElectricJack/agent-queue --body tests-yml-v3"
+        f"ElectricJack/agent-queue --body {CHECK_VERSION}"
     ) in output
     assert (
         f"aq integration trust-manifest agent-queue --policy {POLICY_PATH} "

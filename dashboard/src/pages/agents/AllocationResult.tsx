@@ -96,7 +96,7 @@ export default function AllocationResult({ result, onDone }: {
 
       {placement && (
         <p className="text-xs text-gray-400">
-          {`Re-placed ${plural(placement.moved?.length ?? 0, "queued task")} onto this provider`}
+          {`Returned ${plural(placement.moved?.length ?? 0, "queued task")} to the router to re-plan on this provider`}
           {placementHeld > 0 ? `; ${placementHeld} held` : ""}
           {placementErrors.length > 0 && <span className="block text-red-300">{placementErrors.join("; ")}</span>}
         </p>

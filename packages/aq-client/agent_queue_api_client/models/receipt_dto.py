@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.cancellation_facts_dto import CancellationFactsDTO
     from ..models.explanation_row_dto import ExplanationRowDTO
     from ..models.explanation_value_dto import ExplanationValueDTO
+    from ..models.script_execution_dto import ScriptExecutionDTO
     from ..models.token_usage_dto import TokenUsageDTO
     from ..models.wait_facts_dto import WaitFactsDTO
 
@@ -31,6 +32,8 @@ class ReceiptDTO:
         started_at (float):
         attempt (int | Unset):  Default: 1.
         iteration_index (int | None | Unset):
+        iteration_path (str | Unset):  Default: ''.
+        script (None | ScriptExecutionDTO | Unset):
         selected_edge_id (None | str | Unset):
         completed_at (float | None | Unset):
         duration_seconds (float | None | Unset):
@@ -54,6 +57,8 @@ class ReceiptDTO:
     started_at: float
     attempt: int | Unset = 1
     iteration_index: int | None | Unset = UNSET
+    iteration_path: str | Unset = ""
+    script: None | ScriptExecutionDTO | Unset = UNSET
     selected_edge_id: None | str | Unset = UNSET
     completed_at: float | None | Unset = UNSET
     duration_seconds: float | None | Unset = UNSET
@@ -71,6 +76,7 @@ class ReceiptDTO:
     def to_dict(self) -> dict[str, Any]:
         from ..models.cancellation_facts_dto import CancellationFactsDTO
         from ..models.explanation_value_dto import ExplanationValueDTO
+        from ..models.script_execution_dto import ScriptExecutionDTO
         from ..models.token_usage_dto import TokenUsageDTO
         from ..models.wait_facts_dto import WaitFactsDTO
 
@@ -93,6 +99,16 @@ class ReceiptDTO:
             iteration_index = UNSET
         else:
             iteration_index = self.iteration_index
+
+        iteration_path = self.iteration_path
+
+        script: dict[str, Any] | None | Unset
+        if isinstance(self.script, Unset):
+            script = UNSET
+        elif isinstance(self.script, ScriptExecutionDTO):
+            script = self.script.to_dict()
+        else:
+            script = self.script
 
         selected_edge_id: None | str | Unset
         if isinstance(self.selected_edge_id, Unset):
@@ -197,6 +213,10 @@ class ReceiptDTO:
             field_dict["attempt"] = attempt
         if iteration_index is not UNSET:
             field_dict["iteration_index"] = iteration_index
+        if iteration_path is not UNSET:
+            field_dict["iteration_path"] = iteration_path
+        if script is not UNSET:
+            field_dict["script"] = script
         if selected_edge_id is not UNSET:
             field_dict["selected_edge_id"] = selected_edge_id
         if completed_at is not UNSET:
@@ -231,6 +251,7 @@ class ReceiptDTO:
         from ..models.cancellation_facts_dto import CancellationFactsDTO
         from ..models.explanation_row_dto import ExplanationRowDTO
         from ..models.explanation_value_dto import ExplanationValueDTO
+        from ..models.script_execution_dto import ScriptExecutionDTO
         from ..models.token_usage_dto import TokenUsageDTO
         from ..models.wait_facts_dto import WaitFactsDTO
 
@@ -257,6 +278,25 @@ class ReceiptDTO:
             return cast(int | None | Unset, data)
 
         iteration_index = _parse_iteration_index(d.pop("iteration_index", UNSET))
+
+        iteration_path = d.pop("iteration_path", UNSET)
+
+        def _parse_script(data: object) -> None | ScriptExecutionDTO | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                script_type_0 = ScriptExecutionDTO.from_dict(data)
+
+                return script_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | ScriptExecutionDTO | Unset, data)
+
+        script = _parse_script(d.pop("script", UNSET))
 
         def _parse_selected_edge_id(data: object) -> None | str | Unset:
             if data is None:
@@ -416,6 +456,8 @@ class ReceiptDTO:
             started_at=started_at,
             attempt=attempt,
             iteration_index=iteration_index,
+            iteration_path=iteration_path,
+            script=script,
             selected_edge_id=selected_edge_id,
             completed_at=completed_at,
             duration_seconds=duration_seconds,
