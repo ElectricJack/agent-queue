@@ -52,6 +52,33 @@ def test_task_help_does_not_advertise_retired_ask_human(runner):
     assert "No such command 'ask-human'" in call_result.output
 
 
+def test_ask_cutover_status_forwards_project_and_json(runner):
+    import json
+
+    from src.cli.app import cli
+
+    receipt = {
+        "success": True,
+        "result": {
+            "project_id": "p",
+            "configured_destination": "discord:1:2",
+            "destinations": [],
+        },
+    }
+    # Stub the health probe too: without it the test needs a live daemon.
+    with (
+        patch.object(CLIClient, "connect", new_callable=AsyncMock),
+        patch.object(CLIClient, "close", new_callable=AsyncMock),
+        patch.object(
+            CLIClient, "execute", new_callable=AsyncMock, return_value=receipt
+        ) as execute,
+    ):
+        result = runner.invoke(cli, ["ask", "cutover-status", "--project-id", "p", "--json"])
+    assert result.exit_code == 0, result.output
+    execute.assert_awaited_once_with("ask_cutover_status", {"project_id": "p"})
+    assert json.loads(result.output)["data"] == receipt
+
+
 # Mock response helpers
 
 
@@ -232,6 +259,34 @@ class TestFormatterCompatibility:
         console = Console(record=True, width=200, force_terminal=False)
         console.print(renderable)
         return console.export_text()
+
+    def test_format_task_detail_prints_the_route(self):
+        """Mandatory routing §10: the source, the target and the router's why."""
+        routed = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Routed",
+            "route_source": "router", "profile_id": "standard-high-codex",
+            "intelligence_class": "standard-high",
+            "route": {"lane": "code-design", "rule": "kind:design",
+                      "reason": "lowest pressure"},
+        })
+        text = self._render(format_task_detail(routed))
+        assert "Route: router -> standard-high-codex (standard-high)" in text
+        assert "Route rule: kind:design / lane code-design" in text
+        assert "Route reason: lowest pressure" in text
+
+        pinned = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Pinned",
+            "route_source": "override", "profile_id": "standard-high-claude",
+            "route": {"override": {"by": "human:local-operator", "reason": "outage"}},
+        })
+        text = self._render(format_task_detail(pinned))
+        assert "Override: by human:local-operator: outage" in text
+
+        unrouted = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Waiting",
+            "route_source": "unrouted",
+        })
+        assert "Route: unrouted" in self._render(format_task_detail(unrouted))
 
     def test_format_task_detail_groups_edges_by_type(self):
         # A parent-child edge and a real blocks edge must land in two
@@ -767,7 +822,7 @@ class TestAutoCommands:
 
         result = runner.invoke(cli, ["playbook", "commands", "--help"])
         assert result.exit_code == 0
-        assert "registered Playbook V2 command" in result.output
+        assert "playbook command contracts" in result.output
 
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""
@@ -807,6 +862,23 @@ class TestCLICommands:
 
         mock_client.execute = AsyncMock(side_effect=mock_execute)
         return mock_client
+
+    @pytest.mark.parametrize("flags, resume", [([], False), (["--resume"], True)])
+    def test_supervisor_restart_dispatches_fresh_or_resume(self, runner, flags, resume):
+        from src.cli.app import cli
+
+        mock = self._mock_client({"supervisor_restart": {
+            "success": True, "session_id": "replacement", "name": "supervisor-global",
+            "state": "running", "mode": "resume" if resume else "fresh",
+        }})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["supervisor", "restart", *flags, "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock.execute.await_args.args[0] == "supervisor_restart"
+        args = mock.execute.await_args.args[1]
+        assert args.get("resume", False) is resume
+        assert args.get("name", "supervisor-global") == "supervisor-global"
+        assert "replacement" in result.output
 
     def test_task_list_with_formatter(self, runner):
         """`task list` (hand-crafted since aq-surface Phase S0, previously
@@ -871,20 +943,17 @@ class TestCLICommands:
             assert result.exit_code == 0
             assert "Test task" in result.output
 
-    def test_task_create_with_profile_flag(self, runner):
-        """--profile is passed through as profile_id in create_task args."""
+    @pytest.mark.parametrize(
+        "flag", [["--profile", "claude-opus"], ["-P", "claude-opus"], ["--pin"],
+                 ["--provider-intent", "pinned"], ["--agent-type", "claude-code"]],
+    )
+    def test_task_create_has_no_routing_flags(self, runner, flag):
+        """A filing names hints, never a route: the routing flags are gone
+        (mandatory task routing), so the CLI refuses them before any call."""
         from src.cli.app import cli
 
-        captured_args = {}
-
-        async def mock_execute(command, args=None):
-            if command == "create_task":
-                captured_args.update(args or {})
-                return {"created": "task-42", "title": args.get("title", "")}
-            return {}
-
         mock = self._mock_client({})
-        mock.execute = AsyncMock(side_effect=mock_execute)
+        mock.execute = AsyncMock(return_value={"created": "task-42"})
 
         with patch("src.cli.tasks._get_client", return_value=mock):
             result = runner.invoke(
@@ -898,15 +967,13 @@ class TestCLICommands:
                     "Pick a model",
                     "--description",
                     "test task",
-                    "--profile",
-                    "claude-opus",
+                    *flag,
                 ],
             )
 
-        assert result.exit_code == 0, result.output
-        assert captured_args["profile_id"] == "claude-opus"
-        assert captured_args["project_id"] == "proj"
-        assert captured_args["title"] == "Pick a model"
+        assert result.exit_code == 2, result.output
+        assert "No such option" in result.output
+        mock.execute.assert_not_called()
 
     def test_task_create_partial_flags_seed_wizard_and_preserve_overrides(self, runner):
         """Partial input prompts only for missing fields without losing flags."""
@@ -1045,43 +1112,8 @@ class TestCLICommands:
         assert "Task creation cancelled." in result.output
         mock.execute.assert_not_awaited()
 
-    def test_task_create_with_agent_type_flag(self, runner):
-        """--agent-type is passed through as agent_type in create_task args."""
-        from src.cli.app import cli
-
-        captured_args = {}
-
-        async def mock_execute(command, args=None):
-            if command == "create_task":
-                captured_args.update(args or {})
-                return {"created": "task-43", "title": args.get("title", "")}
-            return {}
-
-        mock = self._mock_client({})
-        mock.execute = AsyncMock(side_effect=mock_execute)
-
-        with patch("src.cli.tasks._get_client", return_value=mock):
-            result = runner.invoke(
-                cli,
-                [
-                    "task",
-                    "create",
-                    "--project",
-                    "proj",
-                    "--title",
-                    "T",
-                    "--description",
-                    "D",
-                    "--agent-type",
-                    "claude-code",
-                ],
-            )
-
-        assert result.exit_code == 0, result.output
-        assert captured_args["agent_type"] == "claude-code"
-
-    def test_task_create_without_profile_flag_omits_field(self, runner):
-        """When --profile is not given, profile_id is absent from create_task args."""
+    def test_task_create_sends_no_routing_field(self, runner):
+        """A plain create sends no routing field: the router picks the route."""
         from src.cli.app import cli
 
         captured_args = {}
@@ -1111,8 +1143,9 @@ class TestCLICommands:
             )
 
         assert result.exit_code == 0, result.output
-        assert "profile_id" not in captured_args
-        assert "agent_type" not in captured_args
+        from src.routing.filing import REFUSED_ROUTING_ARGS
+
+        assert not set(REFUSED_ROUTING_ARGS) & set(captured_args)
 
     def test_task_create_with_parent_flag(self, runner):
         """--parent is passed through as parent_id in create_task args."""

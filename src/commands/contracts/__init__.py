@@ -8,7 +8,6 @@ Registration validates every effect clause against the renderer in
 ``__init__`` re-entered that module before ``can_render`` was defined.
 """
 
-from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.models import CommandContract, CommandResult
 from src.commands.contracts.registry import (
     CONTRACTS,
@@ -28,3 +27,10 @@ __all__ = [
     "UnknownContract",
     "register_builtin_contracts",
 ]
+
+
+def register_builtin_contracts(registry: ContractRegistry) -> None:
+    """Load built-in declarations only when registration is requested."""
+    from src.commands.contracts.builtin import register_builtin_contracts as register
+
+    register(registry)
