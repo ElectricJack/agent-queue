@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.assignment_route_detail import AssignmentRouteDetail
+    from ..models.claim_timing_detail import ClaimTimingDetail
     from ..models.explain_reason import ExplainReason
     from ..models.phase_hold_detail import PhaseHoldDetail
     from ..models.provider_hold_detail import ProviderHoldDetail
@@ -28,6 +29,7 @@ class ExplainTaskResponse:
         assignment_route (AssignmentRouteDetail | None | Unset):
         provider_hold (None | ProviderHoldDetail | Unset):
         phase_hold (None | PhaseHoldDetail | Unset):
+        claim_timing (ClaimTimingDetail | None | Unset):
     """
 
     success: bool | Unset = True
@@ -36,10 +38,12 @@ class ExplainTaskResponse:
     assignment_route: AssignmentRouteDetail | None | Unset = UNSET
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
     phase_hold: None | PhaseHoldDetail | Unset = UNSET
+    claim_timing: ClaimTimingDetail | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.assignment_route_detail import AssignmentRouteDetail
+        from ..models.claim_timing_detail import ClaimTimingDetail
         from ..models.phase_hold_detail import PhaseHoldDetail
         from ..models.provider_hold_detail import ProviderHoldDetail
 
@@ -80,6 +84,14 @@ class ExplainTaskResponse:
         else:
             phase_hold = self.phase_hold
 
+        claim_timing: dict[str, Any] | None | Unset
+        if isinstance(self.claim_timing, Unset):
+            claim_timing = UNSET
+        elif isinstance(self.claim_timing, ClaimTimingDetail):
+            claim_timing = self.claim_timing.to_dict()
+        else:
+            claim_timing = self.claim_timing
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -95,12 +107,15 @@ class ExplainTaskResponse:
             field_dict["provider_hold"] = provider_hold
         if phase_hold is not UNSET:
             field_dict["phase_hold"] = phase_hold
+        if claim_timing is not UNSET:
+            field_dict["claim_timing"] = claim_timing
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.assignment_route_detail import AssignmentRouteDetail
+        from ..models.claim_timing_detail import ClaimTimingDetail
         from ..models.explain_reason import ExplainReason
         from ..models.phase_hold_detail import PhaseHoldDetail
         from ..models.provider_hold_detail import ProviderHoldDetail
@@ -170,6 +185,23 @@ class ExplainTaskResponse:
 
         phase_hold = _parse_phase_hold(d.pop("phase_hold", UNSET))
 
+        def _parse_claim_timing(data: object) -> ClaimTimingDetail | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_timing_type_0 = ClaimTimingDetail.from_dict(data)
+
+                return claim_timing_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimTimingDetail | None | Unset, data)
+
+        claim_timing = _parse_claim_timing(d.pop("claim_timing", UNSET))
+
         explain_task_response = cls(
             success=success,
             reasons=reasons,
@@ -177,6 +209,7 @@ class ExplainTaskResponse:
             assignment_route=assignment_route,
             provider_hold=provider_hold,
             phase_hold=phase_hold,
+            claim_timing=claim_timing,
         )
 
         explain_task_response.additional_properties = d
