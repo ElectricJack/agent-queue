@@ -1,0 +1,35 @@
+{
+  "chrome": "Chrome/150.0.7871.46",
+  "results": [
+    {
+      "check": "tasks-tab",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 1549
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 1850
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 1370
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 1282
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 1577
+    }
+  ]
+}

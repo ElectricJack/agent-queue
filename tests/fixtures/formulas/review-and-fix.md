@@ -20,6 +20,6 @@ nodes:
   - key: fix
     title: Fix findings on {branch}
     needs: [review]
-    profile: "{fixer}"
-    intelligence_class: standard-medium
+    labels: ["fixer:{fixer}"]
+    intelligence_class: standard-high
 ```

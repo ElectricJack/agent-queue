@@ -4,9 +4,23 @@ tags: [spec, agents, profiles]
 
 # Agent Profiles Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
+For current behavior, use [profiles and classes](../reference/profiles-and-classes.md),
+[agents and routing](../concepts/agents-and-routing.md), and the
+[system spec](systems/routing-and-profiles.md).
+The original DB-only storage, project-default cascade, profile model pins and
+in-process runtime descriptions below are historical, superseded designs.
+
 ## Overview
 
-See [[design/profiles]] for the hybrid markdown profile format and vault storage.
+See [design/profiles](design/profiles.md) for the hybrid markdown profile format and vault storage.
 
 Agent Profiles are capability bundles that configure agents with specific tools, MCP servers, model overrides, and system prompt additions at task execution time. They allow task-level specialization (e.g., a code reviewer vs. a web developer) without changing the scheduler or agent pool.
 
@@ -34,9 +48,33 @@ Agent Profiles are capability bundles that configure agents with specific tools,
 
 Tasks gain an optional `profile_id` field (nullable foreign key to `agent_profiles.id`). When set, the agent executing this task is configured with the referenced profile's capabilities.
 
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** a filer never sets
+> `profile_id`. A task's profile comes only from its project's router (the bound routing
+> playbook's `task_route_apply`), an audited `aq task route-override`, or a system role
+> (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`); `tasks.route_source` records which.
+> Filers pass hints (`--type`, `--intelligence-class`) instead.
+
+Role routes bind agent identity as well as capabilities: a task with
+`route_source=role` may launch only on an enabled worker whose saved `profile_id`
+matches the role profile. Scheduler matching and the fresh prelaunch check both
+enforce this, preserving the agent's name and execution overrides. Definitions
+belonging to `triage`, `spec-ingest`, `reviewer` or `final-reviewer` accept only
+tasks routed to their own role; ordinary push tasks and pool launches cannot
+recruit them, even with compatible classes. When an existing role definition is
+busy, disabled, suppressed, owned by a live session or incompatible, demand waits
+rather than creating a replacement. A role with no existing definition may
+bootstrap one; projects share that durable global definition. Renaming edits the
+existing row and retains its id.
+
 ### Project Extension
 
 Projects gain an optional `default_profile_id` field (nullable foreign key to `agent_profiles.id`). This serves as the fallback when a task has no explicit `profile_id`.
+
+> **Superseded by mandatory task routing (2026-09-28):** there is no project default profile.
+> `projects.default_profile_id` was dropped in revision `a00000000043`; a project instead
+> carries its router binding, `projects.assignment_playbook_id` (NOT NULL, default
+> `default-assignment-routing`, re-bound with `aq project set <project> router <playbook-id>`).
 
 ## Profile Resolution Cascade
 
@@ -47,6 +85,11 @@ When `_execute_task()` runs, it resolves the profile in this order:
 3. **System default:** Neither set → use `ClaudeAdapterConfig` defaults (current behavior)
 
 This is a pure dict lookup. No LLM calls. No scheduler changes.
+
+> **Superseded by mandatory task routing (2026-09-28):** the cascade has no project level.
+> `Orchestrator._resolve_profile` returns the task's own `profile_id` (written by the router,
+> an override or a role), else the profile of the worker already holding the task, else
+> nothing. An unrouted task is never claimed or launched, so nothing falls back to a default.
 
 ## Platform Integration
 
@@ -82,7 +125,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 ### Migrations
 
 - `ALTER TABLE tasks ADD COLUMN profile_id TEXT REFERENCES agent_profiles(id)`
-- `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)`
+- `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)` (dropped by `a00000000043`, mandatory task routing)
 - `ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT`
 
 ### CRUD Methods
@@ -91,7 +134,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 - `get_profile(profile_id)` — fetch by ID, returns None if not found
 - `list_profiles()` — all profiles sorted by name
 - `update_profile(profile_id, **kwargs)` — partial update; JSON fields auto-serialized
-- `delete_profile(profile_id)` — cascades: clears profile_id from tasks and default_profile_id from projects before deleting
+- `delete_profile(profile_id)` — cascades: clears profile_id from tasks before deleting, in the same statement setting `route_source='unrouted'` and keeping the lost route in `route.legacy`, so a queued task is routed again (projects no longer carry a default profile)
 
 ## Source of Truth: Vault Markdown
 
@@ -102,7 +145,7 @@ Project-scoped profiles (`project:<pid>:<id>`, sourced from
 `vault/projects/<pid>/agent-types/`) were retired; see
 `src/profiles/project_override_migration.py` and the
 `profiles.project_overrides` doctor check for the upgrade path. See
-[[design/profiles]] for the markdown format. The vault watcher syncs changes
+[design/profiles](design/profiles.md) for the markdown format. The vault watcher syncs changes
 into the `agent_profiles` table at startup and on file change.
 
 `config.yaml` profiles are still accepted for backward compatibility — a
@@ -159,8 +202,8 @@ approval prompts while retaining its workspace sandbox.
 `--dangerously-skip-permissions` removes Claude's permission checks and does not
 confine the process. Neither option turns a git worktree into a filesystem or
 network sandbox; restrict the session environment and tools accordingly. See
-[[design/profiles#harness-automation-and-permission-opt-ins]] and
-[[design/trust-and-ops#4-permission-posture-skip-permissions-inside-worktrees]].
+[design/profiles, "Harness automation and permission opt-ins"](design/profiles.md) and
+[design/trust-and-ops#4-permission-posture-skip-permissions-inside-worktrees](design/trust-and-ops.md#4-permission-posture-skip-permissions-inside-worktrees).
 
 ### Tool Naming
 
@@ -195,7 +238,7 @@ system fallback). A startup migration moves legacy inline configs from
 config.yaml profiles and old `profile.md` `## MCP Servers` blocks into
 registry files. The embedded `agent-queue` server is a builtin registry
 entry computed in-process from CommandHandler tool definitions plus
-plugin tools. See [[mcp-server]] for the registry API and CRUD commands.
+plugin tools. See [mcp-server](mcp-server.md) for the registry API and CRUD commands.
 
 
 ## Discovery & Validation
@@ -298,7 +341,7 @@ Imports from YAML text or gist URL:
 - `delete_profile` — remove profile, clear references
 
 ### Resolution debug
-- `show_effective_profile` — resolve `project + agent_type` through the launch-time cascade (task profile → project default → worker default → system fallback)
+- `show_effective_profile` — resolve `project + profile_id` through the launch-time cascade (task profile → the holding worker's profile; there is no project default since mandatory task routing)
 
 ### Discovery & Validation
 - `list_available_tools` — discover tools and MCP servers for profile configuration
@@ -312,7 +355,7 @@ Imports from YAML text or gist URL:
 - `import_profile` — import from gist URL or YAML text, auto-install dependencies
 
 ### MCP Server Registry
-See [[mcp-server]] for full details. Commands: `list_mcp_servers`,
+See [mcp-server](mcp-server.md) for full details. Commands: `list_mcp_servers`,
 `get_mcp_server`, `create_mcp_server`, `edit_mcp_server`,
 `delete_mcp_server`, `probe_mcp_server`, `list_mcp_tool_catalog`.
 `delete_mcp_server` refuses if any profile still references the name.
@@ -323,6 +366,13 @@ See [[mcp-server]] for full details. Commands: `list_mcp_servers`,
 - `edit_project` — accepts optional `default_profile_id` (null to clear)
 - `get_task` — returns `profile_id` in output
 
+> **Superseded by mandatory task routing (2026-09-28):** `create_task`, `ensure_task`,
+> `create_task_graph` and `edit_task` refuse `profile_id` (and `profile`, `provider`, `model`,
+> `harness`, `agent_type`, `pin`, `provider_intent`) with `routing.choice_forbidden`; only a
+> `SERVICE` or `PLAYBOOK` principal may pass a role profile. `edit_project` / `create_project`
+> refuse `default_profile_id`. `get_task` still returns `profile_id`, with `route_source`,
+> `class_hint` and the `route` record.
+
 ## Backward Compatibility
 
 - Tasks without `profile_id` → cascade to project default or system default. Identical to current behavior.
@@ -330,4 +380,8 @@ See [[mcp-server]] for full details. Commands: `list_mcp_servers`,
 - No YAML `agent_profiles` section → no profiles synced, everything works as before.
 - Database migrations are additive (`ALTER TABLE ADD COLUMN`).
 - Agents are unchanged — no migration needed.
+
+> **Superseded by mandatory task routing (2026-09-28):** a task without `profile_id` is
+> `unrouted` and waits for its project's router; it is not claimable until the router, an
+> override or a role gives it a profile. Projects have no `default_profile_id`.
 - Scheduler is unchanged — same algorithm, same inputs, same outputs.

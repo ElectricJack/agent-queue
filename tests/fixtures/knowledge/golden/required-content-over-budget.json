@@ -1,0 +1,121 @@
+{
+  "budget": {
+    "max_bytes": 64,
+    "max_tokens": 32,
+    "reserved_bytes": 320,
+    "reserved_tokens": 160,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-required-content-over-budget",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-required-content-over-budget",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-required-content-over-budget:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-required-content-over-budget",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-required-content-over-budget",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-required-content-over-budget:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-guidance-long@rev-0005:guidance": "context.required_over_budget"
+    },
+    "required_budget_diagnostic": true
+  },
+  "fixture_id": "required-content-over-budget",
+  "input_hashes": {
+    "budget": "67bdffd413f7eebac14e024b8a58817cda34c1f2977fbecffcb13e90bdac0f97",
+    "delivery_rules": "1cbafac66ee75670cfbd69bec9e062900f6795f3c46659bcee9263b96a4536f2",
+    "expected": "ab9c9fda87c2b794cb86047f51c72c1b0fd54fd07a52b0f9400c264d072ac5b0",
+    "fixture_id": "bca228dbe847000e845b6f5a2a377df6a8519867f6299cb3af5500a5d4ef0340",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "5c66825f49ff70a361595cb8853e19e3b3b60d7f39606dff667dafb7f6cdd5c7",
+    "records": "248b4bd4358e6174df730bb829a1c9ce16b2af353b20f4c23c84fe9fabf0e591",
+    "scenario": "b18a050ab45c5f7bb2a3aed77ce0d5a16fd169aa7d7f219760ad8e2e6f380a20",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-required-content-over-budget",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-required-content-over-budget:cli-plain"
+      }
+    ],
+    "diagnostics": [
+      "context.required_over_budget"
+    ],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [
+      {
+        "identity": "rec-guidance-long@rev-0005:guidance",
+        "reason": "context.required_over_budget"
+      }
+    ],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-required-content-over-budget",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "",
+    "rendered_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "selected": [],
+    "usage": {
+      "bytes": 320,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 160
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Long guidance body: padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. "
+      },
+      "freshness": "current",
+      "kind": "guidance",
+      "record_id": "rec-guidance-long",
+      "revision_id": "rev-0005"
+    }
+  ],
+  "scenario": "If required non-knowledge content alone exceeds the input budget, typed context.required_over_budget diagnostic",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}
