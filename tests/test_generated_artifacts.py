@@ -879,3 +879,144 @@ async def test_clean_single_sided_legacy_change_is_still_refused(tmp_path, path)
         await merge_generated_tree(GitManager(), repo, args, defer_regeneration=True)
     assert caught.value.files == (path,)
     assert RECIPE in str(caught.value)
+
+
+_SCHEDULED_REGENERATOR = """\
+import os, sys, time
+log = sys.argv[1]
+try:
+    lock = os.open(os.path.join(log, "running"), os.O_CREAT | os.O_EXCL)
+except FileExistsError:
+    open(os.path.join(log, "overlap"), "a").write("x")
+    lock = None
+time.sleep(float(sys.argv[2]))
+source = open("input.txt").read()
+with open(os.path.join(log, "runs"), "a") as runs:
+    runs.write(source + "\\n")
+open("gen.txt", "w").write("gen:" + source)
+if lock is not None:
+    os.close(lock)
+    os.unlink(os.path.join(log, "running"))
+"""
+
+
+def _scheduled_trees(tmp_path: Path, count: int, *, sleep: float = 0.05):
+    """A store with *count* distinct source trees and a regenerator that
+    records every run and any overlapping run."""
+    repo, log = tmp_path / "store", tmp_path / "log"
+    log.mkdir()
+    _git(tmp_path, "init", "-q", "-b", "main", str(repo))
+    (repo / ".gitattributes").write_text(f"gen.txt merge={GENERATED_MERGE_DRIVER}\n")
+    trees = []
+    for index in range(count):
+        (repo / "input.txt").write_text(f"source {index}")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", f"source {index}")
+        trees.append(_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip())
+    script = tmp_path / "regenerate.py"
+    script.write_text(_SCHEDULED_REGENERATOR)
+    command = shlex.join([sys.executable, str(script), str(log), str(sleep)])
+    return repo, log, trees, command
+
+
+def _runs(log: Path) -> list[str]:
+    path = log / "runs"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_regeneration_budget_scales_with_load_per_cpu():
+    from src.integration.regeneration import REGENERATION_LOAD_SCALE_MAX, load_scaled_timeout
+
+    assert load_scaled_timeout(600, load=0.5, cpus=8) == 600
+    assert load_scaled_timeout(600, load=24, cpus=8) == 1800
+    assert load_scaled_timeout(600, load=30, cpus=1) == 600 * REGENERATION_LOAD_SCALE_MAX
+
+
+async def test_identical_concurrent_regenerations_share_one_run(tmp_path):
+    import asyncio
+
+    from src.integration.regeneration import regenerated_tree
+
+    repo, log, (tree,), command = _scheduled_trees(tmp_path, 1, sleep=0.3)
+    results = await asyncio.gather(*(
+        regenerated_tree(GitManager(), repo, tree, command=command) for _ in range(5)
+    ))
+    assert len(set(results)) == 1 and results[0] != tree
+    assert _runs(log) == ["source 0"]
+    assert _git(repo, "show", f"{results[0]}:gen.txt").stdout == "gen:source 0"
+    assert not list(tmp_path.glob("aq-regen-*"))
+
+
+async def test_eighteen_closes_under_load_queue_detach_and_all_complete(tmp_path, monkeypatch):
+    """Acceptance: 18 concurrent closes at load 30 all settle. Runs go one at a
+    time, queueing never spends a budget, and a caller past its wait bound gets
+    a pending result it rejoins instead of a failure."""
+    import asyncio
+
+    from src.integration import regeneration
+    from src.integration.regeneration import (
+        RegenerationPending,
+        regenerated_tree,
+        regeneration_wait,
+    )
+
+    monkeypatch.setattr(regeneration.os, "getloadavg", lambda: (30.0, 30.0, 30.0))
+    repo, log, trees, command = _scheduled_trees(tmp_path, 18)
+
+    async def close(tree):
+        # Every run takes far less than its budget, but the 18 queued together
+        # take far longer than one: a budget spent queueing would starve them.
+        with regeneration_wait(0.2):
+            for attempt in range(200):
+                try:
+                    return attempt, await regenerated_tree(
+                        GitManager(), repo, tree, command=command, timeout_seconds=1,
+                    )
+                except RegenerationPending as exc:
+                    assert exc.state in {"queued", "running"}
+        raise AssertionError("close never settled")
+
+    settled = await asyncio.gather(*(close(tree) for tree in trees))
+    assert all(_git(repo, "show", f"{rebuilt}:gen.txt").stdout == f"gen:source {index}"
+               for index, (_, rebuilt) in enumerate(settled))
+    assert any(attempt for attempt, _ in settled), "no close ever returned pending"
+    assert sorted(_runs(log)) == sorted(f"source {index}" for index in range(18))
+    assert not (log / "overlap").exists()
+    assert not list(tmp_path.glob("aq-regen-*"))
+
+
+async def test_detached_regeneration_failure_is_reported_once_then_reruns(tmp_path):
+    import asyncio
+
+    from src.integration.regeneration import (
+        RegenerationFailure,
+        RegenerationPending,
+        regenerated_tree,
+        regeneration_wait,
+    )
+
+    repo, _log, (tree,), command = _scheduled_trees(tmp_path, 1, sleep=0.5)
+    with regeneration_wait(0.05), pytest.raises(RegenerationPending):
+        await regenerated_tree(GitManager(), repo, tree, command=command, timeout_seconds=0.1)
+    await asyncio.sleep(1.0)  # The detached run times out on its own.
+    with pytest.raises(RegenerationFailure, match="timed out") as failed:
+        await regenerated_tree(GitManager(), repo, tree, command=command, timeout_seconds=0.1)
+    assert failed.value.retryable
+    rebuilt = await regenerated_tree(GitManager(), repo, tree, command=command)
+    assert _git(repo, "show", f"{rebuilt}:gen.txt").stdout == "gen:source 0"
+
+
+async def test_cancelled_caller_leaves_the_shared_run_to_finish(tmp_path):
+    import asyncio
+
+    from src.integration.regeneration import regenerated_tree
+
+    repo, log, (tree,), command = _scheduled_trees(tmp_path, 1, sleep=0.3)
+    caller = asyncio.create_task(regenerated_tree(GitManager(), repo, tree, command=command))
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    rebuilt = await regenerated_tree(GitManager(), repo, tree, command=command)
+    assert _runs(log) == ["source 0"]
+    assert _git(repo, "show", f"{rebuilt}:gen.txt").stdout == "gen:source 0"
