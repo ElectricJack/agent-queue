@@ -34,12 +34,19 @@ INSTALLED_SOURCE_ROOTS = (
 #: Playbook-shaped Markdown that no code path installs.  The child plan drafted
 #: this against ``src/prompts/example_playbooks/`` and ``src/prompts/default_rules/``;
 #: neither directory exists on the live tree any more (reconciliation, §2).
-#: ``src/prompts/project_playbooks/`` holds the project-scoped ``pr-merge-sweep``
+#: ``src/prompts/project_playbooks/`` holds the project-scoped ``ci-main-sentinel``
 #: source: ``src/vault.py`` never copies it, it reaches a vault only through its
-#: reviewed bundle (``tests/fixtures/playbooks/v2/pr-merge-sweep/``), which
+#: reviewed bundle (``tests/fixtures/playbooks/v2/ci-main-sentinel/``), which
 #: ``tests/test_default_playbook_v2_artifacts.py`` validates against the live
 #: registries.
-EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = ("src/prompts/project_playbooks",)
+#: ``src/prompts/integration_playbooks/`` holds the system-scoped shared train
+#: routes (``parent-integration``, ``root-train``): never copied into a vault as
+#: live sources, they reach one only through their reviewed bundles, and an
+#: operator imports and activates them by hand (``docs/config/train-onboarding.md``).
+EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = (
+    "src/prompts/project_playbooks",
+    "src/prompts/integration_playbooks",
+)
 
 #: Reviewed V2 bundles the daemon itself ships and seeds into a new vault
 #: (``src/playbooks/required.py``: ``ensure_reviewed_playbook_bundles``).  These
@@ -52,6 +59,8 @@ REVIEWED_BUNDLE_ROOTS: tuple[str, ...] = ("src/prompts/reviewed_playbooks",)
 
 #: Prompt Markdown that is not a playbook at all.
 NON_PLAYBOOK_PROMPTS = (
+    "src/prompts/formulas",  # task-graph recipes, installed by ensure_default_formulas
+    "src/prompts/task_templates",  # worker instructions, seeded by src/vault.py
     "src/prompts/consolidation_task.md",
     "src/prompts/default_intelligence_classes",
     "src/prompts/execution_focus.md",
