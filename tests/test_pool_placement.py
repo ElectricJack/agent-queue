@@ -1,0 +1,659 @@
+"""place_pool_actions — which project each sized start or drain lands in.
+
+Pure function, no I/O, no clock: ``size_pools`` says how many workers a
+profile should have fleet-wide, and this says where they go.  A worker is
+bound to one project for its whole life (workspace and token scope are both
+minted at launch), so this is the only moment the choice is made — which is
+exactly why it is worth testing on its own, without a database.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import replace
+
+from hypothesis import given, strategies as st
+
+from src.scheduler import (
+    PlacementCandidate,
+    PoolAction,
+    PoolKey,
+    place_pool_actions,
+)
+
+K = PoolKey("worker")
+
+
+@st.composite
+def placement_fleets(draw):
+    """All profiles observe the same project's total, cap and free workspaces."""
+    keys = [PoolKey(f"worker-{i}") for i in range(draw(st.integers(1, 3)))]
+    candidates = {key: [] for key in keys}
+    for index in range(draw(st.integers(1, 4))):
+        local = []
+        for key in keys:
+            idle, busy, starting = draw(st.tuples(*(st.integers(0, 3) for _ in range(3))))
+            local.append(PlacementCandidate(
+                project_id=f"project-{index}", ready=draw(st.integers(0, 8)),
+                live=idle + busy + starting, project_live_total=0, project_cap=None,
+                workspace_capacity=0, quarantined=draw(st.booleans()),
+                warm_floor=draw(st.integers(0, 4)), starting=starting,
+                idle_session_ids=tuple(f"{key.profile_id}-{index}-{i}" for i in range(idle)),
+            ))
+        total = sum(c.live for c in local)
+        cap = draw(st.one_of(st.none(), st.integers(total, total + 5)))
+        capacity = draw(st.integers(0, 6))
+        for key, candidate in zip(keys, local):
+            candidates[key].append(replace(
+                candidate, project_live_total=total, project_cap=cap,
+                workspace_capacity=capacity,
+            ))
+    return candidates
+
+
+@given(fleet=placement_fleets(), count=st.integers(1, 8))
+def test_property_placement_preserves_shared_caps_and_accounts_for_every_start(fleet, count):
+    actions = [PoolAction(key, "start", count) for key in fleet]
+    starts, drains, starved = place_pool_actions(actions=actions, candidates=fleet)
+    assert not drains
+    assert (starts, drains, starved) == place_pool_actions(actions=actions, candidates=fleet)
+    # Reordering measured projects cannot alter the choice or diagnosis.
+    assert (starts, drains, starved) == place_pool_actions(
+        actions=actions, candidates={key: list(reversed(rows)) for key, rows in fleet.items()},
+    )
+    placed = Counter()
+    for start in starts:
+        measured = next(c for c in fleet[start.key] if c.project_id == start.project_id)
+        assert not measured.quarantined
+        assert start.count > 0
+        placed[start.project_id] += start.count
+    for measured in next(iter(fleet.values())):
+        assert placed[measured.project_id] <= measured.workspace_capacity
+        if measured.project_cap is not None:
+            assert measured.project_live_total + placed[measured.project_id] <= measured.project_cap
+    for key in fleet:
+        assert sum(s.count for s in starts if s.key == key) + sum(
+            s.wanted for s in starved if s.key == key
+        ) == count
+    prior_allocations = Counter()
+    for key, rows in fleet.items():
+        allocated = Counter({c.project_id: sum(
+            s.count for s in starts if s.key == key and s.project_id == c.project_id
+        ) for c in rows})
+        unserved = {c.project_id: c.ready - len(c.idle_session_ids) - c.starting
+                    - allocated[c.project_id] for c in rows}
+        for starvation in (s for s in starved if s.key == key):
+            assert starvation.wanted > 0
+            assert set(starvation.reasons) == {c.project_id for c in rows}
+            for measured in rows:
+                pid = measured.project_id
+                used = prior_allocations[pid] + allocated[pid]
+                live = measured.live + allocated[pid]
+                if measured.quarantined:
+                    reason = "quarantined"
+                elif measured.workspace_capacity <= used:
+                    reason = "no workspace capacity"
+                elif (measured.project_cap is not None
+                      and measured.project_live_total + used >= measured.project_cap):
+                    reason = f"at project cap ({measured.project_cap})"
+                elif (live >= measured.warm_floor and measured.idle_session_ids
+                      and unserved[pid] <= 0):
+                    reason = "an idle worker is already available"
+                else:
+                    assert live >= measured.warm_floor and unserved[pid] <= 0
+                    assert any(value > 0 for value in unserved.values())
+                    reason = "no unserved demand in this project"
+                assert starvation.reasons[pid] == reason
+        prior_allocations.update(allocated)
+    # Replay each project's allocations. Results aggregate by reason, but each
+    # reason must still be justified by the evolving measured local state.
+    for key, rows in fleet.items():
+        for measured in rows:
+            live = measured.live
+            unserved = measured.ready - len(measured.idle_session_ids) - measured.starting
+            for start in starts:
+                if start.key != key or start.project_id != measured.project_id:
+                    continue
+                for _ in range(start.count):
+                    if start.reason == "warm_floor":
+                        assert live < measured.warm_floor
+                    elif start.reason == "deficit":
+                        assert live >= measured.warm_floor and unserved > 0
+                    else:
+                        assert start.reason == "spread"
+                        assert live >= measured.warm_floor and unserved <= 0
+                    live += 1
+                    unserved -= 1
+
+
+@given(fleet=placement_fleets(), count=st.integers(1, 8))
+def test_property_drains_select_unique_idle_sessions_and_preserve_warm_floors(fleet, count):
+    actions = [PoolAction(key, "drain", count) for key in fleet]
+    starts, drains, starved = place_pool_actions(actions=actions, candidates=fleet)
+    assert not starts and not starved
+    selected = []
+    for drain in drains:
+        measured = next(c for c in fleet[drain.key] if c.project_id == drain.project_id)
+        ids = drain.session_ids
+        assert ids == measured.idle_session_ids[:len(ids)]
+        assert measured.live - len(ids) >= measured.warm_floor
+        selected.extend(ids)
+    assert len(selected) == len(set(selected))
+    for key in fleet:
+        assert sum(len(d.session_ids) for d in drains if d.key == key) <= count
+
+
+def cand(project_id: str, **over) -> PlacementCandidate:
+    """An unremarkable candidate: eligible, no reservation, room to grow."""
+    kw = dict(
+        project_id=project_id,
+        ready=0,
+        live=0,
+        project_live_total=0,
+        project_cap=None,
+        workspace_capacity=4,
+        quarantined=False,
+        warm_floor=0,
+        idle_session_ids=(),
+        starting=0,
+    )
+    kw.update(over)
+    return PlacementCandidate(**kw)
+
+
+def place(count=1, kind="start", candidates=(), session_ids=()):
+    action = PoolAction(key=K, kind=kind, count=count, session_ids=tuple(session_ids))
+    return place_pool_actions(actions=[action], candidates={K: list(candidates)})
+
+
+def placed(starts):
+    return [(s.project_id, s.count, s.reason) for s in starts]
+
+
+# ---------------------------------------------------------------------------
+# Start ordering
+# ---------------------------------------------------------------------------
+
+
+def test_warm_floor_outranks_a_larger_deficit_elsewhere():
+    """A stated per-project reservation is funded before raw demand: ``b`` wants
+    five workers, but ``a`` was promised one."""
+    starts, _, _ = place(
+        candidates=[cand("a", warm_floor=1), cand("b", ready=5)],
+    )
+    assert placed(starts) == [("a", 1, "warm_floor")]
+
+
+def test_largest_warm_floor_shortfall_first():
+    starts, _, _ = place(
+        candidates=[cand("a", warm_floor=1), cand("b", warm_floor=3)],
+    )
+    assert placed(starts) == [("b", 1, "warm_floor")]
+
+
+def test_deficit_outranks_spread():
+    starts, _, _ = place(candidates=[cand("a", live=2, ready=4), cand("b")])
+    assert placed(starts) == [("a", 1, "deficit")]
+
+
+def test_spread_prefers_the_project_with_fewest_live_sessions():
+    """With nothing queued anywhere, a start goes where it concentrates least."""
+    starts, _, _ = place(candidates=[cand("a", live=3), cand("b", live=1)])
+    assert placed(starts) == [("b", 1, "spread")]
+
+
+def test_budget_spreads_rather_than_piling_onto_the_first_project():
+    """Re-sorting after every placement is the point: two starts into two equally
+    hungry projects is one each, not two into whichever sorted first."""
+    starts, _, _ = place(count=2, candidates=[cand("a", ready=4), cand("b", ready=4)])
+    assert placed(starts) == [("a", 1, "deficit"), ("b", 1, "deficit")]
+
+
+def test_a_deep_deficit_shares_the_budget_with_a_smaller_project():
+    """A large backlog cannot swallow the smaller project's first seat."""
+    starts, _, _ = place(count=2, candidates=[cand("a", ready=9), cand("b", ready=1)])
+    assert placed(starts) == [("a", 1, "deficit"), ("b", 1, "deficit")]
+
+
+def test_new_seat_goes_to_unserved_project_before_six_worker_backlog():
+    starts, _, _ = place(candidates=[
+        cand("matter", live=6, ready=500), cand("aq", ready=6),
+    ])
+    assert placed(starts) == [("aq", 1, "deficit")]
+
+
+def test_train_repair_precedes_ordinary_work_and_warm_floor():
+    starts, _, _ = place(count=2, candidates=[
+        cand("ordinary", ready=500, warm_floor=1),
+        cand("repair", live=2, ready=2, repair_ready=1),
+    ])
+    assert placed(starts) == [("repair", 1, "train_repair"), ("ordinary", 1, "warm_floor")]
+
+
+def test_capacity_already_serving_repair_does_not_get_duplicate_priority():
+    starts, _, _ = place(candidates=[
+        cand("repair", live=4, ready=5, repair_ready=1, starting=1),
+        cand("small", ready=1),
+    ])
+    assert placed(starts) == [("small", 1, "deficit")]
+
+
+def test_ties_break_on_project_id_and_are_deterministic():
+    for _ in range(5):
+        starts, _, _ = place(candidates=[cand("zulu"), cand("alpha"), cand("mike")])
+        assert placed(starts) == [("alpha", 1, "spread")]
+
+
+def test_repeat_placements_in_one_project_collapse_into_one_start():
+    starts, _, _ = place(count=2, candidates=[cand("solo", ready=9)])
+    assert placed(starts) == [("solo", 2, "deficit")]
+
+
+# ---------------------------------------------------------------------------
+# Start eligibility, one predicate at a time
+# ---------------------------------------------------------------------------
+
+
+def test_quarantined_project_is_skipped_before_the_budget_is_spent():
+    """Quarantine used to be checked *after* the sizer picked a key, so a broken
+    project silently burned its share of the tick's start budget.  Under a global
+    key one broken project could burn the whole fleet's."""
+    starts, _, starved = place(candidates=[cand("broken", quarantined=True), cand("ok")])
+    assert placed(starts) == [("ok", 1, "spread")]
+    assert starved == []
+
+
+def test_project_without_workspace_capacity_is_skipped():
+    starts, _, _ = place(candidates=[cand("full", workspace_capacity=0), cand("ok")])
+    assert placed(starts) == [("ok", 1, "spread")]
+
+
+def test_project_at_its_concurrency_cap_is_skipped():
+    starts, _, _ = place(
+        candidates=[cand("capped", project_live_total=2, project_cap=2), cand("ok")],
+    )
+    assert placed(starts) == [("ok", 1, "spread")]
+
+
+def test_project_cap_counts_pool_sessions_of_every_profile():
+    """``project_live_total`` is the project's whole pool footprint, not this
+    pool's — two workers of another profile fill a cap of two."""
+    starts, _, starved = place(
+        candidates=[cand("a", live=0, project_live_total=2, project_cap=2)],
+    )
+    assert starts == []
+    assert starved[0].reasons == {"a": "at project cap (2)"}
+
+
+def test_a_second_start_respects_the_capacity_the_first_consumed():
+    """Within one tick a placed start has taken a workspace and a cap slot; the
+    next decision has to see that."""
+    starts, _, starved = place(
+        count=2,
+        candidates=[cand("a", ready=9, workspace_capacity=1, project_cap=4)],
+    )
+    assert placed(starts) == [("a", 1, "deficit")]
+    assert starved[0].wanted == 1
+
+
+def test_profiles_share_workspace_capacity_within_a_tick():
+    other = PoolKey("other")
+    starts, _, starved = place_pool_actions(
+        actions=[PoolAction(K, "start", 1), PoolAction(other, "start", 1)],
+        candidates={key: [cand("a", ready=9, workspace_capacity=1)] for key in (K, other)},
+    )
+    assert sum(start.count for start in starts) == 1
+    assert starved[0].reasons == {"a": "no workspace capacity"}
+
+
+def test_profiles_share_project_cap_within_a_tick():
+    other = PoolKey("other")
+    starts, _, starved = place_pool_actions(
+        actions=[PoolAction(K, "start", 1), PoolAction(other, "start", 1)],
+        candidates={key: [cand("a", ready=9, project_cap=1)] for key in (K, other)},
+    )
+    assert sum(start.count for start in starts) == 1
+    assert starved[0].reasons == {"a": "at project cap (1)"}
+
+
+def test_blocked_demand_does_not_launch_workers_in_empty_projects():
+    starts, _, starved = place(
+        candidates=[cand("backlog", ready=9, workspace_capacity=0), cand("empty")],
+    )
+    assert starts == []
+    assert starved[0].reasons["empty"] == "no unserved demand in this project"
+
+
+def test_blocked_demand_still_honors_explicit_warm_floor():
+    starts, _, _ = place(
+        candidates=[cand("backlog", ready=9, workspace_capacity=0), cand("warm", warm_floor=1)],
+    )
+    assert placed(starts) == [("warm", 1, "warm_floor")]
+
+
+def test_idle_worker_with_nothing_queued_skips_the_project():
+    """That idle worker will claim the next ready task itself; launching beside it
+    just manufactures a drain candidate two minutes later."""
+    starts, _, _ = place(
+        candidates=[cand("warm", live=1, idle_session_ids=("s1",)), cand("cold")],
+    )
+    assert placed(starts) == [("cold", 1, "spread")]
+
+
+def test_idle_worker_does_not_skip_a_project_with_unserved_demand():
+    starts, _, _ = place(
+        candidates=[cand("busy", live=1, ready=4, idle_session_ids=("s1",)), cand("cold", live=2)],
+    )
+    assert placed(starts) == [("busy", 1, "deficit")]
+
+
+def test_a_launch_already_in_flight_counts_as_serving_the_queue():
+    """``ready - (idle + starting)``: one ready task with one worker already
+    booting is not an unserved deficit."""
+    starts, _, _ = place(
+        candidates=[
+            cand("booting", live=2, ready=1, starting=1, idle_session_ids=("s1",)),
+            cand("cold", live=3),
+        ],
+    )
+    assert placed(starts) == [("cold", 1, "spread")]
+
+
+def test_the_idle_skip_never_blocks_a_warm_floor():
+    """A reservation of two is not satisfied by one idle worker."""
+    starts, _, _ = place(
+        candidates=[cand("a", live=1, warm_floor=2, idle_session_ids=("s1",))],
+    )
+    assert placed(starts) == [("a", 1, "warm_floor")]
+
+
+# ---------------------------------------------------------------------------
+# Starvation
+# ---------------------------------------------------------------------------
+
+
+def test_starvation_names_the_blocking_reason_per_project():
+    starts, _, starved = place(
+        count=2,
+        candidates=[
+            cand("q", quarantined=True),
+            cand("nows", workspace_capacity=0),
+            cand("capped", project_live_total=1, project_cap=1),
+        ],
+    )
+    assert starts == []
+    assert len(starved) == 1
+    assert starved[0].key == K
+    assert starved[0].wanted == 2
+    assert starved[0].reasons == {
+        "q": "quarantined",
+        "nows": "no workspace capacity",
+        "capped": "at project cap (1)",
+    }
+
+
+def test_starvation_when_the_profile_has_no_candidate_project_at_all():
+    starts, drains, starved = place(count=1, candidates=[])
+    assert (starts, drains) == ([], [])
+    assert starved[0].wanted == 1 and starved[0].reasons
+
+
+def test_partial_placement_reports_only_the_unplaced_remainder():
+    starts, _, starved = place(
+        count=3,
+        candidates=[cand("a", ready=9, project_cap=1), cand("b", quarantined=True)],
+    )
+    assert placed(starts) == [("a", 1, "deficit")]
+    assert starved[0].wanted == 2
+
+
+def test_no_starvation_when_every_start_is_placed():
+    starts, _, starved = place(count=2, candidates=[cand("a", ready=9)])
+    assert placed(starts) == [("a", 2, "deficit")]
+    assert starved == []
+
+
+# ---------------------------------------------------------------------------
+# Drains
+# ---------------------------------------------------------------------------
+
+
+def test_drain_never_crosses_a_warm_floor():
+    """The quiet project's one warm worker is the oldest and idlest thing in the
+    fleet, and is exactly what ``min_per_project`` bought."""
+    _, drains, _ = place(
+        kind="drain",
+        candidates=[
+            cand("quiet", live=1, warm_floor=1, idle_session_ids=("old",)),
+            cand("busy", live=2, idle_session_ids=("newer",)),
+        ],
+    )
+    assert [(d.project_id, d.session_ids) for d in drains] == [("busy", ("newer",))]
+
+
+def test_drain_takes_the_largest_idle_surplus_relative_to_local_demand():
+    """Two idle workers with two ready tasks behind them is no surplus at all;
+    one idle worker with nothing queued is."""
+    _, drains, _ = place(
+        kind="drain",
+        candidates=[
+            cand("queued", live=2, ready=2, idle_session_ids=("q1", "q2")),
+            cand("empty", live=1, idle_session_ids=("e1",)),
+        ],
+    )
+    assert [(d.project_id, d.session_ids) for d in drains] == [("empty", ("e1",))]
+
+
+def test_drain_takes_the_oldest_idle_session_within_a_project():
+    _, drains, _ = place(
+        kind="drain",
+        candidates=[cand("a", live=3, idle_session_ids=("old", "mid", "new"))],
+    )
+    assert [(d.project_id, d.session_ids) for d in drains] == [("a", ("old",))]
+
+
+def test_multiple_drains_rebalance_between_projects():
+    """Surplus is recomputed after every pick, so the deepest idle pile is
+    shaved down to the next one rather than emptied outright."""
+    _, drains, _ = place(
+        count=3,
+        kind="drain",
+        candidates=[
+            cand("a", live=3, idle_session_ids=("a1", "a2", "a3")),
+            cand("b", live=2, idle_session_ids=("b1", "b2")),
+        ],
+    )
+    assert [(d.project_id, d.session_ids) for d in drains] == [
+        ("a", ("a1", "a2")),
+        ("b", ("b1",)),
+    ]
+
+
+def test_drain_stops_when_nothing_is_left_to_take():
+    _, drains, _ = place(
+        count=4,
+        kind="drain",
+        candidates=[cand("a", live=1, idle_session_ids=("a1",))],
+    )
+    assert [(d.project_id, d.session_ids) for d in drains] == [("a", ("a1",))]
+
+
+def test_drain_ignores_projects_with_no_idle_session():
+    _, drains, _ = place(
+        kind="drain",
+        candidates=[cand("busy", live=2, ready=5), cand("idle", live=1, idle_session_ids=("i1",))],
+    )
+    assert [(d.project_id, d.session_ids) for d in drains] == [("idle", ("i1",))]
+
+
+def test_drain_ties_break_on_project_id():
+    for _ in range(5):
+        _, drains, _ = place(
+            kind="drain",
+            candidates=[
+                cand("zulu", live=1, idle_session_ids=("z1",)),
+                cand("alpha", live=1, idle_session_ids=("a1",)),
+            ],
+        )
+        assert [d.project_id for d in drains] == ["alpha"]
+
+
+def test_starts_and_drains_for_several_pools_stay_separated():
+    other = PoolKey("reviewer")
+    starts, drains, _ = place_pool_actions(
+        actions=[
+            PoolAction(key=K, kind="start", count=1),
+            PoolAction(key=other, kind="drain", count=1),
+        ],
+        candidates={
+            K: [cand("a", ready=3)],
+            other: [cand("a", live=1, idle_session_ids=("r1",))],
+        },
+    )
+    assert [(s.key, s.project_id) for s in starts] == [(K, "a")]
+    assert [(d.key, d.session_ids) for d in drains] == [(other, ("r1",))]
+
+
+def rebalance(candidates, *, since=None, now=100, starts=(), drains=(), limit=2):
+    from src.scheduler import rebalance_idle_pools
+
+    return rebalance_idle_pools(
+        candidates={K: candidates}, starts=list(starts), drains=list(drains),
+        surplus_since=since or {}, now=now, grace=30, max_drains=limit,
+    )
+
+
+def test_full_global_pool_relocates_only_after_continuous_imbalance():
+    from src.scheduler import PoolSupply, size_pools
+
+    candidates = [
+        cand("quiet", live=1, idle_session_ids=("idle",)),
+        cand("working", live=2, ready=1, project_live_total=2),
+    ]
+    actions, _ = size_pools(
+        supply={K: PoolSupply(running_busy=2, running_idle=1, idle_session_ids=["idle"])},
+        demand={K: 1}, bounds={K: (0, 3)}, global_cap=3, surplus_since={},
+        now=100, scale_down_grace=30, max_starts_per_tick=2, max_drains_per_tick=2,
+    )
+    assert actions == []  # The previous global-only sizing stalled here forever.
+    drained, since = rebalance(candidates)
+    assert drained == []
+    assert since == {K: 100}
+    assert rebalance(candidates, since=since, now=129)[0] == []
+    drained, _ = rebalance(candidates, since=since, now=130)
+    assert [(d.project_id, d.session_ids) for d in drained] == [("quiet", ("idle",))]
+    # Only the subsequent normal sizing pass may replace retired capacity.
+    actions, _ = size_pools(
+        supply={K: PoolSupply(running_busy=2)}, demand={K: 1}, bounds={K: (0, 3)},
+        global_cap=3, surplus_since={}, now=131, scale_down_grace=30,
+        max_starts_per_tick=2, max_drains_per_tick=2,
+    )
+    starts, _, _ = place_pool_actions(actions=actions, candidates={K: [candidates[1]]})
+    assert placed(starts) == [("working", 1, "deficit")]
+
+
+def test_rebalance_preserves_warm_floor_and_capacity_for_local_demand():
+    target = cand("target", ready=3)
+    for donor in [
+        cand("source", live=1, idle_session_ids=("idle",), warm_floor=1),
+        cand("source", live=1, idle_session_ids=("idle",), ready=1),
+        cand("source", live=2, idle_session_ids=(), starting=1),
+    ]:
+        assert rebalance([donor, target], since={K: 0}) == ([], {})
+
+
+def test_rebalance_requires_a_destination_that_can_actually_start():
+    donor = cand("source", live=1, idle_session_ids=("idle",))
+    for target in [
+        cand("target", ready=1, quarantined=True),
+        cand("target", ready=1, workspace_capacity=0),
+        cand("target", ready=1, project_cap=1, project_live_total=1),
+        cand("target", ready=1, starting=1, live=1),
+        cand("target", ready=0),
+    ]:
+        assert rebalance([donor, target], since={K: 0}) == ([], {})
+
+
+def test_rebalance_respects_existing_actions_and_global_drain_budget():
+    from src.scheduler import PlacedDrain, PlacedStart
+
+    candidates = [cand("source", live=3, idle_session_ids=("a", "b", "c")),
+                  cand("target", ready=3)]
+    assert rebalance(candidates, since={K: 0}, starts=[PlacedStart(K, "target", 1, "deficit")]) == ([], {})
+    assert rebalance(candidates, since={K: 0}, drains=[PlacedDrain(K, "source", ("a",))]) == ([], {})
+    other = PlacedDrain(PoolKey("other"), "elsewhere", ("already-draining",))
+    drained, _ = rebalance(candidates, since={K: 0}, drains=[other], limit=2)
+    assert drained == [PlacedDrain(K, "source", ("a",))]
+    assert rebalance(candidates, since={K: 0}, limit=0)[0] == []
+
+
+def test_saturated_backlog_yields_idle_seats_to_unserved_project():
+    from src.scheduler import PlacedDrain
+
+    candidates = [cand("matter", live=6, ready=500, idle_session_ids=("one", "two")),
+                  cand("aq", ready=6)]
+    assert rebalance(candidates)[0] == []
+    assert rebalance(candidates, since={K: 0})[0] == [
+        PlacedDrain(K, "matter", ("one", "two")),
+    ]
+
+
+def test_repair_can_take_ordinary_idle_capacity_but_not_busy_or_repair_capacity():
+    from src.scheduler import PlacedDrain
+
+    target = cand("repair", live=3, ready=1, repair_ready=1)
+    donor = cand("ordinary", live=1, ready=50, idle_session_ids=("idle",))
+    assert rebalance([donor, target], since={K: 0})[0] == [
+        PlacedDrain(K, "ordinary", ("idle",)),
+    ]
+    for source in [cand("busy", live=6, ready=50),
+                   cand("repairing", live=6, ready=50, repair_ready=1,
+                        idle_session_ids=("reserved",))]:
+        assert rebalance([source, target], since={K: 0}) == ([], {})
+
+
+def test_kind_placement_shares_project_and_profile_budgets():
+    candidates = [cand("p", ready=5, project_cap=3),
+                  cand("p", workspace_kind="native", ready=5,
+                       workspace_capacity=2, project_cap=3)]
+    starts, _, starved = place(count=5, candidates=candidates)
+    assert sum(s.count for s in starts) == 3
+    assert sum(s.count for s in starts if s.workspace_kind == "native") <= 2
+    assert sum(s.wanted for s in starved) == 2
+    assert any(s.workspace_kind == "project-repo" for s in starts)
+
+
+def test_no_special_kind_warm_supply_without_matching_demand():
+    starts, _, _ = place(count=3, candidates=[cand("p"), cand("p", workspace_kind="native")])
+    assert {s.workspace_kind for s in starts} == {"project-repo"}
+
+
+def test_incompatible_idle_workers_rebalance_within_capped_project():
+    candidates = [cand("p", live=2, project_live_total=2, project_cap=2,
+                       idle_session_ids=("linux-1", "linux-2"), warm_floor=2),
+                  cand("p", workspace_kind="native", ready=2,
+                       project_live_total=2, project_cap=2, workspace_capacity=2)]
+    drains, since = rebalance(candidates)
+    assert not drains
+    drains, _ = rebalance(candidates, since=since, now=1000)
+    assert {sid for d in drains for sid in d.session_ids} == {"linux-1", "linux-2"}
+
+
+def test_workspace_kinds_keep_separate_eviction_demand_and_project_totals():
+    from src.scheduler import project_pool_candidates
+
+    ordinary = PlacementCandidate(
+        project_id="p", ready=1, live=1, project_live_total=2, project_cap=3,
+        workspace_capacity=1, quarantined=False, warm_floor=0, evictable=1,
+    )
+    native = replace(ordinary, workspace_kind="native", workspace_capacity=0, evictable=2)
+    starts, drains, starved = place_pool_actions(
+        actions=[PoolAction(K, "start", 1), PoolAction(K, "evict", 1)],
+        candidates={K: [ordinary, native]},
+    )
+    assert [(s.workspace_kind, s.reason, s.count) for s in starts] == [
+        ("project-repo", "deficit", 1), ("native", "evict", 1),
+    ]
+    assert not drains and not starved
+    [project] = project_pool_candidates([ordinary, native])
+    assert (project.ready, project.live, project.evictable) == (2, 2, 3)

@@ -1,131 +1,158 @@
-"""Plugin management CLI commands (aq plugin ...)."""
+"""Plugin management CLI commands (``aq plugin ...``).
+
+These commands combine direct database and filesystem operations, so they
+cannot use the daemon-backed generated-command path.  They still use the
+shared output funnel: human renderers stay Rich-formatted while ``--json``
+always emits exactly one versioned document.
+"""
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+from typing import Any, NoReturn
 
 import click
+from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
-from .app import cli, console, _run
+from .app import _run, cli, console
+from .envelope import emit, emit_error
 
 
 def _get_plugin_client():
-    """Create a PluginClient for direct-DB plugin operations."""
     from .client import PluginClient
 
-    db_path = os.environ.get("AGENT_QUEUE_DB")
-    return PluginClient(db_path=db_path)
+    return PluginClient(db_path=os.environ.get("AGENT_QUEUE_DB"))
+
+
+def _json_mode(ctx: click.Context) -> bool:
+    return bool((ctx.obj or {}).get("json"))
+
+
+def _safe_line(label: str, value: Any, *, label_style: str = "bold") -> Text:
+    """Build a Rich line without interpreting command-controlled markup."""
+    line = Text(label, style=label_style)
+    line.append(str(value))
+    return line
+
+
+def _fail(ctx: click.Context, code: str, message: str, *, exit_code: int = 1) -> NoReturn:
+    if _json_mode(ctx):
+        emit_error(code, message)
+    else:
+        console.print(_safe_line("Error: ", message, label_style="bold red"))
+    raise SystemExit(exit_code)
+
+
+def _confirm_mutation(ctx: click.Context, yes: bool, prompt: str) -> None:
+    """Never put a confirmation prompt in a JSON output stream."""
+    if yes:
+        return
+    if _json_mode(ctx):
+        _fail(ctx, "usage_error", "--yes is required with --json", exit_code=2)
+    if not click.confirm(prompt):
+        raise click.Abort()
 
 
 @cli.group()
 def plugin() -> None:
     """Plugin management commands."""
-    pass
 
 
 @plugin.command("list")
-def plugin_list() -> None:
+@click.pass_context
+def plugin_list(ctx: click.Context) -> None:
     """List installed plugins."""
-    from rich.table import Table
 
-    async def _run_list():
+    async def _list():
         async with _get_plugin_client() as client:
             return await client.list_plugins()
 
     try:
-        plugins = _run(_run_list())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+        plugins = _run(_list())
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Unable to list plugins: {exc}")
 
-    if not plugins:
-        console.print("[dim]No plugins installed.[/dim]")
-        return
+    def _render(rows: list[dict]) -> None:
+        if not rows:
+            console.print("No plugins installed.", style="dim", markup=False)
+            return
+        table = Table(title="Installed Plugins", show_lines=True)
+        table.add_column("Name", style="bold cyan")
+        table.add_column("Version")
+        table.add_column("Status")
+        table.add_column("Source")
+        colors = {"active": "green", "installed": "yellow", "disabled": "dim", "error": "red"}
+        for row in rows:
+            status = str(row.get("status", "unknown"))
+            table.add_row(
+                Text(str(row.get("id", "?"))),
+                Text(str(row.get("version", "?"))),
+                Text(status, style=colors.get(status, "white")),
+                Text(str(row.get("source_url", ""))),
+            )
+        console.print(table)
 
-    table = Table(title="Installed Plugins", show_lines=True)
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Version")
-    table.add_column("Status")
-    table.add_column("Source")
-
-    status_colors = {
-        "active": "green",
-        "installed": "yellow",
-        "disabled": "dim",
-        "error": "red",
-    }
-
-    for p in plugins:
-        status = p.get("status", "unknown")
-        color = status_colors.get(status, "white")
-        table.add_row(
-            p.get("id", "?"),
-            p.get("version", "?"),
-            f"[{color}]{status}[/{color}]",
-            p.get("source_url", ""),
-        )
-
-    console.print(table)
+    emit(ctx, plugins, render=_render)
 
 
 @plugin.command("info")
 @click.argument("name")
-def plugin_info(name: str) -> None:
+@click.pass_context
+def plugin_info(ctx: click.Context, name: str) -> None:
     """Show detailed plugin info."""
-    from rich.panel import Panel
 
-    async def _run_info():
+    async def _info():
         async with _get_plugin_client() as client:
             return await client.get_plugin(name)
 
     try:
-        p = _run(_run_info())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+        row = _run(_info())
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Unable to inspect plugin {name!r}: {exc}")
+    if not row:
+        _fail(ctx, "not_found", f"Plugin {name!r} not found.")
 
-    if not p:
-        console.print(f"[bold red]Plugin '{name}' not found.[/]")
-        return
+    def _render(data: dict) -> None:
+        lines = [
+            _safe_line("Name: ", data.get("id", name)),
+            _safe_line("Version: ", data.get("version", "?")),
+            _safe_line("Status: ", data.get("status", "?")),
+            _safe_line("Source: ", data.get("source_url", "?")),
+            _safe_line("Rev: ", str(data.get("source_rev", "?"))[:12]),
+            _safe_line("Path: ", data.get("install_path", "?")),
+        ]
+        if data.get("error_message"):
+            lines.append(_safe_line("Error: ", data["error_message"], label_style="bold red"))
+        console.print(Panel(Group(*lines), title=Text(f"Plugin: {name}")))
 
-    lines = []
-    lines.append(f"[bold]Name:[/] {p.get('id', name)}")
-    lines.append(f"[bold]Version:[/] {p.get('version', '?')}")
-    lines.append(f"[bold]Status:[/] {p.get('status', '?')}")
-    lines.append(f"[bold]Source:[/] {p.get('source_url', '?')}")
-    lines.append(f"[bold]Rev:[/] {p.get('source_rev', '?')[:12]}")
-    lines.append(f"[bold]Path:[/] {p.get('install_path', '?')}")
-    if p.get("error_message"):
-        lines.append(f"[bold red]Error:[/] {p['error_message']}")
-
-    console.print(Panel("\n".join(lines), title=f"Plugin: {name}"))
+    emit(ctx, row, render=_render)
 
 
 @plugin.command("install")
 @click.argument("url")
 @click.option("--branch", "-b", default=None, help="Branch to install")
 @click.option("--name", "-n", default=None, help="Override plugin name")
-def plugin_install(url: str, branch: str | None, name: str | None) -> None:
+@click.pass_context
+def plugin_install(ctx: click.Context, url: str, branch: str | None, name: str | None) -> None:
     """Install a plugin from a git repository."""
-    console.print(f"[bold]Installing plugin from {url}...[/]")
+    if not _json_mode(ctx):
+        console.print(_safe_line("Installing plugin from ", f"{url}..."))
 
-    async def _run_install():
+    async def _install():
+        from src.plugins.loader import install_plugin_from_url
+
         async with _get_plugin_client() as client:
-            from src.plugins.loader import install_plugin_from_url
-            from pathlib import Path
-            import json
-
             data_dir = Path(
                 os.environ.get("AGENT_QUEUE_DATA", os.path.expanduser("~/.agent-queue"))
             )
             result = await install_plugin_from_url(
-                url,
-                data_dir / "plugins",
-                data_dir / "plugin-data",
-                branch=branch,
-                name=name,
+                url, data_dir / "plugins", data_dir / "plugin-data", branch=branch, name=name
             )
-
             await client.create_plugin(
                 plugin_id=result["name"],
                 version=result["version"],
@@ -137,99 +164,122 @@ def plugin_install(url: str, branch: str | None, name: str | None) -> None:
                 config=json.dumps(result["default_config"]),
                 permissions=json.dumps(result["permissions"]),
             )
-            return result["name"], result["version"]
+            return result
 
     try:
-        pname, pversion = _run(_run_install())
-        console.print(f"[bold green]Installed plugin '{pname}' v{pversion}[/]")
-        console.print("[dim]Restart the daemon to activate the plugin.[/dim]")
-    except Exception as e:
-        console.print(f"[bold red]Installation failed:[/] {e}")
-        raise SystemExit(1)
+        result = _run(_install())
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Installation failed: {exc}")
+    data = {
+        "id": result["name"],
+        "version": result["version"],
+        "source_url": url,
+        "source_rev": result["source_rev"],
+        "install_path": result["install_path"],
+        "status": "installed",
+        "restart_required": True,
+    }
+
+    def _render(payload: dict) -> None:
+        console.print(
+            _safe_line(
+                "Installed plugin ",
+                f"'{payload['id']}' v{payload['version']}",
+                label_style="bold green",
+            )
+        )
+        console.print("Restart the daemon to activate the plugin.", style="dim", markup=False)
+
+    emit(ctx, data, render=_render)
 
 
 @plugin.command("remove")
 @click.argument("name")
-@click.confirmation_option(prompt="Are you sure you want to remove this plugin?")
-def plugin_remove(name: str) -> None:
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.pass_context
+def plugin_remove(ctx: click.Context, name: str, yes: bool) -> None:
     """Remove an installed plugin."""
     import shutil
 
-    async def _run_remove():
+    _confirm_mutation(ctx, yes, "Are you sure you want to remove this plugin?")
+
+    async def _remove():
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                return None, False
-            install_path = p.get("install_path")
+            row = await client.get_plugin(name)
+            if not row:
+                return None
+            install_path = row.get("install_path")
             await client.delete_plugin_data_all(name)
             await client.delete_plugin(name)
-            # Check if another plugin record shares this install path
-            all_plugins = await client.list_plugins()
-            shared = any(pp.get("install_path") == install_path for pp in all_plugins)
+            shared = any(p.get("install_path") == install_path for p in await client.list_plugins())
             return install_path, shared
 
     try:
-        result = _run(_run_remove())
-        if result[0] is None:
-            console.print(f"[bold red]Plugin '{name}' not found.[/]")
-            raise SystemExit(1)
-
+        result = _run(_remove())
+        if result is None:
+            _fail(ctx, "not_found", f"Plugin {name!r} not found.")
         install_path, shared = result
-        if install_path and os.path.exists(install_path):
-            if shared:
-                console.print(
-                    "[yellow]Warning: another plugin record shares this directory — "
-                    "skipping directory removal.[/]"
-                )
-            else:
-                shutil.rmtree(install_path)
-
-        console.print(f"[bold green]Plugin '{name}' removed.[/]")
+        if install_path and os.path.exists(install_path) and not shared:
+            shutil.rmtree(install_path)
     except SystemExit:
         raise
-    except Exception as e:
-        console.print(f"[bold red]Removal failed:[/] {e}")
-        raise SystemExit(1)
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Removal failed: {exc}")
+    data = {"id": name, "removed": True, "shared_install_path": shared}
+
+    def _render(payload: dict) -> None:
+        if payload["shared_install_path"]:
+            console.print(
+                "Warning: another plugin record shares this directory; skipping directory removal.",
+                style="yellow",
+                markup=False,
+            )
+        console.print(_safe_line("Plugin removed: ", payload["id"], label_style="bold green"))
+
+    emit(ctx, data, render=_render)
+
+
+def _set_plugin_status(ctx: click.Context, name: str, status: str) -> None:
+    async def _update():
+        async with _get_plugin_client() as client:
+            await client.update_plugin(name, status=status)
+
+    action = "Enable" if status == "installed" else "Disable"
+    try:
+        _run(_update())
+    except Exception as exc:
+        _fail(ctx, "command_error", f"{action} failed: {exc}")
+    data = {"id": name, "status": status, "restart_required": status == "installed"}
+
+    def _render(payload: dict) -> None:
+        verb = "enabled" if status == "installed" else "disabled"
+        console.print(_safe_line("Plugin ", f"'{payload['id']}' {verb}.", label_style="bold green"))
+        if payload["restart_required"]:
+            console.print("Restart the daemon to activate.", style="dim", markup=False)
+
+    emit(ctx, data, render=_render)
 
 
 @plugin.command("enable")
 @click.argument("name")
-def plugin_enable(name: str) -> None:
+@click.pass_context
+def plugin_enable(ctx: click.Context, name: str) -> None:
     """Enable a disabled plugin."""
-
-    async def _run_enable():
-        async with _get_plugin_client() as client:
-            await client.update_plugin(name, status="installed")
-
-    try:
-        _run(_run_enable())
-        console.print(f"[bold green]Plugin '{name}' enabled.[/]")
-        console.print("[dim]Restart the daemon to activate.[/dim]")
-    except Exception as e:
-        console.print(f"[bold red]Enable failed:[/] {e}")
-        raise SystemExit(1)
+    _set_plugin_status(ctx, name, "installed")
 
 
 @plugin.command("disable")
 @click.argument("name")
-def plugin_disable(name: str) -> None:
+@click.pass_context
+def plugin_disable(ctx: click.Context, name: str) -> None:
     """Disable a plugin without removing it."""
-
-    async def _run_disable():
-        async with _get_plugin_client() as client:
-            await client.update_plugin(name, status="disabled")
-
-    try:
-        _run(_run_disable())
-        console.print(f"[bold green]Plugin '{name}' disabled.[/]")
-    except Exception as e:
-        console.print(f"[bold red]Disable failed:[/] {e}")
-        raise SystemExit(1)
+    _set_plugin_status(ctx, name, "disabled")
 
 
 @plugin.command("update")
 @click.argument("name")
-def plugin_update(name: str) -> None:
+@click.pass_context
+def plugin_update(ctx: click.Context, name: str) -> None:
     """Update a plugin (git pull + reinstall)."""
     from src.plugins.loader import (
         has_pyproject,
@@ -240,275 +290,353 @@ def plugin_update(name: str) -> None:
         pull_plugin_repo,
     )
 
-    async def _run_update():
+    async def _update():
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            install_path = p["install_path"]
+            row = await client.get_plugin(name)
+            if not row:
+                raise LookupError(f"Plugin {name!r} not found.")
+            install_path = row["install_path"]
             new_rev = await pull_plugin_repo(install_path)
             install_plugin_package(install_path)
             if has_pyproject(install_path):
                 plugin_class = load_plugin_via_entry_point(name)
-                if plugin_class:
-                    info = parse_plugin_metadata(install_path, plugin_class)
-                else:
-                    info = parse_plugin_yaml(install_path)
+                info = (
+                    parse_plugin_metadata(install_path, plugin_class)
+                    if plugin_class
+                    else parse_plugin_yaml(install_path)
+                )
             else:
                 info = parse_plugin_yaml(install_path)
-            await client.update_plugin(
-                name,
-                version=info.version,
-                source_rev=new_rev,
-            )
+            await client.update_plugin(name, version=info.version, source_rev=new_rev)
             return info.version, new_rev
 
+    if not _json_mode(ctx):
+        console.print(_safe_line("Updating plugin ", f"'{name}'..."))
     try:
-        console.print(f"[bold]Updating plugin '{name}'...[/]")
-        version, rev = _run(_run_update())
-        console.print(f"[bold green]Plugin '{name}' updated to v{version} (rev {rev[:12]})[/]")
-        console.print("[dim]Restart the daemon to activate changes.[/dim]")
-    except Exception as e:
-        console.print(f"[bold red]Update failed:[/] {e}")
-        raise SystemExit(1)
+        version, rev = _run(_update())
+    except LookupError as exc:
+        _fail(ctx, "not_found", f"Update failed: {exc}")
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Update failed: {exc}")
+    data = {
+        "id": name,
+        "version": version,
+        "source_rev": rev,
+        "updated": True,
+        "restart_required": True,
+    }
+
+    def _render(payload: dict) -> None:
+        console.print(
+            _safe_line(
+                "Plugin updated: ",
+                f"'{payload['id']}' v{payload['version']} (rev {payload['source_rev'][:12]})",
+                label_style="bold green",
+            )
+        )
+        console.print("Restart the daemon to activate changes.", style="dim", markup=False)
+
+    emit(ctx, data, render=_render)
 
 
 @plugin.command("reload")
 @click.argument("name")
-def plugin_reload(name: str) -> None:
+@click.pass_context
+def plugin_reload(ctx: click.Context, name: str) -> None:
     """Reload a plugin module."""
-    from src.plugins.loader import parse_plugin_yaml, import_plugin_module
+    from src.plugins.loader import import_plugin_module, parse_plugin_yaml
 
-    async def _run_reload():
+    async def _reload():
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            install_path = p["install_path"]
-            info = parse_plugin_yaml(install_path)
-            import_plugin_module(install_path)
+            row = await client.get_plugin(name)
+            if not row:
+                raise LookupError(f"Plugin {name!r} not found.")
+            info = parse_plugin_yaml(row["install_path"])
+            import_plugin_module(row["install_path"])
             await client.update_plugin(name, version=info.version)
             return info.version
 
     try:
-        version = _run(_run_reload())
-        console.print(f"[bold green]Plugin '{name}' reloaded (v{version}).[/]")
-        console.print("[dim]Restart the daemon to apply in-process.[/dim]")
-    except Exception as e:
-        console.print(f"[bold red]Reload failed:[/] {e}")
-        raise SystemExit(1)
+        version = _run(_reload())
+    except LookupError as exc:
+        _fail(ctx, "not_found", f"Reload failed: {exc}")
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Reload failed: {exc}")
+    data = {"id": name, "version": version, "reloaded": True, "restart_required": True}
+
+    def _render(payload: dict) -> None:
+        console.print(
+            _safe_line(
+                "Plugin reloaded: ",
+                f"'{payload['id']}' (v{payload['version']}).",
+                label_style="bold green",
+            )
+        )
+        console.print("Restart the daemon to apply in-process.", style="dim", markup=False)
+
+    emit(ctx, data, render=_render)
 
 
 @plugin.command("config")
 @click.argument("name")
 @click.argument("key_values", nargs=-1)
-def plugin_config(name: str, key_values: tuple[str, ...]) -> None:
-    """View or set plugin configuration.
+@click.pass_context
+def plugin_config(ctx: click.Context, name: str, key_values: tuple[str, ...]) -> None:
+    """View or set plugin configuration using optional KEY=VALUE pairs."""
 
-    With no KEY=VALUE arguments, shows current config.
-    With KEY=VALUE pairs, sets those values.
-    """
-    import json
-
-    async def _run_config():
+    async def _config(updates: dict[str, str] | None):
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            return p
-
-    async def _set_config(updates: dict):
-        async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            current = json.loads(p.get("config", "{}") or "{}")
-            current.update(updates)
-            await client.update_plugin(name, config=json.dumps(current))
+            row = await client.get_plugin(name)
+            if not row:
+                raise LookupError(f"Plugin {name!r} not found.")
+            current = json.loads(row.get("config", "{}") or "{}")
+            if updates is not None:
+                current.update(updates)
+                await client.update_plugin(name, config=json.dumps(current))
             return current
 
+    updates: dict[str, str] = {}
+    for item in key_values:
+        if "=" not in item:
+            _fail(ctx, "usage_error", f"Invalid format: {item!r}; expected KEY=VALUE", exit_code=2)
+        key, value = item.split("=", 1)
+        updates[key] = value
     try:
-        if not key_values:
-            p = _run(_run_config())
-            cfg = json.loads(p.get("config", "{}") or "{}")
-            if not cfg:
-                console.print(f"[dim]No configuration for plugin '{name}'.[/dim]")
-                return
-            from rich.table import Table
+        config = _run(_config(updates if key_values else None))
+    except LookupError as exc:
+        _fail(ctx, "not_found", str(exc))
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Config error: {exc}")
+    data = {"id": name, "config": config, "updated": bool(key_values)}
 
-            table = Table(title=f"Config: {name}")
-            table.add_column("Key", style="bold cyan")
-            table.add_column("Value")
-            for k, v in sorted(cfg.items()):
-                table.add_row(k, str(v))
-            console.print(table)
-        else:
-            updates = {}
-            for kv in key_values:
-                if "=" not in kv:
-                    console.print(f"[bold red]Invalid format:[/] '{kv}' (expected KEY=VALUE)")
-                    raise SystemExit(1)
-                k, v = kv.split("=", 1)
-                updates[k] = v
-            result = _run(_set_config(updates))
-            console.print(f"[bold green]Config updated for '{name}'.[/]")
-            for k, v in sorted(result.items()):
-                console.print(f"  [cyan]{k}[/] = {v}")
-    except SystemExit:
-        raise
-    except Exception as e:
-        console.print(f"[bold red]Config error:[/] {e}")
-        raise SystemExit(1)
+    def _render(payload: dict) -> None:
+        if not payload["config"]:
+            console.print(f"No configuration for plugin {name!r}.", style="dim", markup=False)
+            return
+        if payload["updated"]:
+            console.print(_safe_line("Config updated for ", repr(name), label_style="bold green"))
+        table = Table(title=Text(f"Config: {name}"))
+        table.add_column("Key", style="bold cyan")
+        table.add_column("Value")
+        for key, value in sorted(payload["config"].items()):
+            table.add_row(Text(str(key)), Text(str(value)))
+        console.print(table)
+
+    emit(ctx, data, render=_render)
+
+
+# Guidance for the retired ``aq plugin logs`` stub. Defined once so the human
+# and ``--json`` paths cannot drift apart.
+_PLUGIN_LOGS_REMOVED_WHY = (
+    "`aq plugin logs` has been removed: the hook engine it read is gone, "
+    "so there is no plugin hook execution history to return."
+)
+# Each entry is (what you actually want, the command that gives it). Kept as
+# short standalone lines because Rich hard-wraps human output at terminal
+# width, and a wrapped paragraph splits a command mid-name.
+_PLUGIN_LOGS_REPLACEMENTS = (
+    ("Recent automation runs (playbooks replaced hooks)", "aq playbook list-runs"),
+    ("One run in detail", "aq playbook inspect-run --run-id <run-id>"),
+    (
+        "A plugin's own diagnostic output - daemon logging, not hook history",
+        "aq logs --grep <plugin-name>",
+    ),
+)
+
+PLUGIN_LOGS_REMOVED_MESSAGE = " ".join(
+    (_PLUGIN_LOGS_REMOVED_WHY,)
+    + tuple(f"{what}: `{cmd}`." for what, cmd in _PLUGIN_LOGS_REPLACEMENTS)
+)
 
 
 @plugin.command("logs")
 @click.argument("name")
-@click.option("--limit", default=20, help="Number of recent runs to show")
-def plugin_logs(name: str, limit: int) -> None:
-    """View plugin execution history (deprecated — hooks have been removed)."""
-    console.print(
-        "[yellow]Plugin hook execution logs are no longer available.[/]\n"
-        "The hook engine has been removed. Automation is now handled by playbooks.\n"
-        "Use [bold]aq playbook list[/] to view playbook-based automation."
-    )
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    hidden=True,
+    help="Accepted and ignored; retained so legacy invocations reach this message.",
+)
+@click.pass_context
+def plugin_logs(ctx: click.Context, name: str, limit: int | None) -> None:
+    """Removed - plugin hook execution history no longer exists.
+
+    This stub is deliberately an error, not an empty success: a command
+    named ``logs`` that exits 0 with no rows reads as "this plugin has no
+    history", which is a different (and false) claim from "the history this
+    command read no longer exists". The legacy paging option stays
+    accepted-and-ignored so an old script lands on this guidance instead of
+    a Click usage error.
+    """
+    if _json_mode(ctx):
+        emit_error("command_error", PLUGIN_LOGS_REMOVED_MESSAGE)
+    else:
+        console.print(f"[bold red]Error:[/] {_PLUGIN_LOGS_REMOVED_WHY}")
+        console.print("Use instead:")
+        for what, cmd in _PLUGIN_LOGS_REPLACEMENTS:
+            console.print(f"  [bold]{cmd}[/]", highlight=False, soft_wrap=True)
+            console.print(f"    [dim]{what}[/]")
+    raise SystemExit(1)
 
 
 @plugin.command("prompts")
 @click.argument("name")
-def plugin_prompts(name: str) -> None:
+@click.pass_context
+def plugin_prompts(ctx: click.Context, name: str) -> None:
     """List prompts provided by a plugin."""
-    from pathlib import Path
 
-    async def _run_prompts():
+    async def _path():
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            return p["install_path"]
+            row = await client.get_plugin(name)
+            if not row:
+                raise LookupError(f"Plugin {name!r} not found.")
+            return row["install_path"]
 
     try:
-        install_path = _run(_run_prompts())
-    except Exception as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+        install_path = _run(_path())
+    except LookupError as exc:
+        _fail(ctx, "not_found", str(exc))
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Unable to list plugin prompts: {exc}")
+    inst_dir, src_dir = Path(install_path) / "prompts", Path(install_path) / "src" / "prompts"
+    names = {
+        entry.name
+        for directory in (src_dir, inst_dir)
+        if directory.exists()
+        for entry in directory.iterdir()
+        if entry.is_file()
+    }
+    rows = [
+        {"file": item, "source": (src_dir / item).exists(), "instance": (inst_dir / item).exists()}
+        for item in sorted(names)
+    ]
 
-    inst_dir = Path(install_path) / "prompts"
-    src_dir = Path(install_path) / "src" / "prompts"
+    def _render(data: list[dict]) -> None:
+        if not data:
+            console.print(f"No prompts found for plugin {name!r}.", style="dim", markup=False)
+            return
+        table = Table(title=Text(f"Prompts: {name}"))
+        table.add_column("File", style="bold cyan")
+        table.add_column("Source", style="dim")
+        table.add_column("Instance")
+        for row in data:
+            table.add_row(
+                Text(row["file"]),
+                Text("yes" if row["source"] else "no"),
+                Text("yes" if row["instance"] else "no"),
+            )
+        console.print(table)
 
-    from rich.table import Table
-
-    table = Table(title=f"Prompts: {name}")
-    table.add_column("File", style="bold cyan")
-    table.add_column("Source", style="dim")
-    table.add_column("Instance")
-
-    prompt_names: set[str] = set()
-    if src_dir.exists():
-        for f in src_dir.iterdir():
-            if f.is_file():
-                prompt_names.add(f.name)
-    if inst_dir.exists():
-        for f in inst_dir.iterdir():
-            if f.is_file():
-                prompt_names.add(f.name)
-
-    if not prompt_names:
-        console.print(f"[dim]No prompts found for plugin '{name}'.[/dim]")
-        return
-
-    for pname in sorted(prompt_names):
-        has_src = (src_dir / pname).exists() if src_dir.exists() else False
-        has_inst = (inst_dir / pname).exists() if inst_dir.exists() else False
-        table.add_row(
-            pname,
-            "[green]yes[/]" if has_src else "[dim]no[/]",
-            "[green]yes[/]" if has_inst else "[dim]no[/]",
-        )
-
-    console.print(table)
+    emit(ctx, rows, render=_render)
 
 
 @plugin.command("diff-prompts")
 @click.argument("name")
-def plugin_diff_prompts(name: str) -> None:
+@click.pass_context
+def plugin_diff_prompts(ctx: click.Context, name: str) -> None:
     """Diff instance prompts vs source defaults."""
     import difflib
-    from pathlib import Path
 
-    async def _run_diff():
+    async def _path():
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            return p["install_path"]
+            row = await client.get_plugin(name)
+            if not row:
+                raise LookupError(f"Plugin {name!r} not found.")
+            return row["install_path"]
 
     try:
-        install_path = _run(_run_diff())
-    except Exception as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+        install_path = _run(_path())
+    except LookupError as exc:
+        _fail(ctx, "not_found", str(exc))
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Unable to diff plugin prompts: {exc}")
+    src_dir, inst_dir = Path(install_path) / "src" / "prompts", Path(install_path) / "prompts"
+    files: list[dict[str, Any]] = []
+    if src_dir.exists():
+        for src_file in sorted(src_dir.iterdir()):
+            if not src_file.is_file():
+                continue
+            inst_file = inst_dir / src_file.name
+            if not inst_file.exists():
+                files.append({"file": src_file.name, "status": "instance_missing", "diff": []})
+                continue
+            diff = [
+                line.rstrip("\n")
+                for line in difflib.unified_diff(
+                    src_file.read_text(encoding="utf-8").splitlines(keepends=True),
+                    inst_file.read_text(encoding="utf-8").splitlines(keepends=True),
+                    fromfile=f"source/{src_file.name}",
+                    tofile=f"instance/{src_file.name}",
+                )
+            ]
+            if diff:
+                files.append({"file": src_file.name, "status": "different", "diff": diff})
+    data = {
+        "plugin": name,
+        "source_available": src_dir.exists(),
+        "matches": not files,
+        "files": files,
+    }
 
-    src_dir = Path(install_path) / "src" / "prompts"
-    inst_dir = Path(install_path) / "prompts"
-
-    if not src_dir.exists():
-        console.print(f"[dim]No source prompts for plugin '{name}'.[/dim]")
-        return
-
-    any_diff = False
-    for src_file in sorted(src_dir.iterdir()):
-        if not src_file.is_file():
-            continue
-        inst_file = inst_dir / src_file.name
-        if not inst_file.exists():
-            console.print(f"[yellow]{src_file.name}:[/] instance file missing")
-            any_diff = True
-            continue
-
-        src_lines = src_file.read_text(encoding="utf-8").splitlines(keepends=True)
-        inst_lines = inst_file.read_text(encoding="utf-8").splitlines(keepends=True)
-        diff = list(
-            difflib.unified_diff(
-                src_lines,
-                inst_lines,
-                fromfile=f"source/{src_file.name}",
-                tofile=f"instance/{src_file.name}",
+    def _render(payload: dict) -> None:
+        if not payload["source_available"]:
+            console.print(f"No source prompts for plugin {name!r}.", style="dim", markup=False)
+        elif payload["matches"]:
+            console.print(
+                _safe_line(
+                    "All prompts match source defaults for ", repr(name), label_style="bold green"
+                )
             )
-        )
-        if diff:
-            any_diff = True
-            console.print(f"\n[bold]{src_file.name}[/]")
-            for line in diff:
-                line = line.rstrip("\n")
-                if line.startswith("+"):
-                    console.print(f"[green]{line}[/]")
-                elif line.startswith("-"):
-                    console.print(f"[red]{line}[/]")
-                else:
-                    console.print(line)
+        else:
+            for entry in payload["files"]:
+                if entry["status"] == "instance_missing":
+                    console.print(
+                        _safe_line("Instance file missing: ", entry["file"], label_style="yellow")
+                    )
+                    continue
+                console.print(Text(f"\n{entry['file']}", style="bold"))
+                for line in entry["diff"]:
+                    style = (
+                        "green" if line.startswith("+") else "red" if line.startswith("-") else None
+                    )
+                    console.print(Text(line, style=style))
 
-    if not any_diff:
-        console.print(f"[bold green]All prompts match source defaults for '{name}'.[/]")
+    emit(ctx, data, render=_render)
 
 
 @plugin.command("reset-prompts")
 @click.argument("name")
-@click.confirmation_option(prompt="Reset all prompts to source defaults?")
-def plugin_reset_prompts(name: str) -> None:
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.pass_context
+def plugin_reset_prompts(ctx: click.Context, name: str, yes: bool) -> None:
     """Reset instance prompts to source defaults."""
     from src.plugins.loader import reset_prompts
 
-    async def _run_reset():
+    _confirm_mutation(ctx, yes, "Reset all prompts to source defaults?")
+
+    async def _path():
         async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            return p["install_path"]
+            row = await client.get_plugin(name)
+            if not row:
+                raise LookupError(f"Plugin {name!r} not found.")
+            return row["install_path"]
 
     try:
-        install_path = _run(_run_reset())
-        count = reset_prompts(install_path)
-        console.print(f"[bold green]Reset {count} prompt(s) for '{name}'.[/]")
-    except Exception as e:
-        console.print(f"[bold red]Reset failed:[/] {e}")
-        raise SystemExit(1)
+        count = reset_prompts(_run(_path()))
+    except LookupError as exc:
+        _fail(ctx, "not_found", str(exc))
+    except Exception as exc:
+        _fail(ctx, "command_error", f"Reset failed: {exc}")
+    data = {"id": name, "reset": count}
+    emit(
+        ctx,
+        data,
+        render=lambda payload: console.print(
+            _safe_line(
+                "Prompts reset: ",
+                f"{payload['reset']} for {payload['id']!r}.",
+                label_style="bold green",
+            )
+        ),
+    )

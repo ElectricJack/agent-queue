@@ -20,20 +20,26 @@ class PoolInstanceStatus:
         name (str):
         state (str):
         started_at (float):
+        project_id (None | str | Unset):
         task_id (None | str | Unset):
         task_title (None | str | Unset):
         idle_seconds (float | None | Unset):
         quarantine_reason (None | str | Unset):
+        input_prompt (None | str | Unset):
+        unchanged_seconds (float | None | Unset):
     """
 
     session_id: str
     name: str
     state: str
     started_at: float
+    project_id: None | str | Unset = UNSET
     task_id: None | str | Unset = UNSET
     task_title: None | str | Unset = UNSET
     idle_seconds: float | None | Unset = UNSET
     quarantine_reason: None | str | Unset = UNSET
+    input_prompt: None | str | Unset = UNSET
+    unchanged_seconds: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +50,12 @@ class PoolInstanceStatus:
         state = self.state
 
         started_at = self.started_at
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         task_id: None | str | Unset
         if isinstance(self.task_id, Unset):
@@ -69,6 +81,18 @@ class PoolInstanceStatus:
         else:
             quarantine_reason = self.quarantine_reason
 
+        input_prompt: None | str | Unset
+        if isinstance(self.input_prompt, Unset):
+            input_prompt = UNSET
+        else:
+            input_prompt = self.input_prompt
+
+        unchanged_seconds: float | None | Unset
+        if isinstance(self.unchanged_seconds, Unset):
+            unchanged_seconds = UNSET
+        else:
+            unchanged_seconds = self.unchanged_seconds
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -79,6 +103,8 @@ class PoolInstanceStatus:
                 "started_at": started_at,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if task_id is not UNSET:
             field_dict["task_id"] = task_id
         if task_title is not UNSET:
@@ -87,6 +113,10 @@ class PoolInstanceStatus:
             field_dict["idle_seconds"] = idle_seconds
         if quarantine_reason is not UNSET:
             field_dict["quarantine_reason"] = quarantine_reason
+        if input_prompt is not UNSET:
+            field_dict["input_prompt"] = input_prompt
+        if unchanged_seconds is not UNSET:
+            field_dict["unchanged_seconds"] = unchanged_seconds
 
         return field_dict
 
@@ -100,6 +130,15 @@ class PoolInstanceStatus:
         state = d.pop("state")
 
         started_at = d.pop("started_at")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_task_id(data: object) -> None | str | Unset:
             if data is None:
@@ -137,15 +176,36 @@ class PoolInstanceStatus:
 
         quarantine_reason = _parse_quarantine_reason(d.pop("quarantine_reason", UNSET))
 
+        def _parse_input_prompt(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        input_prompt = _parse_input_prompt(d.pop("input_prompt", UNSET))
+
+        def _parse_unchanged_seconds(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        unchanged_seconds = _parse_unchanged_seconds(d.pop("unchanged_seconds", UNSET))
+
         pool_instance_status = cls(
             session_id=session_id,
             name=name,
             state=state,
             started_at=started_at,
+            project_id=project_id,
             task_id=task_id,
             task_title=task_title,
             idle_seconds=idle_seconds,
             quarantine_reason=quarantine_reason,
+            input_prompt=input_prompt,
+            unchanged_seconds=unchanged_seconds,
         )
 
         pool_instance_status.additional_properties = d

@@ -4,17 +4,28 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.agents.terminals import TerminalStartError, start_agent_terminal
 from src.api.auth import SessionTokenStore
+from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
-from src.database import Database
 from src.event_bus import EventBus
+from src.intelligence_classes import IntelligenceClass
 from src.messages.session_lens import SessionLens
-from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent,
+    AgentProfile,
+    AgentState,
+    Project,
+    ProjectStatus,
+    SessionRecord,
+    Task,
+    TaskStatus,
+)
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness, ResumeSpec
@@ -28,9 +39,8 @@ class InteractiveFake(FakeProvider):
 
 
 @pytest.fixture
-async def handler(tmp_path):
-    db = Database(str(tmp_path / "terminals.db"))
-    await db.initialize()
+async def handler(tmp_path, reuse_database):
+    db = await reuse_database("terminals.db")
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"),
@@ -83,13 +93,214 @@ async def handler(tmp_path):
     result = CommandHandler(orch, config)
     yield result
     result._current_scope = None
-    await db.close()
 
 
-async def start(handler, agent_id="worker-a"):
+async def start(handler, agent_id="worker-a", project_id=None):
     command = getattr(handler, "_cmd_start_agent_terminal", None)
     assert command is not None, "an explicit agent terminal start command is required"
-    return await command({"agent_id": agent_id})
+    args = {"agent_id": agent_id}
+    if project_id is not None:
+        args["project_id"] = project_id
+    return await command(args)
+
+
+async def start_supervisor(handler):
+    from src.agents.configuration import ensure_supervisor_agent
+
+    await ensure_supervisor_agent(handler.db)
+    result = await start(handler, "supervisor-global")
+    assert "error" not in result, result
+    return result
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("permission", [
+    {"claude_dangerously_skip_permissions": True},
+    {"permission_mode": "bypassPermissions"},
+])
+async def test_supervisor_restart_uses_current_named_spec_and_retires_prior_token(
+    handler, resume, permission,
+):
+    await start_supervisor(handler)
+    old = await handler.db.get_session_by_name("n-supervisor--global")
+    old_spec = provider(handler).starts[-1]
+    await handler.db.update_profile("supervisor", default_class="restart-class", **permission)
+    builder = handler.orchestrator.session_spec_builder
+    builder._intelligence_classes["restart-class"] = IntelligenceClass(
+        id="restart-class", name="Restart class", description="",
+        mapping={"anthropic": {"model": "current-model", "thinking": "high"}},
+    )
+    registry = handler.orchestrator.harness_registry
+    registry.upsert(replace(
+        registry.get("claude"), effort_flag="--effort",
+        permission_flag="--dangerously-skip-permissions",
+    ))
+    result = await handler.execute("supervisor_restart", {
+        "resume": resume, "session_id": old.id,
+    })
+    assert result["success"], result
+    new = await handler.db.get_session(result["session_id"])
+    retired = await handler.db.get_session(old.id)
+    spec = provider(handler).starts[-1]
+    assert len(provider(handler).starts) == 2
+    assert new.id != old.id and new.instance_token != old.instance_token
+    assert new.name == old.name and new.agent_id == old.agent_id
+    assert new.state == "running" and new.desired_state == "running"
+    assert retired.state == "stopped" and retired.desired_state == "stopped"
+    assert retired.ended_at and retired.end_reason == "operator_restart"
+    assert spec.command.count("--dangerously-skip-permissions") == 1
+    assert "--permission-mode" not in spec.command
+    assert spec.command[spec.command.index("--model") + 1] == "current-model"
+    assert spec.command[spec.command.index("--effort") + 1] == "high"
+    assert new.model == "current-model" and new.intelligence_class == "restart-class"
+    if resume:
+        assert spec.command[spec.command.index("--resume") + 1] == old.session_key
+        assert "--session-id" not in spec.command
+        assert new.session_key == old.session_key
+    else:
+        assert "--resume" not in spec.command
+        assert spec.command[spec.command.index("--session-id") + 1] == new.id
+        assert new.session_key == new.id
+    tokens = handler.orchestrator.token_store
+    assert await tokens.validate(old_spec.env["AQ_API_TOKEN"]) is None
+    scope = await tokens.validate(spec.env["AQ_API_TOKEN"])
+    assert scope.session_id == new.id and scope.elevated and scope.project_id is None
+    assert spec.env["AQ_PROFILE"] == "supervisor"
+
+
+async def test_supervisor_restart_stale_request_keeps_successor(handler):
+    original = await start_supervisor(handler)
+    first = await handler.execute("supervisor_restart", {"session_id": original["session_id"]})
+    second = await handler.execute("supervisor_restart", {"session_id": original["session_id"]})
+    assert first["success"] and not second["success"]
+    assert "changed" in second["error"]
+    assert len(provider(handler).starts) == 2
+    assert (await handler.db.get_session_by_name("n-supervisor--global")).id == first["session_id"]
+
+
+@pytest.mark.parametrize("incompatible", ["missing_key", "harness"])
+async def test_supervisor_restart_incompatible_resume_does_not_stop(handler, incompatible):
+    old = await start_supervisor(handler)
+    if incompatible == "missing_key":
+        await handler.db.update_session(old["session_id"], session_key=None)
+    else:
+        handler.orchestrator.harness_registry.upsert(Harness(
+            id="codex", command="codex", resume=ResumeSpec(style="flag"),
+        ))
+        await handler.db.update_agent("supervisor-global", harness="codex")
+    result = await handler.execute("supervisor_restart", {"resume": True})
+    assert not result["success"] and "cannot be resumed" in result["error"]
+    assert len(provider(handler).starts) == 1
+    assert (await handler.db.get_session(old["session_id"])).desired_state == "running"
+
+
+async def test_supervisor_restart_unconfirmed_stop_does_not_launch(handler, monkeypatch):
+    await start_supervisor(handler)
+    monkeypatch.setattr(provider(handler), "confirm_stopped", AsyncMock(return_value=False))
+    result = await handler.execute("supervisor_restart", {})
+    assert not result["success"] and "confirm" in result["error"]
+    assert len(provider(handler).starts) == 1
+
+
+async def test_supervisor_restart_failed_stop_preserves_prior_token(handler, monkeypatch):
+    old = await start_supervisor(handler)
+    old_token = provider(handler).starts[-1].env["AQ_API_TOKEN"]
+    monkeypatch.setattr(provider(handler), "stop", AsyncMock(side_effect=RuntimeError("unknown")))
+    result = await handler.execute("supervisor_restart", {})
+    assert not result["success"] and "Could not stop" in result["error"]
+    assert len(provider(handler).starts) == 1
+    assert (await handler.db.get_session(old["session_id"])).state == "running"
+    assert await handler.orchestrator.token_store.validate(old_token) is not None
+
+
+async def test_supervisor_restart_project_session_preserves_scope(handler):
+    await handler.db.create_project(Project(id="p", name="P", supervisor_enabled=True))
+    lens = handler.orchestrator.session_lens
+    assert await lens.ensure_started(kind="session", target_id="supervisor-p", project_id="p")
+    result = await handler.execute("supervisor_restart", {"name": "supervisor-p", "resume": True})
+    assert result["success"], result
+    spec = provider(handler).starts[-1]
+    new = await handler.db.get_session(result["session_id"])
+    scope = await handler.orchestrator.token_store.validate(spec.env["AQ_API_TOKEN"])
+    assert scope.project_id == "p" and scope.elevated and new.project_id == "p"
+    assert new.name == "n-supervisor--p" and "--resume" in spec.command
+
+
+async def test_supervisor_restart_launch_failure_retires_prior_session(handler):
+    old = await start_supervisor(handler)
+    old_token = provider(handler).starts[-1].env["AQ_API_TOKEN"]
+    provider(handler).script_start_error("n-supervisor--global", RuntimeError("launch failed"))
+    result = await handler.execute("supervisor_restart", {})
+    assert not result["success"] and "relaunch failed" in result["error"]
+    row = await handler.db.get_session(old["session_id"])
+    assert row.state == "stopped" and row.desired_state == "stopped"
+    assert not provider(handler).sessions
+    assert await handler.orchestrator.token_store.validate(old_token) is None
+
+
+async def test_supervisor_restart_serializes_with_message_wake(handler, monkeypatch):
+    await start_supervisor(handler)
+    fake = provider(handler)
+    original_stop = fake.stop
+    stopping, release = asyncio.Event(), asyncio.Event()
+
+    async def stop(handle, **kwargs):
+        stopping.set()
+        await release.wait()
+        await original_stop(handle, **kwargs)
+
+    monkeypatch.setattr(fake, "stop", stop)
+    restarting = asyncio.create_task(handler._cmd_supervisor_restart({}))
+    await asyncio.wait_for(stopping.wait(), timeout=5)
+    waking = asyncio.create_task(handler.orchestrator.session_lens.ensure_started(
+        kind="session", target_id="supervisor-global", project_id=None,
+    ))
+    await asyncio.sleep(0)
+    assert not waking.done()
+    release.set()
+    result, awake = await asyncio.gather(restarting, waking)
+    assert result["success"] and awake
+    assert len(fake.starts) == 2
+    assert len(await handler.db.list_sessions(live_only=True)) == 1
+
+
+@pytest.mark.parametrize("scope", [
+    {"kind": "session", "elevated": False, "project_id": "p"},
+    {"kind": "session", "elevated": True, "project_id": "p"},
+])
+async def test_supervisor_restart_requires_global_admin(handler, scope):
+    await start_supervisor(handler)
+    handler._current_scope = scope
+    result = await handler._cmd_supervisor_restart({})
+    assert not result["success"] and "out of scope" in result["error"]
+    assert len(provider(handler).starts) == 1
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_supervisor_restart_api_relaunches_and_reports_stale_request(handler, resume):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api.codegen import build_category_routers
+    from src.api.dependencies import get_command_handler
+
+    old = await start_supervisor(handler)
+    app = FastAPI()
+    for router in build_category_routers():
+        if router.prefix == "/api/supervisor":
+            app.include_router(router)
+    app.dependency_overrides[get_command_handler] = lambda: handler
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        result = await http.post("/api/supervisor/restart", json={
+            "session_id": old["session_id"], "resume": resume,
+        })
+        assert result.status_code == 200, result.text
+        assert result.json()["success"]
+        assert result.json()["mode"] == ("resume" if resume else "fresh")
+        assert result.json()["session_id"] != old["session_id"]
+        stale = await http.post("/api/supervisor/restart", json={"session_id": old["session_id"]})
+        assert stale.status_code == 422 and "changed" in stale.json()["error"]
+    assert len(provider(handler).starts) == 2
 
 
 def provider(handler):
@@ -116,8 +327,84 @@ async def test_worker_starts_private_named_terminal_with_scoped_token(handler):
     assert scope.session_id == row.id and not scope.elevated
     assert scope.session_instance_token == row.instance_token
     assert scope.project_id is None and scope.task_id is None
+    assert check_command_scope("create_task", {}, scope) == (
+        "out of scope: this interactive agent has no assigned project"
+    )
     assert "aq task claim" not in spec.prompt and "aq inbox" not in spec.prompt
     assert await handler.db.list_projects() == [] and await handler.db.list_tasks() == []
+    assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
+
+
+async def test_worker_terminal_can_be_attached_to_one_active_project(handler):
+    await handler.db.create_project(Project(id="p", name="Project"))
+
+    result = await start(handler, project_id="p")
+
+    assert "error" not in result, result
+    row = await handler.db.get_session(result["session_id"])
+    spec = provider(handler).starts[0]
+    assert row.lifecycle == "named" and row.project_id == "p" and row.task_id is None
+    assert spec.env["AQ_PROJECT_ID"] == "p"
+    assert "attached to project 'p'" in spec.prompt
+    assert "create tasks and task graphs" in spec.prompt
+    scope = await handler.orchestrator.token_store.validate(spec.env["AQ_API_TOKEN"])
+    assert scope.project_id == "p" and scope.task_id is None and not scope.elevated
+    allowed = {"project_id": "p", "graph": True}
+    assert check_command_scope("create_task", allowed, scope) is None
+    assert "project_id mismatch" in check_command_scope(
+        "create_task", {"project_id": "other", "graph": True}, scope
+    )
+    handler.config.swarm.enabled = True
+    handler._current_scope = {
+        "kind": "session", "session_id": row.id, "project_id": "p", "elevated": False,
+    }
+    claim = await handler._cmd_task_claim({"next": True})
+    assert claim["error"] == "not a claimable session"
+
+
+async def test_terminal_resume_is_scoped_to_its_project(handler):
+    await handler.db.create_project(Project(id="one", name="One"))
+    await handler.db.create_project(Project(id="two", name="Two"))
+    first = await start(handler, project_id="one")
+    old = await handler.db.get_session(first["session_id"])
+    await provider(handler).stop(SessionHandle(old.name, old.provider, old.instance_token))
+    await handler.db.update_session(old.id, state="stopped", desired_state="stopped")
+
+    result = await start(handler, project_id="two")
+
+    row = await handler.db.get_session(result["session_id"])
+    assert row.project_id == "two" and row.session_key != old.session_key
+    assert old.session_key not in provider(handler).starts[-1].command
+
+
+async def test_live_terminal_cannot_be_reused_for_another_project(handler):
+    await handler.db.create_project(Project(id="one", name="One"))
+    await handler.db.create_project(Project(id="two", name="Two"))
+    assert "error" not in await start(handler, project_id="one")
+
+    with pytest.raises(TerminalStartError, match="stop the running terminal first"):
+        await start_agent_terminal(handler.orchestrator, "worker-a", project_id="two")
+
+    assert len(provider(handler).starts) == 1
+
+
+@pytest.mark.parametrize(
+    ("project_id", "status", "message"),
+    [
+        ("missing", None, "not found"),
+        ("paused", ProjectStatus.PAUSED, "not active"),
+    ],
+)
+async def test_terminal_requires_an_active_project_before_reservation(
+    handler, project_id, status, message
+):
+    if status is not None:
+        await handler.db.create_project(Project(id=project_id, name="Paused", status=status))
+
+    with pytest.raises(TerminalStartError, match=message):
+        await start_agent_terminal(handler.orchestrator, "worker-a", project_id=project_id)
+
+    assert provider(handler).starts == []
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
 
 
@@ -205,7 +492,10 @@ async def test_terminal_provider_start_failure_releases_agent_reservation(handle
     assert not fake.sessions
     assert await handler.orchestrator.token_store.validate(attempted[0].env["AQ_API_TOKEN"]) is None
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
-    assert await handler.db.list_sessions() == []
+    rows = await handler.db.list_sessions()
+    assert len(rows) == 1
+    assert rows[0].state == rows[0].desired_state == "stopped"
+    assert rows[0].end_reason == "launch_failed"
 
 
 async def test_cleanup_does_not_release_newer_reservation(handler):
@@ -377,6 +667,34 @@ async def test_supervisor_button_and_message_wake_share_one_start_and_resume(han
     assert new.id != row.id and new.session_key == row.session_key
     assert row.session_key in provider(handler).starts[-1].command
     assert await handler.db.list_messages() == []
+
+
+@pytest.mark.parametrize("project_id", [None, "active", "paused", "missing"])
+async def test_supervisor_terminal_always_starts_and_reuses_global_scope(handler, project_id):
+    await handler.db.create_agent(
+        Agent(
+            id="supervisor-global", name="Oracle Owl", profile_id="supervisor", role="supervisor"
+        )
+    )
+    await handler.db.create_project(Project(id="active", name="Active"))
+    await handler.db.create_project(
+        Project(id="paused", name="Paused", status=ProjectStatus.PAUSED)
+    )
+
+    result = await start(handler, "supervisor-global", project_id=project_id)
+    assert "error" not in result, result
+    row = await handler.db.get_session(result["session_id"])
+    assert row.name == "n-supervisor--global" and row.project_id is None
+    spec = provider(handler).starts[0]
+    scope = await handler.orchestrator.token_store.validate(spec.env["AQ_API_TOKEN"])
+    assert scope.elevated and scope.project_id is None
+    for target in ("active", "paused"):
+        assert check_command_scope("create_task", {"project_id": target}, scope) is None
+
+    repeated = await start(handler, "supervisor-global", project_id=project_id)
+    assert "error" not in repeated, repeated
+    assert repeated["session_id"] == row.id
+    assert len(provider(handler).starts) == 1
 
 
 async def test_active_assignment_without_current_pointer_cannot_start(handler):
@@ -566,6 +884,7 @@ async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(han
         if router.prefix == "/api/agent":
             app.include_router(router)
     app.dependency_overrides[get_command_handler] = lambda: handler
+    await handler.db.create_project(Project(id="p", name="Project"))
     scope = RequestScope(
         kind="session", session_id="project-supervisor", project_id="p", elevated=True
     )
@@ -582,11 +901,14 @@ async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(han
         assert denied.status_code == 403
         assert provider(handler).starts == []
         scope = LOCAL_SCOPE
-        started = await client.post("/api/agent/start-terminal", json={"agent_id": "worker-a"})
+        started = await client.post(
+            "/api/agent/start-terminal", json={"agent_id": "worker-a", "project_id": "p"}
+        )
         assert started.status_code == 200, started.text
         body = started.json()
         assert body["id"] == "worker-a" and body["session_id"]
         assert body["session_state"] == "running"
+        assert body["project_id"] == "p"
         assert body["settings"]["model"] == "my-model"
         assert len(provider(handler).starts) == 1
 
@@ -626,7 +948,9 @@ async def test_real_provider_missing_cli_is_actionable_without_launch(
     assert "claude" in result["error"] and "PATH" in result["error"]
     assert "aqs_" not in result["error"] and str(tmp_path) not in result["error"]
     assert (await handler.db.get_agent(agent_id)).state == AgentState.IDLE
-    assert await handler.db.list_sessions() == []
+    failed = await handler.db.list_sessions()
+    assert len(failed) == 1 and failed[0].state == "stopped"
+    assert failed[0].end_reason == "launch_failed"
     assert fake.starts == []
     # Message/reconciler callers keep the existing bool-return contract.
     if agent_id == "supervisor-global":

@@ -18,8 +18,8 @@ class ProjectReadyRequest:
         project_id (None | str | Unset): Project id (falls back to the active project when omitted).
         labels (list[Any] | None | Unset): Restrict frontier to tasks carrying ALL of these labels.
         any_label (list[Any] | None | Unset): Restrict frontier to tasks carrying ANY of these labels.
-        profile_id (None | str | Unset): Restrict the frontier to tasks this profile would be offered. Uses the same
-            widening as the work query: when this is the project's default profile, unassigned tasks count as its work too.
+        profile_id (None | str | Unset): Restrict the frontier to tasks routed to this profile. An unrouted task is no
+            profile's work until the project's router routes it.
         brief (bool | None | Unset): Project each ready task to id, title, status, priority, is_blocked, profile_id
             instead of the default shape.
     """

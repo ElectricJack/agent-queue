@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { matchesTask, readTaskFilters, writeTaskFilters } from "../taskFilters";
+import { activityWindowHours, activityWindowLabel, matchesTask, readTaskFilters, writeTaskFilters } from "../taskFilters";
 
-const base = { query: "", status: "", showCompleted: false, focus: "" };
+const base = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false };
 
 describe("shared task filters", () => {
+  it("filters an idle epic as waiting even when its stored lifecycle is IN_PROGRESS", () => {
+    const epic = { id: "epic", status: "IN_PROGRESS", display_state: "waiting" as const };
+    expect(matchesTask(epic, { ...base, status: "IN_PROGRESS" })).toBe(false);
+    expect(matchesTask(epic, { ...base, status: "WAITING" })).toBe(true);
+    expect(matchesTask(epic, { ...base, query: "waiting" })).toBe(true);
+  });
   it("searches words across title, ID, project, and agent without case sensitivity", () => {
     const task = { id: "bright-fox", title: "Fix checkout", status: "READY", assigned_agent_id: "worker-sol" };
     expect(matchesTask(task, { ...base, query: "CHECKOUT sol moss" }, "moss-and-spade")).toBe(true);
@@ -21,21 +27,42 @@ describe("shared task filters", () => {
 
   it("round-trips filters while preserving unrelated deep-link parameters", () => {
     const params = new URLSearchParams("openDrawer=events&q=old");
-    const result = writeTaskFilters(params, { query: "new task", status: "READY", showCompleted: true, focus: "" });
-    expect(readTaskFilters(result)).toEqual({ query: "new task", status: "READY", showCompleted: true, focus: "" });
+    const result = writeTaskFilters(params, { query: "new task", status: "READY", showCompleted: true, focus: "", window: "", held: false });
+    expect(readTaskFilters(result)).toEqual({ query: "new task", status: "READY", showCompleted: true, focus: "", window: "", held: false });
     expect(result.get("openDrawer")).toBe("events");
     expect(params.get("q")).toBe("old");
     expect(writeTaskFilters(result, base).toString()).toBe("openDrawer=events");
   });
 
   it("retains unknown statuses from links rather than silently broadening a filter", () => {
-    expect(readTaskFilters(new URLSearchParams("status=custom&completed=1"))).toEqual({ query: "", status: "CUSTOM", showCompleted: true, focus: "" });
+    expect(readTaskFilters(new URLSearchParams("status=custom&completed=1"))).toEqual({ query: "", status: "CUSTOM", showCompleted: true, focus: "", window: "", held: false });
+  });
+
+  it("resolves the offered time ranges and rejects anything else", () => {
+    expect(activityWindowHours("24h")).toBe(24);
+    expect(activityWindowLabel("24h")).toBe("Last 24 hours");
+    expect(activityWindowHours("7d")).toBe(24 * 7);
+    expect(activityWindowHours("")).toBeNull();
+    expect(activityWindowHours("since-the-dawn-of-time")).toBeNull();
+  });
+
+  it("drops an unknown window from a link instead of mislabelling the range", () => {
+    expect(readTaskFilters(new URLSearchParams("window=all-time")).window).toBe("");
+    expect(readTaskFilters(new URLSearchParams("window=7d")).window).toBe("7d");
+  });
+
+  it("keeps completed work visible inside a time range", () => {
+    const completed = { id: "b", status: "COMPLETED" };
+    expect(matchesTask(completed, base)).toBe(false);
+    expect(matchesTask(completed, { ...base, window: "24h" })).toBe(true);
+    // The range narrows the rows, it does not widen the status filter.
+    expect(matchesTask(completed, { ...base, window: "24h", status: "READY" })).toBe(false);
   });
 
   it("round-trips the focus param", () => {
-    const p = writeTaskFilters(new URLSearchParams(), { query: "", status: "", showCompleted: false, focus: "e1" });
+    const p = writeTaskFilters(new URLSearchParams(), { query: "", status: "", showCompleted: false, focus: "e1", window: "", held: false });
     expect(p.get("focus")).toBe("e1");
     expect(readTaskFilters(p).focus).toBe("e1");
-    expect(writeTaskFilters(p, { query: "", status: "", showCompleted: false, focus: "" }).has("focus")).toBe(false);
+    expect(writeTaskFilters(p, { query: "", status: "", showCompleted: false, focus: "", window: "", held: false }).has("focus")).toBe(false);
   });
 });

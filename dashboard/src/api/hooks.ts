@@ -1,14 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import { apiGet } from "./legacy-fetch";
+import { taskAttachmentsQuery } from "./taskAttachments";
 import {
   addWorkspace,
   archiveTask,
   createMcpServer,
   createTask,
   deleteMcpServer,
+  deleteIntelligenceClass,
   deleteProfile,
   deleteProject,
   deleteTask,
+  removeTask,
   editMcpServer,
   editIntelligenceClass,
   editProfile,
@@ -17,7 +21,6 @@ import {
   editWorkspace,
   getConfig,
   getConfigSchema,
-  getProviderUsageApiProvidersUsageGet,
   getMcpServer,
   getProfile,
   getProject,
@@ -74,14 +77,18 @@ import {
   gateShow,
   gateResolve,
   deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete,
-  listAttachmentsApiTasksTaskIdAttachmentsGet,
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
+  poolRename,
+  poolDelete,
   poolScale,
+  poolSetEnabled,
   playbookActivate,
+  playbookDelete,
   playbookActivationHealth,
   playbookArtifactDiff,
   playbookArtifacts,
+  playbookCommands,
   playbookPendingEventAction,
   playbookPendingEvents,
   playbookRunOverlay,
@@ -129,8 +136,6 @@ import type {
   ProbeMcpServerResponse,
   ProfileDetail,
   ProfileSummary,
-  ProviderUsageResponse,
-  ProviderUsageSnapshot,
   ProjectSummary,
   ShowEffectiveProfileResponse,
   TaskDetail,
@@ -154,14 +159,20 @@ import type {
   GateSummary,
   InspectPlaybookRunResponse,
   CancelPlaybookRunResponse,
-  TaskAttachmentsResponse,
   PoolStatusResponse,
+  PoolRenameRequest,
+  PoolDeleteRequest,
   PoolStatusRow,
+  PoolProjectStatus,
   PoolScaleRequest,
   PoolScaleResponse,
+  PoolSetEnabledRequest,
+  PoolSetEnabledResponse,
   PlaybookActivationHealthResponse,
+  PlaybookDeleteResponse,
   PlaybookArtifactDiffResponse,
   ListPlaybookArtifactsResponse,
+  PlaybookCommandCatalogResponse,
   PlaybookRunOverlayResponse,
   ListPlaybookPendingEventsResponse,
 } from "./client";
@@ -172,6 +183,10 @@ import {
 } from "./chat";
 
 // --- Re-exports — call sites should import shared types from here ---
+// Graph and historical activity projections also feed task components and
+// may carry a status introduced by a newer daemon. Keep their fallback reader.
+export type Task = Omit<TaskResponse, "status"> & { status?: string };
+
 export type {
   AgentSummary,
   AgentSummary as Agent,
@@ -193,7 +208,6 @@ export type {
   ProjectResponse as Project,
   ProjectSummary,
   ShowEffectiveProfileResponse,
-  TaskResponse as Task,
   TaskDetail,
   TaskCompletionDetail,
   WorkspaceSummary as Workspace,
@@ -284,28 +298,36 @@ export function useAllAgents(projectIds: string[]) {
 
 // --- Worker pools (swarm work model §11) ---
 
-export type { PoolStatusRow };
+export type { PoolStatusRow, PoolProjectStatus };
 
 /**
- * One row per (active project, pool profile) with its bounds and live supply.
+ * One row per pool profile with its bounds, its fleet-wide supply and the
+ * per-project breakdown of where that supply currently sits.
  *
- * ``pool_status`` emits a row for every pool profile a project resolves —
- * including one at zero supply — so the response doubles as the authoritative
- * list of which profiles run as pools. Polled on the flock's cadence because
- * supply turns over as fast as agent state does.
+ * Sizing is global (global worker pools §1): a profile is one pool, not one
+ * pool per project, so ``min_active``/``max_active`` bound the whole fleet and
+ * the projects a worker landed in are reported inside ``projects``. A row is
+ * emitted for every pool profile — including one at zero supply — so the
+ * response doubles as the authoritative list of which profiles run as pools.
+ * Polled on the flock's cadence because supply turns over as fast as agent
+ * state does.
  */
 export function usePoolStatus(projectId?: string) {
   return useQuery({
     queryKey: ["pools", projectId ?? "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } = await poolStatus({
         body: projectId ? { project_id: projectId } : {},
+        signal,
         throwOnError: true,
       });
       return ((data as PoolStatusResponse).pools ?? []) as PoolStatusRow[];
     },
     staleTime: 2_000,
-    refetchInterval: 5_000,
+    // pool.* and session.* frames refresh this (ws/useEventStream.ts); the
+    // poll only reconciles. At 5s from the shell rail it was, with the
+    // roster, most of what an idle dashboard asked the daemon for.
+    refetchInterval: 30_000,
   });
 }
 
@@ -321,7 +343,51 @@ export function usePoolSessions() {
       return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
     },
     staleTime: 2_000,
-    refetchInterval: 5_000,
+    // session.* and pool.* frames refresh this; the poll only reconciles.
+    refetchInterval: 30_000,
+  });
+}
+
+export function usePoolRename() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolRenameRequest) => {
+      const { data } = await poolRename({ body: input, throwOnError: true });
+      if (!data.success) throw new Error(data.error || "Could not rename this pool");
+      return data;
+    },
+    onSuccess: async (result, input) => {
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.map((row) => row.profile_id === input.profile_id
+          ? { ...row, name: result.name ?? input.name } : row),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+      void queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      void queryClient.invalidateQueries({ queryKey: ["profile", input.profile_id] });
+      void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
+    },
+  });
+}
+
+export function usePoolDelete() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolDeleteRequest) => {
+      const { data } = await poolDelete({ body: input, throwOnError: true });
+      if (!data.success) throw new Error(data.error || "Could not delete this pool");
+      return data;
+    },
+    onSuccess: async (_result, input) => {
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.filter((row) => row.profile_id !== input.profile_id),
+      );
+      for (const key of ["pools", "profiles", "profile", "effective-profile", "sessions", "tasks", "agents", "providers"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
   });
 }
 
@@ -343,6 +409,59 @@ export function usePoolScale() {
   });
 }
 
+/**
+ * Turn a pool profile on or off (``pool_set_enabled``).
+ *
+ * The switch is written to the system profile's vault markdown like every
+ * other pool edit, so it survives the next vault sync. A disabled pool keeps
+ * its ``pool_status`` row — that is what the directory toggles back on — but
+ * is sized to zero: idle workers drain, a worker mid-task finishes the task
+ * it holds, and its next claim is refused.
+ */
+export function usePoolSetEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolSetEnabledRequest) => {
+      // A stalled relay must produce a visible error instead of leaving the
+      // switch on "Saving…" until the relay's much longer header timeout.
+      const signal = AbortSignal.timeout(10_000);
+      let data;
+      try {
+        ({ data } = await poolSetEnabled({ body: input, signal, throwOnError: true }));
+      } catch (error) {
+        if (signal.aborted) {
+          throw new Error("Saving this pool timed out. Check its current state before trying again.");
+        }
+        throw error;
+      }
+      const result = data as PoolSetEnabledResponse;
+      // Refusals (no such pool profile) come back in band with a 200, exactly
+      // as they do for pool_scale, so success has to be checked here.
+      if (!result.success) throw new Error(result.error || "Could not update this pool");
+      return result;
+    },
+    onSuccess: async (result, input) => {
+      // A fleet status read can start before the write and finish after it.
+      // Cancel it before publishing the confirmed value in every pool view.
+      // Otherwise clearing the toggle's pending state shows the old cached
+      // value until the expensive status refresh completes.
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.map((row) => row.profile_id === input.profile_id
+          ? { ...row, enabled: result.enabled ?? input.enabled }
+          : row),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: () => {
+      // A timeout may occur after persistence; reconcile without hiding the
+      // mutation error or automatically retrying an ambiguous write.
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+    },
+  });
+}
+
 // --- Tasks ---
 
 export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
@@ -353,7 +472,11 @@ export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
       if (projectId) body.project_id = projectId;
       if (opts?.showAll) body.show_all = true;
       const { data } = await listTasks({ body, throwOnError: true });
-      return (data as ListTasksResponse).tasks ?? [];
+      const response = data as ListTasksResponse;
+      return {
+        ...response,
+        tasks: response.tasks ?? [],
+      };
     },
     refetchInterval: 60_000,
   });
@@ -369,16 +492,7 @@ export function useTask(taskId: string) {
 }
 
 export function useTaskAttachments(taskId: string, enabled = true) {
-  return useQuery({
-    queryKey: ["task-attachments", taskId],
-    queryFn: async () => (
-      await listAttachmentsApiTasksTaskIdAttachmentsGet({
-        path: { task_id: taskId },
-        throwOnError: true,
-      })
-    ).data as TaskAttachmentsResponse,
-    enabled: enabled && !!taskId,
-  });
+  return useQuery({ ...taskAttachmentsQuery(taskId), enabled: enabled && !!taskId });
 }
 
 function invalidateTaskAttachments(queryClient: ReturnType<typeof useQueryClient>, taskId: string) {
@@ -420,13 +534,14 @@ export function useDeleteTaskAttachment() {
   });
 }
 
-export function useActiveTasksAllProjects() {
+export function useActiveTasksAllProjects(opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["tasks", "active", "all"],
     queryFn: async () => {
       const { data } = await listActiveTasksAllProjects({ body: {}, throwOnError: true });
       return (data as ListTasksResponse).tasks ?? [];
     },
+    enabled: opts?.enabled ?? true,
     refetchInterval: 60_000,
   });
 }
@@ -669,6 +784,27 @@ export function useEditIntelligenceClass() {
   });
 }
 
+export function useDeleteIntelligenceClass() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { class_id: string; expected_revision: string }) => {
+      const { data } = await deleteIntelligenceClass({ body: input, throwOnError: true });
+      return data.class_id;
+    },
+    retry: false,
+    onSuccess: (classId) => {
+      queryClient.setQueryData<IntelligenceClassesResponse>(["intelligence-classes"], (previous) => previous
+        ? { ...previous, classes: previous.classes.filter((row) => row.id !== classId) }
+        : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["profiles"] });
+    },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] }); },
+  });
+}
+
 // --- Task Mutations ---
 
 function useTaskMutationCallbacks() {
@@ -678,6 +814,7 @@ function useTaskMutationCallbacks() {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["task"] });
       queryClient.invalidateQueries({ queryKey: ["projectGraph"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
     },
   };
 }
@@ -757,11 +894,34 @@ export function useDeleteTask() {
   });
 }
 
+export function useDeleteTaskPreview(input: DeleteTaskRequest) {
+  return useQuery({
+    queryKey: ["task-delete-preview", input.task_id, input.recursive, input.branches],
+    queryFn: async () => (await deleteTask({
+      body: { ...input, confirmed: false }, throwOnError: true,
+    })).data,
+    staleTime: 0,
+  });
+}
+
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
-      (await archiveTask({ body: input, throwOnError: true })).data,
+    mutationFn: async (input: {
+      task_id: string;
+      reason?: string;
+      abandon_undelivered?: boolean;
+      disposition?: "deliver" | "obsolete" | "retire";
+    }) => (await archiveTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
+}
+
+export function useRemoveTask() {
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: DeleteTaskRequest) =>
+      (await removeTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
 }
@@ -820,6 +980,18 @@ export function usePlaybookSource(playbookId: string) {
       (await getPlaybookSource({ body: { playbook_id: playbookId }, throwOnError: true }))
         .data as GetPlaybookSourceResponse,
     enabled: !!playbookId,
+  });
+}
+
+/** The command catalog is static for a daemon config generation, so one cached
+ * query serves every playbook source view without polling. */
+export function usePlaybookCommands() {
+  return useQuery({
+    queryKey: ["playbook-commands"],
+    queryFn: async () =>
+      (await playbookCommands({ body: {}, throwOnError: true }))
+        .data as PlaybookCommandCatalogResponse,
+    staleTime: Infinity,
   });
 }
 
@@ -954,6 +1126,35 @@ export function useEventTriggers() {
  * trigger events spawn new runs. Distinct from useResumePlaybookRun, which
  * resumes a single in-flight run that's waiting on human input.
  */
+/** Delete one exact playbook catalog entry.
+ *
+ *  The server keys the delete on (playbook_id, scope, scope_identifier,
+ *  artifact_sha256) and refuses anything that is enabled, stale, or still owns
+ *  unfinished work, so callers pass the hash they last observed rather than
+ *  letting the server pick.  Everything that lists or projects a playbook is
+ *  invalidated: a deleted entry must not survive in any view. */
+export function useDeletePlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      playbook_id: string;
+      scope: string;
+      scope_identifier: string;
+      artifact_sha256: string;
+    }) =>
+      (await playbookDelete({ body: input, throwOnError: true }))
+        .data as PlaybookDeleteResponse,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-activation-health"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-runs", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-source", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-v2-graph", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: playbookArtifactsKey(variables.playbook_id) });
+    },
+  });
+}
+
 export function useSetPlaybookEnabled() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -1185,14 +1386,23 @@ export function useTaskDeps(taskId: string) {
 
 export type { SessionSummary, ListSessionsResponse, SessionLogsResponse };
 
-export function useSessions(projectId?: string) {
+export const SESSIONS_PAGE_SIZE = 100;
+
+export function useSessions(projectId?: string, page = 0) {
   return useQuery({
-    queryKey: ["sessions", projectId ?? "all"],
+    queryKey: ["sessions", projectId ?? "all", page],
     queryFn: async () => {
-      const body: Record<string, unknown> = {};
+      const body: Record<string, unknown> = {
+        limit: SESSIONS_PAGE_SIZE,
+        offset: page * SESSIONS_PAGE_SIZE,
+      };
       if (projectId) body.project_id = projectId;
       const { data } = await sessionList({ body, throwOnError: true });
-      return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
+      const result = data as ListSessionsResponse;
+      return {
+        sessions: (result.sessions ?? []) as SessionSummary[],
+        hasMore: result.has_more,
+      };
     },
     refetchInterval: 15_000,
   });
@@ -1291,53 +1501,63 @@ export function useSessionLogs(sessionId: string, limit = 200) {
 export type { GateSummary, GateListResponse };
 
 export function useGates(
-  opts: { projectId?: string; status?: string; gateType?: string; enabled?: boolean } = {},
+  opts: { projectId?: string; taskId?: string; status?: string; gateType?: string; enabled?: boolean } = {},
 ) {
   return useQuery({
     queryKey: [
       "gates",
       opts.projectId ?? "all",
+      opts.taskId ?? "all",
       opts.status ?? "any",
       opts.gateType ?? "any",
     ],
     queryFn: async () => {
       const body: Record<string, unknown> = {};
       if (opts.projectId) body.project_id = opts.projectId;
+      if (opts.taskId) body.task_id = opts.taskId;
       if (opts.status) body.status = opts.status;
       if (opts.gateType) body.gate_type = opts.gateType;
       const { data } = await gateList({ body, throwOnError: true });
       return ((data as GateListResponse).gates ?? []) as GateSummary[];
     },
-    refetchInterval: 20_000,
+    // gate.* frames refresh this (ws/useEventStream.ts); the poll reconciles.
+    // A project's list includes every resolved gate (190 KB for agent-queue),
+    // so the task pane polling it every 20s was a steady 0.5 MB a minute.
+    refetchInterval: 60_000,
     enabled: opts.enabled ?? true,
   });
 }
 
 /**
  * Every open gate across every project. Backs the shell TopBar badge and the
- * Activity drawer Gates tab. Fans out one gateList per project because the
- * daemon's list endpoint is project-scoped.
+ * Activity drawer Gates tab.
+ *
+ * One unscoped gateList: the daemon lists every project's gates when no
+ * project is named. This used to fan out one request per project every 20s
+ * from the always-mounted TopBar — thirteen projects made it 39 requests a
+ * minute, half of an idle dashboard's traffic. gate.created / resolved /
+ * expired frames refresh it (ws/useEventStream.ts); the poll only reconciles.
+ * Rows are still limited to the projects the dashboard lists, as before.
  */
 export function useAllOpenGates() {
   const { data: projects } = useProjects();
   const ids = (projects ?? []).map((p) => p.id);
-  return useQuery({
-    queryKey: ["gates", "open", "all", ids],
-    queryFn: async () => {
-      if (ids.length === 0) return [] as GateSummary[];
-      const results = await Promise.all(
-        ids.map((pid) =>
-          gateList({
-            body: { project_id: pid, status: "open" },
-            throwOnError: true,
-          }),
-        ),
-      );
-      return results.flatMap(
-        (r) => ((r.data as GateListResponse).gates ?? []) as GateSummary[],
-      );
+  const idKey = ids.join("\u0000");
+  const select = useCallback(
+    (gates: GateSummary[]) => {
+      const known = new Set(idKey.split("\u0000"));
+      return gates.filter((gate) => known.has(gate.project_id));
     },
-    refetchInterval: 20_000,
+    [idKey],
+  );
+  return useQuery({
+    queryKey: ["gates", "open", "all"],
+    queryFn: async () => {
+      const { data } = await gateList({ body: { status: "open" }, throwOnError: true });
+      return ((data as GateListResponse).gates ?? []) as GateSummary[];
+    },
+    select,
+    refetchInterval: 60_000,
     enabled: ids.length > 0,
   });
 }
@@ -1409,6 +1629,17 @@ export function useSystemConfig() {
   });
 }
 
+export function useDeploymentHistory() {
+  return useQuery({
+    queryKey: ["deployment-history"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const { data } = await getConfig({ body: { section: "deploy" }, throwOnError: true });
+      return (data as GetConfigResponse).deployment_history;
+    },
+  });
+}
+
 export function useSystemConfigSchema() {
   return useQuery({
     queryKey: ["system-config-schema"],
@@ -1431,8 +1662,14 @@ export function useUpdateSystemConfig() {
     }) =>
       (await updateConfig({ body: input, throwOnError: true }))
         .data as UpdateConfigResponse,
-    onSuccess: () => {
+    onSuccess: (_result, input) => {
       queryClient.invalidateQueries({ queryKey: ["system-config"] });
+      // Project onboarding reads the daemon-authoritative roots through its
+      // own query.  Clear a previously opened dialog's cache after a saved
+      // root edit so the next Add project uses the live configuration.
+      if (input.section === "project_roots") {
+        queryClient.invalidateQueries({ queryKey: ["project-roots"] });
+      }
     },
   });
 }
@@ -1448,31 +1685,17 @@ export function useReloadSystemConfig() {
   });
 }
 
-// --- Provider usage -------------------------------------------------------
-//
-// Each provider's own quota, as it reports it: the newest reading per
-// ``(provider, window, scope)`` series.  ``stale`` and ``age_seconds`` are
-// computed server-side and used verbatim here — the horizon differs per
-// provider (a Codex number only advances while a Codex session is live) and
-// re-deriving it in the client is how two surfaces end up disagreeing about
-// the same card.
-//
-// Polled rather than pushed: these numbers move on a ten-minute probe and a
-// transcript tick, so a socket frame for them would carry nothing new 99% of
-// the time.
+// Kept as a compatibility export for the Metrics page and existing callers.
+// Shell-wide consumers import the focused module directly so tests that stub
+// this broad legacy hook collection do not have to learn about provider usage.
+export { useProviderUsage } from "./providerUsage";
+export type { ProviderUsageResponse, ProviderUsageSnapshot } from "./providerUsage";
 
-export function useProviderUsage(options?: { refetchInterval?: number }) {
-  return useQuery({
-    queryKey: ["providers", "usage"],
-    queryFn: async ({ signal }) =>
-      (
-        await getProviderUsageApiProvidersUsageGet({ signal, throwOnError: true })
-      ).data as ProviderUsageResponse,
-    // An install that has never probed returns an empty list, which is a
-    // valid answer and not worth three backoff retries.
-    retry: 1,
-    refetchInterval: options?.refetchInterval ?? 60_000,
-  });
-}
-
-export type { ProviderUsageResponse, ProviderUsageSnapshot };
+// Provider-level worker allocation lives in its own module for the same reason;
+// the Providers view on the agents page is its caller.
+export {
+  PROVIDER_ALLOCATION_KEY,
+  useProviderAllocation,
+  useProviderAllocationApply,
+  useProviderAllocationPreview,
+} from "./providerAllocation";

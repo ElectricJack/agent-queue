@@ -37,12 +37,14 @@ export function ActionRegistryProvider({ children }: { children: ReactNode }) {
 }
 
 export function useRegisterAction(a: PaletteAction): void {
-  const ctx = useContext(C);
+  // Depend on the stable `register`, not the context value: the value changes
+  // whenever an action registers, so depending on it re-registered forever.
+  const register = useContext(C)?.register;
   useEffect(() => {
-    if (!ctx) return;
-    return ctx.register(a);
+    if (!register) return;
+    return register(a);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx, a.id, a.label, a.section]);
+  }, [register, a.id, a.label, a.section]);
 }
 
 export function useActions(): PaletteAction[] {

@@ -46,13 +46,23 @@ export default function ProjectHeader() {
   };
 
   return (
-    <div className="shrink-0 px-4 py-3">
+    <div className="shrink-0 px-3 py-2 md:px-4 md:py-3">
       <header className="space-y-1">
-        <p className="text-xs uppercase tracking-wider text-gray-500">Project</p>
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h1 className="min-w-0 flex-1 break-words text-lg font-semibold">
             {isLoading ? projectId : project?.name || projectId}
           </h1>
+          {project?.repo_url && (
+            <a
+              href={project.repo_url}
+              target="_blank"
+              rel="noreferrer"
+              title={project.repo_url}
+              className="order-last w-full truncate text-xs text-gray-400 hover:text-indigo-300 md:order-none md:ml-auto md:w-auto md:max-w-[45%]"
+            >
+              {project.repo_url}
+            </a>
+          )}
           {project && (
             <>
               <button
@@ -63,7 +73,8 @@ export default function ProjectHeader() {
                     : pause.mutate({ project_id: projectId })
                 }
                 disabled={pending}
-                className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                data-primary-control
+                className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   paused
                     ? "bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
                     : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
@@ -80,7 +91,8 @@ export default function ProjectHeader() {
                   setDeleteError(null);
                   setConfirmOpen(true);
                 }}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                data-primary-control
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
                 title="Delete project"
                 aria-label="Delete project"
               >
@@ -89,9 +101,6 @@ export default function ProjectHeader() {
             </>
           )}
         </div>
-        {project?.repo_url && (
-          <p className="font-mono text-xs text-gray-500">{project.repo_url}</p>
-        )}
       </header>
 
       <Modal

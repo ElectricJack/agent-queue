@@ -11,6 +11,7 @@ import pytest
 from src.database import Database
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.sessions.transcripts.watcher import TranscriptWatcher
+from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -29,7 +30,7 @@ class _Bus:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database
@@ -59,6 +60,135 @@ def _append(path: Path, entries: list[dict]) -> None:
     with path.open("a") as f:
         for e in entries:
             f.write(json.dumps(e) + "\n")
+
+
+def _claude_usage(uuid, call_id, **usage):
+    return {
+        "type": "assistant", "uuid": uuid,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+        "message": {"id": call_id, "model": "claude-x", "content": uuid, "usage": usage},
+    }
+
+
+async def _ledger(db):
+    from sqlalchemy import select
+    from src.database.tables import token_ledger
+
+    async with db._engine.connect() as conn:
+        return [dict(row) for row in (await conn.execute(
+            select(token_ledger).order_by(token_ledger.c.timestamp, token_ledger.c.id)
+        )).mappings()]
+
+
+async def test_api_call_usage_counts_blocks_once_and_retains_changed_counters(tmp_path, db, bus):
+    path = _make_transcript(tmp_path, "/work/api", "api")
+    await _make_session(db, "/work/api", "api")
+    _append(path, [
+        _claude_usage("thinking", "msg-1", input_tokens=10, output_tokens=2,
+                      cache_read_input_tokens=100, cache_creation_input_tokens=20),
+        _claude_usage("text", "msg-1", input_tokens=10, output_tokens=2,
+                      cache_read_input_tokens=100, cache_creation_input_tokens=20),
+        _claude_usage("other", "msg-2", input_tokens=10, output_tokens=2),
+    ])
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await watcher.tick()
+    original = await _ledger(db)
+    assert len(original) == 2
+    assert sum(row["tokens_used"] for row in original) == 144
+    # A changed usage record may reuse the content UUID; absent/lower
+    # counters must not erase input or cache usage already observed.
+    _append(path, [_claude_usage("text", "msg-1", input_tokens=0, output_tokens=7)])
+    await watcher.tick()
+    rows = await _ledger(db)
+    assert rows[:2] == original  # the audit rows remain byte-for-byte intact
+    assert rows[-1]["tokens_used"] == 5
+    assert rows[-1]["input_tokens"] == rows[-1]["cache_read_tokens"] == 0
+    assert rows[-1]["output_tokens"] == 5
+    assert len(bus.payloads("notify.task_message")) == 4
+
+
+async def test_api_usage_survives_restart_replay_partial_line_and_new_session(tmp_path, db, bus):
+    path = _make_transcript(tmp_path, "/work/api-replay", "api-replay")
+    await _make_session(db, "/work/api-replay", "api-replay")
+    initial = _claude_usage("block-1", "msg-1", input_tokens=10, output_tokens=2)
+    _append(path, [initial])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    original = await _ledger(db)
+    await db.delete_session("s1")
+    await _make_session(db, "/work/api-replay", "api-replay", session_id="s2", task_id="t2")
+    final = json.dumps(_claude_usage("block-2", "msg-1", input_tokens=10, output_tokens=8))
+    with path.open("a") as stream:
+        stream.write(final[:len(final) // 2])
+    restarted = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await restarted.tick()
+    assert await _ledger(db) == original
+    with path.open("a") as stream:
+        stream.write(final[len(final) // 2:] + "\n")
+    await restarted.tick()
+    rows = await _ledger(db)
+    assert sum(row["tokens_used"] for row in rows) == 18
+    assert rows[-1]["session_id"] == "s1"
+    assert rows[-1]["task_id"] == "t1"
+    # Lost checkpoints and a full replay cannot recharge any completed call.
+    await db.delete_transcript_checkpoint(str(path))
+    _append(path, [initial])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert await _ledger(db) == rows
+
+
+async def test_api_usage_retries_failed_batch_without_losing_or_recharging(tmp_path, db, bus,
+                                                                         monkeypatch):
+    path = _make_transcript(tmp_path, "/work/api-retry", "api-retry")
+    await _make_session(db, "/work/api-retry", "api-retry")
+    _append(path, [_claude_usage("a1", "msg-1", output_tokens=2),
+                   _claude_usage("a2", "msg-2", output_tokens=3)])
+    real = db.record_transcript_usage
+    async def fail_second(**kwargs):
+        if kwargs["counters"]["output_tokens"] == 3:
+            raise RuntimeError("transient write failure")
+        await real(**kwargs)
+    monkeypatch.setattr(db, "record_transcript_usage", fail_second)
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await watcher.tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 2
+    assert await db.get_transcript_checkpoint(str(path)) is None
+    monkeypatch.setattr(db, "record_transcript_usage", real)
+    # Restart as well as retry: successful writes survive a lost byte mark.
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 5
+    assert (await db.get_transcript_checkpoint(str(path)))["byte_offset"] == path.stat().st_size
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+async def test_upgrade_seeds_existing_uuid_rows_without_rewriting_them(tmp_path, db, bus,
+                                                                    checkpointed):
+    path = _make_transcript(tmp_path, "/work/api-upgrade", "api-upgrade")
+    await _make_session(db, "/work/api-upgrade", "api-upgrade")
+    _append(path, [_claude_usage("legacy-1", "msg-1", input_tokens=10, output_tokens=2),
+                   _claude_usage("legacy-2", "msg-1", input_tokens=10, output_tokens=2)])
+    for uuid in ("legacy-1", "legacy-2"):
+        await db.record_token_usage("p1", "s1", "t1", 12, input_tokens=10, output_tokens=2,
+                                    session_id="s1", call_id=uuid)
+    original = await _ledger(db)
+    if checkpointed:
+        await db.set_transcript_checkpoint(str(path), byte_offset=path.stat().st_size)
+    _append(path, [_claude_usage("new-3", "msg-1", input_tokens=10, output_tokens=8)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    rows = await _ledger(db)
+    assert rows[:2] == original
+    assert len(rows) == 3
+    assert rows[-1]["tokens_used"] == 6
+    # Historical inflation stays visible for the separate correction report.
+    assert sum(row["tokens_used"] for row in rows) == 30
+
+
+async def test_missing_api_id_falls_back_to_content_uuid(tmp_path, db, bus):
+    path = _make_transcript(tmp_path, "/work/api-fallback", "api-fallback")
+    await _make_session(db, "/work/api-fallback", "api-fallback")
+    _append(path, [_claude_usage("a1", None, output_tokens=2),
+                   _claude_usage("a2", None, output_tokens=3)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 5
 
 
 async def _make_session(db, work_dir: str, session_key: str,
@@ -643,3 +773,210 @@ async def test_a_rewritten_transcript_is_read_from_the_start(tmp_path, db, bus):
     fresh_bus = _Bus()
     await TranscriptWatcher(db=db, bus=fresh_bus, base_dir=tmp_path).tick()
     assert [p["message"] for p in fresh_bus.payloads("notify.task_message")] == ["short"]
+
+
+# ---------------------------------------------------------------------------
+# Provider usage: Codex publishes its account quota on the token_count line
+# the watcher already reads (T2 of the provider-usage implementation spec).
+# ---------------------------------------------------------------------------
+
+#: The verified live block, from the implementation spec.
+CODEX_RATE_LIMITS = {
+    "limit_id": "codex",
+    "plan_type": "pro",
+    "primary": {"used_percent": 88.0, "window_minutes": 10080, "resets_at": 1789135776},
+    "secondary": None,
+    "credits": {"has_credits": False, "balance": "0"},
+}
+
+
+def _append_codex_line(path: Path, payload: dict) -> None:
+    """Append one ``event_msg`` to a rollout, stamped now so it is not
+    discarded as pre-session history."""
+    with path.open("a") as handle:
+        handle.write(
+            json.dumps(
+                {"timestamp": time.time(), "type": "event_msg", "payload": payload}
+            )
+            + "\n"
+        )
+
+
+@pytest.mark.asyncio
+async def test_codex_rate_limits_become_one_provider_snapshot(tmp_path, db, bus):
+    """The dashboard's only source of Codex's own quota: nobody probes for
+    it, so a missed line is a number that stays wrong until the next turn."""
+    work_dir = "/work/codex-quota"
+    path = _make_codex_transcript(tmp_path, work_dir)
+    _append_codex_line(
+        path, {"type": "token_count", "info": None, "rate_limits": CODEX_RATE_LIMITS}
+    )
+    await _make_codex_session(db, work_dir, task_id="tq1")
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    rows = await db.latest_provider_usage()
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "codex"
+    assert rows[0]["window"] == "primary"
+    assert rows[0]["used_percent"] == 88.0
+    assert rows[0]["account_label"] == "pro"
+    assert rows[0]["source"] == "transcript"
+    assert rows[0]["resets_at"] == 1789135776.0
+
+
+@pytest.mark.asyncio
+async def test_a_token_count_without_rate_limits_records_no_snapshot(tmp_path, db, bus):
+    """An idle fleet must not gain a synthesised reading — absence of a new
+    line is exactly what makes the stored number stale, and that has to show."""
+    work_dir = "/work/codex-noquota"
+    _make_codex_transcript(tmp_path, work_dir)
+    await _make_codex_session(db, work_dir, task_id="tq2")
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    assert await db.latest_provider_usage() == []
+
+
+@pytest.mark.asyncio
+async def test_replaying_the_same_line_still_yields_one_row(tmp_path, db, bus):
+    """Charged once per assistant uuid, exactly like token usage: a watcher
+    that re-reads the file (relaunch, adoption, a second tick) must not turn
+    one reading into a row per tick."""
+    work_dir = "/work/codex-replay"
+    path = _make_codex_transcript(tmp_path, work_dir)
+    _append_codex_line(
+        path, {"type": "token_count", "info": None, "rate_limits": CODEX_RATE_LIMITS}
+    )
+    await _make_codex_session(db, work_dir, task_id="tq3")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+    await w.tick()
+    # A fresh watcher re-adopts the file from its durable mark rather than
+    # from byte zero; both paths have to stay idempotent.
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    series = await db.provider_usage_series("codex", "primary", "", since=0.0)
+    assert len(series) == 1
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+async def test_restart_discovers_local_date_rollout_and_backfills_quota_without_replay(
+    tmp_path, db, bus, checkpointed,
+):
+    from datetime import datetime, timezone
+
+    from src.providers.snapshot import ProviderUsageSnapshot
+
+    launched = datetime(2026, 9, 26, 3, 35, 33, tzinfo=timezone.utc).timestamp()
+    work_dir = "/work/codex-recovery"
+    directory = tmp_path / ".codex/sessions/2026/09/25"
+    directory.mkdir(parents=True)
+    path = directory / f"rollout-2026-09-25T20-35-33-{CODEX_UUID}.jsonl"
+    _append(path, [{"type": "session_meta", "timestamp": launched,
+        "payload": {"id": CODEX_UUID, "cwd": work_dir, "timestamp": launched,
+                    "cli_version": "0.157.0", "source": "cli"}},
+        {"type": "turn_context", "payload": {"service_tier": "fast"}},
+        *[{"type": "event_msg", "timestamp": launched + i + 1,
+           "payload": {"type": "token_count",
+               "info": {"last_token_usage": {"input_tokens": 10, "output_tokens": 5}},
+               "rate_limits": {**CODEX_RATE_LIMITS, "primary": {
+                   "used_percent": float(13 + i), "resets_at": 1790959903,
+               }}}} for i in range(3)],
+    ])
+    await _make_codex_session(db, work_dir, task_id="t-recovery")
+    await db.update_session("sc", started_at=launched, lifecycle="pool", epoch="adopted")
+    if checkpointed:
+        await db.set_transcript_checkpoint(str(path), byte_offset=path.stat().st_size)
+    await db.record_provider_usage([ProviderUsageSnapshot(
+        provider="codex", window="primary", used_percent=1.0,
+        observed_at=launched - 3600, source="transcript", account_label="pro",
+    )])
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path, startup_replay_limit=0)
+    await watcher.tick()
+    assert (await db.get_session("sc")).session_key == CODEX_UUID
+    assert "session.transcript_missing" not in bus.types()
+    latest = (await db.latest_provider_usage("codex"))[0]
+    assert latest["used_percent"] == 15.0
+    assert latest["observed_at"] == latest["last_seen_at"] == launched + 3
+    assert latest["account_label"] == "pro"
+    assert latest["source"] == "transcript"
+    assert latest["resets_at"] == 1790959903
+    assert await db.get_cost_rollup(project_id="p1") == []
+    assert bus.payloads("notify.task_message") == []
+    mark = await db.get_transcript_checkpoint(str(path))
+    assert mark["byte_offset"] == path.stat().st_size
+    await watcher.tick()
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert len(await db.provider_usage_series("codex", "primary")) == 2
+    assert await db.get_cost_rollup(project_id="p1") == []
+    assert bus.payloads("notify.task_message") == []
+
+
+@pytest.mark.asyncio
+async def test_a_quota_reading_is_stored_even_with_no_agent_to_bill(tmp_path, db, bus):
+    """A provider quota is an account-wide fact, not this agent's spend.
+    Gating it on the ledger's agent lookup would lose the reading entirely
+    whenever a session outlives its agent row."""
+    work_dir = "/work/codex-noagent"
+    path = _make_codex_transcript(tmp_path, work_dir)
+    _append_codex_line(
+        path, {"type": "token_count", "info": None, "rate_limits": CODEX_RATE_LIMITS}
+    )
+    await _make_codex_session(db, work_dir, task_id="tq4")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    w._resolve_agent_id = lambda row: _none()
+    await w.tick()
+
+    assert len(await db.latest_provider_usage()) == 1
+
+
+async def _none():
+    return None
+
+
+@pytest.mark.parametrize("block", [{"windows": [None]}, {"windows": [{"window": "primary"}]}])
+async def test_malformed_normalized_quota_is_contained(tmp_path, db, bus, block):
+    from src.sessions.transcripts.base import TranscriptEntry
+
+    entry = TranscriptEntry(
+        uuid="bad-quota", parent_uuid=None, type="assistant", text="", model=None,
+        usage=None, ts=time.time(), rate_limits=block,
+    )
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await watcher._record_provider_usage(entry)
+    assert await db.latest_provider_usage() == []
+
+
+async def test_full_transcript_replay_after_retention_adds_no_usage(tmp_path, db, bus):
+    from sqlalchemy import delete, update
+    from src.database.tables import sessions, token_ledger, transcript_usage_calls
+    from src.sessions.transcripts.retention import archive_transcript_usage_calls
+
+    path = _make_transcript(tmp_path, "/work/retained", "retained")
+    await _make_session(db, "/work/retained", "retained")
+    _append(path, [_claude_usage("block", "msg-1", input_tokens=10, output_tokens=2)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 12
+    old = time.time() - 31 * 86400
+    async with db._engine.begin() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "s1").values(
+            state="stopped", desired_state="stopped", ended_at=old,
+        ))
+        await conn.execute(update(transcript_usage_calls).values(updated_at=old))
+    result = await archive_transcript_usage_calls(db._engine, backup_dir=tmp_path / "backups")
+    assert result["deleted"] == 1
+    # Lose both the original attribution evidence and the byte checkpoint.
+    async with db._engine.begin() as conn:
+        await conn.execute(delete(token_ledger))
+    await db.delete_session("s1")
+    await db.delete_transcript_checkpoint(str(path))
+    await _make_session(db, "/work/retained", "retained", session_id="s2", task_id="t2")
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert await _ledger(db) == []
+    # The fence covers only archived calls, not new usage in the same file.
+    _append(path, [_claude_usage("new", "msg-2", input_tokens=20, output_tokens=4)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 24

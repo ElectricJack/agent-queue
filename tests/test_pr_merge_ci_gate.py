@@ -18,13 +18,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig, IntegrationConfig
-from src.database import Database
+from src.config import DatabaseConfig, AppConfig, DiscordConfig, IntegrationConfig
 from src.git import ci_gate
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 PR = "https://github.com/o/r/pull/341"
+REPOSITORY = GitHubRepositoryBinding(1, "o/r")
 
 
 def check_run(name: str, conclusion: str | None, status: str = "COMPLETED") -> dict:
@@ -152,74 +154,40 @@ def test_an_unrecognised_state_is_never_read_as_a_pass():
 
 
 @pytest.mark.asyncio
-async def test_apr_check_rollup_asks_gh_and_returns_entries(monkeypatch):
+async def test_apr_check_rollup_forwards_to_repository_client(monkeypatch):
     from src.git.manager import GitManager
 
     gm = GitManager()
-    seen = {}
-
-    async def fake(cmd, cwd, timeout):
-        seen["cmd"] = cmd
-        r = MagicMock()
-        r.returncode = 0
-        r.stdout = '{"statusCheckRollup": [{"name": "Tests", "conclusion": "SUCCESS"}]}'
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    entries = await gm.apr_check_rollup("/cwd", PR)
+    client = MagicMock()
+    client.check_rollup = AsyncMock(return_value=[{"name": "Tests", "conclusion": "SUCCESS"}])
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client if binding == REPOSITORY else None)
+    gm._arun_subprocess = AsyncMock(side_effect=AssertionError("ordinary PR read launched gh"))
+    entries = await gm.apr_check_rollup("/cwd", PR, repository=REPOSITORY)
     assert entries == [{"name": "Tests", "conclusion": "SUCCESS"}]
-    assert seen["cmd"][:4] == ["gh", "pr", "view", PR]
-    assert "statusCheckRollup" in seen["cmd"]
+    client.check_rollup.assert_awaited_once_with(PR)
+    gm._arun_subprocess.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_apr_check_rollup_returns_none_when_gh_fails(monkeypatch):
+async def test_apr_check_rollup_returns_none_when_client_fails(monkeypatch):
     from src.git.manager import GitManager
 
     gm = GitManager()
-
-    async def fake(cmd, cwd, timeout):
-        r = MagicMock()
-        r.returncode = 1
-        r.stdout = ""
-        r.stderr = "gh: not authenticated"
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    assert await gm.apr_check_rollup("/cwd", PR) is None
-
-
-@pytest.mark.asyncio
-async def test_apr_check_rollup_returns_none_on_malformed_json(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-
-    async def fake(cmd, cwd, timeout):
-        r = MagicMock()
-        r.returncode = 0
-        r.stdout = "not json"
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    assert await gm.apr_check_rollup("/cwd", PR) is None
+    client = MagicMock()
+    client.check_rollup = AsyncMock(side_effect=GitHubAccessError("transient", "unavailable"))
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
+    assert await gm.apr_check_rollup("/cwd", PR, repository=REPOSITORY) is None
 
 
 @pytest.mark.asyncio
 async def test_apr_check_rollup_maps_null_to_an_empty_list(monkeypatch):
-    """ "No checks at all" is an answer, not a failure to read one."""
     from src.git.manager import GitManager
 
     gm = GitManager()
-
-    async def fake(cmd, cwd, timeout):
-        r = MagicMock()
-        r.returncode = 0
-        r.stdout = '{"statusCheckRollup": null}'
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    assert await gm.apr_check_rollup("/cwd", PR) == []
+    client = MagicMock()
+    client.check_rollup = AsyncMock(return_value=[])
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
+    assert await gm.apr_check_rollup("/cwd", PR, repository=REPOSITORY) == []
 
 
 # ---------------------------------------------------------------------------
@@ -228,10 +196,9 @@ async def test_apr_check_rollup_maps_null_to_an_empty_list(monkeypatch):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(str(tmp_path / "cg.db"))
-    await d.initialize()
-    await d.create_project(Project(id="p1", name="P1"))
+async def db(tmp_path, reuse_database):
+    d = await reuse_database("cg.db")
+    await d.create_project(Project(id="p1", name="P1", repo_url="https://github.com/o/r.git"))
     await d.create_workspace(
         Workspace(
             id="w1",
@@ -241,14 +208,13 @@ async def db(tmp_path):
         )
     )
     yield d
-    await d.close()
 
 
 def _config(tmp_path, **integration) -> AppConfig:
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "cg.db"),
+        database=DatabaseConfig(url=lease_dsn("cg.db")),
         data_dir=str(tmp_path / "d"),
         integration=IntegrationConfig(**integration),
     )
@@ -258,6 +224,8 @@ def _handler(db, config, rollup, behind=("main", 0)) -> CommandHandler:
     o = Orchestrator(config)
     o.db = db
     o.git = MagicMock()
+    o.git.bind_github_repository = AsyncMock(return_value=REPOSITORY)
+    o.git.acheck_pr_merged = AsyncMock(return_value=False)
     o.git.apr_check_rollup = AsyncMock(return_value=rollup)
     o.git.apr_behind_base = AsyncMock(return_value=behind)
     o.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "s" * 40, "error": None})
@@ -399,6 +367,7 @@ def test_integration_config_defaults():
     integ = IntegrationConfig()
     assert integ.merge_ci_policy == "warn"
     assert integ.merge_required_checks == []
+    assert integ.owner_recovery_sweep is True
     assert integ.validate() == []
 
 
@@ -420,7 +389,7 @@ def test_loader_reads_the_merge_ci_policy(tmp_path):
         "discord:\n"
         "  bot_token: t\n"
         "  guild_id: '1'\n"
-        f"database_path: {tmp_path / 'x.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "integration:\n"
         "  merge_ci_policy: required\n"
         "  merge_required_checks:\n"
@@ -439,7 +408,7 @@ def test_loader_accepts_a_single_check_name_as_a_bare_string(tmp_path):
         "discord:\n"
         "  bot_token: t\n"
         "  guild_id: '1'\n"
-        f"database_path: {tmp_path / 'x.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "integration:\n"
         "  merge_required_checks: Tests (default)\n"
     )
@@ -497,42 +466,26 @@ async def test_apr_behind_base_compares_the_head_against_the_base_tip(monkeypatc
     from src.git.manager import GitManager
 
     gm = GitManager()
-    calls = []
-
-    async def fake(cmd, cwd, timeout):
-        calls.append(cmd)
-        r = MagicMock()
-        r.returncode = 0
-        if cmd[:3] == ["gh", "pr", "view"]:
-            r.stdout = (
-                '{"baseRefName": "main", "headRefOid": "abc1234abc1234abc1234abc1234abc1234abc12"}'
-            )
-        else:
-            r.stdout = '{"status": "behind", "ahead_by": 2, "behind_by": 7}'
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    assert await gm.apr_behind_base("/cwd", PR) == ("main", 7)
-    assert calls[0][:4] == ["gh", "pr", "view", PR]
-    assert calls[1][:2] == ["gh", "api"]
-    assert "repos/o/r/compare/main...abc1234abc1234abc1234abc1234abc1234abc12" in calls[1]
+    client = MagicMock()
+    client.pull_request = AsyncMock(return_value={
+        "base": {"ref": "main"}, "head": {"sha": "a" * 40},
+    })
+    client.compare = AsyncMock(return_value={"behind_by": 7})
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client if binding == REPOSITORY else None)
+    assert await gm.apr_behind_base("/cwd", PR, repository=REPOSITORY) == ("main", 7)
+    client.pull_request.assert_awaited_once_with(PR)
+    client.compare.assert_awaited_once_with("main", "a" * 40)
 
 
 @pytest.mark.asyncio
-async def test_apr_behind_base_returns_none_when_gh_fails(monkeypatch):
+async def test_apr_behind_base_returns_none_when_client_fails(monkeypatch):
     from src.git.manager import GitManager
 
     gm = GitManager()
-
-    async def fake(cmd, cwd, timeout):
-        r = MagicMock()
-        r.returncode = 1
-        r.stdout = ""
-        r.stderr = "gh: not authenticated"
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    assert await gm.apr_behind_base("/cwd", PR) is None
+    client = MagicMock()
+    client.pull_request = AsyncMock(side_effect=GitHubAccessError("transient", "unavailable"))
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
+    assert await gm.apr_behind_base("/cwd", PR, repository=REPOSITORY) is None
 
 
 @pytest.mark.asyncio
@@ -540,16 +493,12 @@ async def test_apr_behind_base_returns_none_for_a_malformed_url(monkeypatch):
     from src.git.manager import GitManager
 
     gm = GitManager()
-    called = False
-
-    async def fake(cmd, cwd, timeout):
-        nonlocal called
-        called = True
-        raise AssertionError("must not shell out for a URL that names no repo")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake)
-    assert await gm.apr_behind_base("/cwd", "https://example.invalid/nope") is None
-    assert called is False
+    client = MagicMock()
+    client.pull_request = AsyncMock(side_effect=GitHubAccessError("conflict_or_invalid", "invalid URL"))
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
+    assert await gm.apr_behind_base(
+        "/cwd", "https://example.invalid/nope", repository=REPOSITORY
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -666,8 +615,58 @@ def test_loader_reads_merge_require_up_to_date(tmp_path):
         "discord:\n"
         "  bot_token: t\n"
         "  guild_id: '1'\n"
-        f"database_path: {tmp_path / 'x.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "integration:\n"
         "  merge_require_up_to_date: false\n"
     )
     assert load_config(str(path)).integration.merge_require_up_to_date is False
+
+
+def test_loader_reads_owner_recovery_sweep(tmp_path):
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "discord:\n"
+        "  bot_token: t\n"
+        "  guild_id: '1'\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+        "integration:\n"
+        "  owner_recovery_sweep: true\n"
+    )
+    assert load_config(str(path)).integration.owner_recovery_sweep is True
+
+
+def _owner_recovery_sweep(tmp_path, integration: str) -> bool:
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "discord:\n"
+        "  bot_token: t\n"
+        "  guild_id: '1'\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+        + integration
+    )
+    return load_config(str(path)).integration.owner_recovery_sweep
+
+
+def test_owner_recovery_sweep_is_on_when_the_config_does_not_name_it(tmp_path):
+    assert _owner_recovery_sweep(tmp_path, "") is True
+    assert _owner_recovery_sweep(tmp_path, "integration:\n  default_mode: pull_request\n")
+
+
+@pytest.mark.parametrize(
+    "value", ["false", "no", "off", "'false'", "'False'", "'off'", "'0'", "''", "~", "0"]
+)
+def test_an_explicit_owner_recovery_sweep_off_stays_off(tmp_path, value):
+    assert _owner_recovery_sweep(
+        tmp_path, f"integration:\n  owner_recovery_sweep: {value}\n"
+    ) is False
+
+
+def test_an_owner_recovery_sweep_off_from_the_environment_stays_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("AQ_TEST_OWNER_RECOVERY_SWEEP", "false")
+    assert _owner_recovery_sweep(
+        tmp_path, "integration:\n  owner_recovery_sweep: ${AQ_TEST_OWNER_RECOVERY_SWEEP}\n"
+    ) is False
