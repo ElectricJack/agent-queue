@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  listAgents, getAgent, createAgent, editAgent, deleteAgent, startAgentTerminal,
-  type AgentSummary, type ListAgentsResponse, type CreateAgentRequest, type EditAgentRequest, type DeleteAgentRequest, type StartAgentTerminalRequest,
+  listAgents, getAgent, createAgent, editAgent, deleteAgent, startAgentTerminal, supervisorRestart,
+  type AgentSummary, type ListAgentsResponse, type CreateAgentRequest, type EditAgentRequest, type DeleteAgentRequest, type StartAgentTerminalRequest, type SupervisorRestartRequest,
 } from "./client";
 
 import { useIntelligenceClasses } from "./hooks";
@@ -32,6 +32,20 @@ const flockQuery = {
 
 export function useAgentFlock() {
   return useQuery({ ...flockQuery, select: (data) => data.agents ?? [] });
+}
+
+/** Every execution, including supervisors without a durable worker definition. */
+export function useFlockSessions(includeStopped = false) {
+  return useQuery({
+    ...flockQuery,
+    queryKey: includeStopped ? ["agents", "flock", "history"] : flockQuery.queryKey,
+    queryFn: includeStopped ? async () => (await listAgents({
+      body: { include_stopped: true }, throwOnError: true,
+    })).data : flockQuery.queryFn,
+    select: (data) => data.sessions ?? [],
+    // session.registered refreshes the shared flock query before startup
+    // finishes. Keep its thirty-second reconciliation poll.
+  });
 }
 
 /** Active native + AQ sub-agents across the whole flock (and per profile). */
@@ -99,6 +113,19 @@ export function useDeleteAgent() {
       }));
       client.removeQueries({ queryKey: ["agents", "detail", input.agent_id], exact: true });
       void client.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+export function useRestartSupervisor() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: SupervisorRestartRequest) =>
+      (await supervisorRestart({ body: input, throwOnError: true })).data,
+    retry: false,
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ["agents"] });
+      void client.invalidateQueries({ queryKey: ["sessions"] });
     },
   });
 }
