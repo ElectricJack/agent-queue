@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/prompts/reviewed_playbooks/fast-smooth-train/source.md::## Rule: observe-policy": {
+      "fingerprint": "1da37619b7f96c3cba76b93ce7d2f43ac8cd2ef55263977f093404621abd2619",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/fast-smooth-train/source.md::<header>": {
+      "fingerprint": "302088a828c81b026a4487fc2625ee236fd444077fa69cadc40b21760f859c81",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

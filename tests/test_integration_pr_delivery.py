@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -262,8 +263,8 @@ async def test_task_reopening_during_apply_invalidates_delivery_proof_before_any
     assert (await env.control.run("p", 16))["outcome"] == "would_close"
     observe = env.control._observe
 
-    async def reopen_after_observation(*args):
-        observed, client = await observe(*args)
+    async def reopen_after_observation(*args, **kwargs):
+        observed, client = await observe(*args, **kwargs)
         assert observed["outcome"] == "would_close"
         async with env.db.immediate() as conn:
             await conn.execute(update(tasks).where(tasks.c.id == "reopened").values(
@@ -481,6 +482,8 @@ async def test_periodic_sweep_uses_real_delivery_proof_and_retries_failed_close(
         await close(number=number)
 
     monkeypatch.setattr(env.github, "close_pull_request", flaky_close)
+    reads = AsyncMock(wraps=env.github.pull_request)
+    monkeypatch.setattr(env.github, "pull_request", reads)
     sweep = PullRequestReconciler(env.db, env.control.git, commands=Handler, page_size=1)
     await sweep.tick(1000)
     assert env.github.closed == []
@@ -491,12 +494,53 @@ async def test_periodic_sweep_uses_real_delivery_proof_and_retries_failed_close(
     await sweep.tick(1301)
     await sweep.tick(1302)
     assert env.github.closed == [21]
+    # Only applies read the PR. Undelivered previews use the paged inventory.
+    assert [call.args[0] for call in reads.await_args_list] == [
+        "https://github.com/o/r/pull/21", "https://github.com/o/r/pull/21",
+    ]
     assert len(env.github.comments[21]) == 1
     assert env.github.pulls[22]["state"] == "open"
     assert env.github.pulls[23]["state"] == "open"
     [event] = await _events(env)
     assert event["payload"]["operator_id"] == "integration-pr-cleanup"
     assert event["payload"]["proof"]["kind"] == "patch_equivalent"
+
+
+@pytest.mark.parametrize("raised", [False, True])
+async def test_periodic_sweep_stops_and_requeues_on_mid_page_backoff(env, raised, caplog):
+    from src.git.github_auth import GitHubAuth
+    from src.git.github_cli import GhRunner
+    from src.integration.pr_cleanup import PullRequestReconciler
+
+    now = [1000.0]
+    runner = GhRunner(GitHubAuth(), clock=lambda: now[0])
+    env.control.git.github_access = SimpleNamespace(runner=runner)
+    for number in range(1, 4):
+        env.github.open(number, f"aq/task-{number}", "b" * 40)
+    visited = []
+
+    class Handler:
+        async def execute(self, command, args):
+            number = args["pr_number"]
+            visited.append(number)
+            if number == 2 and now[0] == 1000:
+                error = GitHubAccessError("rate_limited", "backing off", retry_at=1200)
+                runner._defer(error)
+                if raised:
+                    raise error
+                return {"outcome": "blocked", "reason": str(error)}
+            return {"outcome": "undelivered"}
+
+    sweep = PullRequestReconciler(env.db, env.control.git, commands=Handler)
+    await sweep.tick(now[0])
+    assert visited == [1, 2]
+    assert [pull["pr_number"] for pull in sweep.pending] == [2, 3]
+    assert "PR proof for" not in caplog.text
+    assert "Could not retire" not in caplog.text
+    assert sweep.next_due_at >= 1200
+    now[0] = sweep.next_due_at
+    await sweep.tick(now[0])
+    assert visited == [1, 2, 2, 3] and not sweep.pending
 
 
 async def test_settled_pr_closure_is_idempotent_and_rejects_a_moved_head(env):
