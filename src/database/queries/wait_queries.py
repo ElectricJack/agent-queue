@@ -215,7 +215,11 @@ async def register_wait(
         source_watermark = await read_source_watermark()
     if type(source_watermark) is not int or source_watermark < 0:
         raise ValueError("source watermark must be a nonnegative committed sequence bound")
-    await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+    from src.waits.loops import prepare_progress
+
+    await prepare_progress(conn, [{"owner_kind": scope.owner_kind, "owner_id": scope.owner_id,
+                                  "project_id": scope.project_id, "session_id": scope.session_id}])
+    await lock_graph(conn)  # REGISTRATION_LOCK is the graph fence; waiting is bounded
     scope = await verify_owner(conn, scope, lock_owner=False)
     cond = registry.normalise(condition)
     request_hash = hashlib.sha256(
@@ -336,7 +340,7 @@ async def register_wait(
         ceiling_anchor_at = await ceiling_anchor(conn, scope, now=now, policy=policy)
     ceiling_at = (
         ceiling_anchor_at + policy.in_place_ceiling_seconds
-        if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
+        if decision.mode == "in_place" and cond.kind not in {"human", "resource", "close_merge"}
         else None
     )
     wait_id = str(uuid.uuid4())

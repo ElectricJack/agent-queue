@@ -279,6 +279,41 @@ def test_overlapping_segments_are_not_forced_to_sum():
     assert segments["author_merge"]["median_seconds"] == 0
 
 
+def test_drilldown_names_source_target_reason_and_linked_waits():
+    rows = [row("a", T)]
+    seen = {**obs("pending", T + 50), "reason": "source_not_contained",
+            "source_oid": "s" * 40, "target_oid": "t" * 40}
+    linked = [
+        {**wait("ci", "a", "ci_run", T + 10, T + 40), "result_ref": "https://ci/run/7"},
+        {**wait("forged", "a", "ci_check", T + 20, T + 30),
+         "result_ref": "javascript:alert(1)"},
+        {**wait("live", "a", "batch", T + 30, None, outcome="pending"),
+         "decision_reason": "lane_busy", "evidence_ref": "batch:b1"},
+        wait("ask", "a", "human", T + 5, T + 15, origin="agent"),
+    ]
+    generation = by_task(report(make_inputs(rows, {("a", "c-a"): [seen]}, waits=linked),
+                                now=T + 100))["a"]
+    assert generation["source_ref"] == "aq/x"
+    assert (generation["source_oid"], generation["target_oid"]) == ("s" * 40, "t" * 40)
+    assert generation["observed_at"] == T + 50
+    assert generation["reason"] == "source_not_contained"
+    waits = generation["waits"]
+    assert [w["wait_id"] for w in waits] == ["live", "forged", "ci", "ask"]
+    assert waits[0]["segment"] == "train_wait" and waits[0]["decision_reason"] == "lane_busy"
+    assert waits[0]["resolved_at"] is None and waits[0]["evidence_ref"] == "batch:b1"
+    assert {w["wait_id"]: w["ci_url"] for w in waits} == {
+        "live": None, "forged": None, "ci": "https://ci/run/7", "ask": None}
+    assert waits[3]["segment"] is None
+
+
+def test_unobserved_generation_has_no_observation_identity():
+    generation = by_task(report(make_inputs([row("a", T)]), now=T + 100))["a"]
+    assert generation["status"] == "unknown"
+    assert (generation["observed_at"], generation["reason"], generation["source_oid"]) == (
+        None, None, None)
+    assert generation["waits"] == []
+
+
 def test_rebuild_measurements_derive_cache_hit_rate():
     rows = [row("a", T)]
     measured = {"ci": [{"wait_id": "ci", "waited_seconds": 300, "setup_seconds": 5,

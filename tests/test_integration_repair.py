@@ -2819,9 +2819,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
             "decided_at": 100, "decided_by": "supervisor-p",
         })
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if held:
+        args.update(override_hold=True, reason="Owner recovery proved the fence free")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
     assert result["restarted"] == delegate
     assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
@@ -2831,6 +2832,11 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
         incident = await db.get_task_meta(delegate, "supervisor_recovery_incident")
         assert incident["decision"] == "superseded"
         assert incident["decision_history"][-1]["decision_reason"] == "Fence not released"
+        assert incident["decided_by"] == "human:local-operator"
+        assert "Owner recovery proved the fence free" in incident["decision_reason"]
+        comments = (await db.list_task_comments(delegate))["comments"]
+        audit = next(row for row in comments if "overridden by restart" in row["body"])
+        assert audit["author_id"] == "human:local-operator"
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2858,7 +2864,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
 
 
 @pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
-async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
+@pytest.mark.parametrize("override_hold", [False, True])
+async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(
+    db, fence_state, override_hold,
+):
     """A fence no handoff can prove free is refused, naming the control to run."""
     service, delegate = await _continuous_parent_stage(db)
     streak = {"cause": "context_thrash", "count": 2}
@@ -2882,12 +2891,19 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
             handoff_state=fence_state, session_id="dead",
         ))
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if override_hold:
+        args.update(override_hold=True, reason="Retry branch recovery after diagnosis")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
-    assert "aq integration reserve-owner --task-id" in result["error"]
-    assert "aq integration release-owner --task-id" in result["error"]
+    assert result["success"] is False
+    if override_hold:
+        assert "aq integration reserve-owner --task-id" in result["error"]
+        assert "aq integration release-owner --task-id" in result["error"]
+    else:
+        assert result["error_code"] == "task_recovery.held"
+        assert result["recovery_hold"] == held
+        assert "--override-hold --reason" in result["error"]
     restored = await db.get_task(delegate)
     assert restored.status is TaskStatus.BLOCKED
     assert (restored.profile_id, restored.intelligence_class, restored.route_source,
@@ -2897,6 +2913,8 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
     )
     assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
     assert await db.get_task_meta(delegate, "supervisor_recovery_incident") == held
+    comments = (await db.list_task_comments(delegate))["comments"]
+    assert not any("overridden by restart" in row["body"] for row in comments)
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -5490,6 +5508,9 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
     from src.intelligence_classes import IntelligenceClass
     from tests.session_dispatch_helpers import fake_provider
 
+    # Exercise retained-repair launch in isolation: the active background train
+    # otherwise retires this deliberately seeded legacy parent operation.
+    await session_orch.integration_service.stop()
     db = session_orch.db
     await _configure_db(db)
     await db.update_profile(
@@ -8314,6 +8335,64 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(
     assert (await env.store.get("ordinary")).repair_attempt_count == 2
 
 
+async def test_spent_default_sync_escalates_the_batch_once(ordinary_env):
+    """A spent sync left an epic batch sealed with nothing to run for 60m+ (train-56f15)."""
+    env = ordinary_env
+    decision = {"ref": "refs/heads/main", "sha": "c" * 40, "checks": ["unit"],
+                "provenance": "train_candidate"}
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+    )
+    await env.db.update_task(filed["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    replays = [await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="d" * 40, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True),
+    ) for _ in range(3)]
+    assert {(r["outcome"], r["task_id"]) for r in replays} == {("sync_exhausted", filed["task_id"])}
+    assert len({r["escalation_id"] for r in replays}) == 1
+    incident = await env.db.get_escalation(replays[0]["escalation_id"])
+    assert (incident["state"], incident["source_identity"], incident["summary"]) == (
+        "needs_human", "ordinary", "Default-branch sync exhausted for batch ordinary")
+    assert "abort-batch ordinary --apply" in incident["decision_requested"]
+    assert "refresh-epic --task EPIC --apply" in incident["decision_requested"]
+    assert filed["task_id"] in incident["investigation"]
+    async with env.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        ))).mappings().all()
+    assert [n["to_id"] for n in notices] == ["supervisor-p"]
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_restart_refuses_an_ordinary_repair_that_is_not_the_current_attempt(ordinary_env):
+    """A restarted attempt-1 repair went READY but no claim or handoff could ever take it."""
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                       target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    second = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                        target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    assert second["attempt_count"] == 2
+    await env.db.update_task(first["task_id"], status=TaskStatus.FAILED)
+    result = await TaskCommandsMixin._cmd_restart_task(
+        SimpleNamespace(db=env.db), {"task_id": first["task_id"]},
+    )
+    assert (result["success"], result["error_code"]) == (False, "stale_repair")
+    assert "attempt 1 but batch ordinary is open at attempt 2" in result["error"]
+    assert f"aq task close {first['task_id']} --obsolete" in result["error"]
+    assert (await env.db.get_task(first["task_id"])).status is TaskStatus.FAILED
+    current = await env.db.get_task(second["task_id"])
+    assert await env.service.stale(current) is None
+    assert await env.service.stale(await env.db.get_task(first["task_id"])) is not None
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(intent="aborted"))
+    assert "is aborted at attempt 2" in await env.service.stale(current)
+
+
 @pytest.mark.parametrize("sync", [False, True])
 async def test_ordinary_allocated_repair_enters_hierarchy_frontier(ordinary_env, sync):
     from src.database.queries.claim_queries import _frontier_where
@@ -8535,18 +8614,28 @@ async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
-async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env):
+@pytest.mark.parametrize("attached", ["session", "workspace", "assignment"])
+async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env, attached):
     env = ordinary_env
     first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
                                        authorize=AsyncMock(return_value=True), ttl_seconds=10)
     task_id = first["task_id"]
     await env.db.update_task(task_id, status=TaskStatus.READY)
-    await env.db.create_session(SessionRecord(
-        id="closing", task_id=task_id, project_id="p", profile_id="repairer",
-        harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
-        claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
-        work_dir="/closing",
-    ))
+    if attached == "session":
+        await env.db.create_session(SessionRecord(
+            id="closing", task_id=task_id, project_id="p", profile_id="repairer",
+            harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
+            claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
+            work_dir="/closing",
+        ))
+    elif attached == "workspace":
+        await env.db.create_workspace(Workspace(
+            id="closing", project_id="p", workspace_path="/closing", source_type=RepoSourceType.CLONE,
+            locked_by_task_id=task_id,
+        ))
+    else:
+        await env.db.create_agent(Agent(id="closing", name="Closing", profile_id="repairer"))
+        await env.db.update_task(task_id, assigned_agent_id="closing")
     old = await env.locks.get(env.target)
     env.now += 10
     result = await env.service.recover_reservation(
@@ -8911,7 +9000,8 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
                                  apush_validated_delivery=AsyncMock(return_value=STARTING_SHA))
     plugin._ctx = SimpleNamespace(_bus=None)
     publication = SimpleNamespace(task_id=task_id, branch=env.ref.removeprefix("refs/heads/"),
-                                  default_branch="main", repository_url="/authorized")
+                                  default_branch="main", repository_url="/authorized",
+                                  batch_repair=None)
     plugin._worker_publication = AsyncMock(return_value=publication)
     plugin._publish_policy = AsyncMock(return_value=SimpleNamespace(notes=[]))
     plugin._source_ci_inherited_oids = AsyncMock(return_value=[])
@@ -8966,3 +9056,55 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("ordinal", [0, 1])
+async def test_unlimited_stage_has_no_deadline_or_attempt_exhaustion(db, ordinal):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    for boundary in ("parent", "root"):
+        policy[boundary]["repair"].update(
+            primary_seconds=0, debug_seconds=0, primary_attempts=ordinal, debug_attempts=0,
+        )
+    await _seed_parent_operation(db, policy=policy)
+    service = RepairService(db, clock=lambda: 100.0)
+    started = await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    assert started["deadline_at"] is None
+    if ordinal:
+        escalated = await service.record_result("operation", "failed-check", now=101.0)
+        assert escalated["action"] == "dispatch_debug"
+    for attempt in range(1, 6):
+        evidence_id = f"unlimited-failure-{attempt}"
+        await _add_parent_evidence(db, evidence_id, run_id=evidence_id, conclusion="failure")
+        result = await service.record_result("operation", evidence_id, now=100_000.0 + attempt)
+        assert result == {"outcome": "continue", "action": "repair", "attempts": attempt}
+    stage = await _repair_stage(db, "operation", ordinal)
+    assert stage["deadline_at"] is None and stage["state"] == "active"
+    assert (await service.expire("operation", ordinal, now=1_000_000))["outcome"] == "not_due"
+    assert await service.due_stages(now=1_000_000) == []
+    if not ordinal:
+        replay = await service.start("operation", STARTING_SHA, "failed-check", now=1_000_000)
+        assert replay["deadline_at"] is None
+
+
+@pytest.mark.parametrize("ordinal,reason", [(0, "writer_claimed"), (1, "writer_claimed"),
+                                           (1, "writer_unclaimed")])
+async def test_deferring_a_stage_with_unlimited_duration_removes_its_deadline(db, ordinal, reason):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    stage = await _repair_stage(db, "operation", 0)
+    stage["policy"] = {**stage["policy"], "primary_seconds": 0, "debug_seconds": 0}
+    stage["ordinal"] = ordinal
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            ordinal=ordinal, policy=stage["policy"]))
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        result = await service._defer_expiry_on(conn, dict(operation), stage, {
+            "task_id": "delegate", "task_status": "READY", "claim_epoch": 1,
+        }, reason=reason, now=200.0)
+    assert result["deadline_at"] is None
+    assert (await _repair_stage(db, "operation", ordinal))["deadline_at"] is None
