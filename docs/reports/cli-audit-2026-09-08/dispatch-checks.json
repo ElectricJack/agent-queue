@@ -1,0 +1,1626 @@
+[
+  {
+    "command": "aq agent check-profile",
+    "backend": "check_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent create",
+    "backend": "create_agent",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent create-profile",
+    "backend": "create_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent delete",
+    "backend": "delete_agent",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent delete-profile",
+    "backend": "delete_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent edit",
+    "backend": "edit_agent",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent edit-profile",
+    "backend": "edit_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent export-profile",
+    "backend": "export_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent get",
+    "backend": "get_agent",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent get-error",
+    "backend": "get_agent_error",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent get-profile",
+    "backend": "get_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent import-profile",
+    "backend": "import_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent install-profile",
+    "backend": "install_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent list",
+    "backend": "list_agents",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent list-available-tools",
+    "backend": "list_available_tools",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent list-profiles",
+    "backend": "list_profiles",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent profile-audit",
+    "backend": "profile_audit",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent profile-drift",
+    "backend": "profile_drift",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent profile-reseed",
+    "backend": "profile_reseed",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent show-effective-profile",
+    "backend": "show_effective_profile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq agent start-terminal",
+    "backend": "start_agent_terminal",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq discord cleanup-threads",
+    "backend": "discord_cleanup_threads",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq discord purge-channel",
+    "backend": "discord_purge_channel",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file count-project-memory",
+    "backend": "count_project_memory_files",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file edit",
+    "backend": "edit_file",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file glob",
+    "backend": "glob_files",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file grep",
+    "backend": "grep",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file list-directory",
+    "backend": "list_directory",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file read",
+    "backend": "read_file",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file read-project-memory",
+    "backend": "read_project_memory_file",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file record-inspection",
+    "backend": "record_file_inspection",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file search",
+    "backend": "search_files",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file select-for-inspection",
+    "backend": "select_files_for_inspection",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq file write",
+    "backend": "write_file",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq formula list",
+    "backend": "formula_list",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git branch",
+    "backend": "git_branch",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git changed-files",
+    "backend": "git_changed_files",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git checkout",
+    "backend": "git_checkout",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git checkout-branch",
+    "backend": "checkout_branch",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git ci-baseline-status",
+    "backend": "ci_baseline_status",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git commit",
+    "backend": "git_commit",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git commit-changes",
+    "backend": "commit_changes",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git create-branch",
+    "backend": "create_branch",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git create-github-repo",
+    "backend": "create_github_repo",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git create-pr",
+    "backend": "git_create_pr",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git diff",
+    "backend": "git_diff",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git generate-readme",
+    "backend": "generate_readme",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git get-status",
+    "backend": "get_git_status",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git log",
+    "backend": "git_log",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git merge",
+    "backend": "git_merge",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git merge-branch",
+    "backend": "merge_branch",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git pr-merge",
+    "backend": "pr_merge",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git pull",
+    "backend": "git_pull",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git push",
+    "backend": "git_push",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git push-branch",
+    "backend": "push_branch",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq git remote-url",
+    "backend": "git_remote_url",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq graph layout-rebuild",
+    "backend": "graph_layout_rebuild",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq graph tidy",
+    "backend": "graph_tidy",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp create-server",
+    "backend": "create_mcp_server",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp delete-server",
+    "backend": "delete_mcp_server",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp edit-server",
+    "backend": "edit_mcp_server",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp get-server",
+    "backend": "get_mcp_server",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp list-servers",
+    "backend": "list_mcp_servers",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp list-tool-catalog",
+    "backend": "list_mcp_tool_catalog",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq mcp probe-server",
+    "backend": "probe_mcp_server",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq memory save",
+    "backend": "memory_save",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq memory search",
+    "backend": "memory_search",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note append",
+    "backend": "append_note",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note compare-specs",
+    "backend": "compare_specs_notes",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note delete",
+    "backend": "delete_note",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note list",
+    "backend": "list_notes",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note promote",
+    "backend": "promote_note",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note read",
+    "backend": "read_note",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq note write",
+    "backend": "write_note",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook activate",
+    "backend": "playbook_activate",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook activation-health",
+    "backend": "playbook_activation_health",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook artifact-diff",
+    "backend": "playbook_artifact_diff",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook artifacts",
+    "backend": "playbook_artifacts",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook cancel-run",
+    "backend": "cancel_playbook_run",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook delete",
+    "backend": "playbook_delete",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook dry-run",
+    "backend": "dry_run_playbook",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook get-source",
+    "backend": "get_playbook_source",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook graph-layout-save",
+    "backend": "playbook_graph_layout_save",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook graph-view",
+    "backend": "playbook_graph_view",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook health",
+    "backend": "playbook_health",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook inspect-run",
+    "backend": "inspect_playbook_run",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook list",
+    "backend": "list_playbooks",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook list-runs",
+    "backend": "list_playbook_runs",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook pending-event-action",
+    "backend": "playbook_pending_event_action",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook pending-events",
+    "backend": "playbook_pending_events",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook resume",
+    "backend": "resume_playbook",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook run",
+    "backend": "run_playbook",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook run-overlay",
+    "backend": "playbook_run_overlay",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook set-enabled",
+    "backend": "set_playbook_enabled",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook show-graph",
+    "backend": "show_playbook_graph",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook update-source",
+    "backend": "update_playbook_source",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook v2-graph",
+    "backend": "playbook_v2_graph",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook v2-import",
+    "backend": "playbook_v2_import",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook v2-propose",
+    "backend": "playbook_v2_propose",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook v2-shadow-compile",
+    "backend": "playbook_v2_shadow_compile",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq playbook v2-validate",
+    "backend": "playbook_v2_validate",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq pool scale",
+    "backend": "pool_scale",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq pool set-enabled",
+    "backend": "pool_set_enabled",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq pool set-lifecycle",
+    "backend": "pool_set_lifecycle",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq pool status",
+    "backend": "pool_status",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project add-workspace",
+    "backend": "add_workspace",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project browse-root",
+    "backend": "browse_project_root",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project create",
+    "backend": "create_project",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project delete",
+    "backend": "delete_project",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project edit-workspace",
+    "backend": "edit_workspace",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project find-merge-conflict-workspaces",
+    "backend": "find_merge_conflict_workspaces",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project get",
+    "backend": "get_project",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project get-channels",
+    "backend": "get_project_channels",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project get-for-channel",
+    "backend": "get_project_for_channel",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project get-github-auth-status",
+    "backend": "get_github_auth_status",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project get-onboarding",
+    "backend": "get_project_onboarding",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project list",
+    "backend": "list_projects",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project list-github-owners",
+    "backend": "list_github_owners",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project list-roots",
+    "backend": "list_project_roots",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project list-workspace-kinds",
+    "backend": "list_workspace_kinds",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project list-workspaces",
+    "backend": "list_workspaces",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project pause",
+    "backend": "pause_project",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project queue-sync-workspaces",
+    "backend": "queue_sync_workspaces",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project ready",
+    "backend": "project_ready",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project release-constraint",
+    "backend": "release_project_constraint",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project release-workspace",
+    "backend": "release_workspace",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project remove-workspace",
+    "backend": "remove_workspace",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project resume",
+    "backend": "resume_project",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project search-github-repositories",
+    "backend": "search_github_repositories",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project set-constraint",
+    "backend": "set_project_constraint",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project set-control-interface",
+    "backend": "set_control_interface",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project workspace-doctor",
+    "backend": "workspace_doctor",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq project workspace-reap",
+    "backend": "workspace_reap",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system advance-workflow-stage",
+    "backend": "advance_workflow_stage",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system claude-usage",
+    "backend": "claude_usage",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system create-workflow",
+    "backend": "create_workflow",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system db-preflight-hierarchy",
+    "backend": "db_preflight_hierarchy",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system delivery-promote",
+    "backend": "delivery_promote",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system delivery-receipts",
+    "backend": "delivery_receipts",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system doctor",
+    "backend": "doctor",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system edit-intelligence-class",
+    "backend": "edit_intelligence_class",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system find-applicable-tool",
+    "backend": "find_applicable_tool",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-chat-analyzer-metrics",
+    "backend": "get_chat_analyzer_metrics",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-config",
+    "backend": "get_config",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-config-schema",
+    "backend": "get_config_schema",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-costs",
+    "backend": "get_costs",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-recent-events",
+    "backend": "get_recent_events",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-schema",
+    "backend": "get_schema",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-stuck-tasks",
+    "backend": "get_stuck_tasks",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-system-channel",
+    "backend": "get_system_channel",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-token-usage",
+    "backend": "get_token_usage",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system get-workflow",
+    "backend": "get_workflow",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-build-candidate",
+    "backend": "integration_build_candidate",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-checkpoint-parent",
+    "backend": "integration_checkpoint_parent",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-ci-evidence",
+    "backend": "integration_ci_evidence",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-cleanup",
+    "backend": "integration_cleanup",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-complete-parent",
+    "backend": "integration_complete_parent",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-delivery-readiness",
+    "backend": "integration_delivery_readiness",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-file-children",
+    "backend": "integration_file_children",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-mutate-hierarchy",
+    "backend": "integration_mutate_hierarchy",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-parent-verify",
+    "backend": "integration_parent_verify",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-promote-main",
+    "backend": "integration_promote_main",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-push-conflict-resolution",
+    "backend": "integration_push_conflict_resolution",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-reconcile-promotion",
+    "backend": "integration_reconcile_promotion",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-record-repair",
+    "backend": "integration_record_repair",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-release",
+    "backend": "integration_release",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-repair-dispatch",
+    "backend": "integration_repair_dispatch",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-repair-start",
+    "backend": "integration_repair_start",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-repair-timeout",
+    "backend": "integration_repair_timeout",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-resolve-conflict",
+    "backend": "integration_resolve_conflict",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-schedule-due",
+    "backend": "integration_schedule_due",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-seal",
+    "backend": "integration_seal",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system integration-transfer-owner",
+    "backend": "integration_transfer_owner",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system list-event-triggers",
+    "backend": "list_event_triggers",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system list-intelligence-classes",
+    "backend": "list_intelligence_classes",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system list-prompts",
+    "backend": "list_prompts",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system list-workflows",
+    "backend": "list_workflows",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system migrate-profiles",
+    "backend": "migrate_profiles",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system orchestrator-control",
+    "backend": "orchestrator_control",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system provide-input",
+    "backend": "provide_input",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system provider-usage-probe",
+    "backend": "provider_usage_probe",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system read-logs",
+    "backend": "read_logs",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system read-prompt",
+    "backend": "read_prompt",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system reload-config",
+    "backend": "reload_config",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system render-prompt",
+    "backend": "render_prompt",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system scan-stub-staleness",
+    "backend": "scan_stub_staleness",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system session-input",
+    "backend": "session_input",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system task-route-options",
+    "backend": "task_route_options",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system token-audit",
+    "backend": "token_audit",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system update-config",
+    "backend": "update_config",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system vault-rebuild-index",
+    "backend": "vault_rebuild_index",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq system workflow-pipeline-view",
+    "backend": "workflow_pipeline_view",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task add-dependency",
+    "backend": "add_dependency",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task archive",
+    "backend": "archive_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task archive-settings",
+    "backend": "archive_settings",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task ask-human",
+    "backend": "ask_human",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task batch-commit",
+    "backend": "task_batch_commit",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task batch-discard",
+    "backend": "task_batch_discard",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task batch-propose",
+    "backend": "task_batch_propose",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task batch-update",
+    "backend": "task_batch_update",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task children",
+    "backend": "task_children",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task comment-delete",
+    "backend": "task_comment_delete",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task comment-edit",
+    "backend": "task_comment_edit",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task delete",
+    "backend": "delete_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task deps",
+    "backend": "task_deps",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task edit",
+    "backend": "edit_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task ensure",
+    "backend": "ensure_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task explain",
+    "backend": "explain_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task gate-create",
+    "backend": "gate_create",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task gate-list",
+    "backend": "gate_list",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task gate-resolve",
+    "backend": "gate_resolve",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task gate-show",
+    "backend": "gate_show",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task get",
+    "backend": "get_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task get-chain-health",
+    "backend": "get_chain_health",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task get-dependencies",
+    "backend": "get_task_dependencies",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task get-downstream",
+    "backend": "get_downstream_tasks",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task get-result",
+    "backend": "get_task_result",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task get-tree",
+    "backend": "get_task_tree",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task list-active-all-projects",
+    "backend": "list_active_tasks_all_projects",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task list-archived",
+    "backend": "list_archived",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task pause",
+    "backend": "pause_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task progress",
+    "backend": "task_progress",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task recent-activity",
+    "backend": "task_recent_activity",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task recover",
+    "backend": "task_recover",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task remove-dependency",
+    "backend": "remove_dependency",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task reopen-with-feedback",
+    "backend": "reopen_with_feedback",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task reparent",
+    "backend": "reparent_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task resume",
+    "backend": "resume_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task route",
+    "backend": "task_route",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task set-status",
+    "backend": "set_task_status",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task skip",
+    "backend": "skip_task",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  },
+  {
+    "command": "aq task spec-approve",
+    "backend": "spec_approve",
+    "exit": 0,
+    "dispatch_matches": true,
+    "error": null
+  }
+]

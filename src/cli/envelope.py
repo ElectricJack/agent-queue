@@ -25,7 +25,14 @@ from __future__ import annotations
 
 import json
 import os
+from hashlib import sha256
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
+from uuid import UUID
 
 import click
 
@@ -44,6 +51,9 @@ _LEGACY_WARNING = (
 # `emit(..., entity=...)`. Centrally defined so no command hand-rolls its
 # own trimming.
 BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
+    "ask": ("success", "view", "identity_hash", "items", "count", "snapshot_at", "next_cursor", "source_health",
+            "ask", "expected", "actions", "preview", "decision_id", "application_state",
+            "input_id", "receipt", "created"),
     "task": ("id", "title", "status", "priority", "project_id", "assigned_agent"),
     "session": ("id", "task_id", "state", "harness", "last_activity"),
     "gate": ("id", "gate_type", "status", "task_id"),
@@ -53,8 +63,33 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
     # task row, so it has its own projection: `created` is the id a caller
     # should read (`task_id` is its alias, kept because both ship today).
     "task_created": ("created", "task_id", "title", "status", "project_id"),
+    "agent": ("id", "name", "state", "profile_id", "current_task_id"),
+    "project": ("id", "name", "status", "workspace", "max_concurrent_agents"),
+    "pool": (
+        "profile_id",
+        "enabled",
+        "min_active",
+        "max_active",
+        "desired",
+        "running_idle",
+        "running_busy",
+        "starting",
+        "draining",
+        "ready",
+    ),
+    "provider": (
+        "provider",
+        "vendor",
+        "state",
+        "reason",
+        "since",
+        "until",
+        "held",
+        "override",
+    ),
     "integration": (
         "outcome",
+        "projection_kind",
         "project_id",
         "operation_id",
         "batch_id",
@@ -65,10 +100,23 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "ready",
         "blockers",
         "blocker_digest",
+        "warnings",
+        "promotion_flow",
+        "ci_source",
         "state",
         "stage",
         "count",
     ),
+}
+
+# Public names in the output contract occasionally differ from the internal
+# CommandHandler row.  Keep those translations beside the projections so
+# every command (handwritten and generated) produces the same brief shape.
+_BRIEF_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "workspace": {
+        "path": ("path", "workspace_path"),
+        "locked_by": ("locked_by", "locked_by_agent_id", "locked_by_task_id"),
+    },
 }
 
 
@@ -76,11 +124,82 @@ def _json_legacy_active() -> bool:
     return os.environ.get(AQ_JSON_LEGACY_ENV) == "1"
 
 
-def _project_item(item: Any, fields: tuple[str, ...]) -> Any:
+def _is_unset(value: Any) -> bool:
+    """Recognise generated-client ``Unset`` values without importing it."""
+    return type(value).__name__ == "Unset"
+
+
+def to_jsonable(value: Any) -> Any:
+    """Convert CLI payloads to lossless JSON-compatible Python values.
+
+    Generic ``default=str`` silently turned generated models (and nested
+    ``Unset`` sentinels) into repr strings.  The CLI can receive either plain
+    CommandHandler dictionaries or generated-client/Pydantic models, so the
+    conversion deliberately uses their public projection methods and then
+    recurses.  Missing ``Unset`` mapping fields are omitted; a scalar Unset is
+    represented as JSON null.
+    """
+    if _is_unset(value):
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return to_jsonable(value.value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (Path, UUID)):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): to_jsonable(item) for key, item in value.items() if not _is_unset(item)}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [to_jsonable(item) for item in value if not _is_unset(item)]
+    if hasattr(value, "to_dict"):
+        return to_jsonable(value.to_dict())
+    if hasattr(value, "model_dump"):
+        return to_jsonable(value.model_dump(mode="json", exclude_unset=True))
+    if is_dataclass(value) and not isinstance(value, type):
+        return to_jsonable(asdict(value))
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
     """Trim a single entity (dict or attribute-bearing object) to *fields*."""
-    if isinstance(item, dict):
-        return {k: item.get(k) for k in fields}
-    return {k: getattr(item, k, None) for k in fields}
+    aliases = _BRIEF_ALIASES.get(entity, {})
+    projected: dict[str, Any] = {}
+    for field in fields:
+        candidates = aliases.get(field, (field,))
+        value = None
+        for candidate in candidates:
+            if isinstance(item, Mapping):
+                if candidate in item and not _is_unset(item[candidate]):
+                    value = item[candidate]
+                    break
+            else:
+                candidate_value = getattr(item, candidate, None)
+                if not _is_unset(candidate_value) and candidate_value is not None:
+                    value = candidate_value
+                    break
+        projected[field] = value
+    # Human instructions remain actionable even in compact task/batch views.
+    if entity in {"task", "integration"} and isinstance(item, Mapping):
+        if "operator_decisions" in item:
+            projected["operator_decisions"] = item["operator_decisions"]
+        if entity == "integration" and "github" in item:
+            projected["github"] = item["github"]
+        if entity == "integration":
+            for field in ("intent", "dry_run", "task_id", "replacement_batch_id"):
+                if field in item:
+                    projected[field] = item[field]
+            if "batches" in item:
+                projected["batches"] = [
+                    {key: batch[key] for key in ("id", "intent", "target_ref", "member_disposition")
+                     if key in batch}
+                    for batch in item["batches"]
+                ]
+            for name in ("epics", "task_id", "ahead", "behind", "target_sha", "default_sha"):
+                if name in item:
+                    projected[name] = item[name]
+    return projected
 
 
 def apply_brief(data: Any, entity: str | None) -> Any:
@@ -95,9 +214,9 @@ def apply_brief(data: Any, entity: str | None) -> Any:
     if not fields:
         return data
     if isinstance(data, list):
-        return [_project_item(item, fields) for item in data]
-    if isinstance(data, dict):
-        return _project_item(data, fields)
+        return [_project_item(item, fields, entity) for item in data]
+    if isinstance(data, Mapping) or hasattr(data, "to_dict") or hasattr(data, "model_dump"):
+        return _project_item(data, fields, entity)
     return data
 
 
@@ -124,8 +243,8 @@ def envelope(data: Any, *, total: int | None = None) -> dict:
 def error_envelope(code: str, message: str, details: Any = None) -> dict:
     """Build the versioned error envelope (design §4.1).
 
-    Known codes: ``command_error``, ``not_found``, ``out_of_scope``,
-    ``daemon_unreachable``, ``paused``.
+    Known codes: ``usage_error``, ``command_error``, ``not_found``,
+    ``out_of_scope``, ``daemon_unreachable``, ``paused``.
 
     *details* is the command's structured error payload when it has one
     (``create_task_graph`` returns ``errors``/``warnings`` finding lists).
@@ -151,7 +270,83 @@ def emit_error(code: str, message: str, details: Any = None) -> None:
     width, splitting the message mid-sentence. Agent-facing commands
     (``aq reply``, ``aq inbox``) depend on this staying machine-readable.
     """
-    click.echo(json.dumps(error_envelope(code, message, details), default=str))
+    result = to_jsonable(error_envelope(code, message, details))
+    ctx = click.get_current_context(silent=True)
+    if ctx is not None and (ctx.obj or {}).get("save_output"):
+        try:
+            result["evidence"] = _save_output(ctx.obj["save_output"], result)
+        except click.ClickException as exc:
+            # Saving must not swallow the original failure or break JSON mode.
+            result["error"]["output_save_error"] = exc.format_message()
+    click.echo(json.dumps(result, ensure_ascii=False))
+
+
+def _save_output(destination: str | Path, full_envelope: dict) -> dict:
+    """Write exact retrievable evidence, without following/overwriting an existing file."""
+    # Resolve only the parent: resolving the leaf would follow an existing
+    # symlink and could create its missing target instead of refusing it.
+    requested = Path(destination).expanduser()
+    path = requested.parent.resolve() / requested.name
+    raw = (json.dumps(full_envelope, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+    except OSError as exc:
+        raise click.ClickException(f"Cannot save output to {path}: {exc}") from exc
+    data = full_envelope.get("data")
+    receipt = {"path": str(path), "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
+    if isinstance(data, dict):
+        receipt["shape"] = {"type": "object", "fields": list(data)[:20], "count": len(data)}
+    elif isinstance(data, list):
+        receipt["shape"] = {"type": "array", "count": len(data)}
+    else:
+        receipt["shape"] = {"type": type(data).__name__}
+    return receipt
+
+
+def _requires_full_output(value: Any) -> bool:
+    """Conservatively retain actionable/authoritative data, including nested findings."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = key.lower()
+            if name == "success" and item is False:
+                return True
+            if name in {"exit_code", "returncode"} and item not in (None, 0):
+                return True
+            if name in {"status", "state", "outcome"} and isinstance(item, str):
+                if any(term in item.lower() for term in (
+                    "fail", "error", "block", "approval", "reject", "denied", "cancel",
+                    "timeout", "stale", "paused", "waiting", "drain", "exhaust", "conflict",
+                )):
+                    return True
+            if any(term in name for term in (
+                "error", "warning", "failure", "gate", "blocker", "claim", "instruction",
+                "constraint", "evidence", "next_step", "prompt", "spec", "description",
+                "acceptance",
+            )) and item not in (None, False, "", [], {}):
+                return True
+            if name in {"body", "rules", "role", "result"}:
+                return True
+            if _requires_full_output(item):
+                return True
+    elif isinstance(value, list):
+        return any(_requires_full_output(item) for item in value)
+    return False
+
+
+def reject_json_mode(ctx: click.Context, command: str, reason: str) -> None:
+    """Reject a human-only command without leaking its output into JSON stdout.
+
+    Local operator workflows can own interactive prompts, subprocess progress,
+    or multi-step diagnostics that are not a single command result.  They must
+    make that boundary explicit before doing work when the global ``--json``
+    flag is present.
+    """
+    if not bool((ctx.obj or {}).get("json")):
+        return
+    emit_error("usage_error", f"{command} does not support --json: {reason}")
+    raise SystemExit(2)
 
 
 def emit(
@@ -160,6 +355,7 @@ def emit(
     *,
     entity: str | None = None,
     total: int | None = None,
+    legacy_data: Any | None = None,
     render: Callable[[Any], None] | None = None,
 ) -> None:
     """Single output funnel for `aq` commands (design §5.2).
@@ -168,26 +364,61 @@ def emit(
       under ``AQ_JSON_LEGACY=1``, the raw payload) as one JSON object on
       stdout. ``--brief`` (``ctx.obj["brief"]``) trims *data* via
       :func:`apply_brief` first when an *entity* is given.
-    - default (human) mode: delegates to *render*, which always receives
-      the untrimmed *data* — human-mode formatters keep full control over
-      their columns/panels. If no *render* is supplied, falls back to an
-      indented JSON dump (adequate for commands that don't have a Rich
-      formatter yet).
+    - default (human) mode: delegates to *render*. With ``--brief`` the
+      callback receives the same projected payload as JSON mode; otherwise it
+      receives *data* unchanged. If no *render* is supplied, falls back to an
+      indented JSON dump (adequate for commands without a Rich formatter).
+    - ``--save-output PATH``: saves the full unprojected envelope in a new
+      private file. Ordinary success prints only an integrity receipt;
+      failures, control outcomes and instructions also retain full output.
     """
     obj = ctx.obj or {}
     as_json = bool(obj.get("json"))
+    payload = apply_brief(data, entity) if obj.get("brief") else data
+
+    destination = obj.get("save_output")
+    if destination:
+        full = to_jsonable(envelope(data, total=total))
+        try:
+            receipt = _save_output(destination, full)
+        except click.ClickException as exc:
+            # The command already returned. Retain its identity/result so a
+            # presentation failure cannot invite replaying a successful write.
+            full["output_save_error"] = exc.format_message()
+            full["automatic_retry"] = False
+            click.echo(json.dumps(full, ensure_ascii=False))
+            raise SystemExit(1) from exc
+        # Never apply --brief to failures, control flow or authoritative prose.
+        retain = (
+            ctx.info_name in {"prime", "handoff", "claim", "close"}
+            or not isinstance(full["data"], (dict, list))
+            or _requires_full_output(full["data"])
+        )
+        if as_json:
+            output = full if retain else envelope({"saved_output": receipt})
+            if retain:
+                output["evidence"] = receipt
+            click.echo(json.dumps(output, ensure_ascii=False))
+        else:
+            click.echo(json.dumps({"saved_output": receipt}, ensure_ascii=False))
+            if retain:
+                if ctx.info_name == "prime" and render is not None:
+                    render(data)
+                else:
+                    click.echo(json.dumps(full["data"], ensure_ascii=False, indent=2))
+        return
 
     if as_json:
-        payload = apply_brief(data, entity) if obj.get("brief") else data
         if _json_legacy_active():
             click.echo(_LEGACY_WARNING, err=True)
-            click.echo(json.dumps(payload, default=str))
+            raw = payload if legacy_data is None else legacy_data
+            click.echo(json.dumps(to_jsonable(raw), ensure_ascii=False))
         else:
-            click.echo(json.dumps(envelope(payload, total=total), default=str))
+            click.echo(json.dumps(to_jsonable(envelope(payload, total=total)), ensure_ascii=False))
         return
 
     if render is not None:
-        render(data)
+        render(payload)
         return
 
-    click.echo(json.dumps(data, default=str, indent=2))
+    click.echo(json.dumps(to_jsonable(payload), ensure_ascii=False, indent=2))

@@ -17,10 +17,12 @@ from src.cli.test_runner import (
     _caps,
     _compose_pytest_argv,
     _has_flag,
+    _is_full_suite,
     _missing_paths,
     _positional_args,
     _run_forwarding_signals,
     _xdist_disabled,
+    postgres_test_dsn_error,
 )
 from src.config import ResourcesConfig
 
@@ -34,8 +36,20 @@ def _args(argv: list[str]) -> list[str]:
 
 
 @pytest.fixture
-def runner():
+def runner(monkeypatch):
+    # Command tests mock the pytest child; a non-production placeholder lets
+    # them exercise the wrapper past its required-DSN preflight.
+    monkeypatch.setenv("POSTGRES_TEST_DSN", "postgresql://test:test@localhost/postgres")
     return CliRunner()
+
+
+@pytest.fixture
+def isolated_test_slots(monkeypatch, tmp_path):
+    # Command tests that mock the pytest child still acquire a slot. Keep
+    # nested ``aq test`` invocations out of the parent run's global semaphore.
+    lock_dir = tmp_path / "test-slots"
+    monkeypatch.setattr("src.resources.semaphore.default_lock_dir", lambda _config: lock_dir)
+    return lock_dir
 
 
 class TestArgvComposition:
@@ -122,7 +136,7 @@ class TestArgvComposition:
         args = _args(
             _compose_pytest_argv(("tests/",), workers=4, markers="not tmux", apply_markers=False)
         )
-        assert "-m" not in args
+        assert args[args.index("-m") + 1] == ""
 
     def test_pytest_args_are_passed_through_verbatim(self):
         args = ("tests/test_x.py::TestY::test_z", "-k", "not slow", "-x", "--lf")
@@ -145,9 +159,9 @@ class TestMissingPathsAreRefused:
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_real.py").write_text("")
         assert _missing_paths(("tests/test_real.py",)) == []
-        assert _missing_paths(
-            ("tests/test_real.py", "tests/test_typo.py")
-        ) == ["tests/test_typo.py"]
+        assert _missing_paths(("tests/test_real.py", "tests/test_typo.py")) == [
+            "tests/test_typo.py"
+        ]
 
     def test_a_node_id_suffix_is_stripped_before_the_stat(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -188,17 +202,38 @@ class TestMissingPathsAreRefused:
         assert result.exit_code == 4
         assert "no such test path" in result.output
 
-    def test_an_existing_path_still_runs(self, runner, monkeypatch, tmp_path):
-        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
-        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 0)
-        result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
+    def test_an_existing_path_still_runs(self, runner, monkeypatch, tmp_path, isolated_test_slots):
+        from types import SimpleNamespace
+
+        from src.resources.semaphore import SlotSemaphore
+
+        # Model the parent's shared gate with its only slot occupied. The
+        # nested command must use isolated_test_slots even when the shared
+        # gate cannot grant another slot.
+        shared_data_dir = tmp_path / "shared-data"
+        shared_lock_dir = shared_data_dir / "locks" / "test-slots"
+        monkeypatch.setattr(
+            "src.cli.test_runner._load_config",
+            lambda: SimpleNamespace(
+                data_dir=str(shared_data_dir), resources=ResourcesConfig(test_slots=1)
+            ),
+        )
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
+        with SlotSemaphore(shared_lock_dir, 1).acquire(timeout=0):
+            result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
         assert result.exit_code == 0
+        assert isolated_test_slots.is_dir()
 
 
 class TestEmptyCollectionIsNotASuccess:
-    def test_exit_code_five_is_explained(self, runner, monkeypatch, tmp_path):
+    def test_exit_code_five_is_explained(self, runner, monkeypatch, tmp_path, isolated_test_slots):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
-        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 5)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 5
+        )
         result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py", "-k", "nothing"])
         assert result.exit_code == 5
         assert "no tests were collected" in result.output
@@ -234,6 +269,58 @@ class TestCapResolution:
 
 
 class TestCommand:
+    def test_missing_dsn_fails_once_before_taking_a_slot(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.delenv("POSTGRES_TEST_DSN")
+
+        def _boom(*_args, **_kwargs):  # pragma: no cover - must not be reached
+            raise AssertionError("pytest launched without its required DSN")
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _boom)
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+
+        assert result.exit_code == 4
+        assert result.output.count("POSTGRES_TEST_DSN is not set") == 1
+        assert "docker compose up -d postgres-test" in result.output
+        assert "5534/postgres" in result.output
+        assert "Nothing was run" in result.output
+        assert "aq test: slot" not in result.output
+
+    def test_present_dsn_has_no_preflight_error(self):
+        assert postgres_test_dsn_error({"POSTGRES_TEST_DSN": "postgresql://host/base"}) is None
+
+    def test_bare_pytest_aborts_collection_once_when_dsn_is_missing(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        env = os.environ.copy()
+        env.pop("POSTGRES_TEST_DSN", None)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:xdist",
+                "--co",
+                "-q",
+                "tests/test_config.py",
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        output = proc.stdout + proc.stderr
+        assert proc.returncode == 4
+        assert output.count("POSTGRES_TEST_DSN is not set") == 1
+        assert "docker compose up -d postgres-test" in output
+
     def test_dry_run_prints_the_command(self, runner, monkeypatch, tmp_path):
         monkeypatch.setenv("AQ_TEST_WORKERS", "4")
         result = runner.invoke(cli, ["test", "--aq-dry-run", "tests/test_config.py"])
@@ -264,13 +351,45 @@ class TestCommand:
         )
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(config_path))
         monkeypatch.setenv("AQ_TEST_SLOTS", "1")
-        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 0)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
 
         result = runner.invoke(cli, ["test", "tests/test_config.py"])
 
         assert result.exit_code == 0
         assert (data_dir / "locks" / "test-slots").is_dir()
         assert not (tmp_path / "locks" / "test-slots").exists()
+
+    def test_each_invocation_passes_a_fresh_database_ownership_token(
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
+    ):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setenv("AQ_DB_SCOPE", "worker")
+        monkeypatch.setenv("AQ_DATABASE_URL", "refuse-worker-database")
+        monkeypatch.setenv("AGENT_QUEUE_DB", "refuse-worker-database")
+        seen: list[dict[str, str]] = []
+        slot_tokens: list[str] = []
+
+        def _capture(_argv, *, env):
+            seen.append(env)
+            from src.resources.semaphore import SlotSemaphore
+
+            snapshot = SlotSemaphore(isolated_test_slots, 1).snapshot()
+            slot_tokens.append(snapshot["slots"][0]["holder"]["test_run_id"])
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
+
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        assert len(seen) == 2
+        assert seen[0]["AQ_TEST_RUN_ID"] != seen[1]["AQ_TEST_RUN_ID"]
+        assert slot_tokens == [child_env["AQ_TEST_RUN_ID"] for child_env in seen]
+        for child_env in seen:
+            assert child_env["AQ_DB_SCOPE"] == "worker"
+            assert child_env["AQ_DATABASE_URL"] == "refuse-worker-database"
+            assert child_env["AGENT_QUEUE_DB"] == "refuse-worker-database"
 
     def test_a_full_box_fails_retryably_rather_than_hanging(self, runner, monkeypatch, tmp_path):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
@@ -285,9 +404,7 @@ class TestCommand:
         held = SlotSemaphore(lock_dir, 1).try_acquire({"task_id": "someone-else"})
         assert held is not None
         try:
-            result = runner.invoke(
-                cli, ["test", "--aq-no-wait", "tests/test_config.py"]
-            )
+            result = runner.invoke(cli, ["test", "--aq-no-wait", "tests/test_config.py"])
         finally:
             import os
 
@@ -297,7 +414,623 @@ class TestCommand:
         assert "no test slot free" in result.output
 
 
+class TestSmartSelection:
+    @pytest.fixture
+    def smart(self, monkeypatch, tmp_path, isolated_test_slots):
+        from types import SimpleNamespace
+
+        from src.claim_file import write_claim_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        for name in ("a", "b", "z"):
+            (tmp_path / "tests" / f"test_{name}.py").write_text("")
+        write_claim_file(str(tmp_path), {"task_id": "held-task", "claim_epoch": 17})
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        monkeypatch.setenv("AQ_TEST_WORKERS", "2")
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+        state = SimpleNamespace(
+            calls=[],
+            argv=[],
+            stale=[False, False],
+            error=None,
+            observe_error=False,
+            selection={
+                "success": True,
+                "selection_id": "selection-1",
+                "recorded": True,
+                "full_required": False,
+                "full_suite_authorized": False,
+                "ordered": ["tests/test_b.py", "tests/test_a.py"],
+                "mandatory_modules": ["tests/test_a.py"],
+                "static_modules": [],
+                "jev_modules": ["tests/test_b.py"],
+                "fallback_modules": ["tests/test_a.py"],
+                "final_modules": ["tests/test_a.py", "tests/test_b.py"],
+                "jev_status": "ok",
+                "fallback_reason": None,
+                "reasons": {"tests/test_a.py": ["mandatory_rule"]},
+                "argv": [["tests/test_b.py", "tests/test_a.py"]],
+                "pending_obligations": [{"kind": "acceptance", "command": "aq test tests/ -k x"}],
+                "record": {"base_sha": "base-1", "head_sha": "head-1"},
+            },
+        )
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            async def execute(self, command, args):
+                state.calls.append((command, args))
+                if command == "test_select":
+                    if state.error:
+                        raise state.error
+                    return state.selection
+                if command == "test_selection_recheck":
+                    return {"success": True, "stale": state.stale.pop(0)}
+                if state.observe_error:
+                    raise RuntimeError("observation unavailable")
+                return {"success": True}
+
+        def run(argv, **_kwargs):
+            state.argv.append(argv)
+            return 0
+
+        monkeypatch.setattr(
+            "src.cli.test_runner._get_client", lambda *_args: Client(), raising=False
+        )
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", run)
+        return state
+
+    def test_plan_only_starts_nothing(self, runner, smart, monkeypatch):
+        monkeypatch.delenv("POSTGRES_TEST_DSN")
+        result = runner.invoke(cli, ["test", "--aq-plan-only"])
+        assert result.exit_code == 0, result.output
+        assert "Nothing was verified by this report." in result.output
+        assert "selection-1" in result.output
+        assert "mandatory_rule" in result.output
+        assert "base-1" in result.output and "head-1" in result.output
+        assert "aq test tests/test_b.py tests/test_a.py" in result.output
+        assert "Pending obligations" in result.output
+        assert not smart.argv
+        assert [c for c, _ in smart.calls] == ["test_select"]
+        assert smart.calls[0][1]["mode"] == "plan_only"
+
+    def test_shadow_without_targets_refuses_after_report(self, runner, smart):
+        result = runner.invoke(cli, ["test", "--aq-smart"])
+        assert result.exit_code == 2, result.output
+        assert "Nothing was verified" in result.output
+        assert "name the targets" in result.output
+        assert not smart.argv
+
+    def test_shadow_preserves_argv_and_records_identity_and_execution(self, runner, smart):
+        args = ["tests/test_z.py", "-k", "some_test", "-x", "-n", "0"]
+        ordinary = runner.invoke(cli, ["test", *args])
+        result = runner.invoke(cli, ["test", "--aq-smart", *args])
+        assert ordinary.exit_code == result.exit_code == 0, result.output
+        assert smart.argv[0] == smart.argv[1]
+        assert [c for c, _ in smart.calls] == [
+            "test_select",
+            "test_selection_recheck",
+            "test_selection_recheck",
+            "test_selection_observe",
+        ]
+        request = smart.calls[0][1]
+        assert request["mode"] == "shadow" and request["jev"] is True
+        assert request["targets"] == ["tests/test_z.py"]
+        assert request["task_id"] == "held-task" and request["claim_epoch"] == 17
+        assert "workspace" not in request
+        observation = smart.calls[-1][1]
+        assert observation["exit_code"] == 0
+        assert observation["duration_ms"] >= 0
+        assert observation["executed_modules"] == ["tests/test_z.py"]
+
+    def test_selection_options_and_marker_policy(self, runner, smart):
+        result = runner.invoke(
+            cli,
+            [
+                "test",
+                "--aq-smart",
+                "--aq-no-jev",
+                "--aq-base",
+                "origin/dev",
+                "--aq-project",
+                "example",
+                "--aq-all-markers",
+                "tests/test_z.py",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        request = smart.calls[0][1]
+        assert request["jev"] is False and request["base_ref"] == "origin/dev"
+        assert request["marker_policy"] == "all" and request["project_id"] == "example"
+        args = _args(smart.argv[0])
+        assert args[args.index("-m") + 1] == ""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["-k", "foo"],
+            ["-kfoo"],
+            ["-k=foo"],
+            ["--keyword=foo"],
+            ["-m", "slow"],
+            ["-mslow"],
+            ["--markexpr", "slow"],
+            ["--lf"],
+            ["--last-failed"],
+            ["--deselect=tests/test_a.py::test_x"],
+            ["tests/test_a.py::test_x"],
+        ],
+    )
+    def test_enforce_refuses_narrowing_before_daemon(self, runner, smart, args):
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce", *args])
+        assert result.exit_code == 2, result.output
+        assert args[0] in result.output
+        assert "refuses" in result.output
+        assert not smart.calls and not smart.argv
+
+    def test_enforce_union_preserves_order_and_runner_caps(self, runner, smart):
+        result = runner.invoke(
+            cli,
+            [
+                "test",
+                "--aq-smart=enforce",
+                "tests/test_a.py",
+                "tests/test_z.py",
+                "-x",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        args = _args(smart.argv[0])
+        assert args[-4:] == ["tests/test_b.py", "tests/test_a.py", "tests/test_z.py", "-x"]
+        assert args[args.index("-n") + 1] == "2"
+        assert args[args.index("--dist") + 1] == "loadfile"
+        assert not any("--testmon" in a for a in args)
+
+    @pytest.mark.parametrize("authorized", [False, True])
+    def test_full_fallback_authorization_and_selected_list_lock(
+        self, runner, smart, monkeypatch, isolated_test_slots, authorized
+    ):
+        from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+
+        smart.selection.update(full_required=True, full_suite_authorized=authorized)
+        classified = []
+
+        def classify(args):
+            classified.append(args)
+            return True
+
+        def run(argv, **_kwargs):
+            lock = SlotSemaphore(full_suite_lock_dir(isolated_test_slots), 1)
+            assert lock.snapshot()["free"] == 0
+            smart.argv.append(argv)
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._is_full_suite", classify)
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", run)
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        if authorized:
+            assert result.exit_code == 0, result.output
+            assert classified == [("tests/test_b.py", "tests/test_a.py")]
+            assert smart.argv
+        else:
+            assert result.exit_code == 4, result.output
+            assert "full_suite_required" in result.output
+            assert not smart.argv and not classified
+
+    def test_enforce_empty_selection_is_not_bare_pytest(self, runner, smart):
+        smart.selection["ordered"] = []
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 4, result.output
+        assert "empty_selection" in result.output and not smart.argv
+
+    @pytest.mark.parametrize("stale", [[True], [False, True]])
+    def test_stale_selection_refuses_and_releases_slot(
+        self, runner, smart, stale, isolated_test_slots
+    ):
+        from src.resources.semaphore import SlotSemaphore
+
+        smart.stale = stale.copy()
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 4, result.output
+        assert "selection_stale" in result.output
+        assert not smart.argv
+        assert SlotSemaphore(isolated_test_slots, 1).snapshot()["free"] == 1
+        assert len(smart.calls) == 1 + len(stale)
+
+    @pytest.mark.parametrize("mode", ["plan", "shadow", "enforce"])
+    def test_daemon_unreachable_modes(self, runner, smart, monkeypatch, mode):
+        from src.cli.exceptions import DaemonNotRunningError
+
+        smart.error = DaemonNotRunningError("http://unreachable")
+        offline_calls = []
+
+        def offline(workspace, **kwargs):
+            offline_calls.append((workspace, kwargs))
+            return {**smart.selection, "selection_id": None, "recorded": False}
+
+        monkeypatch.setattr("src.test_selection.service.select_offline", offline)
+        args = {
+            "plan": ["--aq-plan-only", "--aq-base", "origin/dev"],
+            "shadow": ["--aq-smart", "tests/test_z.py"],
+            "enforce": ["--aq-smart=enforce"],
+        }[mode]
+        result = runner.invoke(cli, ["test", *args])
+        if mode == "plan":
+            assert result.exit_code == 0, result.output
+            assert "recorded: no" in result.output and "Nothing was verified" in result.output
+            assert offline_calls[0][1]["base_ref"] == "origin/dev"
+            assert not smart.argv
+        elif mode == "shadow":
+            assert result.exit_code == 0, result.output
+            assert "selection not recorded" in result.output
+            assert _args(smart.argv[0])[-1] == "tests/test_z.py"
+            assert len(smart.calls) == 1
+        else:
+            assert result.exit_code == 3, result.output
+            assert not smart.argv
+
+    def test_scope_denial_is_usage_refusal(self, runner, smart):
+        from src.cli.exceptions import ScopeDeniedError
+
+        smart.error = ScopeDeniedError("test_select", "outside held task")
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 2, result.output
+        assert "outside held task" in result.output and not smart.argv
+
+    def test_plan_only_really_works_offline_without_dsn(self, runner, smart, monkeypatch):
+        from src.cli.exceptions import DaemonNotRunningError
+
+        smart.error = DaemonNotRunningError("http://unreachable")
+        monkeypatch.delenv("POSTGRES_TEST_DSN")
+        result = runner.invoke(cli, ["test", "--aq-plan-only", "--aq-base", "missing-base"])
+        assert result.exit_code == 0, result.output
+        assert "recorded: no" in result.output
+        assert "Nothing was verified by this report." in result.output
+        assert "full_required: yes" in result.output
+        assert not smart.argv and len(smart.calls) == 1
+
+    def test_operator_sends_workspace_and_project(self, runner, smart, monkeypatch, tmp_path):
+        (tmp_path / ".aq" / "claim.json").unlink()
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_PROJECT_ID", raising=False)
+        result = runner.invoke(cli, ["test", "--aq-plan-only", "--aq-project", "operator-project"])
+        assert result.exit_code == 0, result.output
+        request = smart.calls[0][1]
+        assert request["workspace"] == str(tmp_path)
+        assert request["project_id"] == "operator-project"
+        assert "claim_epoch" not in request and "task_id" not in request
+
+    @pytest.mark.parametrize("mode", ["--aq-smart=shadow", "--aq-smart=enforce"])
+    def test_explicit_worker_count_is_unchanged(self, runner, smart, mode):
+        result = runner.invoke(cli, ["test", mode, "tests/test_z.py", "-n", "0"])
+        assert result.exit_code == 0, result.output
+        args = _args(smart.argv[0])
+        assert args.count("-n") == 1 and args[args.index("-n") + 1] == "0"
+
+    def test_rechecks_straddle_actual_slot_acquisition(
+        self, runner, smart, monkeypatch, isolated_test_slots
+    ):
+        from src.cli.test_runner import _smart_recheck
+        from src.resources.semaphore import SlotSemaphore
+
+        free = []
+
+        def recheck(ctx, plan):
+            free.append(SlotSemaphore(isolated_test_slots, 1).snapshot()["free"])
+            _smart_recheck(ctx, plan)
+
+        monkeypatch.setattr("src.cli.test_runner._smart_recheck", recheck)
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 0, result.output
+        assert free == [1, 0]
+
+    def test_report_is_deterministic_and_never_clears_obligations(self, smart):
+        from src.test_selection.report import render_report
+
+        result = {**smart.selection, "reasons": {"b": ["jev_unknown"], "a": ["mandatory_rule"]}}
+        reordered = {**result, "reasons": dict(reversed(list(result["reasons"].items())))}
+        report = render_report(result, mode="shadow", plan_only=True)
+        assert report == render_report(reordered, mode="shadow", plan_only=True)
+        assert "M=1, S=0, J=1, F=1, final=2" in report
+        assert "acceptance: aq test tests/ -k x" in report
+        assert smart.selection["pending_obligations"]
+
+    def test_enforce_disabled_is_not_a_fallback_run(self, runner, smart):
+        smart.selection = {
+            "success": False,
+            "error_code": "enforce_not_enabled",
+            "error": "disabled",
+        }
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 2, result.output
+        assert "enforce_not_enabled" in result.output and not smart.argv
+
+    def test_observation_failure_preserves_pytest_result(self, runner, smart, monkeypatch):
+        smart.observe_error = True
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda *a, **kw: 1)
+        result = runner.invoke(cli, ["test", "--aq-smart", "tests/test_z.py"])
+        assert result.exit_code == 1, result.output
+        assert smart.calls[-1][1]["exit_code"] == 1
+
+    def test_smart_cannot_bypass_fences_using_detach(self, runner, smart):
+        result = runner.invoke(
+            cli, ["test", "--aq-detach", "--aq-smart=enforce", "tests/test_z.py"]
+        )
+        assert result.exit_code == 2, result.output
+        assert not smart.calls and not smart.argv
+
+    def test_narrowing_flags(self):
+        from src.cli.test_runner import _narrowing_flags
+
+        assert _narrowing_flags(("tests/", "-kfoo", "--lf", "tests/x.py::y")) == [
+            "-kfoo",
+            "--lf",
+            "tests/x.py::y",
+        ]
+        assert _narrowing_flags(("tests/", "-x", "-o", "value=-kfoo")) == []
+
+
+class TestSlotReport:
+    """``$AQ_TEST_SLOT_REPORT`` tells a supervising caller how long it queued.
+
+    The development publisher bounds its validation with ``timeout_seconds``;
+    without this report it charged the wait for a test slot to the test run.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _one_private_slot(self, monkeypatch, tmp_path, isolated_test_slots):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+
+    def test_an_immediate_slot_is_reported_acquired_then_released(
+        self, runner, monkeypatch, tmp_path
+    ):
+        import json
+
+        report = tmp_path / "slot.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert result.exit_code == 0
+        events = [json.loads(line) for line in report.read_text().splitlines()]
+        assert [e["event"] for e in events] == ["acquired", "released"]
+        assert events[0]["waited"] >= 0 and events[0]["slot"] == 0
+
+    def test_a_slot_timeout_is_reported_and_the_wait_env_bounds_it(
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
+    ):
+        import os
+
+        from src.resources.semaphore import SlotSemaphore
+        from src.resources.slot_report import read_slot_wait
+
+        lock_dir = isolated_test_slots
+        report = tmp_path / "slot.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        # One second, not the config's half hour: the supervising caller
+        # budgets queueing on its own and must be able to say so.
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "1")
+        # Config says 15 s; the env's 1 s must win.
+        monkeypatch.setattr("src.cli.test_runner._caps", lambda _res: (1, 1, "", 0.05, 15))
+        held = SlotSemaphore(lock_dir, 1).try_acquire({"task_id": "someone-else"})
+        assert held is not None
+        try:
+            result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        finally:
+            os.close(held[1])
+        assert result.exit_code == 75
+        wait = read_slot_wait(report)
+        assert wait.timed_out
+        assert 1.0 <= wait.total_seconds < 10.0
+        assert wait.waiting_seconds == 0.0
+
+    def test_no_report_is_written_unless_asked(self, runner, monkeypatch, tmp_path):
+        monkeypatch.delenv("AQ_TEST_SLOT_REPORT", raising=False)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        assert not list(tmp_path.glob("*.jsonl"))
+
+    def test_the_wait_env_overrides_config_but_not_the_flag(self, monkeypatch):
+        from src.cli.test_runner import _slot_wait_timeout
+
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "120")
+        assert _slot_wait_timeout(1800, None) == 120
+        assert _slot_wait_timeout(1800, 5) == 5
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "banana")
+        assert _slot_wait_timeout(1800, None) == 1800
+        monkeypatch.delenv("AQ_TEST_WAIT_TIMEOUT")
+        assert _slot_wait_timeout(1800, None) == 1800
+
+
+class TestOrphanedRuns:
+    """``aq test`` attributes its slot and gives the supervisor a reap control."""
+
+    @staticmethod
+    def _report(*, apply: bool, freed: bool = True) -> dict:
+        row = {
+            "slot": 2,
+            "state": "orphaned",
+            "reason": "session sess-1 harness (pid 77) has exited",
+            "owner": "brisk-falcon",
+            "pid": 1278781,
+            "held_for_s": 4999,
+        }
+        results = (
+            [
+                {
+                    **row,
+                    "action": "reaped" if freed else "reap_failed",
+                    "freed": freed,
+                    "pids": [1278781],
+                }
+            ]
+            if apply
+            else []
+        )
+        return {
+            "lock_dir": "/l",
+            "applied": apply,
+            "held": [row],
+            "orphaned": [row],
+            "results": results,
+        }
+
+    def test_the_slot_record_names_the_run_its_pytest_child_carries(
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
+    ):
+        import json
+
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+        monkeypatch.setenv("AQ_SESSION_ID", "sess-pool-1")
+        monkeypatch.delenv("AQ_TASK_ID", raising=False)
+        monkeypatch.setenv("AQ_WORK_DIR", str(tmp_path))
+        report = tmp_path / "slot-report.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        (tmp_path / ".aq").mkdir()
+        (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "pool-task"}))
+        seen: list[tuple[dict, dict]] = []
+
+        def _capture(_argv, *, env):
+            record = json.loads((isolated_test_slots / "slot-0.lock").read_text())
+            seen.append((record, env))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
+
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        [(record, env)] = seen
+        assert record["test_run_id"] == env["AQ_TEST_RUN_ID"]
+        assert record["session_id"] == "sess-pool-1"
+        assert record["task_id"] == "pool-task"  # a pool worker has no AQ_TASK_ID
+        assert [row["event"] for row in map(json.loads, report.read_text().splitlines())] == [
+            "acquired",
+            "released",
+        ]
+
+    def test_reap_orphans_is_a_dry_run_by_default(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        calls: list[bool] = []
+
+        def _reap(_lock_dir, *, apply):
+            calls.append(apply)
+            return self._report(apply=apply)
+
+        monkeypatch.setattr("src.resources.test_runs.reap_orphans", _reap)
+        result = runner.invoke(cli, ["test", "--aq-reap-orphans"])
+        assert result.exit_code == 0
+        assert calls == [False]
+        assert "brisk-falcon" in result.output and "Dry run" in result.output
+
+    def test_apply_terminates_and_reports(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        calls: list[bool] = []
+
+        def _reap(_lock_dir, *, apply):
+            calls.append(apply)
+            return self._report(apply=apply)
+
+        monkeypatch.setattr("src.resources.test_runs.reap_orphans", _reap)
+        result = runner.invoke(cli, ["test", "--aq-reap-orphans", "--aq-apply"])
+        assert result.exit_code == 0
+        assert calls == [True]
+        assert "reaped" in result.output and "1278781" in result.output
+
+    def test_a_reap_that_did_not_free_its_slot_exits_nonzero(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setattr(
+            "src.resources.test_runs.reap_orphans",
+            lambda _lock_dir, *, apply: self._report(apply=apply, freed=False),
+        )
+        result = runner.invoke(cli, ["test", "--aq-reap-orphans", "--aq-apply"])
+        assert result.exit_code == 1
+        assert "reap_failed" in result.output
+
+    def test_apply_without_reap_is_refused(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        result = runner.invoke(cli, ["test", "--aq-apply", "tests/test_config.py"])
+        assert result.exit_code == 2
+
+    def test_status_marks_an_orphaned_holder(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setattr("src.cli.test_runner._holder_verdicts", lambda _d: {0: "orphaned"})
+        monkeypatch.setattr(
+            "src.resources.semaphore.SlotSemaphore.snapshot",
+            lambda self: {
+                "free": 0,
+                "total": 1,
+                "waiting": [],
+                "slots": [{"slot": 0, "held": True, "holder": {"task_id": "vivid-summit"}}],
+            },
+        )
+        result = runner.invoke(cli, ["test", "--aq-status"])
+        assert result.exit_code == 0
+        assert "orphaned" in result.output and "--aq-reap-orphans" in result.output
+
+
 class TestSignalForwarding:
+    def test_pytest_runs_under_shared_versioned_box_admission(
+        self, runner, monkeypatch, isolated_test_slots
+    ):
+        from src.resources.box_lock import BoxLock, PROTOCOL_RECORD
+        from src.resources.semaphore import SlotTimeout
+
+        box = BoxLock(isolated_test_slots, 2)
+
+        def run(_argv, **_kwargs):
+            snapshot = box.snapshot()
+            assert snapshot["box"]["mode"] == "shared"
+            assert not snapshot["turnstile"]["held"]
+            holder = box.semaphore.snapshot()["slots"][0]["holder"]
+            assert holder["box_protocol"] == PROTOCOL_RECORD
+            with pytest.raises(SlotTimeout):
+                with box.acquire(exclusive=True, timeout=0):
+                    pytest.fail("exclusive admitted during pytest")
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", run)
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert result.exit_code == 0, result.output
+        assert not box.snapshot()["box"]["held"]
+
+    def test_status_names_held_old_clients_but_ignores_stale_records(
+        self, runner, isolated_test_slots
+    ):
+        from src.resources.semaphore import SlotSemaphore
+
+        sem = SlotSemaphore(isolated_test_slots, 2)
+        with sem.acquire(timeout=0):
+            result = runner.invoke(cli, ["test", "--aq-status"])
+            assert result.exit_code == 0, result.output
+            assert "incompatible slot-only client" in result.output
+            assert "Box-lock protocol v1" in result.output
+        assert (
+            "incompatible slot-only client"
+            not in runner.invoke(cli, ["test", "--aq-status"]).output
+        )
+
+    def test_unknown_box_protocol_refuses_pytest_retryably(
+        self, runner, monkeypatch, isolated_test_slots
+    ):
+        isolated_test_slots.mkdir(parents=True, exist_ok=True)
+        (isolated_test_slots / "protocol.json").write_text('{"version":999}')
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals",
+            lambda *_args, **_kwargs: pytest.fail("unknown protocol must not execute pytest"),
+        )
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert result.exit_code == 75, result.output
+        assert "incompatible box-lock protocol" in result.output
+
     def test_inheritable_slot_fd_reaches_the_pytest_process(self, tmp_path):
         import os
         import sys
@@ -317,9 +1050,9 @@ class TestSignalForwarding:
             "else: path.write_text('inherited')\n"
         )
         try:
-            assert _run_forwarding_signals(
-                [sys.executable, "-c", script, str(fd), str(observed)]
-            ) == 0
+            assert (
+                _run_forwarding_signals([sys.executable, "-c", script, str(fd), str(observed)]) == 0
+            )
         finally:
             os.close(fd)
 
@@ -424,43 +1157,806 @@ class TestPerfSuiteStaysOutOfTheDefaultRun:
     that forgets the marker again should fail here instead.
     """
 
+    @staticmethod
+    def _module_has_perf_marker(source):
+        """Inspect literal module markers without importing perf's DB fixtures."""
+        import ast
+
+        def is_perf(node):
+            if isinstance(node, ast.Call):
+                node = node.func
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "perf"
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "mark"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "pytest"
+            )
+
+        marker = None
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets = [node.target]
+            else:
+                continue
+            if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
+                # Reassignment replaces earlier markers, including the exact
+                # skipif-only regression that this check originally caught.
+                marker = node.value if not isinstance(node, ast.AugAssign) else None
+        if isinstance(marker, (ast.List, ast.Tuple)):
+            return any(is_perf(item) for item in marker.elts)
+        return is_perf(marker)
+
+    @pytest.mark.parametrize(("source", "expected"), [
+        ("pytestmark = pytest.mark.perf", True),
+        ("pytestmark = pytest.mark.perf()", True),
+        ("pytestmark: list = [pytest.mark.perf, pytest.mark.skipif(True)]", True),
+        ("pytestmark = (pytest.mark.skipif(True), pytest.mark.perf)", True),
+        ("pytestmark = pytest.mark.skipif(True, reason='pytest.mark.perf')", False),
+        ("pytestmark = pytest.mark.perf\npytestmark = pytest.mark.skipif(True)", False),
+        ("def test_one():\n    marker = pytest.mark.perf", False),
+        ("# pytestmark = pytest.mark.perf", False),
+    ])
+    def test_static_perf_marker_check(self, source, expected):
+        assert self._module_has_perf_marker(source) is expected
+
     def test_no_unmarked_tests_under_tests_perf(self):
-        import os
-        import subprocess
-        import sys
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent
-        env = os.environ.copy()
-        # Collection alone must not reach for a live Postgres: without a DSN
-        # the perf modules still import (their skipif does the rest), and
-        # AQ_REQUIRE_POSTGRES_TESTS would otherwise turn that into an error.
-        env.pop("POSTGRES_TEST_DSN", None)
-        env.pop("AQ_REQUIRE_POSTGRES_TESTS", None)
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-p",
-                "no:xdist",
-                "--co",
-                "-q",
-                "-m",
-                "not perf",
-                "tests/perf",
-            ],
-            cwd=root,
+        modules = sorted((root / "tests" / "perf").rglob("test_*.py"))
+        assert modules
+        unmarked = [
+            str(path.relative_to(root))
+            for path in modules
+            if not self._module_has_perf_marker(path.read_text())
+        ]
+        assert not unmarked, (
+            "add a literal pytest.mark.perf to each module's pytestmark: " + ", ".join(unmarked)
+        )
+
+
+def _fake_project(root, *, modules: int = 10, subpackage: int = 2):
+    """A project whose pytest ``testpaths`` hold ``modules + subpackage`` test modules."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    tests = root / "tests"
+    (tests / "sub").mkdir(parents=True)
+    (tests / "conftest.py").write_text("")
+    for index in range(modules):
+        (tests / f"test_m{index}.py").write_text("")
+    for index in range(subpackage):
+        (tests / "sub" / f"test_s{index}.py").write_text("")
+    return root
+
+
+class TestFullSuiteClassification:
+    """Which invocations count as "the whole suite".
+
+    Full-suite runs are the ones that held three of four slots for over an
+    hour on 2026-09-24; a slice of the suite, however it is spelled, must
+    never be made to queue behind one.
+    """
+
+    @pytest.fixture
+    def project(self, tmp_path):
+        return _fake_project(tmp_path)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("tests/",),
+            ("tests",),
+            (".",),
+            ("-x",),  # no path: pytest collects testpaths
+            ("tests/", "-x", "--tb", "short", "-p", "no:cacheprovider"),
+            ("tests/", "-k", "not slow"),  # everything but a slice
+            ("tests/", "-knot slow and not flaky"),
+            ("-m", "", "tests/"),  # --aq-all-markers' spelling: no filter
+            ("-m", "not perf", "tests"),
+            ("--lf", "tests/"),  # nothing recorded: pytest runs everything
+        ],
+    )
+    def test_whole_suite_selections(self, project, args):
+        assert _is_full_suite(args, cwd=project)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("tests/test_m0.py",),
+            ("tests/sub",),
+            ("tests/test_m0.py::test_x",),
+            ("tests/", "-k", "claim"),  # the documented "slice of the suite"
+            ("tests/", "-kclaim or pools"),
+            ("tests/", "-k=claim"),
+            ("-m", "perf", "tests/"),
+            ("--co", "tests/"),
+            ("--collect-only", "-q"),
+            ("tests/", "-k", "unbalanced ("),  # pytest refuses it before running
+        ],
+    )
+    def test_slices_are_focused(self, project, args):
+        assert not _is_full_suite(args, cwd=project)
+
+    def test_a_shell_expanded_glob_of_most_modules_is_the_full_suite(self, project):
+        every_top_level_module = tuple(f"tests/test_m{i}.py" for i in range(10))
+        assert _is_full_suite(every_top_level_module, cwd=project)
+        an_area = tuple(f"tests/test_m{i}.py" for i in range(3))
+        assert not _is_full_suite(an_area, cwd=project)
+
+    def test_node_ids_never_count_toward_coverage(self, project):
+        one_test_per_module = tuple(f"tests/test_m{i}.py::test_x" for i in range(10))
+        assert not _is_full_suite(one_test_per_module, cwd=project)
+
+    def test_last_failed_with_failures_on_record_is_a_slice(self, project):
+        cache = project / ".pytest_cache" / "v" / "cache"
+        cache.mkdir(parents=True)
+        (cache / "lastfailed").write_text('{"tests/test_m0.py::test_x": true}')
+        assert not _is_full_suite(("--lf",), cwd=project)
+        (cache / "lastfailed").write_text("{}")
+        assert _is_full_suite(("--lf",), cwd=project)
+
+    def test_a_bare_run_below_the_rootdir_collects_only_that_directory(self, project):
+        assert not _is_full_suite(("-x",), cwd=project / "tests" / "sub")
+        assert _is_full_suite(("-x",), cwd=project / "tests")
+
+    def test_without_pytest_config_only_the_whole_rootdir_counts(self, tmp_path):
+        (tmp_path / "pkg").mkdir()
+        assert _is_full_suite((".",), cwd=tmp_path)
+        assert not _is_full_suite(("pkg",), cwd=tmp_path)
+
+    def test_this_repository(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        assert _is_full_suite(("tests/",), cwd=root)
+        assert not _is_full_suite(("tests/test_cli_test_runner.py",), cwd=root)
+        assert not _is_full_suite(("tests/", "-k", "schema_setup or run_schema"), cwd=root)
+
+
+def _flat(output: str) -> str:
+    """CLI output with Rich's 80-column wrapping undone."""
+    return " ".join(output.split())
+
+
+def _hold(lock_dir, slots: int, **meta):
+    """Take a slot of the semaphore at *lock_dir* as someone else would."""
+    from src.resources.semaphore import SlotSemaphore
+
+    held = SlotSemaphore(lock_dir, slots).try_acquire(meta)
+    assert held is not None
+    return held[1]
+
+
+class TestOneFullSuiteRunAtATime:
+    @pytest.fixture
+    def box(self, runner, monkeypatch, tmp_path):
+        """A fake project as cwd, private locks, 2 slots and a fast poll."""
+        from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+
+        project = _fake_project(tmp_path / "project")
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        lock_dir = tmp_path / "locks" / "test-slots"
+        monkeypatch.setattr("src.resources.semaphore.default_lock_dir", lambda _config: lock_dir)
+        monkeypatch.setattr("src.cli.test_runner._caps", lambda _res: (2, 1, "", 0.05, 30))
+
+        class Box:
+            slots_dir = lock_dir
+            full_dir = full_suite_lock_dir(lock_dir)
+            slots = SlotSemaphore(lock_dir, 2)
+            full = SlotSemaphore(full_suite_lock_dir(lock_dir), 1)
+
+        return Box
+
+    def test_a_second_full_run_refuses_immediately_naming_the_first(self, runner, monkeypatch, box):
+        import os
+        import time
+
+        def _boom(*_a, **_kw):  # pragma: no cover - must not be reached
+            raise AssertionError("a second full-suite run was launched")
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _boom)
+        fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9", since=time.time() - 3725)
+        try:
+            result = runner.invoke(cli, ["test", "--aq-no-wait", "tests/"])
+            # Refused without taking a normal slot either.
+            assert box.slots.snapshot()["free"] == 2
+        finally:
+            os.close(fd)
+        assert result.exit_code == 75
+        output = _flat(result.output)
+        assert "full-suite run is already in progress" in output
+        for fact in ("task first-run", "cwd /w/slot-9", "running 1h02m", "without --aq-no-wait"):
+            assert fact in output
+
+    def test_a_second_full_run_that_times_out_says_so(self, runner, monkeypatch, box):
+        import os
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kw: 0)
+        fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9")
+        try:
+            result = runner.invoke(cli, ["test", "--aq-timeout", "0", "tests/"])
+        finally:
+            os.close(fd)
+        assert result.exit_code == 75
+        assert "for the full-suite lock; it is still held: task first-run" in _flat(result.output)
+
+    def test_a_second_full_run_queues_without_holding_a_slot(self, runner, monkeypatch, box):
+        import os
+        import threading
+        import time
+
+        fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9")
+        observed: dict = {}
+
+        def _first_run_finishes():
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if list((box.full_dir / "waiters").glob("*.json")):
+                    # The second full run is queued: it must not be sitting
+                    # on a slot a focused run could use meanwhile.
+                    observed["free_slots_while_queued"] = box.slots.snapshot()["free"]
+                    break
+                time.sleep(0.02)
+            os.close(fd)
+
+        during: list = []
+
+        def _pytest(_argv, **_kw):
+            during.append((box.full.snapshot(), box.slots.snapshot()))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _pytest)
+        releaser = threading.Thread(target=_first_run_finishes)
+        releaser.start()
+        try:
+            result = runner.invoke(cli, ["test", "tests/"])
+        finally:
+            releaser.join(timeout=30)
+        assert result.exit_code == 0, result.output
+        assert "for the full-suite lock (one full-suite run at a time)" in _flat(result.output)
+        assert observed["free_slots_while_queued"] == 2
+        full, slots = during[0]
+        assert full["slots"][0]["held"]
+        assert full["slots"][0]["holder"]["scope"] == "full"
+        assert slots["free"] == 1
+
+    def test_queueing_on_the_full_suite_lock_is_reported_as_slot_wait(
+        self, runner, monkeypatch, box, tmp_path
+    ):
+        """The development publisher charges its run budget for running only.
+
+        Time spent behind another full suite is queueing like a slot wait,
+        so ``$AQ_TEST_SLOT_REPORT`` must count it.
+        """
+        import json
+        import os
+        import threading
+        import time
+
+        from src.resources.slot_report import read_slot_wait
+
+        report = tmp_path / "slot.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kw: 0)
+        fd = _hold(box.full_dir, 1, task_id="first-run")
+
+        def _first_run_finishes():
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if list((box.full_dir / "waiters").glob("*.json")):
+                    break
+                time.sleep(0.02)
+            time.sleep(0.3)
+            os.close(fd)
+
+        releaser = threading.Thread(target=_first_run_finishes)
+        releaser.start()
+        try:
+            result = runner.invoke(cli, ["test", "tests/"])
+        finally:
+            releaser.join(timeout=30)
+        assert result.exit_code == 0, result.output
+        events = [json.loads(line) for line in report.read_text().splitlines()]
+        assert [e["event"] for e in events] == ["waiting", "acquired", "released"]
+        assert events[1]["waited"] >= 0.3
+        wait = read_slot_wait(report)
+        assert wait.acquired == 1 and not wait.timed_out
+        assert wait.total_seconds >= 0.3
+
+    def test_a_full_suite_lock_timeout_is_reported_and_the_wait_env_bounds_it(
+        self, runner, monkeypatch, box, tmp_path
+    ):
+        import os
+
+        from src.resources.slot_report import read_slot_wait
+
+        def _boom(*_a, **_kw):  # pragma: no cover - must not be reached
+            raise AssertionError("a second full-suite run was launched")
+
+        report = tmp_path / "slot.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        # The box's config says 30 s; the supervising caller's 1 s must win
+        # for the full-suite lock exactly as it does for a slot.
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "1")
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _boom)
+        fd = _hold(box.full_dir, 1, task_id="first-run")
+        try:
+            result = runner.invoke(cli, ["test", "tests/"])
+        finally:
+            os.close(fd)
+        assert result.exit_code == 75, result.output
+        wait = read_slot_wait(report)
+        assert wait.timed_out and wait.acquired == 0
+        assert 1.0 <= wait.total_seconds < 10.0
+        assert wait.waiting_seconds == 0.0
+
+    def test_a_full_run_takes_the_lock_and_exactly_one_slot(self, runner, monkeypatch, box):
+        during: list = []
+
+        def _pytest(_argv, **_kw):
+            during.append((box.full.snapshot(), box.slots.snapshot()))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _pytest)
+        result = runner.invoke(cli, ["test", "tests/"])
+        assert result.exit_code == 0, result.output
+        assert "full-suite lock + slot 0 of 2" in result.output
+        full, slots = during[0]
+        assert full["free"] == 0
+        assert slots["free"] == 1
+        assert slots["slots"][0]["holder"]["scope"] == "full"
+        # Both come back when the run ends.
+        assert box.full.snapshot()["free"] == 1
+        assert box.slots.snapshot()["free"] == 2
+
+    def test_focused_runs_never_wait_behind_a_full_run(self, runner, monkeypatch, box):
+        import os
+
+        launched: list = []
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals",
+            lambda argv, **_kw: launched.append(argv) or 0,
+        )
+        full_fd = _hold(box.full_dir, 1, task_id="first-run", scope="full")
+        slot_fd = _hold(box.slots_dir, 2, task_id="first-run", scope="full")
+        try:
+            result = runner.invoke(cli, ["test", "--aq-no-wait", "tests/test_m0.py"])
+            area = runner.invoke(cli, ["test", "--aq-no-wait", "tests/", "-k", "claim"])
+        finally:
+            os.close(slot_fd)
+            os.close(full_fd)
+        assert result.exit_code == 0, result.output
+        assert area.exit_code == 0, area.output
+        assert len(launched) == 2
+        assert "full-suite lock" not in result.output
+
+    def test_status_shows_the_full_suite_holder_separately(self, runner, box):
+        import os
+
+        free = runner.invoke(cli, ["test", "--aq-status"])
+        assert free.exit_code == 0, free.output
+        assert "Full-suite lock: free" in _flat(free.output)
+
+        full_fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9", scope="full")
+        slot_fd = _hold(box.slots_dir, 2, task_id="first-run", scope="full")
+        try:
+            held = runner.invoke(cli, ["test", "--aq-status"])
+        finally:
+            os.close(slot_fd)
+            os.close(full_fd)
+        assert held.exit_code == 0, held.output
+        assert "Full-suite lock: held by task first-run, cwd /w/slot-9" in _flat(held.output)
+        assert "busy (full suite)" in _flat(held.output)
+
+    def test_status_attributes_managed_slots_to_job_and_project(self, runner, box):
+        from src.resources.box_lock import BoxLock
+
+        with BoxLock(box.slots_dir, 2).acquire(timeout=0, meta={
+            "task_id": "full-task", "project_id": "agent-queue", "job_id": "managed-123",
+            "scope": "full",
+        }):
+            held = runner.invoke(cli, ["test", "--aq-status"])
+        assert held.exit_code == 0, held.output
+        output = _flat(held.output)
+        assert "Managed job managed-123: project agent-queue, task full-task, shared, slots 0" in output
+        assert "busy (full suite)" in output
+
+
+class TestFullSuiteLockReleasedOnSignals:
+    """The full-suite lock is an ``flock`` like the slots: death releases it.
+
+    Driven through a real ``aq test`` process, because the property that
+    matters is the wrapper's: SIGTERM is forwarded to pytest and both locks
+    come back, and a SIGKILLed wrapper leaves the lock with the still-running
+    pytest (a runaway stays accounted for) until that dies too.
+    """
+
+    _SCRIPT = """
+import sys
+sys.path.insert(0, {root!r})
+from src.cli.app import cli
+import src.cli.test_runner as runner
+runner._compose_pytest_argv = lambda args, **kw: [
+    sys.executable, "-c", "import time; print('pytest-started', flush=True); time.sleep(120)"
+]
+cli(["test", "tests/"], prog_name="aq")
+"""
+
+    @pytest.fixture
+    def wrapper(self, tmp_path):
+        import os
+        import signal
+        import site
+        import subprocess
+        import sys
+        import threading
+        from pathlib import Path
+
+        from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+
+        root = Path(__file__).resolve().parent.parent
+        project = _fake_project(tmp_path / "project")
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("AQ_", "AGENT_QUEUE"))}
+        # A private HOME puts the default lock dir (and the config it would
+        # read) under tmp_path, away from this box's real test slots.
+        env.update(
+            HOME=str(home),
+            AQ_TEST_SLOTS="2",
+            AQ_TASK_ID="signalled-run",
+            POSTGRES_TEST_DSN="postgresql://test:test@localhost/postgres",
+        )
+        # Changing HOME also changes Python's user site. Keep this interpreter's
+        # installed dependencies while isolating the config and semaphore files.
+        env["PYTHONPATH"] = os.pathsep.join(
+            [site.getusersitepackages(), env.get("PYTHONPATH", "")]
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", self._SCRIPT.format(root=str(root))],
+            cwd=project,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=300,
-            check=False,
+            start_new_session=True,
         )
-        # pytest exits 5 when the run collected nothing, which is the whole
-        # assertion: `-m "not perf"` is what CI's default job selects.
-        assert proc.returncode == 5, (
-            "tests under tests/perf/ are selected by the default suite's "
-            f"-m 'not perf'; add pytest.mark.perf to their pytestmark\n"
-            f"{proc.stdout}{proc.stderr}"
+
+        def _kill_group():
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        watchdog = threading.Timer(90, _kill_group)
+        watchdog.start()
+        seen = []
+        for line in proc.stdout:
+            seen.append(line)
+            if "pytest-started" in line:
+                break
+        else:
+            watchdog.cancel()
+            pytest.fail(f"aq test never started pytest:\n{''.join(seen)}{proc.stderr.read()}")
+        lock_dir = home / ".agent-queue" / "locks" / "test-slots"
+        full = SlotSemaphore(full_suite_lock_dir(lock_dir), 1)
+        slots = SlotSemaphore(lock_dir, 2)
+        assert full.snapshot()["slots"][0]["holder"]["task_id"] == "signalled-run"
+        assert slots.snapshot()["free"] == 1
+        try:
+            yield proc, full, slots
+        finally:
+            watchdog.cancel()
+            _kill_group()
+            proc.wait(timeout=30)
+
+    def test_sigterm_releases_the_lock_and_the_slot(self, wrapper):
+        import signal
+
+        proc, full, slots = wrapper
+        proc.send_signal(signal.SIGTERM)  # the wrapper only; it forwards to pytest
+        proc.wait(timeout=30)
+        assert full.snapshot()["free"] == 1
+        assert slots.snapshot()["free"] == 2
+
+    def test_a_killed_wrapper_leaves_the_lock_with_pytest_until_it_dies(self, wrapper):
+        import os
+        import signal
+        import time
+
+        proc, full, slots = wrapper
+        proc.kill()  # SIGKILL: nothing is forwarded
+        proc.wait(timeout=30)
+        assert full.snapshot()["free"] == 0, "the orphaned pytest still runs the full suite"
+        os.killpg(proc.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 30
+        while full.snapshot()["free"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert full.snapshot()["free"] == 1
+        assert slots.snapshot()["free"] == 2
+
+
+# -- other projects: their interpreter, their preconditions -------------------
+
+
+def _interpreter(path, *, xdist: bool):
+    """A stand-in interpreter: it answers the xdist probe and runs nothing else."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nexit {0 if xdist else 1}\n")
+    path.chmod(0o755)
+    return path
+
+
+def _project(root, name: str, *, venv: bool = True, xdist: bool = False, git: bool = True):
+    """A repository whose ``pyproject.toml`` names distribution *name*."""
+    root.mkdir(parents=True)
+    if git:
+        (root / ".git").mkdir()
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    )
+    (root / "tests").mkdir()
+    (root / "tests" / "test_x.py").write_text("def test_x():\n    pass\n")
+    if venv:
+        _interpreter(root / ".venv" / "bin" / "python", xdist=xdist)
+        (root / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    return root
+
+
+def _linked_worktree(main, slot):
+    """What ``git worktree add`` leaves behind: a ``.git`` file and an admin dir."""
+    admin = main / ".git" / "worktrees" / slot.name
+    admin.mkdir(parents=True)
+    (admin / "commondir").write_text("../..\n")
+    _project(slot, "quilt-trader", venv=False, git=False)
+    (slot / ".git").write_text(f"gitdir: {admin}\n")
+    return slot
+
+
+class TestProjectInterpreterResolution:
+    """quilt-trader's tests were run under agent-queue's interpreter and refused
+    for agent-queue's ``POSTGRES_TEST_DSN``; the project under test decides both."""
+
+    def test_agent_queue_runs_under_aq_and_requires_postgres(self, tmp_path):
+        import sys
+
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "agent-queue", "agent-queue")  # a .venv does not matter
+        setup = project_tests.resolve(root / "tests")
+        assert setup.python == sys.executable
+        assert setup.source == project_tests.AGENT_QUEUE
+        assert setup.requires_postgres
+
+    def test_this_checkout_is_agent_queue(self):
+        import sys
+        from pathlib import Path
+
+        from src.resources import project_tests
+
+        setup = project_tests.resolve(Path(__file__).resolve().parent)
+        assert setup.requires_postgres
+        assert setup.python == sys.executable
+        assert not setup.foreign
+
+    def test_another_project_runs_under_its_own_venv(self, tmp_path):
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        setup = project_tests.resolve(root / "tests")
+        assert setup.python == str(root / ".venv" / "bin" / "python")
+        assert setup.source == project_tests.VENV
+        assert setup.root == root
+        assert not setup.requires_postgres
+        assert setup.foreign
+
+    @pytest.mark.parametrize("inside", [True, False])
+    def test_a_worker_slot_uses_the_main_checkouts_venv(self, tmp_path, inside):
+        from src.resources import project_tests
+
+        main = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        parent = main / ".aq" / "worktrees" if inside else tmp_path / "workspaces"
+        slot = _linked_worktree(main, parent / "slot-0")
+        assert project_tests.main_checkout(slot.resolve()) == main
+        setup = project_tests.resolve(slot / "tests")
+        assert setup.python == str(main / ".venv" / "bin" / "python")
+        assert setup.root == slot.resolve()
+
+    def test_a_submodule_is_not_a_linked_worktree(self, tmp_path):
+        from src.resources import project_tests
+
+        (tmp_path / "modules" / "sub").mkdir(parents=True)
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / ".git").write_text(f"gitdir: {tmp_path / 'modules' / 'sub'}\n")
+        assert project_tests.main_checkout(tmp_path / "sub") is None
+
+    def test_the_operator_pin_wins_for_its_project_only(self, tmp_path):
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        pinned = _interpreter(tmp_path / "elsewhere" / "bin" / "python", xdist=True)
+        pins = {"quilt-trader": str(pinned)}
+        setup = project_tests.resolve(root, project_id="quilt-trader", interpreters=pins)
+        assert (setup.python, setup.source) == (str(pinned), project_tests.CONFIG)
+        other = project_tests.resolve(root, project_id="other", interpreters=pins)
+        assert other.source == project_tests.VENV
+
+    def test_a_pin_expands_home_and_resolves_relative_paths_from_a_slot(
+        self, tmp_path, monkeypatch
+    ):
+        from src.resources import project_tests
+
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        main = _project(tmp_path / "home" / "dev" / "quilt-trader", "quilt-trader")
+        slot = _linked_worktree(main, tmp_path / "workspaces" / "slot-1")
+        venv_python = str(main.resolve() / ".venv" / "bin" / "python")
+        for pin in ("~/dev/quilt-trader/.venv/bin/python", ".venv/bin/python"):
+            setup = project_tests.resolve(
+                slot, project_id="quilt-trader", interpreters={"quilt-trader": pin}
+            )
+            assert setup.python == venv_python, pin
+
+    def test_a_missing_pin_is_an_error_not_a_fallback(self, tmp_path):
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        with pytest.raises(project_tests.ProjectTestsError, match="does not exist"):
+            project_tests.resolve(
+                root,
+                project_id="quilt-trader",
+                interpreters={"quilt-trader": str(tmp_path / "gone" / "python")},
+            )
+
+    def test_without_a_venv_the_aq_interpreter_is_the_fallback(self, tmp_path):
+        import sys
+
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "scratch", "scratch", venv=False)
+        setup = project_tests.resolve(root)
+        assert (setup.python, setup.source) == (sys.executable, project_tests.FALLBACK)
+        assert not setup.requires_postgres
+
+    def test_the_xdist_probe_asks_the_interpreter(self, tmp_path):
+        import importlib.util
+        import sys
+
+        from src.resources import project_tests
+
+        assert project_tests.has_xdist(str(_interpreter(tmp_path / "a" / "python", xdist=True)))
+        assert not project_tests.has_xdist(
+            str(_interpreter(tmp_path / "b" / "python", xdist=False))
         )
+        assert not project_tests.has_xdist(str(tmp_path / "missing" / "python"))
+        assert project_tests.has_xdist(sys.executable) == (
+            importlib.util.find_spec("xdist") is not None
+        )
+
+    def test_a_foreign_venv_is_activated_for_the_child(self, tmp_path):
+        import os
+        from pathlib import Path
+
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        env = project_tests.resolve(root).child_env({"PATH": "/usr/bin", "PYTHONHOME": "/x"})
+        assert env["VIRTUAL_ENV"] == str(root / ".venv")
+        assert env["PATH"].split(os.pathsep) == [str(root / ".venv" / "bin"), "/usr/bin"]
+        assert "PYTHONHOME" not in env
+        own = project_tests.resolve(Path(__file__).resolve().parent)
+        assert own.child_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+class TestOtherProjectsCommand:
+    @pytest.fixture
+    def quilt(self, runner, monkeypatch, tmp_path, isolated_test_slots):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.delenv("POSTGRES_TEST_DSN", raising=False)
+        monkeypatch.delenv("AQ_PROJECT_ID", raising=False)
+        monkeypatch.setenv("AQ_TEST_WORKERS", "3")
+        seen: list[tuple[list[str], dict[str, str]]] = []
+
+        def _capture(argv, *, env):
+            seen.append((argv, env))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
+        return tmp_path, seen
+
+    def test_runs_under_the_projects_venv_without_the_aq_dsn(self, runner, quilt, monkeypatch):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        monkeypatch.chdir(root)
+
+        result = runner.invoke(cli, ["test", "tests/test_x.py"])
+
+        assert result.exit_code == 0, result.output
+        ((argv, env),) = seen
+        assert argv[:3] == [str(root / ".venv" / "bin" / "python"), "-m", "pytest"]
+        # No pytest-xdist in that venv: a serial run under the slot, not an
+        # ``-n`` pytest rejects as unrecognized arguments.
+        assert "-n" not in _args(argv) and "--dist" not in _args(argv)
+        assert env["VIRTUAL_ENV"] == str(root / ".venv")
+        assert "POSTGRES_TEST_DSN" not in result.output
+        assert "serial" in result.output
+        assert "has no pytest-xdist" in result.output
+
+    def test_an_interpreter_with_xdist_keeps_the_worker_cap(self, runner, quilt, monkeypatch):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader", xdist=True)
+        monkeypatch.chdir(root)
+
+        assert runner.invoke(cli, ["test", "tests/test_x.py"]).exit_code == 0
+        ((argv, _env),) = seen
+        args = _args(argv)
+        assert args[args.index("-n") + 1] == "3"
+        assert args[args.index("--dist") + 1] == "loadfile"
+
+    def test_the_named_paths_decide_not_the_cwd(self, runner, quilt):
+        # From agent-queue's checkout, another project's tests still run
+        # under that project's interpreter and without the DSN.
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+
+        result = runner.invoke(cli, ["test", str(root / "tests" / "test_x.py")])
+
+        assert result.exit_code == 0, result.output
+        assert seen[0][0][0] == str(root / ".venv" / "bin" / "python")
+
+    def test_the_configured_interpreter_is_used_for_the_sessions_project(
+        self, runner, quilt, monkeypatch
+    ):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        pinned = _interpreter(tmp_path / "pinned" / "bin" / "python", xdist=False)
+        (tmp_path / "config.yaml").write_text(
+            f"data_dir: {tmp_path / 'data'}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
+            "discord:\n  bot_token: test-token\n  guild_id: '1'\n"
+            f"resources:\n  test_interpreters:\n    quilt-trader: {pinned}\n"
+        )
+        monkeypatch.setenv("AQ_PROJECT_ID", "quilt-trader")
+        monkeypatch.chdir(root)
+
+        result = runner.invoke(cli, ["test", "tests/test_x.py"])
+
+        assert result.exit_code == 0, result.output
+        assert seen[0][0][0] == str(pinned)
+        assert "(config)" in result.output
+
+    def test_a_missing_configured_interpreter_runs_nothing(self, runner, quilt, monkeypatch):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        (tmp_path / "config.yaml").write_text(
+            f"data_dir: {tmp_path / 'data'}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
+            "discord:\n  bot_token: test-token\n  guild_id: '1'\n"
+            f"resources:\n  test_interpreters:\n    quilt-trader: {tmp_path / 'gone'}\n"
+        )
+        monkeypatch.chdir(root)
+
+        result = runner.invoke(cli, ["test", "--aq-project", "quilt-trader", "tests/test_x.py"])
+
+        assert result.exit_code == 4
+        assert "does not exist" in result.output
+        assert "Nothing was run" in result.output
+        assert "aq test: slot" not in result.output
+        assert seen == []
+
+    def test_agent_queue_keeps_its_interpreter_and_its_dsn_preflight(self, runner, quilt):
+        import sys
+
+        _tmp_path, seen = quilt
+        dry = runner.invoke(cli, ["test", "--aq-dry-run", "tests/test_config.py"])
+        assert dry.exit_code == 0, dry.output
+        assert dry.output.splitlines()[-1].startswith(f"{sys.executable} -m pytest")
+
+        refused = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert refused.exit_code == 4
+        assert "POSTGRES_TEST_DSN is not set" in refused.output
+        assert seen == []

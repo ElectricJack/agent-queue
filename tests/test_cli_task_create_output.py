@@ -175,17 +175,17 @@ class TestWizardCancellation:
         rec = _Recorder({"projects": [{"id": "proj"}]})
         with (
             patch("src.cli.tasks._get_client", return_value=_mock_client(rec)),
+            patch("src.cli.tasks.click.get_text_stream") as stdin,
             patch("src.cli.menus.task_creation_wizard", return_value=None),
         ):
+            stdin.return_value.isatty.return_value = True
             return runner.invoke(cli, argv), rec
 
-    def test_cancelled_wizard_is_still_one_json_document(self, runner):
+    def test_json_mode_refuses_incomplete_input_without_writing(self, runner):
         result, rec = self._invoke_cancelled(runner, ["--json", "task", "create"])
 
-        assert result.exit_code == 0, result.output
-        doc = json.loads(result.output)
-        assert doc["data"]["cancelled"] is True
-        assert doc["data"]["created"] is None
+        assert result.exit_code != 0
+        assert "missing required option(s): --project, --title, --description" in result.output
         assert rec.creates == []
 
     def test_cancelled_wizard_human_mode_says_so(self, runner):
