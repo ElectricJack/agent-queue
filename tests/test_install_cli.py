@@ -21,6 +21,187 @@ ROOT = Path(__file__).resolve().parent.parent
 DOC = ROOT / "docs" / "reference" / "cli" / "install.md"
 
 
+def _bootstrap_checkout(tmp_path, repo, *, aq_on_path=False, **selectors):
+    """Execute the bootstrap's Git boundary, without installing machine prerequisites."""
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    script = (ROOT / "scripts" / "install.sh").read_text()
+    start = script.index('if [[ -e "$checkout_dir" && ! -d "$checkout_dir/.git" ]]')
+    end = script.index('    if [[ ! -x "$checkout_dir/.venv/bin/python" ]]', start)
+    checkout = tmp_path / "bootstrap"
+    state_dir = tmp_path / "state"
+    prelude = (
+        "set -euo pipefail\n"
+        + "\n".join(
+            f"{name}={shlex.quote(str(value))}"
+            for name, value in {
+                "checkout_dir": checkout,
+                "repository": f"file://{repo.origin}",
+                "python_bin": sys.executable,
+            }.items()
+        )
+        + (
+            '\ncommand() { if [[ "$*" == "-v aq" ]]; then echo /existing/aq; return 0; fi; '
+            'builtin command "$@"; }\n'
+            if aq_on_path
+            else '\ncommand() { if [[ "$*" == "-v aq" ]]; then return 1; fi; builtin command "$@"; }\n'
+        )
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"AQ_REF", "AQ_TAG_GLOB", "AQ_PROMOTION_TARGET"}
+    }
+    env.update(AQ_INSTALL_STATE_DIR=str(state_dir), **selectors)
+    result = subprocess.run(
+        ["bash"],
+        input=prelude + script[start:end] + "fi\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result, checkout, state_dir
+
+
+def test_bootstrap_pins_an_explicit_annotated_release_and_records_its_sha(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    repo.push("README.md", "unreleased main\n")
+    result, checkout, state_dir = _bootstrap_checkout(tmp_path, repo, AQ_REF="v0.2.0")
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+    assert _git(checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    record = json.loads((state_dir / "deploy.json").read_text())
+    assert record["tag"] == "v0.2.0" and record["commit"] == expected
+
+
+def test_bootstrap_without_a_selector_keeps_main_head(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    _release(repo, "v0.2.0")
+    expected = repo.push("README.md", "main ahead\n")
+    result, checkout, state_dir = _bootstrap_checkout(tmp_path, repo)
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+    assert _git(checkout, "branch", "--show-current") == "main"
+    assert not (state_dir / "deploy.json").exists()
+
+
+def test_bootstrap_honors_tag_selection_when_aq_is_already_on_path(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    expected = repo.head()
+    _release(repo, "v0.2.0")
+    repo.push("README.md", "unreleased main\n")
+    result, checkout, state_dir = _bootstrap_checkout(
+        tmp_path, repo, aq_on_path=True, AQ_REF="v0.2.0"
+    )
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+    assert json.loads((state_dir / "deploy.json").read_text())["tag"] == "v0.2.0"
+
+
+def test_bootstrap_without_selection_preserves_an_existing_aq_on_path(tmp_path):
+    from tests.test_update import Repo
+
+    repo = Repo(tmp_path)
+    result, checkout, state_dir = _bootstrap_checkout(tmp_path, repo, aq_on_path=True)
+    assert result.returncode == 0, result.stderr
+    assert "Using the aq already on PATH" in result.stdout
+    assert not checkout.exists() and not (state_dir / "deploy.json").exists()
+
+
+def test_bootstrap_resolves_newest_semver_and_falls_back_before_first_release(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    _release(repo, "v0.9.0")
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.10.0")
+    result, checkout, _ = _bootstrap_checkout(tmp_path, repo, AQ_TAG_GLOB="v*")
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    result, checkout, state_dir = _bootstrap_checkout(fallback, repo, AQ_TAG_GLOB="future-v*")
+    assert result.returncode == 0, result.stderr
+    assert "unreleased install" in result.stderr
+    assert _git(checkout, "branch", "--show-current") == "main"
+    assert not (state_dir / "deploy.json").exists()
+
+
+@pytest.mark.parametrize("ref,lightweight", [("v9.9.9", False), ("v0.2.0", True)])
+def test_bootstrap_refuses_missing_or_lightweight_tags(tmp_path, ref, lightweight):
+    from tests.test_update import Repo, _release
+
+    repo = Repo(tmp_path)
+    if lightweight:
+        _release(repo, ref, annotated=False)
+    result, checkout, _ = _bootstrap_checkout(tmp_path, repo, AQ_REF=ref)
+    assert result.returncode == 20
+    assert not checkout.exists()
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_bootstrap_reinstall_reconciles_deploy_record(tmp_path, matching):
+    from tests.test_update import Repo, _release
+
+    repo = Repo(tmp_path)
+    _release(repo, "v0.1.0")
+    result, _, state_dir = _bootstrap_checkout(tmp_path, repo, AQ_REF="v0.1.0")
+    assert result.returncode == 0, result.stderr
+    path = state_dir / "deploy.json"
+    previous = json.loads(path.read_text())
+    previous["previous_commit"] = "retained-rollback-commit"
+    path.write_text(json.dumps(previous))
+    before = path.read_bytes()
+    updater = tmp_path / "bootstrap" / ".venv" / "bin" / "aq"
+    updater.parent.mkdir(parents=True)
+    # The Git-boundary fixture omits installer setup and the updater. Model its
+    # successful preflight; the bootstrap still resolves and pins the real tag.
+    updater.write_text("#!/bin/sh\nexit 0\n")
+    updater.chmod(0o755)
+    if not matching:
+        next_commit = repo.push("README.md", "new release\n")
+        _release(repo, "v0.2.0")
+    result, _, _ = _bootstrap_checkout(tmp_path, repo, AQ_REF="v0.1.0" if matching else "v0.2.0")
+    assert result.returncode == 0, result.stderr
+    record = json.loads(path.read_text())
+    if matching:
+        assert path.read_bytes() == before
+    else:
+        assert record["commit"] == next_commit and record["selector"] == "v0.2.0"
+        assert record["previous_commit"] == previous["commit"]
+
+
+def test_bootstrap_branch_reinstall_reconciles_stale_release_receipt(tmp_path):
+    from tests.test_update import Repo
+
+    repo = Repo(tmp_path)
+    result, _, state_dir = _bootstrap_checkout(tmp_path, repo)
+    assert result.returncode == 0, result.stderr
+    previous = repo.head()
+    path = state_dir / "deploy.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(dict(commit=previous, selector="v0.1.0", kind="release")))
+    expected = repo.push("README.md", "branch reinstall\n")
+    result, _, _ = _bootstrap_checkout(tmp_path, repo)
+    assert result.returncode == 0, result.stderr
+    record = json.loads(path.read_text())
+    assert record["commit"] == expected and record["selector"] == "main"
+    assert record["kind"] == "unreleased" and record["tag"] is None
+    assert record["previous_commit"] == previous
+
+
 @pytest.fixture(autouse=True)
 def _pg_backend():
     """The installer CLI runs before a database exists."""
@@ -40,6 +221,24 @@ def supported_host(monkeypatch):
     from tests.installer_machine import WSL2
 
     monkeypatch.setattr(install_cli, "describe_host", lambda: WSL2)
+
+
+@pytest.fixture(autouse=True)
+def quiet_git_identity(monkeypatch):
+    """Answer the wizard's commit-identity question with "later", without probing gh.
+
+    Every wizard test below scripts its answers line by line; the identity
+    question is exercised on its own (``-- the commit identity --``) with a
+    scripted discovery, so no test here ever asks a real ``gh``.
+    """
+    from types import SimpleNamespace
+
+    from src.cli import install as install_cli
+
+    asked: list[bool] = []
+    real = install_cli.ask_git_identity
+    monkeypatch.setattr(install_cli, "ask_git_identity", lambda: asked.append(True))
+    return SimpleNamespace(asked=asked, real=real)
 
 
 @pytest.fixture
@@ -299,20 +498,26 @@ def test_the_documented_step_states_are_the_ones_the_code_reports():
 
 
 @pytest.fixture
-def graft_probe():
-    """Change the host fact between installs without touching the real PATH."""
-    return {"path": "/usr/bin/graft"}
+def graft_host():
+    """graft and npm as the graft steps see them: never the real PATH or npm.
+
+    ``path`` is where ``graft`` is (``None``: not installed), ``version`` what
+    it reports, ``npm`` where npm is, and ``calls`` every command the steps ran.
+    """
+    return {"path": "/usr/bin/graft", "version": "0.18.0", "npm": None, "calls": []}
 
 
 @pytest.fixture
-def wizard_registry(monkeypatch, tmp_path, graft_probe):
-    """A registry with the onboarding steps but no database or platform adapter.
+def wizard_registry(monkeypatch, tmp_path, graft_host):
+    """A registry with the onboarding and graft steps but no database or platform adapter.
 
     ``aq install`` composes those adapters for the host it runs on; a test
     about the *wizard* must not depend on whether this box has PostgreSQL
     listening or a Homebrew prefix.
     """
     from src.cli import install as install_cli
+    from src.install.command import CommandOutput
+    from src.install.graft import graft_steps
     from src.install.onboarding import onboarding_steps
     from src.install.prerequisites import default_registry
 
@@ -333,9 +538,36 @@ def wizard_registry(monkeypatch, tmp_path, graft_probe):
                 runner=lambda argv, **kwargs: (_ for _ in ()).throw(
                     AssertionError("the daemon must not be started in this test")
                 ),
-                which=lambda name: graft_probe["path"] if name == "graft" else f"/usr/bin/{name}",
+                which=lambda name: f"/usr/bin/{name}",
                 probe=lambda url: None,
                 dashboard_root=home,
+            )
+        )
+
+        def which(name):
+            return {"graft": graft_host["path"], "npm": graft_host["npm"]}.get(
+                name, f"/usr/bin/{name}"
+            )
+
+        def run(argv, **kwargs):
+            argv = tuple(argv)
+            graft_host["calls"].append(argv)
+            if argv[1:] == ("--version",):
+                return CommandOutput(argv, 0, graft_host["version"] + "\n")
+            if argv[1:] == ("telemetry", "disable"):
+                state = home / ".graft" / "telemetry.json"
+                state.parent.mkdir(parents=True, exist_ok=True)
+                state.write_text('{"enabled": false}', encoding="utf-8")
+                return CommandOutput(argv, 0, "telemetry: off.")
+            raise AssertionError(f"unexpected command: {argv}")
+
+        registry.extend(
+            graft_steps(
+                which=which,
+                runner=run,
+                list_workspaces=list,
+                vault=home / "vault",
+                home=home,
             )
         )
         return registry
@@ -488,41 +720,68 @@ def test_skipping_discord_leaves_the_run_ready(install_home, wizard_registry):
 
 
 @pytest.mark.parametrize("as_json", [False, True])
-@pytest.mark.parametrize("available", [False, True])
-def test_graft_is_optional_advice_in_human_and_json_output(
-    install_home, wizard_registry, graft_probe, available, as_json
+def test_graft_not_selected_is_a_choice_to_add_later_in_human_and_json_output(
+    install_home, wizard_registry, graft_host, as_json
 ):
-    graft_probe["path"] = "/usr/bin/graft" if available else None
     args = ("--json",) if as_json else ()
     result = _invoke("--non-interactive", "--yes", *args)
 
     assert result.exit_code == 0
+    assert graft_host["calls"] == []
     if as_json:
         payload = _payload(result)
         assert payload["outcome"] == "ready"
-        check = next(row for row in payload["steps"] if row["step_id"] == "config.check")
-        assert check["detail"]["graft_available"] is available
-        assert check["state"] == "succeeded"
-        assert all("graft" not in row["step_id"] for row in payload["plan"])
-        advice = " ".join(payload["onboarding"]["skipped"])
-    else:
-        advice = " ".join(result.output.split())
-        if not available:
-            assert "Not installed (optional)" in advice
-    assert ("npm i -g @nanonets/graft" in advice) is (not available)
-    if available:
-        assert "graft — optional code index" not in advice
-
-
-def test_graft_advice_refreshes_on_rerun_and_repair(install_home, wizard_registry, graft_probe):
-    for path, mode in ((None, ()), ("/usr/bin/graft", ()), (None, ("--repair",))):
-        graft_probe["path"] = path
-        result = _invoke("--non-interactive", "--yes", "--json", *mode)
-        assert result.exit_code == 0
-        payload = _payload(result)
-        assert payload["outcome"] == "ready"
+        states = {row["step_id"]: row["state"] for row in payload["steps"]}
+        assert states["graft.cli"] == states["graft.repos"] == "skipped"
         advice = [line for line in payload["onboarding"]["skipped"] if "graft" in line]
-        assert len(advice) == (1 if path is None else 0)
+    else:
+        text = " ".join(result.output.split())
+        assert "Not installed (optional)" in text
+        advice = [text]
+    assert len(advice) == 1
+    assert "`aq install --with graft`" in advice[0]
+
+
+def test_with_graft_an_installed_graft_is_reused_and_its_telemetry_turned_off(
+    install_home, wizard_registry, graft_host
+):
+    result = _invoke("--non-interactive", "--yes", "--json", "--with", "graft")
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload["outcome"] == "ready"
+    cli_step = next(row for row in payload["steps"] if row["step_id"] == "graft.cli")
+    assert cli_step["state"] == "succeeded"
+    assert cli_step["detail"]["telemetry"] == "disabled"
+    assert cli_step["detail"]["installed"] is False
+    repos = next(row for row in payload["steps"] if row["step_id"] == "graft.repos")
+    assert repos["state"] == "succeeded"
+    assert "no registered project" in repos["summary"]
+    # Reused, never reinstalled or upgraded: no npm call at all.
+    assert all("npm" not in argv[0] for argv in graft_host["calls"])
+    assert payload["onboarding"]["drift"] == []
+
+
+def test_a_graft_that_cannot_be_installed_never_fails_the_install(
+    install_home, wizard_registry, graft_host
+):
+    graft_host["path"] = None
+    result = _invoke("--non-interactive", "--yes", "--with", "graft")
+
+    assert result.exit_code == 0
+    text = " ".join(result.output.split())
+    assert "graft.cli" in text and "npm is not on PATH" in text
+    assert "ready" in text
+
+
+def test_an_uncleared_graft_version_is_shown_as_drift(install_home, wizard_registry, graft_host):
+    graft_host["version"] = "0.20.0"
+    result = _invoke("--non-interactive", "--yes", "--with", "graft")
+
+    assert result.exit_code == 0
+    text = " ".join(result.output.split())
+    assert "Drift (reported, not changed)" in text
+    assert "graft 0.20.0 is outside the 0.18.x series" in text
 
 
 def test_an_ordinary_run_decides_the_advanced_choices_instead_of_asking(
@@ -649,6 +908,318 @@ def test_an_existing_project_root_is_not_asked_for_again(
     result = _invoke("--interactive", "--dry-run", input="\n\n")
 
     assert "Where do your code projects live?" not in result.output
+
+
+# -- the commit identity ------------------------------------------------------
+
+MONA = ("Mona Lisa Octocat", "mona@example.com")
+
+
+def _discovery(*suggestions, note=""):
+    from src.install.git_identity import Discovery
+
+    return Discovery(
+        suggestions=tuple(suggestions),
+        gh_status="authenticated" if suggestions else "missing",
+        gh_note=note,
+    )
+
+
+def _public_suggestion():
+    from src.install.git_identity import LABEL_PUBLIC, Suggestion
+
+    return Suggestion(*MONA, f"GitHub @octocat: {LABEL_PUBLIC}", "gh:octocat")
+
+
+@pytest.fixture
+def ask_identity(monkeypatch, quiet_git_identity):
+    """Put the real identity question back, over a scripted discovery.
+
+    Call the fixture with the :class:`~src.install.git_identity.Discovery` the
+    probes should report; ``None`` makes any probe fail the test.
+    """
+    from src.cli import install as install_cli
+
+    monkeypatch.setattr(install_cli, "ask_git_identity", quiet_git_identity.real)
+
+    def script(discovery):
+        def probe():
+            if discovery is None:
+                raise AssertionError("gh must not be probed in this test")
+            return discovery
+
+        monkeypatch.setattr(install_cli, "git_identity_discovery", probe)
+
+    return script
+
+
+@pytest.fixture
+def onboarding_registry(install_home, monkeypatch):
+    """Host, data directory, a no-op Codex step and the real onboarding steps."""
+    from src.cli import install as install_cli
+    from src.install import logins as logins_module
+    from src.install.onboarding import onboarding_steps
+    from src.install.prerequisites import data_directory_step, host_step
+    from src.install.results import StepResult
+    from src.install.steps import StepRegistry, StepSpec
+
+    def build(_support):
+        codex = StepSpec(
+            id="provider.codex-cli",
+            title="Install or reuse Codex CLI",
+            run=lambda context: StepResult.succeeded("provider.codex-cli", "reused"),
+            capability="provider.codex",
+        )
+        registry = StepRegistry((host_step(), data_directory_step(path=install_home), codex))
+        registry.extend(
+            onboarding_steps(
+                environ={"HOME": str(install_home)},
+                home=install_home,
+                runner=lambda argv, **kwargs: (_ for _ in ()).throw(AssertionError(argv)),
+                which=lambda name: f"/usr/bin/{name}",
+                probe=lambda url: None,
+                dashboard_root=install_home,
+            )
+        )
+        return registry
+
+    monkeypatch.setattr(install_cli, "build_registry", build)
+    # The post-run catalog refresh probes provider CLIs; none exist here.
+    monkeypatch.setattr(logins_module, "probe_all", lambda **kwargs: ())
+    return install_home
+
+
+def _stored_identity(home):
+    import yaml
+
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    return raw.get("git_identity")
+
+
+def test_the_wizard_suggests_the_gh_account_and_enter_saves_it(
+    onboarding_registry, scripted_questions, ask_identity, tmp_path
+):
+    ask_identity(_discovery(_public_suggestion()))
+    folder = tmp_path / "code"
+
+    result = _invoke("--interactive", input=f"\n\n{folder}\n\ny\n")
+
+    assert "GitHub @octocat: public profile email" in result.output
+    assert "Commit as: Mona Lisa Octocat <mona@example.com>" in result.output
+    assert "OK Record the Git commit identity" in result.output
+    assert _stored_identity(onboarding_registry) == {
+        "name": MONA[0],
+        "email": MONA[1],
+        "source": "gh:octocat",
+    }
+
+
+def test_the_wizard_saves_an_edited_identity_and_re_asks_an_invalid_email(
+    onboarding_registry, scripted_questions, ask_identity, tmp_path
+):
+    ask_identity(_discovery(_public_suggestion()))
+    folder = tmp_path / "code"
+
+    result = _invoke(
+        "--interactive",
+        input=f"\n\n{folder}\ne\nAda Lovelace\nnot-an-email\nada@example.com\ny\n",
+    )
+
+    assert "name@domain" in result.output
+    assert result.output.count("Commit email") == 2
+    assert _stored_identity(onboarding_registry) == {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "source": "manual",
+    }
+
+
+def test_without_gh_the_wizard_offers_manual_entry_and_enter_skips_it(
+    install_home, wizard_registry, scripted_questions, ask_identity
+):
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+    ask_identity(_discovery(note="gh is not installed"))
+
+    result = _invoke("--interactive", "--dry-run", input="\n\n\n\n")
+
+    assert "gh is not installed" in result.output
+    assert "Commit name (Enter to set it up later)" in result.output
+    assert f"• {NOT_CONFIGURED_NOTE}" in result.output
+    # The closing note is printed through Rich, which wraps it to the console.
+    assert f"note: {NOT_CONFIGURED_NOTE}" in " ".join(result.output.split())
+    assert _plan_action(result.output, "provider.codex-cli") != "skip_not_selected"
+
+
+def test_a_configured_identity_is_never_asked_for_again(
+    install_home, wizard_registry, scripted_questions, ask_identity
+):
+    ask_identity(None)
+    config = install_home / "config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + "git_identity:\n  name: Grace Hopper\n  email: grace@example.com\n",
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+
+    result = _invoke("--interactive", "--dry-run", input="\n\n\n")
+
+    assert "commits in your projects use this name" not in result.output
+    assert "looking up your GitHub account" not in result.output
+    assert not isinstance(result.exception, AssertionError), result.exception
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["--repair", "--upgrade"])
+def test_repair_and_upgrade_never_ask_for_an_identity(
+    install_home, wizard_registry, scripted_questions, ask_identity, mode
+):
+    ask_identity(None)
+
+    result = _invoke("--interactive", mode, "--dry-run", input="")
+
+    assert "commits in your projects use this name" not in result.output
+    assert "looking up your GitHub account" not in result.output
+    assert not isinstance(result.exception, AssertionError), result.exception
+
+
+def test_explicit_flags_answer_the_wizards_identity_question(
+    install_home, wizard_registry, scripted_questions, quiet_git_identity
+):
+    _invoke(
+        "--interactive",
+        "--dry-run",
+        "--git-name",
+        "Ada Lovelace",
+        "--git-email",
+        "ada@example.com",
+        input="\n\n\n",
+    )
+
+    assert quiet_git_identity.asked == []
+
+
+def test_unattended_flags_record_the_identity(onboarding_registry, quiet_git_identity):
+    result = _invoke(
+        "--non-interactive",
+        "--yes",
+        "--json",
+        "--git-name",
+        "Ada Lovelace",
+        "--git-email",
+        "ada@example.com",
+    )
+
+    payload = _payload(result)
+    row = next(row for row in payload["steps"] if row["step_id"] == "config.git-identity")
+    assert row["state"] == "succeeded"
+    assert _stored_identity(onboarding_registry) == {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "source": "manual",
+    }
+    assert quiet_git_identity.asked == []
+
+
+def test_an_unattended_run_with_nothing_explicit_never_guesses_or_prompts(
+    onboarding_registry, ask_identity
+):
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+    ask_identity(None)
+
+    result = _invoke("--non-interactive", "--yes", "--json", input="")
+
+    payload = _payload(result)
+    assert NOT_CONFIGURED_NOTE in payload["messages"]
+    assert _stored_identity(onboarding_registry) is None
+
+
+def test_the_input_file_supplies_the_identity(onboarding_registry, tmp_path):
+    path = tmp_path / "install.yaml"
+    path.write_text(
+        "settings:\n  git_identity:\n    name: Ada Lovelace\n    email: ada@example.com\n",
+        encoding="utf-8",
+    )
+
+    _invoke("--config", str(path), "--yes", "--json")
+
+    assert _stored_identity(onboarding_registry)["email"] == "ada@example.com"
+
+
+def test_explicit_flags_replace_a_configured_identity(onboarding_registry):
+    _invoke("--non-interactive", "--yes", "--json", "--git-name", "Grace", "--git-email", "g@x.io")
+
+    _invoke("--non-interactive", "--yes", "--json", "--git-name", "Ada", "--git-email", "a@x.io")
+
+    assert _stored_identity(onboarding_registry) == {
+        "name": "Ada",
+        "email": "a@x.io",
+        "source": "manual",
+    }
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (("--git-name", "Ada", "--git-email", "not an email"), "invalid Git identity"),
+        (("--git-name", "Ada"), "must be given together"),
+        (("--git-email", "ada@example.com"), "must be given together"),
+        (("--git-name", "", "--git-email", ""), "must not be empty"),
+    ],
+)
+def test_an_unusable_identity_flag_is_invalid_input(install_home, args, fragment):
+    result = _invoke("--non-interactive", "--yes", *args)
+
+    assert result.exit_code == EXIT_CODES[InstallOutcome.INVALID_INPUT]
+    assert fragment in result.output
+    assert not (install_home / "install-state.json").exists()
+
+
+def test_a_misspelled_identity_setting_is_invalid_input(install_home, tmp_path):
+    path = tmp_path / "install.yaml"
+    path.write_text(
+        "settings:\n  git_identity:\n    name: Ada\n    emial: ada@example.com\n",
+        encoding="utf-8",
+    )
+
+    result = _invoke("--config", str(path), "--yes")
+
+    assert result.exit_code == EXIT_CODES[InstallOutcome.INVALID_INPUT]
+    assert "emial" in result.output
+
+
+def test_identity_flags_win_over_the_input_file(tmp_path):
+    from src.install import build_registry
+    from tests.installer_machine import WSL2
+
+    path = tmp_path / "install.yaml"
+    path.write_text(
+        "settings:\n  git_identity:\n    name: Grace\n    email: g@x.io\n    source: gh:g\n",
+        encoding="utf-8",
+    )
+    options = build_options(
+        build_registry(WSL2),
+        interactive=False,
+        dry_run=True,
+        resume=True,
+        fresh=False,
+        restart_from=None,
+        capabilities=(),
+        approve=(),
+        assume_yes=False,
+        config_path=path,
+        state_path=None,
+        git_name="Ada",
+        git_email="a@x.io",
+    )
+
+    assert options.settings["git_identity"] == {
+        "name": "Ada",
+        "email": "a@x.io",
+        "source": "manual",
+    }
 
 
 # -- repair and upgrade -----------------------------------------------------

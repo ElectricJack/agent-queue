@@ -504,6 +504,10 @@ class PromptBuilder:
     # Build
     # ------------------------------------------------------------------
 
+    def set_context_bundle(self, bundle) -> None:
+        """Use a prepared core bundle and suppress legacy memory injection."""
+        self._context_bundle = bundle
+
     def build(self) -> tuple[str, list[dict]]:
         """Assemble all layers into a system prompt and tool list.
 
@@ -522,11 +526,12 @@ class PromptBuilder:
             sections.append(self._l0_role)
         if self._override_content:
             sections.append(self._override_content)
-        if self._l1_facts:
+        bundle = getattr(self, "_context_bundle", None)
+        if self._l1_facts and bundle is None:
             sections.append(self._l1_facts)
-        if self._l1_guidance:
+        if self._l1_guidance and bundle is None:
             sections.append(self._l1_guidance)
-        if self._l2_context:
+        if self._l2_context and bundle is None:
             sections.append(self._l2_context)
         if self._identity:
             sections.append(self._identity)
@@ -536,6 +541,14 @@ class PromptBuilder:
             sections.append(content)
 
         system_prompt = "\n\n---\n\n".join(sections) if sections else ""
+        if bundle is not None:
+            from src.knowledge.budget import ContextBudget
+
+            ContextBudget(**bundle.budget["requested"]).enforce(
+                system_prompt, bundle.to_markdown(), tools=self._tools,
+            )
+            if bundle.items:
+                system_prompt += "\n\n" + bundle.to_markdown()
         return system_prompt, list(self._tools)
 
     def build_task_prompt(self) -> str:
