@@ -51,7 +51,9 @@ PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 #: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
 #: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
-    "stuck-task-watch": "src/prompts/default_playbooks/stuck-task-watch.md",
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
+    "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
+    "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
     "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
@@ -555,7 +557,7 @@ def _routing_policy_block(source: str) -> str:
 #: (docs/guides/operator-workers.md), and standard-first bugfix escalation
 #: (docs/specs/design/routing-live-context.md).
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:4133b64ec754ff8cd88f1bf0eaa3badff1f34b4d594005705842d4d71edea9bf"
+    "sha256:82e852857e630dfb459b4ddac5f9244ffafb70c2656dbfedd9447c0a8db17412"
 )
 
 ROUTING_BUNDLES = (
