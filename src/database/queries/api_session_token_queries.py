@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 
-from src.database.tables import api_session_tokens
+from src.database.tables import api_session_tokens, sessions
 
 
 class ApiSessionTokenQueriesMixin:
@@ -72,6 +72,41 @@ class ApiSessionTokenQueriesMixin:
             )
             return int(result.rowcount or 0)
 
+    async def renew_supervisor_api_tokens(
+        self, *, now: float, renew_before: float, expires_at: float,
+    ) -> list[str]:
+        """Extend still-valid credentials for the same live supervisor launch.
+
+        Keep the identity checks and expiry/revocation predicate in the UPDATE:
+        a stale cache or a concurrent revocation must never resurrect a token.
+        """
+        token = api_session_tokens.c
+        session = sessions.c
+        live_supervisor = select(session.id).where(
+            session.id == token.session_id,
+            session.instance_token == token.session_instance_token,
+            session.instance_token != "",
+            session.project_id.is_not_distinct_from(token.project_id),
+            session.profile_id == "supervisor",
+            session.lifecycle == "named",
+            session.task_id.is_(None),
+            session.state.in_(("starting", "running")),
+            session.desired_state == "running",
+            session.ended_at.is_(None),
+        ).exists()
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(api_session_tokens).where(
+                    token.elevated.is_(True),
+                    token.task_id.is_(None),
+                    token.revoked_at.is_(None),
+                    token.expires_at > now,
+                    token.expires_at <= renew_before,
+                    live_supervisor,
+                ).values(expires_at=expires_at).returning(token.token_hash)
+            )
+            return list(result.scalars())
+
     async def delete_expired_api_tokens(self, *, now: float) -> int:
         async with self._engine.begin() as conn:
             result = await conn.execute(
@@ -86,3 +121,24 @@ class ApiSessionTokenQueriesMixin:
                 )
             )
             return int(result.rowcount or 0)
+
+    async def uncredentialed_supervisor_sessions(self, *, now: float) -> list[dict]:
+        """Find current named launches whose credentials expired, even after pruning."""
+        token, session = api_session_tokens.c, sessions.c
+        valid = select(token.token_hash).where(
+            token.session_id == session.id,
+            token.session_instance_token == session.instance_token,
+            token.project_id.is_not_distinct_from(session.project_id),
+            token.elevated.is_(True), token.task_id.is_(None),
+            token.revoked_at.is_(None), token.expires_at > now,
+        ).exists()
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(select(
+                session.id, session.name, session.project_id, session.instance_token,
+            ).where(
+                session.profile_id == "supervisor", session.lifecycle == "named",
+                session.state == "running", session.desired_state == "running",
+                session.ended_at.is_(None), session.started_at < now - 60,
+                ~valid,
+            ))).mappings().all()
+            return [dict(row) for row in rows]

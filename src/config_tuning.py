@@ -244,11 +244,12 @@ def recommended_tuning(machine: MachineResources | None = None) -> dict[str, Any
             "retention_days": _by_size(machine, 7, 14, 30),
         },
         "integration": {
+            "git_first": "active",
             "default_mode": "pull_request",
             "merge_ci_policy": "warn",
             "merge_required_checks": [],
             "merge_require_up_to_date": True,
-            "owner_recovery_sweep": False,
+            "owner_recovery_sweep": True,
         },
         "pricing": {"models": _pricing_rows()},
         "max_concurrent_playbook_runs": max(1, min(4, agents)),
@@ -632,6 +633,11 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
             "Raise when debugging model behaviour over a long window.",
         ),
         TuningNote(
+            "integration.git_first",
+            "active: the Git-first train is the delivery engine on every install.",
+            "Trial mode has been removed; remove an old shadow value or set active.",
+        ),
+        TuningNote(
             "integration.default_mode",
             "pull_request: the last link of the policy chain (task override → "
             "project policy → this). It means worker output lands on a branch "
@@ -665,9 +671,12 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
         ),
         TuningNote(
             "integration.owner_recovery_sweep",
-            "false: the first releases of the current stranded-owner backlog should be "
-            "deliberate and observed, not triggered by a daemon restart.",
-            "Set true only after the supervisor has released the existing backlog by hand.",
+            "true: releasing owners whose writers are proven gone is routine, and each "
+            "release is still refused while a writer is live or its branch is not safe "
+            "on origin.",
+            "Set false to release stranded owners only by hand "
+            "(`aq integration release-owner`, `aq doctor --check "
+            "integration.stranded_fences --fix`).",
         ),
         TuningNote(
             "pricing.models",

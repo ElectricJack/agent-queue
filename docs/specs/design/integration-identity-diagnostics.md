@@ -1,5 +1,23 @@
 # Integration identity diagnostics
 
+## Repair delegate reservations
+
+Stage advancement recognizes its exact previous writer in `handoff_pending`.
+Transfer still requires server-side stop and detach proof. A released owner
+can be reserved for the active delegate without resetting its stage budget.
+Integration reconciliation retries interrupted delegate handoffs after owner
+recovery. Unrelated live owners are never replaced.
+
+`aq integration reserve-owner --task-id TASK` also accepts an active repair
+delegate, redispatching its current stage through the same fenced handoff.
+The command remains restricted to the operator or project supervisor.
+`integration.missing_repair_owners` reports active stages whose detached
+delegates lack their reserved repair owner, with the recovery command.
+
+After all delivered-batch cleanup items complete, release the exact detached
+collector reservation recorded by the committed root intent. A successor fence
+or attached writer is retained. Cleanup replay reconciles old reserved rows.
+
 ## Superseded repair intents
 
 Recovery of an unwritten parent conflict resolution preserves the old intent
@@ -143,3 +161,14 @@ Outcomes: `would_rebind`, `rebound` and `nothing_to_rebind` succeed;
 `unproven` (any refusal or unproven SHA, each also listed in `unproven`),
 `blocked` (origin could not be inspected, or the development publisher holds
 the repository), `changed`, `invalid` and `not_found` fail.
+
+### Superseded private candidate repair evidence
+
+Operator recovery may retire a pushed private reservation from an earlier repair
+stage after both stages have expired and the operation is human-required. It
+must freshly prove that the private ref retains the exact repair SHA and that
+the integration ref still names the partial candidate. The original writer must
+be stopped and its branch owner released, with no pending mutation or handoff.
+Record the preserved ref/SHA and successor stage in rejection evidence. This
+does not accept code, move refs, reset a deadline, or grant a writer; ordinary
+resume and a new fenced reservation are still required.
