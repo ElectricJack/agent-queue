@@ -1,0 +1,115 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+      "fingerprint": "ad6d4a0a391ae6f4258668944b00a83526e1fcc8755fe8b2dab231553ba41ced",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_backmerge_source": {
+      "reason": "Authors owed lower-branch sources after freshly observing the released head; each source enters its own frozen batch and PR gate, or records configured disabled backmerge debt."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_promotion_notes_input": {
+      "reason": "Assembles release notes from the exact source and task completions while enforcing outstanding backmerge obligations."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_promotion_policy_input": {
+      "reason": "Returns stored step configuration, exact current or retained hotfix source, outstanding debt and active intent to the reviewed promotion policy."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_approve": {
+      "reason": "Posts a pinned human GitHub approval for an open promotion intent and caches its review evidence for the integration step gate."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_cancel": {
+      "reason": "Closes an unpublished promotion PR and aborts its intent under the integration branch lock; never touches the target or tag."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix": {
+      "reason": "Files a project-scoped ordinary root task on the selected step target and records daemon-owned hotfix routing inputs; completion and publication still require fresh Git and PR gates."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare": {
+      "reason": "Files a routed version and notes preparation task on the exact default head, with immutable worker inputs, and sends it through the ordinary integration train."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_repair": {
+      "reason": "Backs up and restores a stranded promotion intent's daemon-owned task to the IN_PROGRESS, unrouted row StepAdmission admits; never touches the target, tag or PR."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_request": {
+      "reason": "Delegates the command boundary to the shared immutable promotion/backmerge admission mechanism."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_rulesets": {
+      "reason": "Read-only admin ruleset and workflow configuration derived from the validated promotion chain."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_schema": {
+      "reason": "Read-only promotion-flow schema command; owns the integration configuration contract."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_validate": {
+      "reason": "Read-only layered promotion-flow validation against designated-repository trust."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_cached": {
+      "reason": "Reads promotion intents with cached check and PR review evidence from integration batch storage."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_inputs": {
+      "reason": "Authorizes the caller and resolves the project's validated promotion flow and bound integration repository."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_intent": {
+      "reason": "Loads a promotion batch and its immutable request identity from the integration policy snapshot."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_manifest": {
+      "reason": "Reads committed integration trust for promotion-flow validation."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_runtime": {
+      "reason": "Resolves the integration train lane, Git operations and GitHub client for a promotion step target."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._request_promotion": {
+      "reason": "Admits immutable promotion or backmerge requests after exact-source CI, project authority, flow, notes, debt and source-chain checks; retains the source and freezes a separately gated batch."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._woken": {
+      "reason": "Wakes the integration train target when a promotion request, approval or cancellation changes its admission inputs."
+    },
+    "src/commands/promote_commands.py::_check_flow": {
+      "reason": "Rechecks the bound integration repository and promotion policy; holds a shared project-row lock only during intent writes to prevent a concurrent policy edit."
+    },
+    "src/commands/promote_commands.py::_check_pull": {
+      "reason": "Verifies the GitHub PR still matches the pinned promotion source, private head, target and repository identity."
+    },
+    "src/commands/promote_commands.py::_guard_backmerges": {
+      "reason": "Requires the requested source to contain each outstanding lower-branch obligation using current Git ancestry."
+    },
+    "src/commands/promote_commands.py::_hotfix_source": {
+      "reason": "Binds a completed hotfix to one live origin and its retained exact completion generation before allowing a promotion source."
+    },
+    "src/commands/promote_commands.py::_increasing_version": {
+      "reason": "Enforces increasing semver tags for the pinned promotion source."
+    },
+    "src/commands/promote_commands.py::_intent_response": {
+      "reason": "Projects a promotion batch row and its request identity into the command response."
+    },
+    "src/commands/promote_commands.py::_source_inputs": {
+      "reason": "Reads and validates the exact source version and operator-reviewed notes for promotion admission."
+    },
+    "src/commands/promote_commands.py::_unavailable": {
+      "reason": "Converts promotion GitHub failures into unavailable or rate-limited command outcomes while preserving provider retry timing."
+    },
+    "src/commands/promote_commands.py::import from src.commands.supervisor_authority import integration_operator": {
+      "reason": "Promotion validation uses project-scoped integration operator authority."
+    },
+    "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_branch_origins, task_metadata, tasks": {
+      "reason": "Promotion commands use frozen batch/member evidence, designated repository configuration, task origins and daemon-owned task inputs."
+    },
+    "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_metadata, tasks": {
+      "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
+    },
+    "src/commands/promote_commands.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
+      "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
+    },
+    "src/commands/promote_commands.py::import from src.integration.batches import Batch, BatchMember, BatchStore": {
+      "reason": "Promotion requests freeze an integration batch for the step's exact source."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_notes import PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, authored_notes_section, draft_notes, notes_metadata, previous_tag, semver, source_version, step_has_version, step_pr_body": {
+      "reason": "Promotion preparation and admission use integration-owned exact-source version and release-notes mechanisms."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, promotion_ref, promotion_task_defect": {
+      "reason": "Promotion commands use retained step schema, exact-source CI refusal and private request identity contracts."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref": {
+      "reason": "Promotion intents use the integration-owned step identity, result and private request ref."
+    }
+  }
+}

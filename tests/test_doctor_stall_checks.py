@@ -63,6 +63,50 @@ async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
     assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
 
 
+@pytest.mark.parametrize("health", ["stale_contract", "invalid", "unavailable",
+                                    "question_required", "disabled"])
+@pytest.mark.parametrize("scope,pid", [("system", ""), ("project", "paused-project")])
+async def test_activation_faults_reach_sweep_without_tasks(context, monkeypatch, health, scope, pid):
+    from unittest.mock import AsyncMock
+
+    from src.playbooks.activation import ActivationHealth, ActivationHealthRecord, HealthReason
+
+    context.config.playbooks.enabled = True
+    context.handler._v2_lookups = AsyncMock(return_value=(object(), object(), None))
+    context.db.list_projects = AsyncMock(return_value=[])
+    record = ActivationHealthRecord(
+        "activation-one", "broken-policy", scope, pid, True, "sha256:" + "a" * 64,
+        ActivationHealth(health), (HealthReason("command_contract_changed", "changed", "gate_create"),),
+        activated_at=NOW - 7200,
+    )
+    monkeypatch.setattr(import_module("src.playbooks.activation"), "load_activation_health",
+                        AsyncMock(return_value=[record]))
+    context.reference_time = NOW
+    result = await module._check_sweep(context)
+    [alert] = result.data["findings"]
+    assert alert["kind"] == "playbook_activation_unhealthy"
+    assert alert["project_id"] == (pid or None)
+    assert alert["activation_age_seconds"] == 7200
+    assert "gate_create" in alert["detail"] and "2.0h ago" in alert["detail"]
+    result.observation_data = [alert]
+    [observation] = module._stall_observations(result)
+    assert observation["subject"] == {"type": "playbook_activation", "id": "activation-one"}
+    assert any(p["kind"] == alert["kind"] and p["project_id"] == (pid or None)
+               and p["complete"] for p in result.coverage)
+
+
+async def test_activation_read_failure_cannot_prove_health(context):
+    from dataclasses import replace
+
+    context.config.playbooks.enabled = True
+    probe = await module._probe(
+        replace(context, read_only=True), {"one"}, ("playbook_activation_unhealthy",),
+        lambda c: module._activation_findings(c, NOW),
+    )
+    assert probe.findings == []
+    assert all(not p["complete"] and "probe_unavailable" in p["reasons"] for p in probe.coverage)
+
+
 async def test_container_dependencies_sweep_reports_cap_and_retargeting(context, monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -192,8 +236,12 @@ class DB:
     async def list_workspaces(self, project_id=None):
         return [w for w in self.workspaces if project_id in (None, w.project_id)]
 
+    async def count_available_workspaces(self, project_id, **kwargs):
+        return 1
+
     async def get_project(self, project_id):
-        return SimpleNamespace(id=project_id, git_identity_name=None, git_identity_email=None)
+        return SimpleNamespace(id=project_id, max_concurrent_agents=2,
+                               git_identity_name=None, git_identity_email=None)
 
     async def list_provider_availability(self):
         return self.providers
@@ -583,7 +631,7 @@ async def test_sweep_reports_missing_delivery_engine_without_waiting_for_tasks(c
         "_provider_findings", "_unmaterialized_pr_findings", "_completed_undelivered_findings",
         "_unadmitted_parent_findings", "_stranded_child_findings", "_reviewed_file_guard_findings",
         "_orphaned_pr_findings", "_validation_findings", "_subject_unknown_findings",
-        "_object_bootstrap_findings", "_worker_relaunch_findings", "_stranded_promotion_findings",
+        "_object_bootstrap_findings", "_worker_relaunch_findings", "_delivery_stuck_findings", "_stranded_promotion_findings",
     ):
         monkeypatch.setattr(module, name, AsyncMock(return_value=[]))
     monkeypatch.setattr(module, "_log_findings", lambda *args: [])
@@ -664,7 +712,7 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
     assert findings[1]["detail"] == "offline"
 
 
-async def test_a_stranded_child_line_names_the_missing_path(context):
+async def test_legacy_subject_absence_does_not_report_a_train_child_as_stranded(context):
     """The shape both PR lines miss: completed, pushed, no PR, no delivery."""
     context.db.rows = [
         {"task_id": "container.1", "project_id": "one", "parent_task_id": "container",
@@ -680,14 +728,9 @@ async def test_a_stranded_child_line_names_the_missing_path(context):
 
     findings = await module._stranded_child_findings(context, NOW)
 
-    assert [item["kind"] for item in findings] == ["stranded_child", "stranded_child"]
-    first = findings[0]
-    assert first["project_id"] == "one" and first["parent_task_id"] == "container"
-    assert "22m" in first["detail"] and "aq/container.1" in first["detail"]
-    # Every part of the container's path is named, including the absent ones.
-    assert "checkpoint awaiting_children" in first["detail"]
-    assert "operation none" in first["detail"] and "Subject none" in first["detail"]
-    assert "no collector will carry it" in findings[1]["detail"]
+    # Parent Subjects no longer collect children. These rows cannot prove a
+    # train stall; current train status supplies its blockers instead.
+    assert findings == []
 
 
 async def test_the_stranded_child_line_is_quiet_on_a_healthy_train(context):
@@ -843,3 +886,19 @@ async def test_delivery_held_ready_work_is_not_reported_as_unclaimed(context):
     assert finding["kind"] == "WAITING-ON-DELIVERY"
     assert finding["blockers"] == ["source.6"]
     assert "aq/epic" in finding["detail"]
+
+
+async def test_workspace_capacity_sweep_names_physical_holds(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    holds = [{"workspace_id": "held", "reason": "hibernated_checkout", "task_id": "paused"},
+             {"workspace_id": "stale", "reason": "stopped_agent_lock", "agent_id": "old"}]
+    monkeypatch.setattr(context.db, "count_available_workspaces", AsyncMock(return_value=0))
+    read = AsyncMock(return_value=holds)
+    monkeypatch.setattr(import_module("src.workspace_ownership"), "workspace_capacity_holds", read)
+    [finding] = await module._workspace_capacity_findings(context, {"one"}, [task("ready")])
+    assert finding["kind"] == "workspace_capacity_held"
+    assert finding["holds"] == holds and finding["ready_task_ids"] == ["ready"]
+    read.assert_awaited_once_with(context.db, "one")
+    context.db.count_available_workspaces.return_value = 1
+    assert await module._workspace_capacity_findings(context, {"one"}, [task("ready")]) == []
