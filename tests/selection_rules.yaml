@@ -22,6 +22,7 @@ global_invalidators:            # any change -> M = U (spec §4.2)
   - "tests/conftest.py"
   - "tests/pg_dsn.py"
   - "tests/db_fixtures.py"
+  - "tests/reuse_databases.py"
   - "tests/alembic_revisions.py"
   - "migrations/**"
   - "src/__init__.py"

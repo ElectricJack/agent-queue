@@ -4,9 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
-from src.database.tables import escalations, projects, tasks, wait_records
+from src.database.tables import escalations, integration_batches, projects, tasks, wait_records
 from src.git.manager import GitError, GitManager
 from src.integration import delivery_truth
 from src.integration.delivery_truth import DeliverySnapshot
@@ -32,7 +32,8 @@ async def world(reuse_database, monkeypatch):
                                     task_status="COMPLETED") for tid in task_ids}
 
     entry = dict(task_id="t", project_id="p", archived=False, root=True,
-                 branch="aq/t", head="a" * 40, wip=False, rule="stranded_root")
+                 branch="aq/t", head="a" * 40, wip=False, rule="stranded_root",
+                 reason="no delivery owner")
     observe = AsyncMock(return_value={"entries": [entry], "unavailable": []})
 
     async def scan(**kwargs):
@@ -164,6 +165,70 @@ async def test_partial_hand_landing_still_owes_work(world, history):
     report = await observe_completed_branches(world.db, observer, now=world.now)
     assert report["unavailable"] == []
     assert report["entries"][0]["rule"] == "unreconciled"
+
+
+@pytest.mark.parametrize("intent,lifecycle", [
+    ("open", "testing"), ("open", "repairing"), ("open", "promoting"),
+    ("open", "failed"), ("paused", "testing"),
+])
+async def test_incoming_batch_prevents_takeover_and_resets_streak(world, intent, lifecycle):
+    assert (await world.scan())["deliveries"][0]["stuck_scans"] == 1
+    # Inventory has already called this epic stranded. A child batch sealed
+    # afterward still owns the target, without the epic being a batch member.
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="incoming", project_id="p", repository_id="r", target_ref="refs/heads/aq/t",
+            intent=intent, lifecycle=lifecycle, request_id="incoming",
+            source_manifest_digest="digest", base_sha="a" * 40,
+            integration_branch="aq/batches/incoming", policy_snapshot={}, artifact_snapshot={},
+            cleanup_state="pending", created_at=1, updated_at=1))
+    for _ in range(3):
+        delivery = (await world.scan())["deliveries"][0]
+        assert (delivery["state"], delivery["reason"], delivery["stuck_scans"]) == (
+            "progressing", "batch_queued", 0)
+        assert delivery["redrive"] is None
+    assert len(await world.rows(tasks)) == 1
+    assert await world.rows(escalations) == []
+
+    async with world.db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="promoted", intent="open"))
+    world.observe.return_value["entries"][0]["head"] = "b" * 40
+    assert (await world.scan())["deliveries"][0]["stuck_scans"] == 1
+    delivery = (await world.scan())["deliveries"][0]
+    assert delivery["redrive"], await world.rows(wait_records)
+    landing = next(row for row in await world.rows(tasks) if row["id"] == delivery["redrive"]["task_id"])
+    assert "b" * 40 in landing["description"]
+    assert "a" * 40 not in landing["description"]
+    (projection,) = await world.rows(wait_records)
+    assert projection["evidence_ref"] == "b" * 40
+
+
+async def test_recovery_fetches_current_epic_head_instead_of_cached_tip(world, history):
+    await history.run("checkout", "aq/t")
+    head = await history.commit("new-child", "new child\n", "collect child batch")
+    await history.run("checkout", "main")
+    target = await history.run("rev-parse", "main")
+    path = await history.run("rev-parse", "--show-toplevel")
+    stale = DeliverySnapshot(history.git, path, "p", "r", "unused", "refs/heads/main", target,
+                             {"refs/remotes/origin/aq/t": history.source})
+    current = DeliverySnapshot(history.git, path, "p", "r", "unused", "refs/heads/main", target,
+                               {"refs/remotes/origin/aq/t": head})
+
+    async def snapshot(_target, *, max_age, cached_only):
+        return current if max_age == 0 else stale
+
+    observer = SimpleNamespace(git=history.git, READ_MAX_AGE=30,
+                               snapshot=AsyncMock(side_effect=snapshot))
+    # The old tip's content is on main, but the just-collected child is not.
+    for _ in range(3):
+        report = await scan_stuck_deliveries(world.db, observer=observer, now=world.now)
+        assert not report["errors"] and not report["unavailable"]
+        world.now += 3600
+    landing = [row for row in await world.rows(tasks) if row["created_by_id"] == "delivery-watchdog"]
+    assert len(landing) == 1
+    assert head in landing[0]["description"]
+    assert history.source not in landing[0]["description"]
+    assert all(call.kwargs["max_age"] == 0 for call in observer.snapshot.await_args_list)
 
 
 async def test_content_present_settles_existing_watchdog_incident(world, history):

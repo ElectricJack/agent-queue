@@ -225,7 +225,8 @@ class DependencyAnalyzer:
                                 data.update(p.relative_to(self.root).as_posix()
                                             for p in candidate.rglob("*") if p.is_file()
                                             and p.name not in {"BUILD", "BUILD.bazel"}
-                                            and not any(part in _SKIP for part in p.parts))
+                                            and not any(part in _SKIP for part in
+                                                        p.relative_to(self.root).parts))
                 for target in targets:
                     imports.update(self._resolve(target))
                     parent = self.known.get(target.rpartition(".")[0])

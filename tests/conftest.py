@@ -12,7 +12,6 @@ import pytest
 from hypothesis import settings
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
-from src.config import DatabaseConfig
 from tests.db_fixtures import lease_dsn
 
 # Fresh per-test PostgreSQL databases use the migration template cache. Individual
@@ -278,7 +277,7 @@ async def _pg_backend():
 
 @pytest.fixture(scope="session")
 def _initialized_databases():
-    from tests.db_fixtures import InitializedDatabases
+    from tests.reuse_databases import InitializedDatabases
 
     return InitializedDatabases()
 
@@ -610,7 +609,7 @@ def command_handler_factory(tmp_path: Path):
 
     async def _make():
         from src.commands.handler import CommandHandler
-        from src.config import AppConfig, DiscordConfig
+        from src.config import AppConfig, DatabaseConfig, DiscordConfig
         from src.database import Database
         from src.orchestrator import Orchestrator
 
@@ -657,7 +656,7 @@ def orchestrator_factory(tmp_path: Path):
 
     async def _make():
         from src.commands.handler import CommandHandler
-        from src.config import AppConfig, DiscordConfig
+        from src.config import AppConfig, DatabaseConfig, DiscordConfig
         from src.database import Database
         from src.orchestrator import Orchestrator
 
