@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `playbook_artifact_diff` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:d5f7a868baa320b2b04b9531f0719c59d12d1d61736ef6e8ae0830bbfd3a65ef` |
+| Contract fingerprint | `sha256:804c4c9fcbf96d839d6b7fffff1d98d1178d8d8f3e888bd34a8f267686384ce3` |
 
 ## Parameters
 
@@ -25,7 +25,7 @@
 | `base_sha256` | `string` | no | — | The artifact to diff against. Defaults to the currently active artifact; absent entirely for a playbook's first artifact, which reports every element as added. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -47,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using playbook_id, target_sha256, base_sha256 | — | always |
+| Read using playbook_id, target_sha256, base_sha256 | — | always |
 
 <!-- aq:generated:end -->
 

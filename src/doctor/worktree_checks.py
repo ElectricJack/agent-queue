@@ -99,6 +99,89 @@ async def _check_worktrees_orphans(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# worktrees.capacity
+# ---------------------------------------------------------------------------
+
+
+async def find_capacity_shortfalls(db) -> list[dict]:
+    """Projects whose enabled worktree slots fall short of their agent cap.
+
+    A disabled slot inside the cap is an agent the pool can never start:
+    acquisition skips it and lazy growth counts it as existing, so the
+    scheduler just reports "no workspace capacity".  One entry per project
+    with at least one such slot, each slot carrying its recorded reason.
+    Shared with ``stall.sweep`` (``src/doctor/stall_checks.py``).
+    """
+    from src.workspace_disable import describe_disabled_slot, disabled_slots_in_cap, slot_cap
+
+    by_project: dict[str, list] = {}
+    for ws in await db.list_workspaces():
+        if ws.is_slot and ws.project_id:
+            by_project.setdefault(ws.project_id, []).append(ws)
+    shortfalls: list[dict] = []
+    for project_id in sorted(by_project):
+        project = await db.get_project(project_id)
+        if project is None:
+            continue
+        disabled = disabled_slots_in_cap(project, by_project[project_id])
+        if not disabled:
+            continue
+        cap = slot_cap(project)
+        shortfalls.append(
+            {
+                "project_id": project_id,
+                "cap": cap,
+                "enabled_in_cap": cap - len(disabled),
+                "disabled_slots": [describe_disabled_slot(ws) for ws in disabled],
+            }
+        )
+    return shortfalls
+
+
+def describe_shortfall(entry: dict) -> str:
+    """One line: ``agent-queue: 2/8 slots enabled (slot-0 unrecorded, ...)``."""
+    slots = ", ".join(
+        f"slot-{s['slot_index']} {s['reason_code']}" for s in entry["disabled_slots"][:6]
+    )
+    more = len(entry["disabled_slots"]) - 6
+    if more > 0:
+        slots += f", +{more} more"
+    return (
+        f"{entry['project_id']}: at most {entry['enabled_in_cap']}/{entry['cap']} "
+        f"slots usable ({slots})"
+    )
+
+
+_CAPACITY_REMEDIATION = (
+    "The slot reconciler re-creates missing slots and re-enables clean ones on "
+    "its 5-minute pass (claim_failures slots after a 15-minute cooldown). "
+    "quarantined_dirty slots need their uncommitted changes salvaged or "
+    "discarded; operator slots stay off until `aq project edit-workspace` re-enables them."
+)
+
+
+async def _check_worktrees_capacity(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("worktrees.capacity")
+    shortfalls = await find_capacity_shortfalls(ctx.db)
+    if not shortfalls:
+        return CheckResult(
+            id="worktrees.capacity",
+            severity=Severity.OK,
+            detail="no disabled worktree slots inside any project's agent cap",
+        )
+    return CheckResult(
+        id="worktrees.capacity",
+        severity=Severity.WARN,
+        detail=(
+            "enabled slots < cap — disabled slots hold the pool below max-agents: "
+            + "; ".join(describe_shortfall(e) for e in shortfalls)
+        ),
+        data={"projects": shortfalls, "remediation": _CAPACITY_REMEDIATION},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -107,6 +190,7 @@ def worktree_checks() -> list[DoctorCheck]:
     """The worktree-execution checks, for registration at daemon startup."""
     return [
         DoctorCheck(id="worktrees.orphans", run=_check_worktrees_orphans, owner=OWNER),
+        DoctorCheck(id="worktrees.capacity", run=_check_worktrees_capacity, owner=OWNER),
     ]
 
 

@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `provider_status` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:063299c8a5320875834dd1c8d12f747836a8cf4a43b2d88b33dcb04064c5fc4c` |
+| Contract fingerprint | `sha256:261889558c32e65293c2ec2a18c6c5638dfaa9b984a86b32ef432bf9ac2f2b61` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `verbose` | `boolean` | no | — | Include the evidence ring and the last ten transitions. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using provider, verbose | — | always |
+| Read using provider, verbose | — | always |
 
 <!-- aq:generated:end -->
 

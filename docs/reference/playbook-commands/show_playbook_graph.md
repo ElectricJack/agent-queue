@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `show_playbook_graph` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:8739fcf05bc2294be82e5a193fe3f77376ba8c768b337481cbb3b4c52be3e588` |
+| Contract fingerprint | `sha256:21dfe8b3260d9b61ffe26078c49603f25bd5060289dfa1f93ef6f26ac83bf4c4` |
 
 ## Parameters
 
@@ -26,7 +26,7 @@
 | `show_prompts` | `boolean` | no | `true` | Include truncated prompt previews in node labels. Default: true. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -48,7 +48,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using playbook_id, format, direction, show_prompts | — | always |
+| Read using playbook_id, format, direction, show_prompts | — | always |
 
 <!-- aq:generated:end -->
 
