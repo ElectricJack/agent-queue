@@ -208,6 +208,12 @@ def _fit_brief(brief: dict) -> None:
         }
         for project_id, observed in brief["git"].items()
     }
+    # Reminder rows survive every day, but may not crowd all evidence out of
+    # the bounded brief. Keep their total and explicitly count omitted rows.
+    reminders = brief.get("waiting_on_you", {})
+    while _size(brief) > MAX_BRIEF_BYTES and reminders.get("items"):
+        reminders["items"].pop()
+        reminders["more"] += 1
     facts = [{**fact, "detail": _compact(fact["detail"])} for fact in brief["facts"]]
     members = {
         project["id"]: {group: project[group] for group in _GROUPS} for project in brief["projects"]
@@ -518,6 +524,11 @@ async def collect_morning_evidence(
         "version": 1,
         "kind": "morning",
         "needs_you": snapshot.get("needs_you", {"count": None, "source_health": "refreshing"}),
+        "waiting_on_you": {
+            "items": snapshot.get("waiting_on_you", [])[:10],
+            "count": len(snapshot.get("waiting_on_you", [])),
+            "more": max(0, len(snapshot.get("waiting_on_you", [])) - 10),
+        },
         "window": window,
         "facts": facts,
         "projects": project_briefs,
@@ -546,7 +557,7 @@ async def collect_morning_evidence(
         "omitted": {"facts": 0},
     }
     _fit_brief(brief)
-    has_changes = bool(brief["facts"])
+    has_changes = bool(brief["facts"]) or brief["waiting_on_you"]["count"] > 0
     would_suppress = not has_changes and brief["coverage"]["complete"]
     return {
         "brief": brief,

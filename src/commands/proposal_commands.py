@@ -17,7 +17,7 @@ from pathlib import Path
 from sqlalchemy import exists, insert, or_, select, update
 
 from src.api.auth import RequestScope
-from src.api.scope import spec_ingest_task_for_session
+from src.api.scope import fidelity_review_task_for_session, spec_ingest_task_for_session
 from src.asks.ingestion import approved_packet, stamp_for, task_stamp
 from src.asks.operations import get_operation, operation, succeed
 from src.commands import task_changes
@@ -26,6 +26,12 @@ from src.database.queries import ingest_batch_queries as batches
 from src.database.queries import proposal_queries
 from src.database.tables import (
     approved_document_snapshots,
+    agents,
+    sessions,
+    ask_decisions,
+    human_asks,
+    ingest_batch_members,
+    ingest_batch_receipts,
     events,
     gates,
     ingest_batches,
@@ -37,6 +43,7 @@ from src.models import Task, TaskStatus
 from src.integration.outbox import enqueue_integration_event
 from src.routing.filing import choice_forbidden
 from src.task_graph import batch_checks
+from src.task_graph.batch_digest import canonical_batch_structure, normalize_description
 
 logger = logging.getLogger(__name__)
 
@@ -416,11 +423,14 @@ class TaskProposalCommandsMixin:
         row = await proposal_queries.get_proposal(self.db, proposal_id)
         if row is None:
             return {"success": False, "error": f"proposal '{proposal_id}' not found"}
+        async with self.db._engine.connect() as conn:
+            batch = await batches.get_batch(conn, proposal_id)
+        if batch is not None:
+            return await self._update_held_batch(row, args)
         if row["payload"].get(SPEC_INGEST_META):
-            return {
-                "success": False,
-                "error": "propose a new spec-ingest batch instead of updating it",
-            }
+            return {"success": False, "error": "Legacy ingestion requires reconciliation"}
+        if args.get("operations") is not None:
+            return {"success": False, "error": "operations require a held ingestion batch"}
         try:
             async with task_changes.boundary(self.db, row["project_id"]) as conn:
                 current = (
@@ -451,6 +461,192 @@ class TaskProposalCommandsMixin:
         except Exception as exc:
             return self._change_set_failure(exc, "task_batch_update")
         return {"success": True, "diff": payload["diff"]}
+
+    async def _update_held_batch(self, row, args):
+        """Reviewer-scoped changes, live proof and audit share one commit boundary."""
+        batch_id, project_id = row["id"], row["project_id"]
+        principal = current_principal()
+        reviewer = None
+        if principal and principal.kind is PrincipalKind.SESSION and not principal.elevated:
+            reviewer = await fidelity_review_task_for_session(self.db, RequestScope(
+                kind="session", session_id=principal.session_id,
+                session_instance_token=principal.session_instance_token,
+                project_id=principal.project_id, task_id=principal.task_id,
+            ), batch_id)
+            if reviewer is None:
+                return {"success": False, "code": "authority", "error_code": "authority",
+                        "error": "Only the live assigned reviewer may edit this held batch"}
+        if ((principal and principal.project_id and principal.project_id != project_id)
+                or args.get("project_id") not in (None, project_id)):
+            return {"success": False, "code": "authority", "error_code": "authority",
+                    "error": "Batch belongs to another project"}
+        revision = args.get("expected_revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            return {"success": False, "error": "expected_revision must be a positive integer"}
+        if args.get("payload") is not None:
+            return {"success": False, "error": "held updates take operations, not payload"}
+        try:
+            async with task_changes.boundary(self.db, project_id) as conn:
+                batch = await batches.get_batch(conn, batch_id, lock=True)
+                if batch["state"] not in batches.HELD_STATES:
+                    raise task_changes.ChangeSetError("Batch is not held", "batch_not_held")
+                if batch["structure_revision"] != revision:
+                    raise task_changes.ChangeSetError("Reload the current batch revision", "stale_revision")
+                if reviewer and (batch["reviewer_task_id"] != reviewer.id
+                                 or batch["reviewer_claim_epoch"] != reviewer.claim_epoch
+                                 or batch["reviewer_session_id"] != principal.session_id):
+                    raise task_changes.ChangeSetError("Reviewer assignment changed", "authority")
+                if reviewer:
+                    # Re-read the live holder under the graph writer's claim
+                    # fence: assignment discovery happened before this lock.
+                    live = await conn.scalar(select(tasks.c.id).join(
+                        sessions, sessions.c.task_id == tasks.c.id,
+                    ).join(agents, agents.c.id == sessions.c.agent_id).where(
+                        tasks.c.id == reviewer.id,
+                        tasks.c.claim_epoch == reviewer.claim_epoch,
+                        tasks.c.project_id == project_id,
+                        tasks.c.profile_id == reviewer.profile_id,
+                        tasks.c.route_source == "role", tasks.c.dedup_key == reviewer.dedup_key,
+                        tasks.c.status == "IN_PROGRESS",
+                        tasks.c.assigned_agent_id == agents.c.id,
+                        sessions.c.id == principal.session_id,
+                        sessions.c.project_id == project_id,
+                        sessions.c.profile_id == reviewer.profile_id,
+                        sessions.c.lifecycle.in_(("task", "pool")),
+                        or_(principal.session_instance_token is None,
+                            sessions.c.instance_token == principal.session_instance_token),
+                        sessions.c.state.in_(("starting", "running")),
+                        sessions.c.desired_state == "running",
+                        or_(sessions.c.last_claim_epoch.is_(None),
+                            sessions.c.last_claim_epoch == tasks.c.claim_epoch),
+                        agents.c.enabled.is_(True), agents.c.deleted_at.is_(None),
+                        agents.c.state == "BUSY", agents.c.current_task_id == tasks.c.id,
+                    ))
+                    if live is None:
+                        raise task_changes.ChangeSetError("Reviewer no longer holds its claim", "authority")
+                if batch["state"] == "needs_scope":
+                    # A server-recorded answer permits a new review round; it
+                    # never clears the hold or stands in for a fidelity receipt.
+                    answered = await conn.scalar(select(ask_decisions.c.id).join(
+                        human_asks, human_asks.c.id == ask_decisions.c.ask_id,
+                    ).where(
+                        human_asks.c.project_id == project_id,
+                        human_asks.c.source_key == f"batch-scope:{batch_id}:{revision}",
+                        human_asks.c.decision_state.in_(("answered", "approved", "changes_requested")),
+                        human_asks.c.application_state == "applied",
+                        ask_decisions.c.decision_generation == human_asks.c.decision_generation,
+                        ask_decisions.c.source_fingerprint == human_asks.c.source_fingerprint,
+                    ).limit(1))
+                    if answered is None:
+                        raise task_changes.ChangeSetError("Scope question needs an applied answer", "needs_scope")
+                before_members, before_edges = await batches.hydrate_structure(conn, batch_id, lock=True)
+                before = canonical_batch_structure(before_members, before_edges)
+                digest = await batches.live_digest(conn, batch_id)
+                if digest != batch["structure_digest"]:
+                    raise task_changes.ChangeSetError("Live batch digest changed; reconcile it", "stale_revision")
+                # Even a title-only operation refuses a live holder anywhere in
+                # this held graph. Reuse the same claim/integration proof as release.
+                pre = await batch_checks.run(
+                    conn, batch_checks.BatchGraph.from_members(before_members, before_edges),
+                    authority=batch_checks.Authority(project_id, row["source"]),
+                    expected_revision=revision, batch_id=batch_id,
+                )
+                for finding in pre.hard:
+                    if finding.code in ("active_claim", "integration_owned"):
+                        raise task_changes.ChangeSetError(finding.detail, finding.code)
+                payload = task_changes.held_operations(args.get("operations"), before_members, before_edges)
+                structural = False
+                by_id = {m["task_id"]: m for m in before_members}
+                for edit in payload["edits"]:
+                    if set(edit) - {"task_id", "title", "description", "priority", "tags"}:
+                        structural = True
+                    if "description" in edit and normalize_description(edit["description"]) != (
+                        normalize_description(by_id[edit["task_id"]]["description"])
+                    ):
+                        structural = True
+                structural |= bool(payload["tasks"] or payload["edges"] or payload["remove_edges"])
+                try:
+                    expected, rows, project = await task_changes.snapshot(conn, project_id, payload)
+                    receipt, notifications = await task_changes.apply(
+                        self, conn, project_id, payload, expected, rows, project, row["source"],
+                        hold=batch_id, hold_revision=revision + int(structural),
+                    )
+                except task_changes.ChangeSetError as exc:
+                    if exc.code == "change_set.invalid":
+                        raise task_changes.ChangeSetError(str(exc), "validation_failed") from exc
+                    raise
+                for task_id in receipt["task_ids"]:
+                    await self.db._upsert_meta(task_id, PROPOSAL_ID_META, batch_id, conn=conn)
+                    await self.db._upsert_meta(task_id, SPEC_INGEST_META,
+                                              row["payload"][SPEC_INGEST_META], conn=conn)
+                # Parent edits can change container/leaf roles. Operational
+                # placement is explicit and must survive this derived refresh.
+                active = await batches.members(conn, batch_id, state="active")
+                active_ids = [m["task_id"] for m in active]
+                parents = set((await conn.execute(select(tasks.c.parent_task_id).where(
+                    tasks.c.id.in_(active_ids),
+                ))).scalars())
+                for member in active:
+                    if member["role"] != "operational_root":
+                        await conn.execute(update(ingest_batch_members).where(
+                            ingest_batch_members.c.batch_id == batch_id,
+                            ingest_batch_members.c.task_id == member["task_id"],
+                        ).values(role="container" if member["role"] == "container"
+                                 or member["task_id"] in parents else "leaf"))
+                after_members, after_edges = await batches.hydrate_structure(conn, batch_id)
+                graph = batch_checks.BatchGraph.from_members(after_members, after_edges)
+                report = await batch_checks.run(
+                    conn, graph, authority=batch_checks.Authority(project_id, row["source"]),
+                    expected_revision=revision, batch_id=batch_id,
+                )
+                if report.hard:
+                    raise task_changes.ChangeSetError(
+                        json.dumps(report.to_dict()), "validation_failed",
+                    )
+                # add_leaf/split/combine may never create a container by alias.
+                created = set(receipt["task_ids"])
+                if any(m["task_id"] in created and m["role"] == "container" for m in after_members):
+                    raise task_changes.ChangeSetError("New scoped tasks must be leaves", "validation_failed")
+                results = {**(batch["check_results"] or {}), **report.to_dict()}
+                diff = {"before": before,
+                        "after": canonical_batch_structure(after_members, after_edges),
+                        "created": receipt["task_ids"], "edited": receipt["edited_task_ids"],
+                        "retired": receipt["archived_task_ids"], "structural": structural}
+                results["last_diff"] = diff
+                if structural:
+                    bumped = await batches.bump_revision(conn, batch_id, revision)
+                    if not bumped["success"]:
+                        raise task_changes.ChangeSetError(bumped["error"], bumped["error_code"])
+                    superseded = dict(results.get("superseded_receipts", {}))
+                    for rid in (await conn.execute(select(ingest_batch_receipts.c.receipt_id).where(
+                        ingest_batch_receipts.c.batch_id == batch_id,
+                        ingest_batch_receipts.c.structure_revision <= revision,
+                    ))).scalars():
+                        # Preserve each immutable historical verdict and record
+                        # its supersession in the batch's review audit.
+                        superseded[rid] = revision + 1
+                    results["superseded_receipts"] = superseded
+                elif await batches.live_digest(conn, batch_id) != digest:
+                    raise task_changes.ChangeSetError("Nonstructural edit changed the digest", "validation_failed")
+                if batch["state"] == "needs_scope":
+                    await batches.set_state(conn, batch_id, "held", from_states={"needs_scope"})
+                await batches.set_check_results(conn, batch_id, results)
+                result = await self._batch_receipt(conn, await batches.get_batch(conn, batch_id))
+                result.update(diff=diff)
+                await conn.execute(insert(events).values(
+                    event_type="task.batch_updated", project_id=project_id, timestamp=time.time(),
+                    payload=json.dumps({"batch_id": batch_id, "previous_revision": revision,
+                                        "structure_revision": result["structure_revision"],
+                                        "actor": principal.session_id if principal else "operator",
+                                        "diff": diff}),
+                ))
+        except Exception as exc:
+            failure = self._change_set_failure(exc, "task_batch_update")
+            failure["error_code"] = failure.get("code", "change_set.invalid")
+            return failure
+        await self._publish_committed(batch_id, project_id, receipt["task_ids"], notifications,
+                                      status="held")
+        return result
 
     async def _cmd_task_batch_discard(self, args: dict) -> dict:
         proposal_id = args.get("proposal_id")
