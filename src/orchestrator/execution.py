@@ -320,11 +320,12 @@ class ExecutionMixin:
         """
         task = await self.db.get_task(action.task_id)
         if task is not None:
+            batch = await self._delivery_admission([task.id])
+            task = await self.db.get_task(task.id)
             if task.is_blocked:
                 return "task has unresolved gates or dependencies"
-            batch = await self._delivery_admission([task.id])
             if task.id not in batch.allowed:
-                return "development prerequisite delivery is pending or unknown"
+                return "prerequisite delivery is pending or unknown"
             agent = await self.db.get_agent(action.agent_id)
             mismatch = await self._check_agent_routing(task, agent)
             if mismatch:
@@ -794,9 +795,11 @@ class ExecutionMixin:
         from src.models import SessionRecord
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
         current = await self.db.get_task(action.task_id)
+        resuming = getattr(action, "continuation_id", None) is not None
         if (
             current is None
-            or current.status not in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            or current.status not in ((TaskStatus.RESUME_PENDING,) if resuming
+                                      else (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS))
             or current.assigned_agent_id != action.agent_id
             or current.claim_epoch != task.claim_epoch
         ):
@@ -809,10 +812,13 @@ class ExecutionMixin:
             return
         agent = await self.db.get_agent(action.agent_id)
         routed_task, effective_route = await self._effective_assignment_task(task)
-        mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
         batch = await self._delivery_admission([task.id])
-        if task.id not in batch.allowed:
-            mismatch = "development prerequisite delivery is pending or unknown"
+        task = await self.db.get_task(task.id)
+        mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
+        if (task.id not in batch.allowed or not await batch.matches()
+                or not await batch.is_fresh(task.id)
+                or batch.pr is not None and not await batch.pr.verify_workspace(task.id, workspace)):
+            mismatch = "prerequisite delivery is pending or unknown"
         if mismatch is None and routed_task is None:
             mismatch = "awaiting intelligence route"
         if mismatch is None:
@@ -933,7 +939,8 @@ class ExecutionMixin:
             api_token = _uuid.uuid4().hex
         resume_key = None
         try:
-            resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
+            if not resuming:
+                resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
         except Exception:
             pass
         if resume_key:
@@ -985,7 +992,10 @@ class ExecutionMixin:
             api_token=api_token,
             resume_key=resume_key,
             workspace_source_type=source_type,
-            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
+            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch), **({
+                "AQ_CONTINUATION_ID": action.continuation_id,
+                "AQ_CONTINUATION_GENERATION": str(action.generation),
+            } if resuming else {})},
             git_identity=resolve_git_identity(self.config, project).identity,
         )
 
@@ -1008,9 +1018,12 @@ class ExecutionMixin:
             git_identity_digest=spec.git_identity_digest,
         )
 
-        hierarchy_enabled = getattr(
-            project, "hierarchical_integration_mode", "disabled"
-        ) in {"hierarchy", "train"}
+        if resuming:
+            await self.wait_service.lifecycle.resume.bind_launch(action, launch_record)
+
+        from src.integration.train_policy import worker_integration_enabled
+
+        hierarchy_enabled = await worker_integration_enabled(self.db, project)
         integration_ownership = None
         integration_fence = None
         if hierarchy_enabled:
@@ -1084,6 +1097,9 @@ class ExecutionMixin:
         except SessionLaunchUncertain as exc:
             logger.exception("Task %s: launch retained for session reconciliation", task.id)
             release_canary()
+            if resuming:
+                await self._fail_session_launch(action, task, str(exc))
+                return
             if integration_ownership is not None:
                 # Keep the failed writer visible while the existing handoff
                 # protocol proves it stopped. Unknown termination retains
@@ -1187,6 +1203,12 @@ class ExecutionMixin:
         ``session_launch_failed`` backoff below.
         """
         from src.providers import inflight
+
+        if getattr(action, "continuation_id", None):
+            await self.wait_service.lifecycle.resume.failed(
+                action, task, reason, handler=self._command_handler,
+            )
+            return
 
         availability = getattr(self, "provider_availability", None)
         disposition = inflight.decide(availability, failure)
@@ -1481,23 +1503,28 @@ class ExecutionMixin:
         # else in this function would ever look at the workspace — which is
         # exactly how five commits left a slot worktree and vanished
         # (``src/orchestrator/stranded_work.py``).  Push first, and refuse
-        # the close when the push fails and the agent is still there to fix
-        # it.  Runs before any transition: a refused close must leave the
-        # task exactly as it found it.
+        # the close when preservation fails or cannot be proved and the
+        # agent is still there to fix it. Runs before any transition: a
+        # refused close leaves the task exactly as it found it.
         stranded = None
         if outcome != "pass" and not repair_delegate:
             stranded = await self._preserve_unpushed_on_failure(
                 task, workspace_path, project_id=task.project_id
             )
-            if stranded.status == "push_failed" and session_live:
+            if session_live and (
+                stranded.status == "push_failed"
+                or stranded.status == "unknown" and workspace_path is not None
+            ):
                 from src.orchestrator.stranded_work import unpushed_close_issues
 
                 issues = unpushed_close_issues(stranded)
                 current = await self.db.get_task(task.id)
                 logger.warning(
-                    "Task %s: close refused, %d commit(s) are on no remote branch",
+                    "Task %s: close refused, preservation status=%s, count=%d: %s",
                     task.id,
+                    stranded.status,
                     stranded.count,
+                    stranded.error,
                 )
                 return {
                     "status": (current or task).status.value,
@@ -1540,10 +1567,9 @@ class ExecutionMixin:
             try:
                 children = await self.db.get_children(task.id, limit=1)
                 checkpoint = await self.db.get_integration_checkpoint(task.id)
-                hierarchy_enabled = (
-                    getattr(project, "hierarchical_integration_mode", "disabled")
-                    in {"hierarchy", "train"}
-                )
+                from src.integration.train_policy import worker_integration_enabled
+
+                hierarchy_enabled = await worker_integration_enabled(self.db, project)
                 managed_parent = bool(
                     hierarchy_enabled
                     and (children or checkpoint and checkpoint.get("episode_id") is not None)
@@ -1887,7 +1913,10 @@ class ExecutionMixin:
                 }
 
         if outcome == "pass" and completed_ok:
-            from src.integration.completion_ci import verify_completion_ci
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
 
             ci = await verify_completion_ci(
                 self.db, getattr(self, "git", None), self.config, task, project,
@@ -1896,8 +1925,8 @@ class ExecutionMixin:
             if ci is not None:
                 if ci["state"] != "green":
                     feedback = (
-                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}; "
-                        "resolve the checks or wait for CI and retry close."
+                        f"{describe_completion_ci(ci)} Resolve the named stage or checks "
+                        "or wait for CI and retry close."
                     )
                     return {
                         "status": task.status.value, "pr_url": pr_url, "pipeline_ok": False,
@@ -1917,6 +1946,30 @@ class ExecutionMixin:
                 if (accepted_close is not None and isinstance(draft, dict)
                         and draft.get("identity") == accepted_close):
                     draft["completion"]["commits"] = completion_commits
+                    await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
+        close_merge_result = None
+        if (git_completion and completion_source and task.parent_task_id
+                and completion_id and outcome == "pass" and completed_ok):
+            from src.integration.close_runtime import DaemonClose
+
+            close_runtime = DaemonClose(self)
+            operation = await close_runtime.store.get(completion_id)
+            if operation is not None:
+                try:
+                    close_merge_result = await close_runtime.run(completion_id)
+                except Exception as exc:
+                    return {"status": task.status.value, "pipeline_ok": False,
+                            "verification_retry": True, "issues": [str(exc)],
+                            "feedback": "Retain the source and candidate; continue this close."}
+                if not close_merge_result["completed"]:
+                    return {"status": task.status.value, "pipeline_ok": False,
+                            "verification_retry": True, "close_merge": close_merge_result}
+                # Source S, never integration candidate M, is the completion.
+                from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+
+                draft = await self.db.get_task_meta(task.id, PENDING_COMPLETION_KEY)
+                if draft and draft.get("identity") == accepted_close:
+                    draft["completion"]["commits"] = [completion_source]
                     await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED
@@ -1992,6 +2045,17 @@ class ExecutionMixin:
         # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
         # it even when the agent never called ``aq task set --pr-url``.
         pr_kwargs = {"pr_url": pr_url} if pr_url else {}
+        # A ``pull_request`` completion leaves its work on that open PR, so
+        # ``blocks`` dependents wait on its ``pr-merged`` gate rather than on
+        # COMPLETED alone.  Managed projects deliver through their own paths.
+        if pr_url and new_status == TaskStatus.COMPLETED:
+            from src.integration.delivery_path import MANAGED_MODES
+
+            if (
+                getattr(project, "hierarchical_integration_mode", None) not in MANAGED_MODES
+                and await self._effective_integration_mode(task) == "pull_request"
+            ):
+                pr_kwargs["pr_merge_gate"] = pr_url
         try:
             if managed_parent_suspended or managed_parent_completed:
                 # The suspension transition and episode reservation above
@@ -2461,6 +2525,8 @@ class ExecutionMixin:
             # archive path for nothing.
             "slot_restored": slot_restored,
         }
+        if close_merge_result is not None:
+            response["close_merge"] = close_merge_result
         if repair_writer_closed:
             # The canonical ref may be absent from the base checkout used by
             # task close. Preserve the head proved under the repair writer's
@@ -2550,13 +2616,13 @@ class ExecutionMixin:
                 event_bus=self.bus,
                 project_id=project_id,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Task %s: unpushed-work check failed", task.id, exc_info=True
             )
             from src.orchestrator.stranded_work import StrandedWork
 
-            return StrandedWork(status="unknown")
+            return StrandedWork(status="unknown", error=f"{type(exc).__name__}: {exc}")
 
         if stranded.branch and stranded.status in ("pushed", "no_remote", "push_failed"):
             try:

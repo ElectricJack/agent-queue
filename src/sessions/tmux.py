@@ -335,12 +335,23 @@ class TmuxProvider(SessionProvider):
 
         # ``exec`` so the agent *is* the pane process, not a child of a
         # lingering shell — process discovery and signalling depend on it.
-        # tmux replaces a pane's PATH with the client's PATH even when
-        # new-session -e PATH=... set the session environment. Restore the
-        # same lookup context used by preflight at exec time; quote it as
-        # literal data, including relative entries and shell metacharacters.
-        launch_path = shlex.quote(spec.env.get("PATH", os.defpath))
-        shell_cmd = f"PATH={launch_path} exec " + " ".join(shlex.quote(a) for a in spec.command)
+        # -e overlays the persistent tmux server's environment; omitted keys
+        # can still leak from the shell that originally started that server.
+        # Start the agent with exactly the scrubbed env plus tmux's terminal
+        # metadata. Reapply PATH too: tmux substitutes the client's PATH even
+        # when -e set a different, preflight-validated value.
+        launch_env = {"PATH": os.defpath, **spec.env}
+        terminal_env = " ".join(
+            f'{key}="${key}"' for key in ("TERM", "TMUX", "TMUX_PANE")
+            if key not in launch_env
+        )
+        shell_cmd = "exec /usr/bin/env -i " + terminal_env + " " + " ".join(
+            shlex.quote(arg)
+            for arg in (
+                *(f"{key}={value}" for key, value in launch_env.items()),
+                *spec.command,
+            )
+        )
 
         args = ["new-session", "-d", "-s", spec.session_name, "-c", str(work_dir)]
         for key, value in spec.env.items():
