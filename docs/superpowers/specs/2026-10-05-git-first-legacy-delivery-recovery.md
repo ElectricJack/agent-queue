@@ -16,6 +16,18 @@ current completion generation. No attestation transfers to a later completion.
 This is a read-only compatibility exception; journals, receipts, outbox and old
 runtime projections remain outside train authority.
 
+A completed epic whose current passing descriptive completion records an exact
+source OID but lacks its retained completion marker may also be excluded by Git
+ancestry or a no-op merge of that exact source into the designated root. The
+merge must add no non-generated changes or conflicts. This compatibility proof
+does not use a live branch tip, an older completion, a failing close or an
+invalid marker, and does not apply to leaves or change strict delivery truth.
+Discovery, stale epic settlement and origin retirement share this proof.
+Retirement still rechecks the current completion and Git freshness. Automatic
+refresh also accepts a no-op merge of the live epic head after proving every
+required child delivered; it rechecks the closed graph and both observed branch
+heads before skipping.
+
 Apply the member limit after excluding delivered work and selecting the target,
 so recent delivered completions cannot starve older owed inputs. Discovery probes
 run concurrently outside database connections with a five-second bound; unavailable
@@ -24,6 +36,12 @@ evidence preserves owed targets, whose visits perform their own root proof.
 A completed epic with no owed children produces no epic target. An already frozen
 epic batch containing root-delivered inputs is held with a visible blocker, avoiding
 duplicate builds, repairs and publication until a supervisor aborts it.
+
+A stale epic visit also checks the current epic completion's root delivery before
+refreshing checks or evaluating its collection branch. Proven delivery reports
+`delivered`, even after that branch is retired, without recording another aggregate
+completion. A missing branch alone or an attestation for an older completion does
+not prove delivery and retains the ordinary readiness blockers.
 
 ## Recovery controls
 
@@ -34,6 +52,12 @@ them. Per-project target scope checks both the task and any supplied origin.
 
 Abort observes the target and candidate, refuses promoted work, and rechecks both
 under the same batch row lock used by publication before setting intent to aborted.
+Promotion is proven by a recorded `promoted` lifecycle or Git truth containing
+every frozen member's whole source in the target. Candidate ancestry alone is
+insufficient: a conflict on the first member publishes the target itself as the
+repair start, and a later conflict can publish only some members. Both batches
+remain abortable while any member is missing. Unavailable member proof refuses
+abort; preview performs the same checks without changing intent or audit history.
 The exact aborted inputs remain withheld from that target.
 
 Retire requires the previewed origin id and delivery proof for the current completed
