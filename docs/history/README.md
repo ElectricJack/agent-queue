@@ -104,6 +104,7 @@ None of them is true now.
 * [Disposition ledger](disposition-ledger.md) — every file, its disposition, and the reason.
 * [The documentation map](../documentation-map.md) — the current tree and who owns each page.
 * [Known inaccuracies](../plans/documentation-overhaul/known-inaccuracies.md) — contradictions recorded with evidence.
+* [Final coverage and disposition report](../plans/documentation-overhaul/final-coverage-report.md) — final navigation and coverage verification.
 * [Documentation style](../contributing/documentation-style.md) — the rules that keep a retired claim from coming back.
 
 ## Checking this material

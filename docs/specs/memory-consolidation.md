@@ -12,11 +12,17 @@ tags: [spec, memory, consolidation]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
-> **Status:** Implemented
+> **Status:** Historical; former implementation retired
 > **Author:** Agent (fleet-beacon)
 > **Date:** 2026-04-05
 
 See [design/memory-scoping](design/memory-scoping.md) for scoped collections and [design/memory-plugin](design/memory-plugin.md) for the plugin v2 architecture.
+
+> **Current boundary (2026-10-22).** The implementation described below is retired. Its scheduler and memory
+> backend are absent from core. Current extraction/consolidation writes unverified
+> proposals through the gated knowledge generation loop and ships disabled; see
+> [knowledge records](../guides/knowledge-records.md) and the
+> [extraction provider contract](../reference/knowledge-extraction-provider.md).
 
 ## Problem Statement
 
@@ -277,7 +283,7 @@ The existing `MemoryContext` dataclass gets a new tier:
 class MemoryContext:
     factsheet: str = ""        # NEW: Project factsheet (highest priority, Tier 0)
     profile: str = ""          # Project profile (Tier 1)
-    project_docs: str = ""     # CLAUDE.md etc. (Tier 1.5)
+    project_docs: str = ""     # AGENTS.md / CLAUDE.md etc. (Tier 1.5)
     notes: str = ""            # Relevant notes (Tier 2)
     recent_tasks: str = ""     # Recent task summaries (Tier 3)
     search_results: str = ""   # Semantic search results (Tier 4)

@@ -4,32 +4,130 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import asynccontextmanager
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database.tables import (
+    archived_tasks,
     chat_analyzer_suggestions,
-    task_comments,
     events,
+    integration_batches,
+    project_integration_leases,
     project_constraints,
     projects,
     repos,
-    task_context,
+    task_comments,
     task_completion_records,
+    task_context,
     task_criteria,
     task_dependencies,
+    task_integration_checkpoints,
     task_metadata,
     task_results,
+    task_subtasks,
     task_tools,
     tasks,
     token_ledger,
     workspaces,
 )
+from src.database.tables import sessions
 from src.models import Project, ProjectConstraint, ProjectStatus
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
+
+# Separate from hierarchy/integration writer locks; held before those locks.
+REPOSITORY_BINDING_LOCK_NAMESPACE = 0x41515242  # AQRB
 
 
 class ProjectQueryMixin:
     """Query mixin for project operations.  Expects ``self._engine``."""
+
+    @asynccontextmanager
+    async def project_repository_publication(self, project_id: str):
+        """Keep a first binding from overlapping a project Git push."""
+        async with self._engine.begin() as conn:
+            await conn.execute(select(func.pg_advisory_xact_lock_shared(
+                REPOSITORY_BINDING_LOCK_NAMESPACE, func.hashtext(project_id),
+            )))
+            yield
+
+    async def bind_project_repository(
+        self, project_id: str, *, repo_url: str, expected_repo_url: str,
+        reason: str, operator_id: str,
+    ) -> dict:
+        """First-binding CAS with publication exclusion and atomic audit.
+
+        CommandHandler owns identity, URL and credential validation. This
+        primitive never reassigns an existing authorization or integration.
+        """
+        if not repo_url or not reason.strip() or not operator_id.strip():
+            raise ValueError("repository binding requires a URL, reason and operator identity")
+
+        def refused(code: str, message: str) -> dict:
+            return {"success": False, "error_code": code, "error": message}
+
+        async with self._engine.begin() as conn:
+            available = (await conn.execute(select(func.pg_try_advisory_xact_lock(
+                REPOSITORY_BINDING_LOCK_NAMESPACE, func.hashtext(project_id),
+            )))).scalar_one()
+            if not available:
+                return refused("repository_publication_busy", "A project Git push is in progress")
+            await self.lock_hierarchy_project(conn, project_id)
+            current = (await conn.execute(select(projects).where(
+                projects.c.id == project_id,
+            ).with_for_update())).mappings().one_or_none()
+            if current is None:
+                return refused("project_not_found", "Project not found")
+            old_url = current["repo_url"] or ""
+            if old_url != expected_repo_url:
+                return refused("repository_binding_stale", "The expected repository URL is stale")
+            if old_url:
+                if old_url == repo_url:
+                    return {"success": True, "project_id": project_id,
+                            "repo_url": old_url, "changed": False}
+                return refused("repository_already_bound",
+                               "An existing repository cannot be reassigned")
+            configured = (
+                current["hierarchical_integration_mode"] != "disabled"
+                or current["hierarchical_integration_desired_mode"] != "disabled"
+                or current["hierarchical_integration_draining"]
+                or current["integration_repository_id"] is not None
+            )
+            durable = []
+            for stmt in (
+                select(project_integration_leases.c.project_id).where(
+                    project_integration_leases.c.project_id == project_id,
+                ),
+                select(integration_batches.c.id).where(
+                    integration_batches.c.project_id == project_id,
+                ),
+                select(task_integration_checkpoints.c.task_id).join(
+                    tasks, tasks.c.id == task_integration_checkpoints.c.task_id,
+                ).where(tasks.c.project_id == project_id),
+            ):
+                durable.append((await conn.execute(stmt.limit(1))).first() is not None)
+            if configured or any(durable):
+                return refused(
+                    "repository_integration_active",
+                    "Repository binding requires disabled integration without publication state",
+                )
+            expected = (
+                projects.c.repo_url.is_(None) if current["repo_url"] is None
+                else projects.c.repo_url == expected_repo_url
+            )
+            written = await conn.execute(update(projects).where(
+                projects.c.id == project_id, expected,
+            ).values(repo_url=repo_url))
+            if written.rowcount != 1:
+                return refused("repository_binding_stale", "The expected repository URL is stale")
+            payload = {"project_id": project_id, "old_repo_url": old_url,
+                       "repo_url": repo_url, "reason": reason, "operator_id": operator_id}
+            event_id = await self.log_event(
+                "project.repository_bound", project_id=project_id,
+                payload=json.dumps(payload, sort_keys=True), conn=conn,
+            )
+            return {"success": True, "project_id": project_id, "repo_url": repo_url,
+                    "changed": True, "event_id": event_id}
 
     async def create_project(self, project: Project) -> None:
         """Insert a new project row."""
@@ -52,8 +150,14 @@ class ProjectQueryMixin:
                     discord_channel_id=project.discord_channel_id,
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
-                    default_profile_id=project.default_profile_id,
-                    assignment_playbook_id=project.assignment_playbook_id,
+                    preferred_provider=project.preferred_provider,
+                    supervisor_enabled=project.supervisor_enabled,
+                    # Never unbound (routing spec §8): the command layer passes
+                    # ``routing.default_router``; a caller that passes nothing
+                    # gets that key's default.
+                    assignment_playbook_id=(
+                        project.assignment_playbook_id or DEFAULT_ROUTER_PLAYBOOK_ID
+                    ),
                     integration_mode=project.integration_mode,
                     hierarchical_integration_mode=project.hierarchical_integration_mode,
                     integration_repository_id=project.integration_repository_id,
@@ -65,6 +169,9 @@ class ProjectQueryMixin:
                     hierarchical_integration_generation=(
                         project.hierarchical_integration_generation
                     ),
+                    review_delegate_to=project.review_delegate_to,
+                    git_identity_name=project.git_identity_name,
+                    git_identity_email=project.git_identity_email,
                     created_at=time.time(),
                 )
             )
@@ -82,57 +189,69 @@ class ProjectQueryMixin:
             return self._row_to_project(row) if row else None
         async with self._engine.begin() as owned:
             row = (await owned.execute(stmt)).mappings().fetchone()
-            return self._row_to_project(row) if row else None
+        return self._row_to_project(row) if row else None
 
     async def list_projects(
         self,
         status: ProjectStatus | None = None,
+        *,
+        include_admission: bool = False,
     ) -> list[Project]:
         """List all projects, optionally filtered by status."""
         stmt = select(projects)
+        if include_admission:
+            from src.integration.admission import project_admission_required
+
+            stmt = stmt.add_columns(project_admission_required(projects).label("source_admission"))
         if status:
             stmt = stmt.where(projects.c.status == status.value)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_project(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        found = []
+        for row in rows:
+            project = self._row_to_project(row)
+            if include_admission:
+                project._source_admission_required = row["source_admission"]
+            found.append(project)
+        return found
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""
         control_fields = {
+            "storage_binding",
             "hierarchical_integration_desired_mode",
             "hierarchical_integration_draining",
             "hierarchical_integration_generation",
         }
         if control_fields & kwargs.keys():
             raise ValueError("integration rollout state requires the generation CAS helper")
-        values = {}
-        for key, value in kwargs.items():
-            if isinstance(value, ProjectStatus):
-                value = value.value
-            values[key] = value
+        values = {
+            key: value.value if isinstance(value, ProjectStatus) else value
+            for key, value in kwargs.items()
+        }
         async with self._engine.begin() as conn:
-            if {
-                "hierarchical_integration_mode",
-                "integration_repository_id",
-            } & values.keys():
-                current = (
-                    await conn.execute(select(projects).where(projects.c.id == project_id))
-                ).mappings().one_or_none()
+            if {"hierarchical_integration_mode", "integration_repository_id"} & values.keys():
+                result = await conn.execute(select(projects).where(projects.c.id == project_id))
+                current = result.mappings().one_or_none()
                 if current is None:
                     return
+                proposed = {**current, **values}
                 await self._validate_hierarchical_integration_project(
-                    conn,
-                    project_id,
-                    values.get(
-                        "hierarchical_integration_mode",
-                        current["hierarchical_integration_mode"],
-                    ),
-                    values.get(
-                        "integration_repository_id",
-                        current["integration_repository_id"],
-                    ),
+                    conn, project_id,
+                    proposed["hierarchical_integration_mode"],
+                    proposed["integration_repository_id"],
                 )
             await conn.execute(update(projects).where(projects.c.id == project_id).values(**values))
+            if values.get("supervisor_enabled") is False:
+                # Persist intent with the setting. The reconciler owns stopping
+                # the instance and waits for the current turn to finish.
+                await conn.execute(update(sessions).where(
+                    sessions.c.project_id == project_id,
+                    sessions.c.lifecycle == "named",
+                    sessions.c.name == "n-supervisor--" + project_id,
+                ).values(desired_state="stopped"))
+                await self.redirect_disabled_supervisor_messages(conn=conn)
 
     @staticmethod
     async def _validate_hierarchical_integration_project(
@@ -145,7 +264,9 @@ class ProjectQueryMixin:
             )
         if repository_id is None:
             if mode in {"hierarchy", "train"}:
-                raise ValueError("hierarchy/train mode requires a designated integration repository")
+                raise ValueError(
+                    "hierarchy/train mode requires a designated integration repository"
+                )
             return
         owner = (
             await conn.execute(select(repos.c.project_id).where(repos.c.id == repository_id))
@@ -155,6 +276,13 @@ class ProjectQueryMixin:
 
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (cascading)."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.database.queries.task_references import (
+            describe_integration_references,
+            find_integration_repository_references,
+            find_integration_task_references,
+        )
+
         async with self._engine.begin() as conn:
             # Block concurrent task FK insertion before collecting identities.
             # SQLite needs an actual write to acquire its database write lock.
@@ -165,17 +293,40 @@ class ProjectQueryMixin:
                 )
                 .with_for_update()
             )
-            # Get all task IDs for this project
+            # History may resolve to either a live task or its archived
+            # snapshot. Deleting the project must not turn that evidence into
+            # an orphan just because the task FKs were intentionally removed.
             result = await conn.execute(select(tasks.c.id).where(tasks.c.project_id == project_id))
             task_ids = [r[0] for r in result.fetchall()]
+            archived_ids = list(
+                (
+                    await conn.execute(
+                        select(archived_tasks.c.id).where(archived_tasks.c.project_id == project_id)
+                    )
+                ).scalars()
+            )
+            found = await find_integration_task_references(conn, [*task_ids, *archived_ids])
+            repo_ids = list(
+                (await conn.execute(select(repos.c.id).where(repos.c.project_id == project_id))).scalars()
+            )
+            repository_found = await find_integration_repository_references(conn, repo_ids)
+            if found or repository_found:
+                references = [*found, *repository_found]
+                first = references[0]
+                subject = first.get("task_id") or first["repository_id"]
+                raise HierarchyError(
+                    "integration_history_retained",
+                    f"delete is refused: {len(references)} integration audit record(s) name "
+                    f"{subject} ({describe_integration_references(references)}) and audit "
+                    "history is append-only.",
+                    {"references": references},
+                )
 
             for tid in sorted(task_ids):
                 await self._assert_pause_cleanup_complete(tid, conn=conn)
                 await conn.execute(delete(task_results).where(task_results.c.task_id == tid))
                 await conn.execute(
-                    delete(task_completion_records).where(
-                        task_completion_records.c.task_id == tid
-                    )
+                    delete(task_completion_records).where(task_completion_records.c.task_id == tid)
                 )
                 await conn.execute(
                     delete(task_dependencies).where(
@@ -205,8 +356,12 @@ class ProjectQueryMixin:
             await conn.execute(
                 delete(task_comments).where(task_comments.c.project_id == project_id)
             )
+            await conn.execute(
+                delete(task_subtasks).where(task_subtasks.c.project_id == project_id)
+            )
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
             await conn.execute(delete(repos).where(repos.c.project_id == project_id))
+            await self.delete_dashboard_documents_for_project(project_id, conn=conn)
             await conn.execute(delete(events).where(events.c.project_id == project_id))
             await conn.execute(
                 delete(project_constraints).where(project_constraints.c.project_id == project_id)
@@ -285,9 +440,6 @@ class ProjectQueryMixin:
     @staticmethod
     def _row_to_project(row) -> Project:
         """Convert a database row to a Project model."""
-        channel_id = row.get("discord_channel_id")
-        if not channel_id:
-            channel_id = row.get("discord_control_channel_id")
         return Project(
             id=row["id"],
             name=row["name"],
@@ -296,17 +448,17 @@ class ProjectQueryMixin:
             status=ProjectStatus(row["status"]),
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
-            discord_channel_id=channel_id,
+            discord_channel_id=row.get("discord_channel_id") or row.get("discord_control_channel_id"),
             repo_url=row["repo_url"] if row.get("repo_url") else "",
-            repo_default_branch=row["repo_default_branch"]
-            if row.get("repo_default_branch")
-            else "main",
-            default_profile_id=row.get("default_profile_id"),
-            assignment_playbook_id=row.get("assignment_playbook_id"),
+            repo_default_branch=row.get("repo_default_branch") or "main",
+            preferred_provider=row.get("preferred_provider"),
+            supervisor_enabled=bool(row.get("supervisor_enabled", False)),
+            storage_binding=row.get("storage_binding"),
+            # NOT NULL; an empty binding is read as stored, so doctor
+            # (``routing.bypassed``) sees the project as unbound.
+            assignment_playbook_id=row.get("assignment_playbook_id") or "",
             integration_mode=row.get("integration_mode"),
-            hierarchical_integration_mode=(
-                row.get("hierarchical_integration_mode") or "disabled"
-            ),
+            hierarchical_integration_mode=(row.get("hierarchical_integration_mode") or "disabled"),
             integration_repository_id=row.get("integration_repository_id"),
             hierarchical_integration_policy=row.get("hierarchical_integration_policy"),
             hierarchical_integration_desired_mode=(
@@ -318,4 +470,7 @@ class ProjectQueryMixin:
             hierarchical_integration_generation=int(
                 row.get("hierarchical_integration_generation", 0)
             ),
+            review_delegate_to=row.get("review_delegate_to"),
+            git_identity_name=row.get("git_identity_name"),
+            git_identity_email=row.get("git_identity_email"),
         )
