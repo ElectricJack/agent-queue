@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.approved_spec_packet_response_design_type_0 import ApprovedSpecPacketResponseDesignType0
     from ..models.approved_spec_packet_response_feedback_item import ApprovedSpecPacketResponseFeedbackItem
     from ..models.approved_spec_packet_response_packet import ApprovedSpecPacketResponsePacket
 
@@ -33,6 +34,7 @@ class ApprovedSpecPacketResponse:
         packet (ApprovedSpecPacketResponsePacket):
         feedback (list[ApprovedSpecPacketResponseFeedbackItem]):
         success (bool | Unset):  Default: True.
+        design (ApprovedSpecPacketResponseDesignType0 | None | Unset):
     """
 
     project_id: str
@@ -48,9 +50,12 @@ class ApprovedSpecPacketResponse:
     packet: ApprovedSpecPacketResponsePacket
     feedback: list[ApprovedSpecPacketResponseFeedbackItem]
     success: bool | Unset = True
+    design: ApprovedSpecPacketResponseDesignType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.approved_spec_packet_response_design_type_0 import ApprovedSpecPacketResponseDesignType0
+
         project_id = self.project_id
 
         decision_id = self.decision_id
@@ -83,6 +88,14 @@ class ApprovedSpecPacketResponse:
 
         success = self.success
 
+        design: dict[str, Any] | None | Unset
+        if isinstance(self.design, Unset):
+            design = UNSET
+        elif isinstance(self.design, ApprovedSpecPacketResponseDesignType0):
+            design = self.design.to_dict()
+        else:
+            design = self.design
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -103,11 +116,14 @@ class ApprovedSpecPacketResponse:
         )
         if success is not UNSET:
             field_dict["success"] = success
+        if design is not UNSET:
+            field_dict["design"] = design
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.approved_spec_packet_response_design_type_0 import ApprovedSpecPacketResponseDesignType0
         from ..models.approved_spec_packet_response_feedback_item import ApprovedSpecPacketResponseFeedbackItem
         from ..models.approved_spec_packet_response_packet import ApprovedSpecPacketResponsePacket
 
@@ -158,6 +174,23 @@ class ApprovedSpecPacketResponse:
 
         success = d.pop("success", UNSET)
 
+        def _parse_design(data: object) -> ApprovedSpecPacketResponseDesignType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                design_type_0 = ApprovedSpecPacketResponseDesignType0.from_dict(data)
+
+                return design_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ApprovedSpecPacketResponseDesignType0 | None | Unset, data)
+
+        design = _parse_design(d.pop("design", UNSET))
+
         approved_spec_packet_response = cls(
             project_id=project_id,
             decision_id=decision_id,
@@ -172,6 +205,7 @@ class ApprovedSpecPacketResponse:
             packet=packet,
             feedback=feedback,
             success=success,
+            design=design,
         )
 
         approved_spec_packet_response.additional_properties = d
