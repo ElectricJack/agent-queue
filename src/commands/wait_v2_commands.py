@@ -127,6 +127,12 @@ class WaitV2CommandsMixin:
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
 
+    async def wait_service_quarantine_deadline(self, timers, deadline, refusal):
+        """Internal service mutation; no public worker quarantine authority."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(timers.service.listener)
+            return await timers.quarantine(deadline, refusal)
+
     async def wait_service_resume_stalls(self, lifecycle):
         """Internal maintenance boundary; never exposes service authority to agents."""
         with principal_context(ExecutionPrincipal.service("waits-driver")):

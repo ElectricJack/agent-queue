@@ -287,6 +287,10 @@ class BatchStore:
             ).with_for_update())
             if enabled is None:
                 raise ValueError("automatic integration is off")
+            from src.integration.train_policy import train_policy_on
+
+            if not (await train_policy_on(conn, batch.project_id)).enabled:
+                raise ValueError("train playbook is off")
         requests = await load_delivery_requests(
             self.db, [member.task_id for member in members], repository_id=batch.repository_id,
             target_ref=batch.target_ref, conn=conn, reduced=True,

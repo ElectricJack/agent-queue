@@ -1,30 +1,15 @@
-"""The reduced integration train: level-triggered visits over Git, checks and intent.
+"""Level-triggered Git-first visits over fetched Git, exact-head checks and durable intent.
 
-Under ``integration.git_first: active`` one :class:`IntegrationTrain` takes the
-place of the retired root, parent and development subject runtimes. Every
-visit derives progress from one fetched Git snapshot, the cached
-checks of the exact candidate commit and the batch's durable intent, so a
-restart or a missed notification is repaired by the next visit. There is no
-journal, generation or receipt to replay.
+Each target has one task. Ticks bound repository concurrency and admit the least
+recently started idle targets; checks refresh outside locks before the batch gate.
+Restarts and missed notifications recover on the next visit without journal replay.
 
-Each admitted target (project, repository, target ref) has its own task. A
-tick bounds repository concurrency and admits the least recently started idle
-targets without awaiting running visits. Checks are refreshed outside every
-lock; the batch gate reads only the cached verdict.
-
-A red candidate is refreshed before a repair is allocated: a green observation
-ends the repair with no attempt counted. A red candidate is then measured against
-the target commit it was built on, and only a failure the target does not also
-fail reaches the repair. An epic with only pre-existing failures can instead
-receive one default-branch sync repair when that exact branch has trusted green
-checks and train-produced or attested provenance. An ordinary root can admit
-green pending baseline fixes through an atomic replacement batch. Otherwise
-the candidate's own suites are re-requested under bounded backoff, and the
-bound ends at a named blocker instead of an endless repair chain. The allocator
-counts attempts when it files, never per visit. A merge conflict files one
-ordinary repair whose brief names the conflicting member and every member still to
-be merged, because a repaired head that lacks one of them lets the target advance
-without it.
+Red candidates refresh before allocating repair. The target baseline distinguishes
+inherited failures from new ones. Eligible epic batches may repair inherited failures,
+sync proven default-branch fixes or atomically replace the batch with pending fixes.
+Otherwise suite re-requests use bounded backoff and end at a named blocker.
+Repair attempts count allocations, not visits. Merge-conflict briefs retain every
+frozen member so a partial merge can never authorize target publication.
 """
 
 from __future__ import annotations
@@ -418,6 +403,9 @@ class TrainLane:
     service: BatchService
     checks: CandidateChecks
     repair_policy: RepairPolicy | None = None
+    train_policy: Any = None
+    train_policy_enabled: bool = True
+    train_policy_reason: str | None = None
     complete_epic: Callable[[GitTruthSnapshot], Awaitable[tuple[dict[str, Any], ...]]] | None = None
     sync_default_branch: Callable[
         [Batch, GitTruthSnapshot, str, tuple[str, ...]], Awaitable[dict[str, Any] | None]
@@ -535,8 +523,7 @@ class IntegrationTrain:
         """Bound each repository's visits; give new and longest-waiting targets a turn."""
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
-            return {"started": [], "running": [], "skipped": ["tick_in_progress"],
-                    "deferred": []}
+            return {'started': [], 'running': [], 'skipped': ['tick_in_progress'], 'deferred': []}
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
@@ -579,8 +566,7 @@ class IntegrationTrain:
                 )
                 lane.task.add_done_callback(lambda _done: self._notify_requested())
                 started.append(label)
-            return {"started": started, "running": running, "skipped": [],
-                    "deferred": deferred}
+            return {'started': started, 'running': running, 'skipped': [], 'deferred': deferred}
 
     async def request_visit(self, target: TrainTarget) -> TrainVisit | None:
         """Request a bounded visit through the same admission as the daemon tick."""
@@ -744,6 +730,8 @@ class IntegrationTrain:
                 lane.progress_at = self.clock()
             lane.progress_identity = identity
         lane.last = self._wait(target, lane, visit)
+        if (visit.detail or {}).get("reason") in {"train_policy_wait", "train_policy_unavailable"}:
+            lane.not_before = visit.detail["retry_at"]
         if lane.requested:
             # A state change while this visit awaited Git/checks belongs to
             # another observation, not the backoff of the stale one.
@@ -809,6 +797,10 @@ class IntegrationTrain:
     async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False,
                             depart_next: bool = True) -> TrainVisit:
         lane = await self.lane_for(target)
+        if not lane.train_policy_enabled:
+            return TrainVisit(target, "unknown", detail={
+                "reason": lane.train_policy_reason or "train_policy_unavailable",
+                "retry_at": self.clock() + 30}, observed_at=self.clock())
         _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
         if lane.observe_source:
@@ -1029,6 +1021,11 @@ class IntegrationTrain:
                 head_sha=observation.candidate_sha, authorize=authorize_reservation,
                 held=batch.intent != "open",
             )
+        if (observation.state == "conflict" and lane.train_policy
+                and lane.train_policy.action("conflict") == "wait"):
+            return replace(self._visit(target, "conflict", batch, observation), detail={
+                "reason": "train_policy_wait", "retry_at": self.clock() +
+                lane.train_policy.wait_seconds})
         if observation.state == "conflict":
             async def completion_blocker(task_id, starting_sha):
                 return await lane.service.repair_completion_blocker(
@@ -1064,6 +1061,10 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
+            if lane.train_policy and lane.train_policy.action("red") == "wait":
+                return replace(self._visit(target, "red", batch, observation, result), detail={
+                    "reason": "train_policy_wait", "retry_at": self.clock() +
+                    lane.train_policy.wait_seconds})
             if target.kind == "promotion":
                 return self._visit(target, "held", batch, replace(observation, detail={
                     "reason": "promotion_checks_failed",
@@ -1071,9 +1072,26 @@ class IntegrationTrain:
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks, snapshot
             )
+        if hasattr(checks, "reconcile_stuck"):
+            async def authorize_rerun():
+                return await lane.service.repair_authorized(
+                    batch, members, observation.candidate_sha,
+                )
+
+            reconciliation = await checks.reconcile_stuck(batch, head, authorize=authorize_rerun)
+            if reconciliation:
+                observation = replace(observation, detail={
+                    **(observation.detail or {}), "check_reconciliation": reconciliation,
+                })
         missing_push = [check for check in getattr(result, "checks", ())
                         if check.classification == "ci_not_triggered"]
         if missing_push:
+            if lane.train_policy is not None:
+                # A newly required check may not have started yet. Unknown CI
+                # takes the policy's bounded observation path, not a code fixer.
+                return replace(self._visit(target, "testing", batch, observation, result), detail={
+                    "reason": "train_policy_wait", "retry_at": self.clock() +
+                    lane.train_policy.wait_seconds})
             diagnostic = missing_push[0]
             observation = replace(observation, detail={
                 **(observation.detail or {}), "ci_not_triggered": {
@@ -1089,11 +1107,12 @@ class IntegrationTrain:
         members: tuple[BatchMember, ...], observation: BatchObservation, result: ChecksResult,
         head: HeadIdentity, checks: ExactChecks, snapshot: GitTruthSnapshot,
     ) -> TrainVisit:
-        """A red candidate is repaired only where the target is not already red.
+        """Classify red checks and admit bounded repairs on the retained candidate.
 
         A required check that also fails on the target commit this candidate was
         built on is a pre-existing failure, and one the target has not decided is
-        nobody's. An epic can merge a verified default head; an ordinary root
+        nobody's. A sealed epic can repair proven inherited failures when a
+        verified default sync cannot resolve them. An ordinary root
         can admit a green pending baseline fix through a replacement batch.
         Otherwise re-request the candidate's own suites under bounded backoff.
         """
@@ -1119,10 +1138,13 @@ class IntegrationTrain:
             batch, candidate=result, target_sha=baseline_sha, checks=checks,
             target_ref=baseline_ref,
         )
+        sealed_target = (await self.baseline.sealed_target(batch)
+                         if target.kind == "epic" and not batch.epic_refresh
+                         and baseline.pre_existing else None)
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
-                brief=red_brief(baseline, head.sha, candidate=result),
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
             )
             detail = {**(visit.detail or {}), **baseline.detail()}
             if batch.epic_refresh and baseline.repairable:
@@ -1158,6 +1180,18 @@ class IntegrationTrain:
                     return replace(visit, detail={
                         **(visit.detail or {}), **baseline.detail(), "sync_default_branch": sync,
                     })
+        if sealed_target and baseline.pre_existing:
+            visit = await self._repair(
+                target, lane, batch, members, observation, result,
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
+            )
+            return replace(visit, detail={
+                **(visit.detail or {}), **baseline.detail(),
+                **({"sync_default_branch": sync} if sync else {}), "target_repair": {
+                    "epic_task_id": sealed_target,
+                    "checks": list(baseline.pre_existing),
+                },
+            })
         reassembly = None
         if (target.kind in {"root", "development"} and baseline.state == "pre_existing"
                 and lane.baseline_fix_checks is not None):

@@ -24,6 +24,9 @@ from src.wait_runtime.scheduler import SchedulerWaitService
 logger = logging.getLogger(__name__)
 
 
+BRIDGE_TICK_BUDGET_SECONDS = 10.0
+
+
 class WaitService:
     def __init__(self, orch, *, clock=time.time, owner=None, connect=None):
         self.orch = orch
@@ -164,6 +167,11 @@ class WaitService:
     async def drain(self, watermark):
         return await self.orch._command_handler.wait_service_drain(self.listener, watermark)
 
+    async def quarantine_deadline(self, deadline, refusal):
+        return await self.orch._command_handler.wait_service_quarantine_deadline(
+            self.timers, deadline, refusal,
+        )
+
     async def source_commit(self, args, *, principal, scope, handler):
         seq = await self.orch.db.wait_source_commit(**args)
         return {"success": True, "source_seq": seq}
@@ -183,7 +191,7 @@ class WaitService:
     async def tick(self):
         if await self.processing_enabled():
             if self.enabled:
-                await self.startup_bridge()
+                await self._bounded_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
@@ -214,6 +222,20 @@ class WaitService:
             except Exception:
                 logger.exception("Wait continuation maintenance failed")
             await asyncio.sleep(self.listener.renewal_seconds)
+
+    async def _bounded_bridge(self):
+        """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
+        task = getattr(self, "_bridge_task", None)
+        if task is None or task.done():
+            self._bridge_task = asyncio.create_task(self._run_bridge())
+        # A slow pass keeps running; the scheduler continues after the budget.
+        await asyncio.wait({self._bridge_task}, timeout=BRIDGE_TICK_BUDGET_SECONDS)
+
+    async def _run_bridge(self):
+        try:
+            await self.startup_bridge()
+        except Exception:
+            logger.exception("Wait startup bridge failed")
 
     async def startup_bridge(self):
         """Durable project receipts permit restart and newly enabled canary recovery."""

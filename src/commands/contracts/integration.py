@@ -73,6 +73,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_withheld_source",
         "integration_pause_batch",
         "integration_resume_batch",
+        "integration_repair_target",
+        "integration_rerequest_check",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
@@ -92,6 +94,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_fast_forward_pr",
         "integration_delegate_publication",
         "integration_revoke_publication",
     }
@@ -223,6 +226,28 @@ class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
         return self
 
 
+class IntegrationRepairTargetArgs(IntegrationSettleBatchArgs):
+    expected_candidate_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_candidate(self):
+        if not self.dry_run and not is_valid_git_oid(self.expected_candidate_sha or ""):
+            raise ValueError("apply requires the previewed candidate SHA")
+        return self
+
+
+class IntegrationRerequestCheckArgs(IntegrationAbortBatchArgs):
+    check_name: str = Field(min_length=1)
+    expected_candidate_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_candidate(self):
+        if not self.dry_run and (not is_valid_git_oid(self.expected_candidate_sha or "")
+                                or not self.reason.strip()):
+            raise ValueError("apply requires the previewed candidate SHA and a nonblank reason")
+        return self
+
+
 #: Refusals of a withheld-source release; each names the owner decision it needs.
 RELEASE_WITHHELD_REFUSALS = (
     "unknown_batch", "not_aborted", "not_a_member", "already_ejected",
@@ -317,6 +342,10 @@ class IntegrationTrainControlValue(CommandValue):
     replacement_batch_id: str | None = None
     members: tuple[str, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationRepairTargetValue(IntegrationTrainControlValue):
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntegrationReleaseWithheldSourceValue(IntegrationTrainControlValue):
@@ -617,6 +646,14 @@ class IntegrationCloseDeliveredPrArgs(_PreviewHeadArgs):
     reason: str | None = Field(default=None, min_length=1)
 
 
+class IntegrationFastForwardPrArgs(_PreviewHeadArgs):
+    task_id: str = Field(min_length=1)
+    pr_number: int = Field(gt=0)
+    dry_run: bool = True
+    expected_head_sha: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+
+
 class IntegrationOperationalValue(CommandValue):
     id: str | None = None
     head_sha: str | None = None
@@ -725,6 +762,20 @@ class IntegrationCloseDeliveredPrValue(CommandValue):
     task_ids: list[str] = Field(default_factory=list)
     proof: dict[str, Any] | None = None
     undelivered: dict[str, Any] | None = None
+    reason: str | None = None
+
+
+class IntegrationFastForwardPrValue(CommandValue):
+    """A separately filed repair's head adopted into its root PR branch."""
+
+    task_id: str | None = None
+    project_id: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    target_branch: str | None = None
+    previous_oid: str | None = None
+    published_oid: str | None = None
+    root_task_id: str | None = None
     reason: str | None = None
 
 
@@ -1475,8 +1526,8 @@ INTEGRATION_RELEASE_OWNER = _operational_contract(
 INTEGRATION_RESERVE_OWNER = _operational_contract(
     "integration_reserve_owner",
     IntegrationReserveOwnerArgs,
-    ("acquired", "already_reserved", "not_eligible", "not_found"),
-    successes=frozenset({"acquired", "already_reserved"}),
+    ("acquired", "already_reserved", "running", "not_eligible", "not_found"),
+    successes=frozenset({"acquired", "already_reserved", "running"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -1616,6 +1667,16 @@ INTEGRATION_CLOSE_DELIVERED_PR = _operational_contract(
     successes=frozenset({"would_close", "closed", "nothing_to_close"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationCloseDeliveredPrValue,
+)
+
+INTEGRATION_FAST_FORWARD_PR = _operational_contract(
+    "integration_fast_forward_pr",
+    IntegrationFastForwardPrArgs,
+    ("would_publish", "published", "already_published", "changed", "blocked", "not_eligible",
+     "not_found", "invalid"),
+    successes=frozenset({"would_publish", "published", "already_published"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationFastForwardPrValue,
 )
 
 
@@ -2111,6 +2172,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
          IntegrationReleaseWithheldSourceValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
+        ("integration_repair_target", IntegrationRepairTargetArgs, "repairing", IntegrationRepairTargetValue),
+        ("integration_rerequest_check", IntegrationRerequestCheckArgs, "reconciled",
+         IntegrationRepairTargetValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
@@ -2326,6 +2390,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         INTEGRATION_REDRIVE_CHILD,
         INTEGRATION_REOPEN_COLLECTION,
         INTEGRATION_CLOSE_DELIVERED_PR,
+        INTEGRATION_FAST_FORWARD_PR,
         INTEGRATION_FILE_CHILDREN,
         INTEGRATION_CHECKPOINT_PARENT,
         INTEGRATION_MUTATE_HIERARCHY,

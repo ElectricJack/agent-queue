@@ -87563,6 +87563,17 @@
               }
             ],
             "title": "Next Step"
+          },
+          "changed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed"
           }
         },
         "additionalProperties": false,

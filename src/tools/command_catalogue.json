@@ -14872,6 +14872,62 @@
         "type": "object"
       }
     },
+    "integration_fast_forward_pr": {
+      "name": "integration_fast_forward_pr",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "pr_number": {
+            "exclusiveMinimum": 0,
+            "title": "Pr Number",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "task_id",
+          "pr_number"
+        ],
+        "title": "IntegrationFastForwardPrArgs",
+        "type": "object"
+      }
+    },
     "integration_file_children": {
       "name": "integration_file_children",
       "description": "Reserve child origins and advance the parent integration generation atomically.",
@@ -16360,6 +16416,59 @@
         "type": "object"
       }
     },
+    "integration_repair_target": {
+      "name": "integration_repair_target",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationRepairTargetArgs",
+        "type": "object"
+      }
+    },
     "integration_repair_timeout": {
       "name": "integration_repair_timeout",
       "description": "Expire the current repair stage once its absolute deadline has passed.",
@@ -16382,6 +16491,53 @@
           "stage"
         ],
         "title": "IntegrationRepairTimeoutArgs",
+        "type": "object"
+      }
+    },
+    "integration_rerequest_check": {
+      "name": "integration_rerequest_check",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "check_name": {
+            "minLength": 1,
+            "title": "Check Name",
+            "type": "string"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "check_name"
+        ],
+        "title": "IntegrationRerequestCheckArgs",
         "type": "object"
       }
     },

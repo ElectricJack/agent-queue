@@ -84,17 +84,6 @@ class PromotionValue(BaseModel):
     prepared_sha: str | None = None
 
 
-class ConflictResolutionInput(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    intent_id: str
-    operation_id: str
-    resolved_head_sha: str
-    resolved_tree_sha: str
-    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
-    fence: Fence
-
-
 class RequiredCheckSet(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -294,6 +283,7 @@ class IntegrationTrainPolicy(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    playbook_id: str | None = Field(default=None, min_length=1)
     cadence_seconds: int = Field(default=300, gt=0)
     settling_cap_seconds: int = Field(default=1800, gt=0)
     speculative_ci: bool = False
@@ -317,6 +307,8 @@ class IntegrationTrainPolicy(BaseModel):
     @model_serializer(mode="wrap")
     def omit_speculative_defaults(self, handler: SerializerFunctionWrapHandler):
         dumped = handler(self)
+        if self.playbook_id is None:
+            dumped.pop("playbook_id", None)
         if not self.speculative_ci:
             dumped.pop("speculative_ci", None)
         if not self.speculative_public_hosted:

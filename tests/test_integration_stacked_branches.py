@@ -32,6 +32,7 @@ from src.integration.stacked_branches import (
     StackedBranches,
     merge_heads,
     observe_stacks,
+    shared_stack_inputs,
     stacked_policy,
 )
 from src.integration.train import TrainTarget
@@ -203,7 +204,9 @@ async def test_cross_epic_and_root_sources_stack_on_current_parent(stack):
 
 @pytest.mark.parametrize("contained", [False, True])
 @pytest.mark.parametrize("decision", ["label", "pause", "gate", "rejection", "operator"])
-async def test_cross_epic_parent_decisions_travel_through_transitive_sources(stack, decision, contained):
+async def test_cross_epic_parent_decisions_travel_through_transitive_sources(
+    stack, decision, contained, monkeypatch,
+):
     # The foreign epic is still open; no synthetic epic approval is required.
     from src.database.tables import gates, integration_review_evidence, task_gates, task_labels
     from src.operator_decisions import OperatorDecisions
@@ -216,8 +219,17 @@ async def test_cross_epic_parent_decisions_travel_through_transitive_sources(sta
     await db.add_dependency("first", "cross")
     if contained:
         git(stack.origin.clone, "push", "origin", f"{stack.first}:aq/epic", f"{stack.first}:main")
+        import src.integration.stacked_branches as module
+
+        # Exercise an expired ref cache without depending on machine speed.
+        now = module.time.monotonic() + 3
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
+    # Preparation observed the old target before the completions/push above.
+    # Refresh both the snapshot and refs before testing the explicit decisions.
+    view = await observe_stacks(stack.service.observer, "p", task_id="child")
+    assert view.proofs
+    assert await view.fresh()
     assert await db.is_hierarchy_task_runnable("child")
-    assert (await observe_stacks(stack.service.observer, "p", task_id="child")).proofs
     async with db.immediate() as conn:
         if decision == "label":
             await conn.execute(insert(task_labels).values(task_id="other-epic", label="hold:human"))
@@ -1188,6 +1200,58 @@ async def test_stack_view_revalidates_incarnation_and_remote(stack):
     assert await view.fresh()  # the frozen source is independent of its branch tip
 
 
+@pytest.mark.parametrize("interruption", [None, RuntimeError, asyncio.CancelledError])
+async def test_shared_stack_inputs_are_per_project_and_reset_after_exit(monkeypatch, interruption):
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    conn = object()
+    first, second = StackView(None, "p"), StackView(None, "q")
+
+    async def scoped():
+        async with shared_stack_inputs():
+            for _ in range(3):
+                await first.verified_on(conn)
+                await second.verified_on(conn)
+            assert read.await_count == 2
+            if interruption:
+                raise interruption()
+
+    if interruption:
+        with pytest.raises(interruption):
+            await scoped()
+    else:
+        await scoped()
+    for _ in range(2):
+        await first.verified_on(conn)
+    assert read.await_args_list == [((conn, "p"),), ((conn, "q"),),
+                                   ((conn, "p"),), ((conn, "p"),)]
+
+
+async def test_shared_stack_inputs_isolate_overlapping_passes(monkeypatch):
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    entered, finished = asyncio.Event(), asyncio.Event()
+    conn = object()
+    view = StackView(None, "p")
+
+    async def first_pass():
+        async with shared_stack_inputs():
+            await view.verified_on(conn)
+            entered.set()
+            await finished.wait()
+            await view.verified_on(conn)
+
+    async def second_pass():
+        await entered.wait()
+        async with shared_stack_inputs():
+            await view.verified_on(conn)
+            await view.verified_on(conn)
+        finished.set()
+
+    await asyncio.gather(first_pass(), second_pass())
+    assert read.await_count == 2
+
+
 async def test_stack_withholds_prerequisite_when_local_object_validation_fails(stack, monkeypatch):
     observer = stack.service.observer
     view = await observe_stacks(observer, "p", task_id="child")
@@ -1530,3 +1594,103 @@ async def test_stack_currentness_separates_moved_refs_from_missing_git_evidence(
     assert await StackView(db=None, project_id="p").fresh()
     unproven = _stack_view({"main": _ref(_TARGET)}, proofs=proof).without_proofs()
     assert (unproven.proofs, unproven.delivered_refs) == ({}, {})
+
+
+@pytest.mark.parametrize("projection", ["missing", "stale", "prerequisite_missing"])
+@pytest.mark.parametrize("constraint", ["none", "hold", "generation"])
+async def test_stack_publication_recovers_checkpoint_from_current_git_completion(
+    stack, projection, constraint,
+):
+    task_id = "first" if projection == "prerequisite_missing" else "child"
+    async with stack.db._engine.begin() as conn:
+        query = (update(task_integration_checkpoints).values(checkpoint_sha=stack.base)
+                 if projection == "stale" else delete(task_integration_checkpoints))
+        await conn.execute(query.where(task_integration_checkpoints.c.task_id == task_id))
+    if constraint == "hold":
+        old = await stack_record(stack)
+        async with stack.db._engine.begin() as conn:
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id == "child",
+            ).values(stack_snapshot={**old, "hold": "operator_hold"}))
+    elif constraint == "generation":
+        changed = stack.origin.work("first", "changed")
+        await close(stack.db, "first", [changed], close_id="changed", origin=stack.origin)
+    observed = await snapshot(stack.world)
+    assert await stack.service.current(
+        "child", source_sha=stack.child, snapshot=observed,
+    ) is (constraint == "none")
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_lost_stack_projection_still_proves_current_prerequisite_ancestry(stack, changed):
+    async with stack.db._engine.begin() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "child",
+        ).values(stack_snapshot=None))
+    if changed:
+        head = stack.origin.work("first", "new-prerequisite")
+        await close(stack.db, "first", [head], close_id="new-prerequisite", origin=stack.origin)
+    assert await stack.service.current(
+        "child", source_sha=stack.child, snapshot=await snapshot(stack.world),
+    ) is (not changed)
+
+
+@pytest.mark.parametrize("locator", ["missing", "moved", "generation"])
+async def test_current_source_rejection_survives_checkpoint_drift(stack, locator):
+    from src.database.tables import integration_review_evidence
+
+    async with stack.db.immediate() as conn:
+        await conn.execute(insert(integration_review_evidence).values(
+            id="explicit-source-rejection", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="rejected", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=1,
+        ))
+        source = task_integration_checkpoints.c.task_id == "first"
+        if locator == "missing":
+            await conn.execute(delete(task_integration_checkpoints).where(source))
+        else:
+            values = ({"checkpoint_sha": stack.base} if locator == "moved"
+                      else {"generation": 99, "version": 99})
+            await conn.execute(update(task_integration_checkpoints).where(source).values(**values))
+        # Exercise the lost-stack recovery, where fresh Git otherwise proves
+        # the child's exact source includes this completed prerequisite.
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "child",
+        ).values(stack_snapshot=None))
+    observed = await snapshot(stack.world)
+    assert not await stack.service.current("child", source_sha=stack.child, snapshot=observed)
+    # A later explicit approval of that exact source clears the veto even
+    # when the checkpoint remains stale or absent.
+    async with stack.db.immediate() as conn:
+        await conn.execute(insert(integration_review_evidence).values(
+            id="explicit-source-approval", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="approved", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=2,
+        ))
+    assert await stack.service.current("child", source_sha=stack.child, snapshot=observed)
+
+
+async def test_inherited_repository_rejection_uses_project_when_checkpoint_is_missing(stack):
+    from src.database.tables import integration_review_evidence
+    from src.integration.stacked_branches import _unauthorized_sources
+
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "first").values(repo_id=None))
+        await conn.execute(delete(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "first",
+        ))
+        await conn.execute(insert(integration_review_evidence).values(
+            id="inherited-source-rejection", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="rejected", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=1,
+        ))
+        assert await _unauthorized_sources(conn, {"first"}) == {"first"}

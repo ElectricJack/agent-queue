@@ -57,6 +57,29 @@ the block absent from serialized snapshots, so pre-existing snapshots still
 compare equal; do not add the deprecated fields to new policy.
 Epic collection and local development targets freeze immediately.
 
+The installable `fast-smooth-train` playbook supplies the current train policy.
+Copy its shipped source into the project's playbooks, set its scope to
+`project:PROJECT_ID`, and compile and activate it through the ordinary playbook
+commands. Its `integration-policy.train` block chooses immediate admission or a
+finite wait, in-place repair or a finite wait for red/conflicting candidates, and
+the current required checks. Exact green proceeds through the existing publisher
+fence; explicit holds and competing live writers remain binding. Unknown facts
+are retried with a due time. This policy has no repair tasks or exhaustion gates.
+
+Disabling that project activation stops new train batches and fenced writes,
+including author-assisted integration, while workers can publish and close their
+source branches. It preserves frozen sources and candidates. Re-enabling resumes
+from Git. Editing required check names/version/producer affects the same pending
+candidate; it does not abort and requeue that batch. The publisher rechecks the
+current check policy inside its fence, and activation edits serialize with writes.
+
+The conventional activation id is `fast-smooth-train`. For a renamed project
+copy, set the project integration policy's `train.playbook_id` to its id. A missing,
+unreadable or unhealthy bound artifact causes a finite retry, never legacy
+publication. Existing projects without this activation or binding keep their
+pre-install behavior until their operator installs it. The shipped template is
+available on installation but is not automatically activated on existing projects.
+
 A red batch starts one task-free fixer session on its existing candidate branch.
 The session uses a retained checkout outside task slots; subsequent red results
 reuse both the session and checkout. It creates no repair task, claim or successor
@@ -690,6 +713,24 @@ waited (`observe-ci` outcome `infra`); this is the same rule applied to the
 source-CI observation path so the two agree.
 
 ## Delivery evidence
+
+The train automatically re-runs a required Actions job once if its check stays
+`in_progress` for five minutes after its workflow or all job steps completed.
+The check remains pending until fresh authenticated evidence concludes it.
+Integration status includes durable `check_reconciliation` evidence with the
+exact SHA, job, workflow attempt, actor and request outcome. A reserved request
+after interruption, or an unavailable request, consumes the same one-shot bound.
+
+The owning supervisor can preview and apply the same bounded recovery:
+
+```bash
+aq integration rerequest-check BATCH_ID --check 'Tests (postgres-integration)'
+aq integration rerequest-check BATCH_ID --check 'Tests (postgres-integration)' --apply --candidate-sha PREVIEW_SHA --reason 'Reconcile completed workflow with unfinished check'
+```
+
+This uses GitHub's [job rerun endpoint](https://docs.github.com/en/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run),
+which requires Actions write permission. A failed or ambiguous request is retained
+for supervisor attention; it never makes the check green or files a code repair.
 
 `task show` and the dashboard report delivery from receipts and observed Git
 history. A worker close, queued request or historical journal entry alone does

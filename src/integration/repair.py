@@ -57,6 +57,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, is_valid_git_oid
+from src.integration.batches import BatchStore
 from src.integration.engine import root_engine_guard
 from src.integration.green_continuation import (
     enqueue_green_continuation_on,
@@ -248,8 +249,10 @@ class OrdinaryRepairService:
                         table.c.project_id == batch["project_id"],
                         table.c.dedup_key == sync_key,
                     ))
-                    if previous:
-                        return answer("sync_exhausted", task_id=previous)
+                    if previous:  # Nothing else will move this batch: escalate it.
+                        incident = await self._escalate_on(conn, batch, policy, head_sha, previous)
+                        return answer("sync_exhausted", task_id=previous,
+                                      escalation_id=incident["id"])
             if live_lease:
                 return answer("busy")
             stage = policy.allocation_stage(attempt) if policy else None
@@ -323,7 +326,9 @@ class OrdinaryRepairService:
             ).values(repair_attempt_count=attempt, updated_at=self.clock()))
             return answer("filed", task_id=task_id, fence=fence.model_dump(mode="json"))
 
-    async def _escalate_on(self, conn, batch, policy: RepairPolicy, head_sha: str) -> dict:
+    async def _escalate_on(
+        self, conn, batch, policy: RepairPolicy | None, head_sha: str, sync_task: str = "",
+    ) -> dict:
         """One incident and supervisor notice per batch, atomic with allocation."""
         batch_id, now = batch["id"], self.clock()
         incident_id = "escalation-" + ordinary_repair_id(batch_id, 1)
@@ -332,7 +337,13 @@ class OrdinaryRepairService:
                     "whole batch. The train still observes the candidate and clears this "
                     "escalation if it becomes green.")
         choices = ["eject", "abort-batch"]
-        if batch_id.startswith("train-epic-refresh-"):
+        if sync_task:
+            # The one default-branch sync (sync_task) is spent; the batch only re-requests.
+            summary = f"Default-branch sync exhausted for batch {batch_id}"
+            decision = (f"Abort it with aq integration abort-batch {batch_id} --apply --reason "
+                        f"REASON, then aq integration refresh-epic --task EPIC --apply for the epic on "
+                        f"{batch['target_ref']}, or eject the member that conflicts.")
+        elif batch_id.startswith("train-epic-refresh-"):
             decision = (
                 f"Repair epic refresh candidate {head_sha} for batch {batch_id}, retaining "
                 "its frozen default-branch input, or abandon the refresh with "
@@ -346,9 +357,10 @@ class OrdinaryRepairService:
             source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
             supervisor_owner=f"supervisor-{batch['project_id']}", summary=summary,
             task_title=f"Restore delivery of batch {batch_id}",
-            investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
-                           f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
-                           f"Candidate: {head_sha}; target: {batch['target_ref']}."),
+            investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed" + (
+                f" ({policy.primary_attempts} primary, {policy.debug_attempts} debug)"
+                if policy else "") + (f"; default-branch sync {sync_task} is spent" if sync_task
+                else "") + f". Candidate: {head_sha}; target: {batch['target_ref']}."),
             decision_requested=decision, choices=choices, severity="high",
             now=now,
         )
@@ -418,6 +430,18 @@ class OrdinaryRepairService:
         if ordinary_repair_id(value["batch_id"], value["attempt"]) != task_id:
             raise ValueError("ordinary repair input does not match filing identity")
         return value
+
+    async def stale(self, task) -> str | None:
+        """Why an ordinary repair is not its live batch's current attempt (restart refusal)."""
+        if task.created_by_kind != "system" or not (original := await self.input(task.id)):
+            return None
+        batch = await BatchStore(self.db).get(original["batch_id"])
+        if batch and batch.intent != "aborted" and batch.repair_attempt_count == original["attempt"]:
+            return None
+        state = f"batch {original['batch_id']} " + (
+            f"is {batch.intent} at attempt {batch.repair_attempt_count}" if batch else "is gone")
+        return (f"Cannot restart stale repair {task.id}: it is attempt {original['attempt']} but "
+                f"{state}; retire it with aq task close {task.id} --obsolete --reason REASON")
 
     async def recover_published_reservation(self, batch, members, snapshot, service) -> dict:
         """Revisit the current filing before source admission or candidate rebuilding.
@@ -861,9 +885,7 @@ class RepairService:
             if operation_snapshot is None:
                 return {"outcome": "stale", "operation_id": operation_id}
             try:
-                project_id = await self._operation_project_id_on(
-                    conn, dict(operation_snapshot)
-                )
+                project_id = await self._operation_project_id_on(conn, dict(operation_snapshot))
             except ValueError:
                 return {"outcome": "invariant_error", "operation_id": operation_id}
             await self.db.lock_hierarchy_project(conn, project_id)
@@ -2810,10 +2832,7 @@ class RepairService:
                             ("active", "awaiting_completion")
                         ),
                     )
-                    .values(
-                        repair_task_id=repair_task_id,
-                        writer_kind="repair_delegate",
-                    )
+                    .values(repair_task_id=repair_task_id, writer_kind="repair_delegate")
                 )
                 if linked.rowcount != 1:
                     raise RuntimeError("repair stage writer changed while linking delegate")
@@ -2884,11 +2903,7 @@ class RepairService:
             and owner["owner_role"] == "repair"
             and owner["handoff_state"] in {"reserved", "attached"}
         ):
-            fence = Fence(
-                target=target,
-                owner_id=repair_task_id,
-                token=int(owner["fence_token"]),
-            )
+            fence = Fence(target=target, owner_id=repair_task_id, token=int(owner["fence_token"]))
             replay = True
         elif owner["handoff_state"] == "released":
             # ``_archive_one`` releases detached reservations along with the
@@ -4403,13 +4418,7 @@ class RepairService:
                     _manual_pause_control=True,
                     assigned_agent_id=None,
                 )
-            await self._ownership._claim_released(
-                conn,
-                owner,
-                target,
-                operation_id,
-                "collector",
-            )
+            await self._ownership._claim_released(conn, owner, target, operation_id, "collector")
         if transition is not None:
             await self.db.log_blocked_flips(transition.flipped)
             await self.db._notify_settled(transition.settled)
@@ -5208,10 +5217,7 @@ class RepairService:
                     integration_repair_stages.c.repair_task_id.is_(None),
                     integration_repair_stages.c.writer_kind.is_(None),
                 )
-                .values(
-                    repair_task_id=expected_task_id,
-                    writer_kind="existing_verifier",
-                )
+                .values(repair_task_id=expected_task_id, writer_kind="existing_verifier")
             )
             if linked.rowcount != 1:
                 return None
@@ -5506,11 +5512,7 @@ class RepairService:
                 )
                 if not released_claim.released:
                     raise _RepairInvariant("retained writer claim could not be fenced and released")
-            if (
-                changed.rowcount != 1
-                or rebound.rowcount != 1
-                or stage_changed.rowcount != 1
-            ):
+            if changed.rowcount != 1 or rebound.rowcount != 1 or stage_changed.rowcount != 1:
                 raise RuntimeError("retained repair handoff lost its compare-and-swap")
         if released_claim is not None:
             from src.claim_file import remove_claim_file_if_matches
@@ -6472,12 +6474,7 @@ class RepairService:
     def _timeout_value(
         outcome: str, action: str, operation_id: str, stage: int
     ) -> dict[str, Any]:
-        return {
-            "outcome": outcome,
-            "action": action,
-            "operation_id": operation_id,
-            "stage": stage,
-        }
+        return {"outcome": outcome, "action": action, "operation_id": operation_id, "stage": stage}
 
     @staticmethod
     def _dispatch_value(
@@ -6489,11 +6486,7 @@ class RepairService:
         writer_kind: str | None = None,
         fence: Fence | None = None,
     ) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "outcome": outcome,
-            "operation_id": operation_id,
-            "stage": stage,
-        }
+        value: dict[str, Any] = {"outcome": outcome, "operation_id": operation_id, "stage": stage}
         if repair_task_id is not None:
             value["repair_task_id"] = repair_task_id
         if writer_kind is not None:

@@ -2437,9 +2437,17 @@ class GitHubAppConfig:
     app_id: int = field(metadata={"json_schema": {"minimum": 1}})
     installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
     private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
+    actions_permission: str = field(default="read", metadata={"json_schema": {
+        "enum": ["read", "write"],
+    }})
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if not isinstance(self.actions_permission, str) or self.actions_permission not in (
+            "read", "write",
+        ):
+            errors.append(ConfigError("integration", "github_app.actions_permission",
+                                      "must be read or write"))
         if not _is_safe_identity(self.client_id):
             errors.append(
                 ConfigError("integration", "github_app.client_id", "must be a safe identity")
@@ -2464,7 +2472,7 @@ class GitHubAppConfig:
 
 
 _GITHUB_APP_CONFIG_KEYS = frozenset(
-    {"client_id", "app_id", "installation_id", "private_key_path"}
+    {"client_id", "app_id", "installation_id", "private_key_path", "actions_permission"}
 )
 
 _SCRATCH_PROBE_CONFIG_KEYS = frozenset(
@@ -2585,6 +2593,7 @@ def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
                 "app_id": _is_positive_int,
                 "installation_id": _is_positive_int,
                 "private_key_path": _is_safe_path_or_env,
+                "actions_permission": lambda v: isinstance(v, str) and v in ("read", "write"),
             }
             if name == "github_app"
             else {
@@ -5620,6 +5629,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 app_id=github_app_raw.get("app_id"),
                 installation_id=github_app_raw.get("installation_id"),
                 private_key_path=github_app_raw.get("private_key_path", ""),
+                actions_permission=github_app_raw.get("actions_permission", "read"),
             )
         scratch_probe_raw = integ.get("scratch_probe")
         scratch_probe = None

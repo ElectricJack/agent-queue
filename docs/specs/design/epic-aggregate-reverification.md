@@ -11,6 +11,13 @@ must not suppress this observation. Other admission refusals retain authority.
 The full recursive readiness evaluator continues to enforce child
 completion and containment, project/task holds, source identity, checks and reviews.
 
+Branch-based aggregate lookup identifies the unique completed container in the
+target project and repository, including containers with archived children or
+an explicit container flag. Completed repair and role tasks sharing that branch
+do not compete for the epic's identity. Missing or ambiguous container identity
+withholds completion and is logged; it never selects an arbitrary task. The same
+lookup governs closed-epic refresh inputs.
+
 Once a closed epic's required children are contained, aggregate readiness first
 refreshes its private branch from the current default branch when it is behind.
 This also runs immediately after the last child batch publishes and on idle

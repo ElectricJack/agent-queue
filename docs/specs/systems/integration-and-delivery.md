@@ -188,7 +188,11 @@ A repository with no PR host falls back to `direct`.
     ([required-job settlement](../design/required-job-train-settlement.md)).
 - **Pre-existing failure.** `candidate_baseline.py:CandidateBaselineService` compares
   the candidate's failures against the target's baseline. Only failures that the batch
-  introduced are repairable by the batch.
+  introduced are normally repairable by the batch. When an open batch seals its own
+  epic target's subtree, proven target failures are also repairable on the retained
+  candidate: the seal prevents ordinary hierarchy repair. Unknown baseline checks
+  never authorize this exception. Frozen members, repair budgets and publication
+  checks remain authoritative.
 - **Repair.** A bounded fix task filed against a red or conflicting candidate
   (section 3.3.3).
 - **Receipt.** An append-only `task_delivery_receipts` row with a disposition of `code`,
@@ -290,7 +294,15 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
 `_red` (`train.py`, about line 867) handles a red candidate:
 
 - **Every failure pre-dates the batch.** An epic target gets one sync with the default
-  branch. Other targets get a bounded recheck, which ends in the
+  branch. If that sync is unavailable or spent and this open batch seals the epic's
+  subtree, it files an ordinary candidate repair for the proven inherited failures.
+  Mixed candidate/target failures use the same scope exception. The operator or live
+  owning supervisor can preview `aq integration repair-target BATCH_ID` and apply with
+  the previewed `--candidate-sha`, `--target-sha` and a nonblank `--reason`. Apply
+  reobserves checks and both refs; it reuses outstanding repairs and retains the
+  existing attempt budget, intent, source and branch ownership fences. It never
+  reopens the epic, adds children or advances the target. Other targets get a bounded
+  recheck, which ends in the
   `candidate_pre_existing_failure` blocker. A failing check that cannot be identified
   yields `candidate_failing_checks_unknown`. A red promotion target is held.
 - **The batch introduced a failure, or the merge conflicted.** `_repair` calls
