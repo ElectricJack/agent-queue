@@ -28,9 +28,11 @@ from src.integration.ci import (
     CIService,
     FailedCIObservation,
     ParentCISubject,
+    PromotionAttestationPayload,
     TrustedCIObservation,
     TrustedFixtureObserver,
     ci_trust_from_policy,
+    failed_run_verdict,
     select_trusted_attestation,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -270,6 +272,13 @@ class FakeGitHubClient:
         if key == "check_runs":
             if "Agent%20Queue%20Integration%20Attestation" in path:
                 return self.checks.get("attestation", [])
+            if "check_name=" not in path:
+                return [
+                    record
+                    for name, records in self.checks.items()
+                    if name != "attestation"
+                    for record in records
+                ]
             name = "unit" if "unit" in path else "postgres"
             return self.checks.get(name, [])
         if key == "jobs":
@@ -325,7 +334,9 @@ async def test_authenticated_observer_selects_newest_exact_producer_and_coherent
 
     assert observation.payload == AttestationPayload.model_validate(payload_dict())
     assert observation.workflow_ids == {21: 301, 22: 302}
-    assert all("filter=all" in path for path, key in client.paths if key == "check_runs")
+    assert [path for path, key in client.paths if key == "check_runs"] == [
+        f"/repos/acme/widgets/commits/{SHA}/check-runs?filter=all&per_page=100"
+    ]
 
 
 @pytest.mark.asyncio
@@ -358,9 +369,11 @@ async def test_candidate_push_failure_cannot_be_overridden_by_newer_pr_success()
 
 
 @pytest.mark.asyncio
-async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt():
+@pytest.mark.parametrize("producer_id", ["15368", "github-actions"])
+async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt(producer_id):
+    # The numeric id is canonical; the legacy slug keeps matching for frozen snapshots.
     policy = policy_snapshot()
-    policy["root"]["required_checks"]["producer_id"] = "github-actions"
+    policy["root"]["required_checks"]["producer_id"] = producer_id
     gh_trust = ci_trust_from_policy(
         canonical_repository_id="repo-config-1",
         repository_id=303,
@@ -438,7 +451,7 @@ async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt(
     ).observe(gh_trust, SHA)
 
     assert isinstance(observation.payload, CIReceiptPayload)
-    assert observation.payload.producer_id == "github-actions"
+    assert observation.payload.producer_id == producer_id
     assert observation.payload.repository_id == 303
     assert observation.payload.head_sha == SHA
     assert tuple(check.name for check in observation.payload.checks) == ("unit", "postgres")
@@ -548,9 +561,10 @@ async def test_gh_observer_uses_latest_workflow_attempt_and_rejects_wrong_reposi
 
     observation = await AuthenticatedGitHubObserver(client).observe(gh_trust, SHA)
 
-    assert isinstance(observation, FailedCIObservation)
-    assert observation.workflow_runs[0]["workflow_run_id"] == 32
-    assert observation.workflow_runs[0]["run_attempt"] == 2
+    assert isinstance(observation, TrustedCIObservation)
+    assert observation.payload.workflow_runs[0].workflow_run_id == 32
+    assert observation.payload.workflow_runs[0].run_attempt == 2
+    assert observation.payload.workflow_runs[0].conclusion == "failure"
 
     attempts[1] = {
         **attempts[1],
@@ -611,8 +625,51 @@ async def test_gh_observer_rejects_required_check_from_an_older_workflow_attempt
 @pytest.mark.asyncio
 async def test_authenticated_observer_rejects_partial_required_matrix():
     client = FakeGitHubClient({"unit": [], "postgres": []}, [])
-    with pytest.raises(AttestationError, match="missing"):
+    with pytest.raises(AttestationError, match="pending"):
         await AuthenticatedGitHubObserver(client).observe(trust(), SHA)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["queued", "in_progress", "completed"])
+@pytest.mark.parametrize("existing_login", [False, True])
+async def test_missing_check_requires_all_push_workflows_completed(status, existing_login):
+    workflows = [
+        {
+            "id": 31 + index,
+            "workflow_id": 301 + index,
+            "run_attempt": 1,
+            "check_suite_id": 21 + index,
+            "head_sha": SHA,
+            "event": "push",
+            "status": "completed" if index == 0 else status,
+            "conclusion": "success" if index == 0 or status == "completed" else None,
+            "repository": {"id": 303, "full_name": "acme/widgets"},
+            "head_repository": {"id": 303, "full_name": "acme/widgets"},
+        }
+        for index in range(2)
+    ]
+    selected_trust = ci_trust() if existing_login else trust()
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient({"unit": [], "postgres": []}, workflows), expected_event="push"
+    )
+
+    if status != "completed":
+        with pytest.raises(AttestationError, match="pending"):
+            await observer.observe(selected_trust, SHA)
+    else:
+        observation = await observer.observe(selected_trust, SHA)
+        assert isinstance(observation, FailedCIObservation)
+        assert observation.conclusion == "failure"
+        assert observation.workflow_runs == ({
+            "workflow_run_id": 31,
+            "run_attempt": 1,
+            "check_suite_id": 21,
+            "head_sha": SHA,
+            "conclusion": "success",
+        },)
+        assert {check["name"]: check["conclusion"] for check in observation.checks} == {
+            "unit": "missing", "postgres": "missing"
+        }
 
 
 @pytest.mark.asyncio
@@ -674,6 +731,111 @@ async def test_authenticated_observer_returns_normalized_conclusive_failure():
     assert observation.conclusion == "failure"
 
 
+@pytest.mark.parametrize(
+    ("conclusions", "expected"),
+    [
+        # A real failure is conclusive whatever its cancelled siblings say.
+        (("failure", "cancelled"), "failure"),
+        (("cancelled", "failure"), "failure"),
+        (("success", "failure"), "failure"),
+        (("failure", "failure"), "failure"),
+        # GitHub concludes a run 'failure' when no runner was acquired for its
+        # jobs, so cancellations alone stay inconclusive and retry.
+        (("success", "cancelled"), "cancelled"),
+        (("cancelled", "success"), "cancelled"),
+        (("cancelled", "cancelled"), "cancelled"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_required_check_failure_outranks_cancelled_siblings(conclusions, expected):
+    checks = {
+        name: [
+            {
+                "id": 11 + index,
+                "name": name,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": conclusion,
+                "app": {"id": 404},
+                "check_suite": {"id": 21},
+            }
+        ]
+        for index, (name, conclusion) in enumerate(zip(("unit", "postgres"), conclusions))
+    }
+    workflows = [
+        {
+            "id": 31,
+            "workflow_id": 301,
+            "run_attempt": 1,
+            "check_suite_id": 21,
+            "head_sha": SHA,
+            "conclusion": "failure",
+        }
+    ]
+
+    observation = await AuthenticatedGitHubObserver(
+        FakeGitHubClient(checks, workflows)
+    ).observe(trust(), SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.conclusion == expected
+
+
+@pytest.mark.asyncio
+async def test_a_required_check_the_run_never_produced_outranks_a_cancelled_attempt():
+    # 'postgres' never ran: its completed push attempt concluded 'cancelled'
+    # while the attempt carrying 'unit' succeeded. The absence is conclusive.
+    checks = {
+        "unit": [
+            {"id": 11, "name": "unit", "head_sha": SHA, "status": "completed",
+             "conclusion": "success", "app": {"id": 404}, "check_suite": {"id": 21}}
+        ],
+        "postgres": [],
+    }
+    workflows = [
+        {"id": 31, "workflow_id": 301, "run_attempt": 1, "check_suite_id": 21,
+         "head_sha": SHA, "status": "completed", "conclusion": "success", "event": "push"},
+        {"id": 32, "workflow_id": 302, "run_attempt": 1, "check_suite_id": 22,
+         "head_sha": SHA, "status": "completed", "conclusion": "cancelled", "event": "push"},
+    ]
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient(checks, workflows), expected_event="push"
+    )
+
+    observation = await observer.observe(trust(), SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.conclusion == "failure"
+    assert {check["name"]: check["conclusion"] for check in observation.checks} == {
+        "unit": "success",
+        "postgres": "missing",
+    }
+
+
+@pytest.mark.parametrize(
+    ("check_conclusions", "run_conclusions", "verdict"),
+    [
+        (("failure", "cancelled"), ("failure",), "red"),
+        (("missing", "cancelled"), ("cancelled",), "red"),
+        (("failure", "success"), ("failure",), "red"),
+        (("success", "success"), ("failure",), "red"),
+        (("success", "cancelled"), ("failure",), "cancelled"),
+        (("cancelled", "success"), ("failure",), "cancelled"),
+        (("success", "success"), ("cancelled",), "cancelled"),
+        (("success", "skipped"), ("success",), "infra"),
+        (("success", "success"), ("skipped",), "infra"),
+    ],
+)
+def test_the_shared_precedence_reads_the_jobs_before_the_run(
+    check_conclusions, run_conclusions, verdict
+):
+    # One function, so no layer can be red where the one below it is infra.
+    checks = [{"name": str(index), "conclusion": c} for index, c in enumerate(check_conclusions)]
+    runs = [{"conclusion": c} for c in run_conclusions]
+
+    assert failed_run_verdict(checks, runs) == verdict
+
+
 @pytest.mark.asyncio
 async def test_publish_attestation_uses_canonical_text_and_digest():
     client = FakeGitHubClient({}, [])
@@ -687,6 +849,45 @@ async def test_publish_attestation_uses_canonical_text_and_digest():
     assert body["name"] == ATTESTATION_CHECK_NAME
     assert body["external_id"] == payload.external_id
     assert body["output"]["text"].encode() == payload.canonical_bytes()
+
+
+async def test_step_publication_uses_its_own_name_and_never_reuses_default_proof():
+    lower = AttestationPayload.model_validate(payload_dict())
+    name = "Agent Queue Promotion Attestation (release)"
+    manifest = trust().model_copy(update={"promotion_attestation_names": (name,)})
+    payload = PromotionAttestationPayload(
+        schema="aq.promotion-attestation.v1",
+        repository={
+            "canonical_repository_id": manifest.canonical_repository_id,
+            "repository_id": manifest.repository_id, "full_name": manifest.full_name,
+            "ci_producer_app_id": manifest.ci_producer_app_id,
+            "attestation_app_id": manifest.attestation_app_id,
+        },
+        step="release", target_ref="refs/heads/main", attestation_name=name, version="1.2.3",
+        request_id="promotion:repo-config-1:release:1.2.3", batch_id="promotion-batch",
+        source_sha=SHA, base_sha="b" * 40, checks_version="checks-v1",
+        checks=lower.checks, workflow_runs=lower.workflow_runs,
+    )
+    client = FakeGitHubClient({"attestation": [check_record(71, lower.canonical_bytes())]}, [])
+    assert await AuthenticatedGitHubObserver(client).publish(manifest, payload) == 77
+    body = client.published[0][2]
+    assert body["name"] == name and body["external_id"] == payload.external_id
+    assert body["output"]["text"].encode() == payload.canonical_bytes()
+    with pytest.raises(AttestationError, match="invalid|identity"):
+        select_trusted_attestation([dict(body, id=77, app={"id": 101}, name=ATTESTATION_CHECK_NAME)],
+                                   manifest, expected_head_sha=SHA)
+    with pytest.raises(AttestationError, match="identity"):
+        await AuthenticatedGitHubObserver(client).publish(
+            manifest, payload.model_copy(update={"attestation_name": "Untrusted step"}),
+        )
+
+
+def test_step_check_sets_can_require_checks_the_source_lane_never_ran():
+    data = trust().model_dump(mode="json", by_alias=True)
+    data["check_sets"] = {"release": ["release-smoke"]}
+    data["promotion_attestation_names"] = ["Agent Queue Promotion Attestation (release)"]
+    manifest = IntegrationTrustManifest.model_validate(data)
+    assert manifest.check_sets["release"] == ("release-smoke",)
 
 
 @pytest.mark.asyncio
@@ -1235,3 +1436,9 @@ async def test_ci_service_rejects_noncurrent_root_authority(ci_db, mutation):
     assert result == {"outcome": "stale_subject", "evidence_ids": []}
     async with ci_db._engine.connect() as conn:
         assert not (await conn.execute(select(integration_check_evidence))).all()
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)
