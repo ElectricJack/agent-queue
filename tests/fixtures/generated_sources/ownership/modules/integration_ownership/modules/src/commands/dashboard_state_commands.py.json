@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 225,
+      "owner": "DashboardStateCommandsMixin._dashboard_mutate",
+      "owner_fingerprint": "2b73a8d7dcede07c615d2da03a3bda9c978df0ec035d1fe4fdd0c963354e4166",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

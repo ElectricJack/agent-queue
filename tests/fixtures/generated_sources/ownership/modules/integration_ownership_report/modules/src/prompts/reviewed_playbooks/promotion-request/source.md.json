@@ -1,0 +1,25 @@
+{
+  "reconciliation_definitions": {
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::<header>": {
+      "fingerprint": "03d66beb422830dc3419a0e0c7e48ddb291150da6d1db485f68a2852a433ac48",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: advance-source": {
+      "reason": "Reviewed promotion policy reacts to durable source settlement using daemon-derived source and backmerge debt; continuous steps cancel only unpublished stale intents before requesting the newer exact source."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: backmerge-delivered": {
+      "reason": "Reviewed promotion policy requests independent lower-branch backmerge sources after delivery observation; never extends or rewrites frozen batch membership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: explicit-request": {
+      "reason": "Reviewed promotion policy admits an explicit request through daemon-derived source, debt and active-intent checks, preserving the explicit notes acknowledgement."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: hotfix-completed": {
+      "reason": "Reviewed promotion policy resolves a completed hotfix through its retained completion and step PR gate; missing notes acknowledgement or authority ends visibly held."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: visit-intent": {
+      "reason": "Reviewed promotion policy invokes the server-owned build, gate, attestation and publication sequence; waits and refusal notifications carry no bypass authority."
+    }
+  }
+}
