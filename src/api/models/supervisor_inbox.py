@@ -7,11 +7,16 @@ from pydantic import BaseModel, Field
 from src.commands.contracts.supervisor_inbox import (
     SupervisorInboxHistoryArgs,
     SupervisorInboxReplyArgs,
+    SupervisorInboxSayArgs,
     SupervisorInboxStatusArgs,
 )
 
 
 class SupervisorInboxReplyRequest(SupervisorInboxReplyArgs):
+    pass
+
+
+class SupervisorInboxSayRequest(SupervisorInboxSayArgs):
     pass
 
 
@@ -30,6 +35,10 @@ class SupervisorInboxReplyResponse(BaseModel):
     delivery_dedup_key: str
     discord_text_chars: int
     truncated: bool
+
+
+class SupervisorInboxSayResponse(SupervisorInboxReplyResponse):
+    delivery_id: str
 
 
 class ConversationPreconditions(BaseModel):
@@ -135,6 +144,7 @@ class SupervisorInboxErrorResponse(BaseModel):
 
 
 RESPONSE_MODELS = {
+    "supervisor_inbox_say": SupervisorInboxSayResponse,
     "supervisor_inbox_reply": SupervisorInboxReplyResponse,
     "supervisor_inbox_status": SupervisorInboxStatusResponse,
     "supervisor_inbox_history": SupervisorInboxHistoryResponse,
@@ -142,6 +152,7 @@ RESPONSE_MODELS = {
 
 # Use explicit models so state choices and pagination bounds survive codegen.
 REQUEST_MODELS = {
+    "supervisor_inbox_say": SupervisorInboxSayRequest,
     "supervisor_inbox_reply": SupervisorInboxReplyRequest,
     "supervisor_inbox_status": SupervisorInboxStatusRequest,
     "supervisor_inbox_history": SupervisorInboxHistoryRequest,

@@ -63,6 +63,9 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   The authoring command refreshes the fixture and shipped copies; assembly uses
   `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
   `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
+  A shipped profile grant or command-contract change must rebuild affected bundles
+  in the same commit. `aq test tests/test_default_playbook_v2_artifacts.py` validates
+  every shipped artifact against shipped profiles and current contracts.
 - **Import the `.aq/claim.json` helpers from `src/claim_file.py`**, never from
   `src.commands.claim_commands`, or `src.sessions` and `src.commands` form an import cycle.
 - **`openapi.json` and both API clients are generated.** After any change to

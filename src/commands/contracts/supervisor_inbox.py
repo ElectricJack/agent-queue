@@ -41,6 +41,12 @@ class SupervisorInboxReplyArgs(CommandArgs):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class SupervisorInboxSayArgs(CommandArgs):
+    conversation_id: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=16000)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 class SupervisorInboxStatusArgs(CommandArgs):
     pass
 
@@ -75,6 +81,10 @@ class SupervisorInboxReplyValue(CommandValue):
     delivery_dedup_key: str
     discord_text_chars: int
     truncated: bool
+
+
+class SupervisorInboxSayValue(SupervisorInboxReplyValue):
+    delivery_id: str
 
 
 class SupervisorInboxStatusValue(CommandValue):
@@ -141,7 +151,7 @@ def _register(registry, name, args_model, value_model, summary, effects, side_ef
                             frozenset({"envelope"})
                             if name == "supervisor_inbox_post"
                             else frozenset({"text"})
-                            if name == "supervisor_inbox_reply"
+                            if name in {"supervisor_inbox_reply", "supervisor_inbox_say"}
                             else frozenset()
                         ),
                     ),
@@ -158,6 +168,16 @@ def _register(registry, name, args_model, value_model, summary, effects, side_ef
 
 
 def register_supervisor_inbox_contracts(registry: ContractRegistry) -> None:
+    _register(
+        registry,
+        "supervisor_inbox_say",
+        SupervisorInboxSayArgs,
+        SupervisorInboxSayValue,
+        "Start a supervisor message in an existing conversation without answering an input.",
+        (CreateOrReuseClause(subject=EffectSubject.CONVERSATION_REPLY, key_arg="idempotency_key"),),
+        SideEffectClass.CREATE,
+        IdempotencySpec(mode="keyed", key_field="idempotency_key"),
+    )
     _register(
         registry,
         "supervisor_inbox_post",

@@ -412,6 +412,12 @@ and derived worker rungs are not rewritten; rungs inherit their worker template.
   merge and syncs the DB row. It is a
   permitted fix under trust-and-ops §5.4 because it is idempotent, removes
   nothing, keeps a backup, and enforces policy the operator set.
+  `profiles.capability_drift` provides the same missing-grant report and
+  additive `--fix` for every installed shipped profile, including worker and
+  operator templates. It names all missing commands and other capability
+  grants per role, preserves extra grants and operator edits, and skips
+  `capability_sync: false` copies. A missing or malformed Capabilities block
+  is reported for manual repair. Custom profiles and derived rungs are excluded.
 
 Because the operator can no longer remove a *shipped* supervisor grant by
 deleting it from the vault copy (the next reload puts it back), narrowing the

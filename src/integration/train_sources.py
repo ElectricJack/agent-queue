@@ -77,7 +77,7 @@ from src.integration.epics import (
     HeadChecks,
     playbook_epic_checks_on,
 )
-from src.integration.git_truth import GitTruth, GitTruthSnapshot
+from src.integration.git_truth import GitTruth, GitTruthSnapshot, merge_noop
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.manual_control import train_write
@@ -336,6 +336,8 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
     proves delivery. An ordinary worker's provenance marker alone never does.
     Historical delivery attestations must name this project/repository/root
     and cover the current completion, never a later reopened generation.
+    Legacy epic closes without a retained marker may use their exact passing
+    completion head, proven contained or adding no changes to this target.
     """
     requests = await load_delivery_requests(
         db, ids, repository_id=repository_id, target_ref=target_ref, reduced=True,
@@ -367,6 +369,7 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
     observed = snapshot.observation
     provenance = GitProvenance(observed.git, observed.store,
                                repository_url=observed.repository_url)
+    missing = {}
     for task_id, request in requests.items():
         if task_id in delivered or request.task_status != "COMPLETED":
             continue
@@ -376,6 +379,7 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
                 request.completion_id or request.legacy_generation,
             ))
             if record is None:
+                missing[task_id] = request
                 continue
             source = record["source_oid"]
             facts = snapshot.truth._pair(observed, source)
@@ -386,6 +390,31 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
         except (GitError, OSError, ValueError, KeyError, TypeError):
             # Unknown root evidence never suppresses owed work.
             continue
+    # Historical aggregates can have an ordinary completion head without a
+    # provenance ref. Only a completed container may use this compatibility
+    # locator; neither a mutable branch tip nor an older close can supply it.
+    if not missing:
+        return delivered
+    async with db._engine.connect() as conn:
+        epics = await _epic_branches_on(conn, list(missing))
+    for task_id in epics:
+        request = missing[task_id]
+        source = request.reported_source
+        if (request.completion_outcome != "pass" or not is_valid_git_oid(source or "")
+                or request.lifecycle_disposition is not None):
+            continue
+        contained = await snapshot.strictly_contains_source(source)
+        if contained is True:
+            delivered.add(task_id)
+        elif contained is False and not snapshot.cached_only:
+            try:
+                facts = snapshot.truth._pair(observed, source)
+                if facts.merge_noop is None:
+                    facts.merge_noop = await merge_noop(observed, source, snapshot.target_oid)
+                if facts.merge_noop:
+                    delivered.add(task_id)
+            except (GitError, OSError, ValueError):
+                continue
     return delivered
 
 

@@ -460,20 +460,26 @@ LLM calls and no writes.
 Slots 7–8 exist in the section model from day one so the memory comeback is a renderer
 change, not a protocol change.
 
-Task Context includes every comment on the current task, newest first, with author,
-timestamp and the complete quoted body. Read all project-scoped comment pages; neither
-the comment count nor body length is capped in prime. Worker context previews apply to
-other context, with comment history appended in full outside that budget. Comments remain
-labelled as historical reports, not instructions or approval. Prime and `aq task comment`
+Ordinary Task Context includes at most the newest 20 complete task comments, newest first,
+with author, timestamp and quoted body, within a separate 16 KiB UTF-8 history budget
+(including headings and retrieval guidance). Read only the first project-scoped page.
+Report the number shown and total; omitted history includes an omitted count and
+`aq task comments <task_id>` pointer. A comment that cannot fit is omitted along with
+older comments, preserving a contiguous newest-first prefix without partial bodies.
+Prime does not change stored comments; full history remains available through
+`aq task comments`. Continuation prime retains its separate chronological history budget.
+Comments remain labelled as historical reports, not instructions or approval.
+Prime and `aq task comment`
 help ask agents to keep comments concise: state what changed, decisions and blockers;
 link evidence instead of pasting logs or repeating status.
 
 Pilot workers with knowledge context enabled also fit the aggregate required
 document to the configured byte budget: ordinary context, description and
 historical handoff excerpts may shrink to explicit lossless continuation reads.
-Complete comments remain outside those excerpts, along with live repair fences,
+After reducing pageable excerpts, fitting may remove more of the oldest retained ordinary
+comments, updating the count and full-history pointer. Live repair fences,
 profile Role/Rules, pending messages, current facts, result/wait pointers and the
-completion protocol. Reassemble overrides and the pause notice before accounting;
+completion protocol stay intact. Reassemble overrides and the pause notice before accounting;
 unpageable required content still triggers `context.required_over_budget`.
 
 Sections 1–2 render exactly the *prime-visible* profile headings —

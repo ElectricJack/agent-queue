@@ -264,6 +264,8 @@ def _owned_page_rules() -> list[tuple[str, str, str, str, str]]:
 # Ordered rules: (glob, shard, component page, category, note).
 # First match wins, so narrower globs come first.
 RULES: list[tuple[str, str, str, str, str]] = [
+    ("src/project_schedules.py", "scheduler", "docs/guides/project-schedules.md",
+     PRODUCTION, "Durable project-owned one-shot supervisor notifications."),
     # ---------------------------------------------------------------- docs
     ("LICENSE", "contributing", "docs/contributing/README.md", SUPPORTING,
      "Repository license; explained with contributor and distribution policy."),

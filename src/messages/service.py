@@ -15,7 +15,8 @@ class MessageDeliveryService:
     Events are hints, never the queue: every pass reads pending database rows,
     including after restart and when an emitter did not publish an event.
     A burst occupies one event bit, and passes run no faster than the configured
-    delivery interval. No task or timer is allocated per message.
+    delivery interval, except committed conversation inputs wake immediately.
+    No task or timer is allocated per message.
     """
 
     def __init__(self, engine, config: Callable, bus):
@@ -23,6 +24,7 @@ class MessageDeliveryService:
         self._config = config
         self._bus = bus
         self._wake = asyncio.Event()
+        self._urgent = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._unsubscribe = None
 
@@ -34,6 +36,7 @@ class MessageDeliveryService:
         if self.running:
             return
         self._wake.clear()
+        self._urgent.clear()
         self._unsubscribe = self._bus.subscribe("message.sent", self._on_message)
         self._task = asyncio.create_task(self._run(), name="message-delivery")
 
@@ -44,6 +47,8 @@ class MessageDeliveryService:
             payload.get("to_kind") == "profile" and payload.get("to_id") == "supervisor"
         ):
             self._wake.set()
+            if payload.get("body_kind") == "conversation_input":
+                self._urgent.set()
 
     async def stop(self) -> None:
         if self._unsubscribe is not None:
@@ -61,6 +66,7 @@ class MessageDeliveryService:
         loop = asyncio.get_running_loop()
         while True:
             self._wake.clear()
+            self._urgent.clear()
             started = loop.time()
             if self._config().enabled:
                 try:
@@ -79,4 +85,11 @@ class MessageDeliveryService:
                 pass
             # Events received during a pass are coalesced. Even a continuous
             # sender or immediate failure cannot turn durable retry into a spin.
-            await asyncio.sleep(max(0, interval - (loop.time() - started)))
+            remaining = max(0, interval - (loop.time() - started))
+            try:
+                await asyncio.wait_for(self._urgent.wait(), timeout=remaining)
+            except TimeoutError:
+                pass
+            # Conversation bursts coalesce without inheriting a long routine
+            # interval. Preserve a small floor even under continuous intake.
+            await asyncio.sleep(max(0, 0.1 - (loop.time() - started)))

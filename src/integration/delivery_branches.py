@@ -327,15 +327,15 @@ async def live_branch_references(
         for task_id, branch in await _branches_of(conn, operation_tasks):
             hold(branch, operation_tasks[task_id], wip=True)
 
+    # Abort intent overrides lifecycle; fixer queues hold refs only while retained.
+    batch = integration_batches.c
     for row in await rows(
-        select(integration_batches.c.id, integration_batches.c.integration_branch).where(
-            integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES)
-            | (integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion")))
-            | (
-                (integration_batches.c.lifecycle == "promoted")
-                & (integration_batches.c.cleanup_state != "complete")
-            )
-        )
+        select(batch.id, batch.integration_branch).where(or_(
+            (batch.intent != "aborted") & batch.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
+            (batch.cleanup_state == "retained")
+            & batch.fixer_queue["status"].astext.in_(("deferred", "companion")),
+            (batch.lifecycle == "promoted") & (batch.cleanup_state != "complete"),
+        ))
     ):
         reason = f"integration batch {row['id']} is active"
         hold(row["integration_branch"], reason)
