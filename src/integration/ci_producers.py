@@ -30,9 +30,10 @@ from src.integration.ci import (
     IntegrationCITrust,
     IntegrationTrustManifest,
     TrustedCIObservation,
+    failed_run_verdict,
     is_numeric_producer_id,
 )
-from src.integration.subjects import CIEvidence, CIState, HeadIdentity, Subject
+from src.integration.runtime_contracts import CIEvidence, CIState, HeadIdentity, Subject
 from src.jobs.adapters import finite_command
 from src.jobs.policy import JobError, TERMINAL
 
@@ -148,6 +149,10 @@ class HostedCIProducer:
             )
 
     async def observe(self, subject: Subject, head: HeadIdentity) -> ProducerObservation:
+        return await self.observe_head(head)
+
+    async def observe_head(self, head: HeadIdentity) -> ProducerObservation:
+        """Observe the exact head alone; trust, not a subject, binds the result."""
         producer = (
             str(self.trust.ci_producer_app_id)
             if isinstance(self.trust, IntegrationTrustManifest)
@@ -181,6 +186,7 @@ class HostedCIProducer:
                 state=state,
                 classification=exc.classification,
                 reason=str(exc),
+                details=exc.details,
             )
         except (AttestationError, ValueError) as exc:
             return ProducerObservation(
@@ -190,6 +196,8 @@ class HostedCIProducer:
                 reason=str(exc),
             )
         except (GitHubAccessError, OSError) as exc:
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             return ProducerObservation(
                 **common,
                 state=CIState.INFRA,
@@ -202,7 +210,14 @@ class HostedCIProducer:
             checks = {check.name: check.conclusion for check in observed.payload.checks}
             identity = observed.payload.external_id
             classification, state = "conclusive", CIState.GREEN
-            details = {"receipt": observed.payload.model_dump(mode="json")}
+            receipt = observed.payload.model_dump(mode="json")
+            details = {
+                "receipt": receipt,
+                "checks": [
+                    {**check, **observed.check_details.get(check["check_run_id"], {})}
+                    for check in receipt["checks"]
+                ],
+            }
         else:
             checks = {check["name"]: check["conclusion"] for check in observed.checks}
             details = {
@@ -210,15 +225,13 @@ class HostedCIProducer:
                 "workflow_runs": list(observed.workflow_runs),
             }
             identity = "hosted:" + digest(details)
-            classification, state = (
-                ("cancelled", CIState.INFRA)
-                if observed.conclusion == "cancelled"
-                else ("conclusive", CIState.RED)
-                if "failure" in checks.values()
-                or "missing" in checks.values()
-                or any(run["conclusion"] == "failure" for run in observed.workflow_runs)
-                else ("infra", CIState.INFRA)
-            )
+            # The same precedence the observer used, so a run cannot be red at
+            # one layer and infrastructure at the next.
+            classification, state = {
+                "red": ("conclusive", CIState.RED),
+                "cancelled": ("cancelled", CIState.INFRA),
+                "infra": ("infra", CIState.INFRA),
+            }[failed_run_verdict(observed.checks, observed.workflow_runs)]
         return ProducerObservation(
             **common,
             state=state,
@@ -237,7 +250,7 @@ class LocalValidationPlan(BaseModel):
     # An explicit policy-supplied identity, changed only to request a new attempt.
     attempt_id: str = Field(min_length=1)
     commands: tuple[str, ...] = ()
-    queue_seconds: float = Field(default=1800, gt=0)
+    queue_seconds: float = Field(default=1800, ge=0)
     run_seconds: float = Field(default=300, gt=0)
 
 
@@ -254,11 +267,13 @@ class LocalCIProducer:
         *,
         store: str | Path,
         plan: LocalValidationPlan,
+        workspace_batch_id: str | None = None,
         read_jobs: JobReader | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db, self.job_client, self.store = db, job_client, str(store)
         self.plan, self.clock = plan, clock
+        self.workspace_batch_id = workspace_batch_id
         self.required_check_version = plan.version
         self.read_jobs = read_jobs or self._read_jobs
 
@@ -268,7 +283,10 @@ class LocalCIProducer:
                 "subject": subject.id,
                 "project": subject.project_id,
                 "head": head.model_dump(mode="json"),
-                "policy": subject.policy.model_dump(mode="json"),
+                # Exact-commit checks own their jobs by commit, with no subject policy.
+                "policy": None
+                if subject.policy is None
+                else subject.policy.model_dump(mode="json"),
                 "plan": self.plan.model_dump(mode="json"),
             }
         )
@@ -318,7 +336,9 @@ class LocalCIProducer:
                 if job is None:
                     job = await self.job_client.submit(
                         project_id=subject.project_id,
+                        repository_id=head.repository_id,
                         operation_id=subject.id,
+                        workspace_batch_id=self.workspace_batch_id,
                         store=self.store,
                         input_ref=head.sha,
                         preset=preset,
@@ -398,10 +418,27 @@ class LocalCIProducer:
             return CIState.GREEN, "conclusive", "success", None
         return CIState.INFRA, "infra", "missing", "invalid_job_conclusion"
 
-    async def observe(self, subject: Subject, head: HeadIdentity) -> ProducerObservation:
+    async def job_states(
+        self, subject: Subject, head: HeadIdentity
+    ) -> tuple[tuple[str, dict | None, tuple], ...]:
+        """Each planned command with its job and classification for this exact head."""
         keys = self._keys(subject, head)
         existing = await self.read_jobs(subject, keys)
-        requested_at = min((job["submitted_at"] for job in existing.values()), default=None)
+        return tuple(
+            (
+                command,
+                existing.get(key),
+                (CIState.PENDING, "pending", "missing", None)
+                if existing.get(key) is None
+                else self._classify_job(subject, head, existing[key]),
+            )
+            for command, key in zip(self.plan.commands, keys, strict=True)
+        )
+
+    async def observe(self, subject: Subject, head: HeadIdentity) -> ProducerObservation:
+        states = await self.job_states(subject, head)
+        existing = [job for _, job, _ in states if job is not None]
+        requested_at = min((job["submitted_at"] for job in existing), default=None)
         now = self.clock()
         common = dict(
             head_sha=head.sha,
@@ -411,19 +448,14 @@ class LocalCIProducer:
             requested_at=requested_at,
             age_seconds=max(0, now - requested_at) if requested_at is not None else None,
         )
-        if not keys or not existing:
+        if not existing:
             return ProducerObservation(**common, state=CIState.NONE, classification="none")
         checks, classified, details = {}, [], []
-        for index, key in enumerate(keys):
-            job = existing.get(key)
-            if job is None:
-                checks[str(index)] = "missing"
-                classified.append((CIState.PENDING, "pending", "missing", None))
-                continue
-            state = self._classify_job(subject, head, job)
+        for index, (_, job, state) in enumerate(states):
             classified.append(state)
             checks[str(index)] = state[2]
-            details.append({"job_id": job["id"], "result": job.get("result")})
+            if job is not None:
+                details.append({"job_id": job["id"], "result": job.get("result")})
         # A real failure outranks infrastructure, but identity failures cannot
         # be used as evidence for any attempt.
         selected = next((item for item in classified if item[0] is CIState.UNTRUSTED), None)
