@@ -47,7 +47,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import yaml
 from pydantic import (
@@ -126,6 +126,13 @@ class _Strict(BaseModel):
         return data
 
 
+class Escalation(_Strict):
+    """Try the kind's default class before raising it after substantive failures."""
+
+    after_failures: int = Field(ge=1, strict=True)
+    to_class: str
+
+
 class KindRule(_Strict):
     """``kinds.<kind>``: the class a kind gets without a hint, and its bounds."""
 
@@ -134,6 +141,9 @@ class KindRule(_Strict):
     lane: str | None = None
     narrow: bool = False
     prefer_harnesses: tuple[str, ...] = ()
+    escalate: Escalation | None = None
+
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("escalate",)
 
 
 class OriginRule(_Strict):
@@ -279,10 +289,19 @@ class Balance(_Strict):
     """``balance``: the weights of the load score (§6.4 step 5)."""
 
     harness_weights: dict[str, float] = Field(default_factory=dict)
+    usage_mode: Literal["soft_limit", "headroom"] = "soft_limit"
     usage_soft_percent: float = Field(default=80.0, ge=0, lt=100)
     usage_floor_factor: float = Field(default=0.1, gt=0, le=1)
     degraded_factor: float = Field(default=0.5, gt=0, le=1)
     tie_order: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        # Adding an opt-in mode must not invalidate existing reviewed digests.
+        if self.usage_mode == "soft_limit":
+            data.pop("usage_mode", None)
+        return data
 
     @model_validator(mode="after")
     def _weights(self) -> Balance:
@@ -363,6 +382,14 @@ class RoutingPolicy(_Strict):
             check_lane(f"kinds.{name}.lane", rule.lane)
             if rule.max_class is not None and self.rank(rule.class_) > self.rank(rule.max_class):
                 raise ValueError(f"kinds.{name}: class ranks above max_class")
+            if rule.escalate is not None:
+                check_class(f"kinds.{name}.escalate.to_class", rule.escalate.to_class)
+                if self.rank(rule.escalate.to_class) <= self.rank(rule.class_):
+                    raise ValueError(f"kinds.{name}: escalation must raise the default class")
+                if rule.max_class and self.rank(rule.escalate.to_class) > self.rank(rule.max_class):
+                    raise ValueError(f"kinds.{name}: escalation ranks above max_class")
+                if rule.lane:
+                    raise ValueError(f"kinds.{name}: escalation belongs to a kind without a lane")
         for name, rule in self.origins.items():
             check_class(f"origins.{name}.class", rule.class_)
             check_class(f"origins.{name}.max_class", rule.max_class)
