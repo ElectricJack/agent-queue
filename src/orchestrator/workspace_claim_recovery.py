@@ -129,6 +129,7 @@ _RELEASED_STATUSES = ('COMPLETED', 'FAILED', 'PAUSED', 'BLOCKED', 'READY', 'DEFI
 async def retire_stale_slot_claim(
     db, workspace_id: str, path: str, *,
     claimant_task_id: str | None = None, claimant_session_id: str | None = None,
+    conn=None,
 ) -> dict | None:
     """Retire a slot's claim marker whose holder provably no longer holds it.
 
@@ -155,45 +156,50 @@ async def retire_stale_slot_claim(
     epoch = claim.get('claim_epoch')
     if not isinstance(holder, str) or not holder:
         return None
-    async with db.immediate() as conn:
-        slot = (await conn.execute(select(workspaces).where(
-            workspaces.c.id == workspace_id,
-        ).with_for_update())).mappings().one_or_none()
-        if (slot is None or slot['base_workspace_id'] is None
-                or os.path.realpath(slot['workspace_path']) != os.path.realpath(path)
-                or slot['locked_by_task_id'] not in (None, claimant_task_id)
-                or (claimant_task_id is None and slot['locked_by_agent_id'] is not None)):
+    if conn is None:
+        async with db.immediate() as connection:
+            return await retire_stale_slot_claim(
+                db, workspace_id, path, claimant_task_id=claimant_task_id,
+                claimant_session_id=claimant_session_id, conn=connection,
+            )
+    slot = (await conn.execute(select(workspaces).where(
+        workspaces.c.id == workspace_id,
+    ).with_for_update())).mappings().one_or_none()
+    if (slot is None or slot['base_workspace_id'] is None
+            or os.path.realpath(slot['workspace_path']) != os.path.realpath(path)
+            or slot['locked_by_task_id'] not in (None, claimant_task_id)
+            or (claimant_task_id is None and slot['locked_by_agent_id'] is not None)):
+        return None
+    task = (await conn.execute(select(
+        tasks.c.status, tasks.c.claim_epoch,
+    ).where(tasks.c.id == holder).with_for_update())).mappings().one_or_none()
+    if task is None:
+        reason = 'holder task no longer exists'
+    elif isinstance(epoch, int) and (task['claim_epoch'] or 0) > epoch:
+        reason = f"claim epoch {epoch} superseded by {task['claim_epoch']}"
+    elif holder == claimant_task_id:
+        return None
+    elif task['status'] in _RELEASED_STATUSES:
+        reason = f"holder task is {task['status']}"
+    else:
+        return None
+    session_id = claim.get('session_id')
+    if session_id is not None and session_id != claimant_session_id:
+        session = (await conn.execute(select(
+            sessions.c.state, sessions.c.task_id, sessions.c.last_claim_epoch,
+        ).where(sessions.c.id == session_id).with_for_update())).mappings().one_or_none()
+        if (session is not None and session['state'] in _LIVE_STATES
+                and session['task_id'] == holder
+                and session['last_claim_epoch'] == epoch):
             return None
-        task = (await conn.execute(select(
-            tasks.c.status, tasks.c.claim_epoch,
-        ).where(tasks.c.id == holder).with_for_update())).mappings().one_or_none()
-        if task is None:
-            reason = 'holder task no longer exists'
-        elif isinstance(epoch, int) and (task['claim_epoch'] or 0) > epoch:
-            reason = f"claim epoch {epoch} superseded by {task['claim_epoch']}"
-        elif holder == claimant_task_id:
-            return None
-        elif task['status'] in _RELEASED_STATUSES:
-            reason = f"holder task is {task['status']}"
-        else:
-            return None
-        session_id = claim.get('session_id')
-        if session_id is not None and session_id != claimant_session_id:
-            session = (await conn.execute(select(
-                sessions.c.state, sessions.c.task_id, sessions.c.last_claim_epoch,
-            ).where(sessions.c.id == session_id).with_for_update())).mappings().one_or_none()
-            if (session is not None and session['state'] in _LIVE_STATES
-                    and session['task_id'] == holder
-                    and session['last_claim_epoch'] == epoch):
-                return None
-        live = select(sessions.c.id).where(
-            sessions.c.work_dir.in_(sorted({path, os.path.realpath(path)})),
-            sessions.c.state.in_(_LIVE_STATES),
-        )
-        if claimant_session_id is not None:
-            live = live.where(sessions.c.id != claimant_session_id)
-        if (await conn.execute(live.limit(1))).first() is not None:
-            return None
-        if not remove_claim_file_if_identical(path, claim, identity):
-            return None
+    live = select(sessions.c.id).where(
+        sessions.c.work_dir.in_(sorted({path, os.path.realpath(path)})),
+        sessions.c.state.in_(_LIVE_STATES),
+    )
+    if claimant_session_id is not None:
+        live = live.where(sessions.c.id != claimant_session_id)
+    if (await conn.execute(live.limit(1))).first() is not None:
+        return None
+    if not remove_claim_file_if_identical(path, claim, identity):
+        return None
     return {**claim, 'workspace_id': workspace_id, 'path': path, 'reason': reason}

@@ -10,6 +10,8 @@ Worktree-execution implementation spec §6.8 / design §9:
   slot in the caller's project scope.
 * ``workspace_retire_claim`` — remove a slot's leftover claim file when
   its holder provably no longer holds it.
+* ``workspace_clear_sentinel`` — return a slot's ``.aq-worktree.json`` to
+  the free form when the task it names is terminal.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method
 takes a flat ``dict`` of arguments and returns a ``dict`` — domain data
@@ -29,6 +31,16 @@ logger = logging.getLogger(__name__)
 
 class WorktreeCommandsMixin:
     """Worktree command methods mixed into CommandHandler."""
+
+    async def _cmd_repair_workspace_checkout(self, args: dict) -> dict:
+        from src.commands.workspace_checkout_repair import repair
+
+        return await repair(self, args)
+
+    async def _cmd_workspace_cutover(self, args: dict) -> dict:
+        from src.commands.workspace_cutover import cutover
+
+        return await cutover(self, args)
 
     async def _cmd_workspace_doctor(self, args: dict) -> dict:
         """Diagnose workspace inventory.  Read-only unless ``fix`` is set.
@@ -215,6 +227,10 @@ class WorktreeCommandsMixin:
             if worktrees_cfg is None or not worktrees_cfg.enabled:
                 continue
 
+            from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
+
+            findings.extend(await reconcile_slot_bindings(self.db, mgr, project.id))
+
             for slot in slots:
                 if slot.locked_by_task_id:
                     continue
@@ -299,6 +315,45 @@ class WorktreeCommandsMixin:
             "reason": retired["reason"],
         }
 
+    async def _cmd_workspace_clear_sentinel(self, args: dict) -> dict:
+        """Clear a slot sentinel that still names a terminal task.
+
+        The supervisor's control for a slot that claim preparation refuses
+        with ``branch disagrees with its source sentinel`` after its task
+        ended.  Clearing is conditional on the named task being terminal
+        (``if_task_terminal``, the only supported mode) and on the proofs in
+        ``WorktreeSlotManager.clear_terminal_sentinel``; otherwise the command
+        refuses, naming the holder and the reason.
+        """
+        from src.jobs.policy import JobError
+
+        ws_id = args.get("workspace_id")
+        if not ws_id:
+            return {"success": False, "error": "workspace_id is required"}
+        if args.get("if_task_terminal", True) is False:
+            return {"success": False, "error": (
+                "only a sentinel naming a terminal task can be cleared; "
+                "if_task_terminal must be true"
+            )}
+        ws = await self.db.get_workspace(ws_id)
+        if ws is None:
+            return {"success": False, "error": f"workspace {ws_id} not found"}
+        if not ws.is_slot:
+            return {"success": False, "error": f"{ws_id} is not a worktree slot"}
+        mgr = getattr(self.orchestrator, "_worktree_slots", None)
+        if mgr is None or not callable(mgr):
+            return {"success": False, "error": "worktree slot manager unavailable"}
+        try:
+            result = await mgr().clear_terminal_sentinel(ws)
+        except JobError as exc:
+            return {"success": False, "workspace_id": ws.id, "error": str(exc)}
+        if refusal := result.pop("refusal", None):
+            return {"success": False, "workspace_id": ws.id, **result, "error": (
+                f"sentinel of {ws.id} naming {result.get('holder_task_id')} "
+                f"was not cleared: {refusal}"
+            )}
+        return {"success": True, "workspace_id": ws.id, **result}
+
     async def _cmd_workspace_reap(self, args: dict) -> dict:
         """Explicit reap of retired slots.  Refuses live slots.
 
@@ -355,14 +410,15 @@ class WorktreeCommandsMixin:
         projects = [p for p in projects if p.id == project_id]
         for project in projects:
             workspaces = await self.db.list_workspaces(project_id=project.id)
-            cap = project.max_concurrent_agents or 0
+            from src.workspace_disable import kind_slot_cap
             for ws in workspaces:
                 if not ws.is_slot:
                     continue
                 if ws.locked_by_task_id or ws.locked_by_agent_id:
                     skipped.append({"id": ws.id, "reason": "locked"})
                     continue
-                if (ws.slot_index or 0) < cap:
+                kind = await self.db.resolve_workspace_kind(project.id, ws.kind_id or "project-repo")
+                if (ws.slot_index or 0) < kind_slot_cap(project.max_concurrent_agents or 0, kind):
                     skipped.append({"id": ws.id, "reason": "within cap"})
                     continue
                 ok = await mgr.reap_slot(ws, reason="cli:workspace_reap all_retired")
