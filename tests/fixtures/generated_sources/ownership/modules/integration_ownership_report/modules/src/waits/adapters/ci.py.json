@@ -1,0 +1,13 @@
+{
+  "shared_definitions": {
+    "src/waits/adapters/ci.py::CIAdapter.authorise": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    }
+  }
+}
