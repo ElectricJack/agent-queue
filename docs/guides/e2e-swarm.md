@@ -64,13 +64,18 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 20 scenarios. `S1`–`S8` cover swarm composition;
+The default run executes all 21 scenarios. `S1`–`S8` cover swarm composition;
 `S9`–`S14` cover the wider stateful CLI surface; `S16` runs a whole provider
 outage against two fake providers; `S17` cooks and works a phased graph; and
 `S18` proves the reviewed supervisor failure-triage playbook against a real
 terminal worker close. `S19` uses a planner's authenticated session token to
 file a graph, prove root/cross-project/foreign-parent denials, race two graph
 batches at quota, and work a graph-seeded checklist through prime and close.
+`S21` snapshots an implementation approval, materializes held work through its
+assigned ingester, verifies the hold against a pool claim, records the assigned
+reviewer's fidelity receipt and releases the leaf. Reconstructing client
+authentication and replaying materialization, reviewer dispatch and release
+proves that a lost response cannot duplicate work or change release evidence.
 Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
@@ -731,9 +736,9 @@ and then sits idle holding a workspace.
 ### Two things that will bite you first
 
 **`aq` inside the session must be *this* worktree's.** The pip-installed
-`aq` resolves `src` through the editable install — usually a different
-checkout, with no `aq task claim` in it at all — so a worker fails its very
-first command with "No such command". `e2e-env.sh` writes
+`aq` resolves `src` through the editable install, which may point to a different
+checkout and expose a different claim protocol or command surface.
+`e2e-env.sh` writes
 `$AQ_E2E_HOME/bin/aq` (a wrapper around `scripts/e2e/aq.py`) and
 `e2e-daemon.sh start` puts that directory first on the daemon's PATH, which
 tmux sessions inherit. Verify before blaming the agent:
