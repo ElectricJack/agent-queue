@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import integration_check_evidence, wait_source_events
@@ -24,6 +24,9 @@ from src.integration.checks import (
 )
 from src.integration.ci_producers import HostedCIProducer, ProducerRequest
 from src.integration.runtime_contracts import HeadIdentity
+from src.models import Project, RepoConfig, RepoSourceType
+from src.waits.conditions import Condition
+from src.waits.watchers.ci import CheckWatcher
 from tests.test_integration_ci_producers import HEAD, OTHER, JobClient, github, local
 
 REQUIRED = RequiredChecks(version="v1", names=("unit", "lint"), producer_id="15368")
@@ -191,6 +194,81 @@ async def test_concurrent_first_refreshes_share_one_cache_row_per_check(db):
         assert {check["check_name"] for check in cached} == set(REQUIRED.names)
         assert len(cached) == len(REQUIRED.names)
         assert all(check["observed_at"] == 1000 + refreshes - 1 for check in cached)
+
+
+@pytest.mark.parametrize("first_insert", [False, True])
+async def test_ci_source_fence_serializes_with_refresh_without_row_order_deadlock(
+    db, monkeypatch, first_insert,
+):
+    from src.waits import sources
+    from src.integration.checks import _upsert
+
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK))
+    provider = SimpleNamespace(required=REQUIRED, observe=AsyncMock(return_value=[
+        row(name, "pending", observed_at=10) for name in REQUIRED.names
+    ]))
+    checks = ExactChecks(db, provider)
+    if not first_insert:
+        # Refresh writes lint then unit; the old fence locked unit then lint.
+        async with db._engine.begin() as conn:
+            for name, ident in (("unit", "a-unit"), ("lint", "z-lint")):
+                await conn.execute(_upsert(row(name, "pending", observed_at=10)).values(id=ident))
+    provider.observe.return_value = [row(name, "success", observed_at=20)
+                                      for name in REQUIRED.names]
+    paused, release = asyncio.Event(), asyncio.Event()
+    original = sources.record_source_event
+
+    async def pause_after_first_write(conn, **kwargs):
+        if not paused.is_set():
+            paused.set()
+            await release.wait()
+        return await original(conn, **kwargs)
+
+    monkeypatch.setattr(sources, "record_source_event", pause_after_first_write)
+    refresh = asyncio.create_task(checks.refresh(head()))
+    fence = None
+    try:
+        await asyncio.wait_for(paused.wait(), 15)
+        watcher = CheckWatcher(db, None, None, checks=None, repository=None)
+        condition = Condition("ci_check", {"repository_id": "repo", "head_sha": HEAD},
+                              context={"project_id": "p"})
+        async with db._engine.begin() as conn:
+            pid = await conn.scalar(select(func.pg_backend_pid()))
+            fence = asyncio.create_task(watcher.lock_source(conn, condition))
+
+            async def blocked_on_head():
+                async with db._engine.connect() as observer:
+                    while True:
+                        if fence.done():
+                            await fence
+                            pytest.fail("source fence bypassed an in-flight evidence writer")
+                        waiting = await observer.scalar(text(
+                            "SELECT wait_event FROM pg_stat_activity WHERE pid = :pid "
+                            "AND cardinality(pg_blocking_pids(pid)) > 0"
+                        ), {"pid": pid})
+                        if waiting:
+                            return waiting
+                        await asyncio.sleep(0.01)
+
+            try:
+                assert await asyncio.wait_for(blocked_on_head(), 15) == "advisory"
+                release.set()
+                assert (await asyncio.wait_for(refresh, 15)).green
+                await asyncio.wait_for(fence, 15)
+                cached = (await conn.execute(select(integration_check_evidence))).mappings().all()
+                assert len(cached) == 2 and all(r["conclusion"] == "success" for r in cached)
+            finally:
+                # Stop the query before returning its connection on assertion failure.
+                fence.cancel()
+                await asyncio.gather(fence, return_exceptions=True)
+    finally:
+        release.set()
+        for task in (refresh, fence):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(t for t in (refresh, fence) if t is not None),
+                             return_exceptions=True)
 
 
 @pytest.mark.parametrize("conclusion,delay", [("pending", 60), ("unavailable", 300)])

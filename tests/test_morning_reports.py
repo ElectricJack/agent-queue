@@ -1731,7 +1731,7 @@ async def test_scoped_fallback_delivers_without_supervisor_and_summary_budget_in
     row["report"]["coverage"]["window"]["omitted_interval"] = {"since": 0, "until": 1}
     text = render_summary(row, url="https://dashboard.example.test", notice="")
     assert "Partial coverage" in text and "Lookback capped" in text
-    assert text.endswith(f"https://dashboard.example.test/reports/{row['id']}")
+    assert text.endswith(f"[Dashboard](https://dashboard.example.test/reports/{row['id']})")
     assert "@everyone" not in text
     # Same marker size the shared primitive appends.
     assert len(text) + 1 + len(operation_marker("x", prefix="aq-out")) <= 1500

@@ -159,7 +159,7 @@ def test_a_review_post_is_two_lines_and_a_link():
     post = review_post(changes_note="Answers the threading and quiet-hours questions.")
     assert len(body_lines(post, envelope=1)) == 2
     assert len(post) <= REVIEW_READY.chars
-    assert post.splitlines()[-1] == f"<{ORIGIN}/reviews/rev-1>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/reviews/rev-1)"
 
 
 def test_the_revision_changes_note_is_capped_at_160_characters():
@@ -169,7 +169,7 @@ def test_the_revision_changes_note_is_capped_at_160_characters():
     note = body_lines(post, envelope=1)[-1]
     assert len(note) == REVIEW_CHANGES_NOTE_CHARS
     assert note.endswith(ELLIPSIS)
-    assert post.splitlines()[-1] == f"<{ORIGIN}/reviews/rev-1>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/reviews/rev-1)"
 
 
 def test_a_review_title_is_cut_at_120_characters():
@@ -183,7 +183,7 @@ def test_a_review_post_with_no_note_is_one_line_and_still_links():
     post = review_post()
     assert len(body_lines(post, envelope=1)) == 1
     assert len(post) <= REVIEW_READY.chars
-    assert post.splitlines()[-1].startswith("<")
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/reviews/rev-1)"
 
 
 # -------------------------------------------- row 2: escalation root (2 + 400)
@@ -193,7 +193,7 @@ def test_an_open_escalation_is_two_lines_400_characters_and_one_link():
     post = render_root(facts(), mentions=MentionPolicy(), base_url=ORIGIN, dedup_key="esc-1:root:0")
     assert len(body_lines(post, envelope=2)) == 2  # marker line + link
     assert len(post) <= ESCALATION_OPEN.chars
-    assert post.splitlines()[-1] == f"<{ORIGIN}/escalations/esc-1>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/escalations/esc-1)"
 
 
 def test_the_decision_line_is_kept_and_the_summary_is_what_gives_way():
@@ -218,7 +218,7 @@ def test_a_summary_too_long_for_the_post_at_all_is_dropped_not_the_decision():
     )
     assert "z" not in post.splitlines()[0]
     assert len(post) <= ESCALATION_OPEN.chars
-    assert post.splitlines()[-1] == f"<{ORIGIN}/escalations/esc-1>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/escalations/esc-1)"
 
 
 def test_every_field_the_facts_carry_still_fits_the_open_root_budget():
@@ -238,7 +238,7 @@ def test_every_field_the_facts_carry_still_fits_the_open_root_budget():
     )
     assert len(post) <= ESCALATION_OPEN.chars
     assert len(body_lines(post, envelope=2)) <= ESCALATION_OPEN.body_lines
-    assert post.splitlines()[-1] == f"<{ORIGIN}/escalations/esc-1>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/escalations/esc-1)"
 
 
 def test_the_configured_mention_survives_the_cut_wherever_the_rollover_lands():
@@ -304,7 +304,7 @@ def test_a_thread_reply_is_at_most_four_lines_and_600_characters():
     )
     assert len(body_lines(post, envelope=2)) <= ESCALATION_THREAD.body_lines
     assert len(post) <= ESCALATION_THREAD.chars
-    assert post.splitlines()[-1] == f"<{ORIGIN}/escalations/esc-1>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/escalations/esc-1)"
 
 
 def test_a_resolution_reply_is_inside_the_thread_budget_too():
@@ -324,7 +324,7 @@ def test_a_digest_is_three_lines_600_characters_and_one_link():
     post = digest_text(tuple(work_fact(f"c{index}") for index in range(20)))
     assert len(body_lines(post, envelope=1)) <= DIGEST.body_lines
     assert len(post) <= DIGEST.chars
-    assert post.splitlines()[-1] == f"<{ORIGIN}/inbox>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/inbox)"
 
 
 def test_each_digest_section_is_cut_to_two_lines():
@@ -343,7 +343,7 @@ def test_a_digest_never_grows_past_its_budget_however_long_the_window():
         open_escalations=9,
     )
     assert len(post) <= DIGEST.chars
-    assert post.splitlines()[-1] == f"<{ORIGIN}/inbox>"
+    assert post.splitlines()[-1] == f"[Dashboard]({ORIGIN}/inbox)"
 
 
 def test_a_digest_reports_what_it_left_out():
@@ -369,7 +369,7 @@ def test_a_chat_reply_over_budget_becomes_two_posts_with_an_ellipsis_and_the_lin
     posts = split_posts("word " * 2000, CHAT_REPLY, link=link)
     assert len(posts) == CHAT_REPLY.posts == 2
     assert all(len(post) <= CHAT_REPLY.chars for post in posts)
-    assert posts[-1].endswith(f"{ELLIPSIS} <{ORIGIN}/conversations?conversation=conv-1>")
+    assert posts[-1].endswith(f"{ELLIPSIS} [Dashboard]({ORIGIN}/conversations?conversation=conv-1)")
 
 
 @pytest.mark.parametrize("reply", ["x" * 5000, "short " * 300 + "x" * 2500])
@@ -394,6 +394,35 @@ def test_a_chat_reply_that_needs_no_split_carries_no_ellipsis():
     posts = split_posts("word " * 100, CHAT_REPLY, link="")
     assert len(posts) == 1
     assert ELLIPSIS not in posts[0]
+
+
+def test_a_short_reply_keeps_its_supplied_dashboard_link():
+    link = link_line(ORIGIN, conversation_path("conv-1"))
+    assert split_posts("Short answer", CHAT_REPLY, link=link) == [f"Short answer\n{link}"]
+
+
+def test_a_link_larger_than_the_split_budget_has_a_notice_and_no_empty_post():
+    posts = split_posts("https://example.com/" + "x" * 2000, CHAT_REPLY)
+    assert len(posts) == 1
+    assert "links could not fit" in posts[0]
+    assert "https://" not in posts[0]
+
+
+def test_link_failure_notice_respects_a_small_field_budget():
+    result = cut("See [Link](https://example.com/very-long-target)", 20)
+    assert len(result) <= 20
+    assert "Link too long." in result
+
+
+def test_prose_trimming_keeps_links_from_beyond_the_line_cap():
+    post = compose(
+        ["first " * 200, "second", "third https://github.com/org/repo/pull/42"],
+        REVIEW_READY,
+        link=link_line(ORIGIN, "/reviews/r"),
+    )
+    assert "https://github.com/org/repo/pull/42" in post
+    assert post.endswith(f"[Dashboard]({ORIGIN}/reviews/r)")
+    assert len(post) <= REVIEW_READY.chars
 
 
 def test_an_empty_chat_reply_is_the_link_or_nothing():
@@ -439,7 +468,7 @@ def test_a_single_line_that_does_not_fit_is_cut_not_dropped():
 
 def test_the_link_and_the_marker_are_never_cut():
     marker = "-# aq-esc:esc-1:root:0"
-    link = f"<{ORIGIN}/escalations/esc-1>"
+    link = f"[Dashboard]({ORIGIN}/escalations/esc-1)"
     post = compose(["x" * 4000], ESCALATION_OPEN, link=link, marker=marker)
     assert post.splitlines()[-2:] == [marker, link]
     assert len(post) <= ESCALATION_OPEN.chars
@@ -447,7 +476,7 @@ def test_the_link_and_the_marker_are_never_cut():
 
 def test_an_envelope_longer_than_the_budget_is_still_sent_whole():
     """A link that cannot fit must never be cut into one that points elsewhere."""
-    link = f"<{ORIGIN}/{'x' * ESCALATION_CLOSED.chars}>"
+    link = f"[Dashboard]({ORIGIN}/{'x' * ESCALATION_CLOSED.chars})"
     post = compose(["body"], ESCALATION_CLOSED, link=link)
     assert post == link
     assert len(post) > ESCALATION_CLOSED.chars
@@ -523,7 +552,7 @@ def test_the_digest_link_joins_the_resolver_origin_and_the_inbox_path():
     """The resolver hands over an origin and nothing else, so the join is exact."""
     origin, why = normalise_public_origin("https://aq.example.ts.net/")
     assert (origin, why) == (ORIGIN, "")
-    assert digest_text(dashboard_url=origin).splitlines()[-1] == f"<{ORIGIN}/inbox>"
+    assert digest_text(dashboard_url=origin).splitlines()[-1] == f"[Dashboard]({ORIGIN}/inbox)"
 
 
 def test_the_digest_keeps_its_counts_when_the_highlights_do_not_fit():

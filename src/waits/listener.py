@@ -12,6 +12,7 @@ from dataclasses import replace
 
 from sqlalchemy import func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 
 from src.database.queries.wait_queries import verify_owner
 from src.database.tables import sessions, wait_listener_cursors, wait_records, wait_source_events
@@ -467,9 +468,20 @@ class WaitSourceListener:
                 # and let the live loop retry without cancelling sibling tasks.
                 self._graph_busy = True
                 return count
-            except TimeoutError:
-                if not budget.expired():
+            except (DBAPIError, TimeoutError) as exc:
+                if isinstance(exc, DBAPIError):
+                    sqlstate = getattr(exc.orig, "sqlstate", None)
+                    if sqlstate not in {"40P01", "40001"}:
+                        raise
+                    event = attempt.get("event", {})
+                    logger.warning("wait.source_transaction_conflict seq=%s source_key=%s "
+                                   "sqlstate=%s", event.get("seq"), event.get("source_key"),
+                                   sqlstate)
+                elif not budget.expired():
                     raise
+                # _drain_one has exited its transaction: a PostgreSQL conflict
+                # aborts the whole attempt just as the work budget does. Retain
+                # its source for fresh observation while later events proceed.
                 if not await self._defer(attempt):
                     return count
                 retries += bool(attempt["retry"])

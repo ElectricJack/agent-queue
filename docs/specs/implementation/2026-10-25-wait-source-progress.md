@@ -8,6 +8,10 @@ its undispatched row as durable retry ownership. Later events may proceed. Cance
 and lease loss never authorize this advance. Retry passes are bounded and back off.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
+PostgreSQL deadlocks (`40P01`) and serialization failures (`40001`) during a
+source attempt follow the same rollback, leased cursor CAS and retry backoff as
+an expired work budget. Reobserve the source on retry and keep unrelated events
+moving without restarting the listener. Other database errors still propagate.
 Retained undispatched events older than the listener safety cadence share alternating
 turns with forward work once their observation backoff expires. Preserve the next
 turn across drain passes, including timeouts, so a continuous forward backlog cannot
@@ -42,6 +46,14 @@ must never fall back to remote I/O. Database-backed predicates and resource admi
 remain fresh transaction-local reads. Lease loss, cancellation and failed apply roll
 back all outcomes and cursor changes. A deferred newest CI hint retains durable
 retry ownership; superseding a hint does not prove satisfaction.
+
+The CI source fence and every mutable exact-head cache writer lock the repository
+row first, then a transaction advisory lock keyed by repository and SHA before any
+cache row access for mutation or locked revalidation. This includes refresh inserts
+and updates and check-reconciliation reservations/results. The source fence uses
+this advisory lock instead of locking cache rows in a competing order; it also
+covers first observations where no cache row exists yet. Refreshes touching several
+heads acquire their fences in repository/SHA order before any check-specific locks.
 
 CI events have no lifecycle effects without a pending verified subscriber of the
 same source/generation whose watermark precedes the event. Pool, config and workspace
