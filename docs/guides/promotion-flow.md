@@ -127,6 +127,13 @@ Partial canonical evidence and real failures still block the request. The
 private promotion ref, candidate checks and promotion attestation continue to
 use the step's canonical names.
 
+If a completed `aq/batches/` push run on the same commit was cancelled or
+skipped, source admission can retain green checks from another run. This
+requires alternative evidence for each affected name under the trusted App
+and a valid successful workflow attempt. Real failures, pending checks and
+cancellations without coverage still block promotion. Candidate and
+attestation gates continue to require their newest checks.
+
 Activation requires this configuration on the designated default branch and
 the updated source-admission code in the running daemon. After delivery, an
 authorized operator verifies `aq promote request --project agent-queue --step
@@ -210,7 +217,20 @@ A draft or closed PR, a changed head, or unavailable evidence hold publication.
 The integration service observes the PR again before its fenced write. Sources:
 [src/commands/promote_commands.py](../../src/commands/promote_commands.py) and
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
-(`StepPullRequestGate`, `PromotionPublisher`).
+(`StepPullRequestGate`, `PromotionVisit`).
+
+One promotion task is open per project, repository and target ref. A chained
+flow legitimately holds one intent per step target. An intent that ends without
+delivery, through `promote cancel`, `aq integration abort` or a failed
+lifecycle, fails its task. A new request on that target fails, and reports in
+`superseded_task_ids`, any task an older aborted or failed intent left
+`IN_PROGRESS`, and integration cleanup repairs the rest. `aq doctor --check
+stall.sweep` reports any such task as `stranded_promotion_task` until then.
+Sources: `fail_stranded_promotion_tasks_on` in
+[src/integration/promotion_steps.py](../../src/integration/promotion_steps.py),
+[src/integration/batches.py](../../src/integration/batches.py) (`set_intent`),
+[src/integration/cleanup.py](../../src/integration/cleanup.py) (`reconcile_aborted`) and
+[src/doctor/stall_checks.py](../../src/doctor/stall_checks.py).
 
 The candidate is S itself. The target must be an ancestor of S; the lane creates
 no merge commit. After the checks and PR gate pass, it emits the step's
@@ -262,6 +282,15 @@ activations do not enable promotion policy for other projects.
 They request or replace intents, wait and notify on holds, drive the existing PR
 gate, and trigger backmerge after delivery. Both ship inactive; activate the
 reviewed artifact hash for the intended project before starting delivery.
+
+Active Git-first mode dispatches promotion policy events through the durable
+outbox, including source observations after CI finishes. Legacy integration
+events remain isolated. Use `aq doctor --check integration.continuous_promotion_lag`
+or `aq doctor --check stall.sweep` to find continuous steps with source-only
+work older than six hours. The check reports the oldest unpromoted first-parent
+commit's age and exact ahead/behind counts; a newer dev head does not reset that
+age. Missing branch evidence is reported as unavailable. Inspect source CI,
+promotion status and the project's reviewed activation when a step lags.
 
 ## Inputs and outputs
 

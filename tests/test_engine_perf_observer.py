@@ -119,3 +119,38 @@ async def test_pool_gauges_are_read_without_a_round_trip():
 def test_pool_gauges_are_null_without_an_engine():
     db = Database("postgresql://unused@127.0.0.1:1/unused")
     assert db.metrics_pool_gauges() == {"checked_out": None, "overflow": None, "size": None}
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_slow_query_logs_do_not_disclose_sql_or_parameters(
+    registry, monkeypatch, caplog, failed
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy import event
+
+    engine = create_postgres_engine(lease_dsn("perf-slow-log.db"))
+    clock = [0.0]
+    try:
+        async with engine.connect() as conn:
+            monkeypatch.setattr(
+                "src.database.engine.time", SimpleNamespace(perf_counter=lambda: clock[0])
+            )
+
+            @event.listens_for(engine.sync_engine, "before_cursor_execute")
+            def advance(*args):
+                clock[0] += 2.0
+
+            caplog.set_level("WARNING", logger="src.database.engine")
+            if failed:
+                with pytest.raises(exc.DBAPIError):
+                    await conn.execute(text("SELECT missing_secret_function('needle')"))
+            else:
+                await conn.execute(text("SELECT 'needle'"))
+    finally:
+        await engine.dispose()
+    messages = [r.message for r in caplog.records if "database query duration" in r.message]
+    assert messages == [f"database query duration_ms=2000.0 failed={failed}"]
+    assert "needle" not in " ".join(messages)
+    assert "secret" not in " ".join(messages)
+    assert registry.snapshot()["db"]["query"]["max"] == 2000.0
