@@ -7,11 +7,12 @@ document is a **review**, not a commit: the worker writes it in its checkout
 without committing it, submits it with `aq review submit`, and closes its
 task. The daemon stores the text in the database and mirrors it to a vault
 file you can read and edit in Obsidian. Approval is a decision on a revision
-(`aq review decide`), and any task filed with `--after-review <id>` waits on
-the review's gate until you approve.
+(through the ask preview and decision flow). Any task filed with
+`--after-review <id>` waits on the review's gate until you approve.
 
-This page is the operator's guide. The design that defines every word on it
-is [the document review design spec](../../superpowers/specs/2026-09-21-document-review-design.md).
+This page is the operator's guide to the current code. See the
+[reviews and knowledge system spec](../specs/systems/reviews-and-knowledge.md)
+for implementation boundaries and planned work.
 
 ## What you get
 
@@ -31,18 +32,18 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
 
 ## The lifecycle
 
-```
-                  submit
-   (no review) ───────────────► in_review
-                                 ▲  │
-              submit --review-id │  │ decide approve
-                                 │  ▼
-                          changes_requested ───► approved
-                                 │
-                                 │ withdraw
-                                 ▼
-                             withdrawn
-```
+| Decision on the current revision | State | Gate and answering work |
+|---|---|---|
+| `approve` | `approved` | Resolve the gate after frozen feedback has owned work; follow-up tasks may remain |
+| `request_changes` or `fold_in` | `changes_requested` | Keep the gate open; create a revision task |
+| `reject` (legacy reject-and-revise) | `rejected` | Keep the gate open; create a revision task |
+| `decline` | `rejected` | Cancel the gate; create no revision task |
+| Withdraw | `withdrawn` | Cancel the gate and report affected dependants |
+
+Submission starts at `in_review`; resubmission of an open review advances its
+revision and returns to `in_review`. Open states are `in_review`,
+`changes_requested` and `rejected`. An approval with `fold_in` feedback becomes
+a changes-requested decision instead of releasing work.
 
 - `in_review` — waiting for a decision on the current revision.
 - `changes_requested` — a decision with feedback; the daemon files one new
@@ -71,7 +72,9 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
   must still be current. Earlier withdrawal events retain the full history.
 
 Every transition checks the review's state and the revision it was issued
-for, so two decisions racing on different revisions cannot both succeed.
+for. Decisions require `in_review`; an open changes-requested or rejected
+review awaits resubmission before another decision. Concurrent stale decisions
+cannot both succeed.
 
 ## Design and implementation documents
 
@@ -79,8 +82,8 @@ Use `spec_kind: design | implementation` in the submitted YAML frontmatter;
 this is separate from review kind `spec | plan | other`. The classification
 is stored on each revision and survives vault status rewrites and recovery.
 A body-only revision retains its previous classification. Invalid values
-are refused. Legacy documents may omit it; the ingestion agent checks their
-content before deciding whether they are ready for implementation.
+are refused. Legacy documents may omit it; approved-packet loading defaults
+missing classification to `design`. The agent cannot choose an implementation fallback.
 
 A design spec approves goals and architecture. Its ingest creates one epic
 containing one deep-high design task to write an implementation spec grounded
@@ -92,15 +95,20 @@ creates no implementation work.
 An implementation spec creates phase/deliverable epics with self-contained
 children, maximizing safe parallelism by file/module ownership. Dependencies
 connect children only; structural parent-child edges connect children to epics.
-Spec ingestion validates and commits the whole graph atomically without a
-human proposal gate. Ordinary task-batch proposals retain their approval gate.
-Ingest authority only creates work; existing-task updates go to the supervisor
-as an ordinary, human-approved change set.
+Spec ingestion atomically creates an implementation batch in `held` state,
+without a human proposal gate. Held members cannot run. Fidelity edits and
+receipts are implemented, but the release command, shipped reviewer profile
+and default-pipeline rules are still missing at `52d2efe4c` (2026-10-22), so the
+batch remains held. A design batch releases only its server-shaped authoring
+work. Ordinary task-batch proposals retain their approval gate. Ingest authority
+only creates work; existing-task updates require an ordinary approved change
+set. See [approved document ingestion](../specs/implementation/spec-ingestion.md).
 
 Start from the [spec template](../templates/spec.md). On an existing install,
-the operator must reconcile the shipped spec-ingest Role and commit grant;
-profile seeding does not overwrite local copies. Preserve the installed
-harness when updating it.
+the operator must reconcile the installed spec-ingest Role and grants with
+the deployed behavior; its shipped immediate-commit wording currently lags the
+held-batch mechanism. Profile seeding does not overwrite local copies. Preserve
+the installed harness when updating it.
 
 ## Spec supersession checklist
 
@@ -155,10 +163,10 @@ Grant-only profile reseeding does not update this prose.
 | `aq review attach --review-id <id> --revision N --file <image> --caption "…" --view-id <id> --candidate-id <id>` | yes | Append a verified screenshot to the current open revision. |
 | `aq review attachments --review-id <id> --revision N` | yes | List one revision's image metadata and download URLs. |
 | `aq review download-attachment --review-id <id> --revision N --attachment-id <id> --output <path>` | yes | Download an image after the same packet access check as the API. |
-| `aq review decide --review-id <id> --revision N --decision approve --note "…"` | yes | Approve. Resolves the gate, releases dependent tasks, rewrites the vault file. |
-| `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class>]` | yes | Reject the revision and file a new revision task with the note as feedback. The revision task is routed by the project's router; `--responder-class` is its class hint. A responder profile is refused (`routing.choice_forbidden`). |
+| `aq ask show`, `aq ask prepare`, `aq ask decide` | decider | Inspect, preview and confirm a decision against the exact source/context/feedback versions; see below. |
+| `aq review decide --review-id <id> --revision N --decision <choice> [--note "…"]` | decider | Compatibility entry point. Feedback, task or playbook effects require an ask preview; a no-effect decision can still complete directly. |
 | `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
-| `aq review dispatch --review-id <id> [--count N] [--class <class>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to `--count` adversarial reviewer tasks (default 1). Each is filed unrouted with the `--class` hint (default `deep-high`) and the constraint `exclude_providers: [<provider the author revision ran on>]`, so the project's router picks each reviewer's profile on another family. A dispatch never names a profile; `--to` is refused (`routing.choice_forbidden`). The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A second dispatch of the same revision needs `--force`. |
+| `aq review dispatch --review-id <id> [--count N] [--class <class>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to `--count` adversarial reviewer tasks (default 1). Each is filed unrouted with the `--class` hint (default `deep-high`) and the constraint `exclude_providers: [<provider the author revision ran on>]` when that provider is known, so the project's router picks an eligible reviewer. Unknown author attribution cannot establish cross-family coverage. A dispatch never names a profile; `--to` is refused (`routing.choice_forbidden`). The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A second dispatch of the same revision needs `--force`. |
 | `aq review withdraw --review-id <id> --reason "…"` | yes | Cancel the review gate, flag dependent tasks for attention and notify the supervisor. Actor, surface, time and reason are recorded. Other callers also notify the author task. The dashboard requires confirmation. |
 | `aq review reopen --review-id <id> --revision N` | yes | Copy the current withdrawn revision into N+1 and reopen the same approval gate. Also available to the author task and project supervisor. |
 | `aq review delegate --review-id <id> --to supervisor\|user` | yes (`local_operator_only`) | Change `decider` on one review. `supervisor` lets the live named supervisor session approve it. |
@@ -213,8 +221,8 @@ recorded for its held task; it never gives that worker decision authority.
 |---|---|---|---|
 | `submit`, `show`, `list` | yes | yes | yes (`submit` only from their own task) |
 | `withdraw` | yes | yes | the authoring task only |
-| `decide` | yes | **only when `decider` is `user_or_supervisor`** | no |
-| `comment` | yes | **only when `decider` is `user_or_supervisor`** | dispatched reviewer on its pinned revision |
+| `decide` | yes | when `decider` is `user_or_supervisor` or `supervisor`, with live elevated project authority | no |
+| `comment` | yes | when `decider` is `user_or_supervisor` or `supervisor`, with live elevated project authority | dispatched reviewer on its pinned revision |
 | `dispatch` | yes | yes | no |
 | `delegate`, `import-edits` | yes | no | no |
 
@@ -294,30 +302,66 @@ A reviewed bundle that is already in the vault — a shipped one, or one
 compiled by hand — is imported with
 `aq playbook import --path reviewed-playbooks/<id> [--activate]`.
 
-## What happens when you reject
+## Preview and confirm a decision
 
-Rejection files new work; it never reopens the author. Every `request_changes`
-creates **one new revision task**, whatever state the authoring task is in:
+Use `aq ask show --ask-id <ask-id> --json` to read the document, frozen inputs,
+choices, permitted actions and the current `expected` object (source, context
+and feedback versions). A compatibility `aq review decide` refusal with
+`ask.preview_required` supplies the ask id and a preview; inspect the whole
+packet before confirming it. For an explicit preparation:
 
-- **Title and place.** *"Revise \<title> (review \<id>)"*, under the authoring
-  task's parent — live or archived — or at the project root when there is no
-  authoring task or its parent is gone.
-- **Deduplicated per revision.** The task carries the dedup key
-  `review-revision:<review>:<revision>`, so one decision on one revision files
-  one task, however often the hook runs.
-- **Route.** The revision task is filed unrouted and the project's router
-  routes it (mandatory routing). `--responder-class` on the decision is its
-  class hint; a responder profile is refused. `aq review show` previews the
-  route before you decide (`response_route`). The task is `class_only`, never
-  `pinned`, so the revision can fail over to the same class on another
-  provider.
-- **Description.** Your note, the route line, every unresolved anchored
-  comment with its id and anchor, and the `aq review submit --review-id … --resolves …`
-  command to answer with.
-- **Who may answer.** While the review is `changes_requested`, only the
-  session holding that revision task may resubmit; any other worker gets
-  `not_your_task`. An authoring task still `in_review` (its worker resubmitting
-  before it closes) may keep revising its own draft.
+```bash
+aq ask prepare --ask-id <ask-id> --expected '<expected JSON from ask show>' \
+  --option-key request_changes --overall-note 'Address the listed findings' \
+  --responder-class <installed-class>
+```
+
+Inspect the returned preview, dispositions and proposed tasks. Confirm within
+its ten-minute lifetime using the **same intent and expected versions**, plus
+the returned preview id and a stable idempotency key:
+
+```bash
+aq ask decide --ask-id <ask-id> --expected '<same expected JSON>' \
+  --option-key request_changes --overall-note 'Address the listed findings' \
+  --responder-class <installed-class> --preview-id <preview-id> \
+  --idempotency-key <unique-decision-key>
+```
+
+These are templates for an authorized decider. Do not substitute a review
+revision number for the expected object. Changed feedback or source requires a
+fresh preview. A recorded decision can have pending application operations;
+only `application_state: applied` means the effects completed. Inspect the ask
+and retained operation failures before retrying; the decision is not lost.
+
+## What happens to decision feedback
+
+A revision decision files new work; it never reopens the author. Feedback is
+frozen per decision, including formal comments the author previously marked
+resolved. The decision packet retains original ids, text, anchors, note and
+hash. Marking a comment resolved is a proposed answer, not decider acceptance.
+
+- **Owned work.** `request_changes`, `fold_in` and legacy `reject` create a
+  *Revise \<title> (review \<id>)* task. An approval with `follow_up` obligations
+  creates *Follow up on \<title> (review \<id>)*. `decline` creates no task.
+- **Deduplication and placement.** Keys are `review-revision:<decision-id>` or
+  `review-followup:<decision-id>`. The task is placed under the author's parent
+  only when that parent is live and open; otherwise it is a project root.
+- **Route.** The task is filed unrouted with the `--responder-class` hint;
+  a responder profile is refused. The router chooses its profile.
+- **Disposition.** Prerequisite feedback defaults to `fold_in`. Explicitly
+  accepted external implementation prerequisites may instead use `follow_up`
+  with coverage and a release dependency. `follow_up` creates owned work; `applied` and `no_change` require reasons,
+  and `withdrawn` requires human provenance. An `approve` intent with `fold_in`
+  obligations is converted to changes requested.
+- **Completion.** The answering worker records evidence for each obligation
+  with `aq review feedback-complete --task-id <task> --obligation-id <id>
+  --evidence "<what changed or why no change is needed>"`. Obligation ids are
+  in `aq ask show`'s `obligations` list. A passing close with any incomplete
+  obligation is refused as `feedback.incomplete`, listing pending ids.
+  `--resolves` alone does not complete an obligation.
+
+Follow-up work does not mutate approved document bytes. If it changes approved
+requirements, submit an amendment for a new decision.
 
 ## The worker's side
 
@@ -332,6 +376,8 @@ From the worker's point of view the workflow is short:
    on it waits (via `--after-review`). A whole build graph takes it too:
    `aq task create --from-spec <path> --after-review <id>` (or `--graph`)
    attaches every node to the review's gate in the graph's own transaction.
+   This manual path does not create a held ingestion batch or perform fidelity
+   review; it is not equivalent to approved implementation-spec ingestion.
 
    The close gate enforces the submit. A task that declares a `review`
    deliverable (`--deliverable '{"id":"proposal","kind":"review","target":"spec"}'`;
@@ -364,7 +410,9 @@ From the worker's point of view the workflow is short:
    the assigned review and revision even when the description is truncated.
    Record the new revision number and content hash in the close summary;
    publication does not approve the review and does not require waiting for
-   its decision. See [the completion contract](../specs/design/review-revision-completion.md).
+   its decision. Complete every frozen feedback obligation with evidence before
+   closing; publication and feedback completion are separate gates. See
+   [the completion contract](../specs/design/review-revision-completion.md).
 
 This is wired into every shipped worker profile's `## Rules` section as
 *Documents go to review, not the repo*, and the shipped supervisor profile
@@ -382,7 +430,7 @@ Implementers read an approved document with `aq review show --review-id
 ## Adversarial review across model families
 
 One model family writes a document, a different family attacks it, and the
-two go round for a few revisions — say Fable writing and Astra attacking.
+two go round for a few revisions.
 Every verb this needs already exists, so it is a recipe, not a feature. It is
 **opt-in**: the [software-factory policy](../concepts/factory-policy.md) rules
 out mandatory multi-pass review chains, so run it on a document that warrants
@@ -395,44 +443,33 @@ author and the reviewer; they never dispatch or decide.
 
 ### Rung names come from the installed ladder
 
-"Fable" and "Astra" are model families, not profile ids. Read the rungs off
-the install before reading a route:
+Read the installed intelligence classes and profiles before interpreting a
+route. Model-family nicknames do not identify stable profile ids:
 
 ```bash
 aq system list-intelligence-classes
 aq agent list-profiles
 ```
 
-On the shipped ladder Fable is the `anthropic` slice of `deep-high`
-(`claude-fable-5`, rung `deep-high-claude`), and Astra (`gpt-6-astra`) is the
-OpenAI-only class `astra-high` on rung `astra-high-codex`; `deep-high-codex`
-runs `gpt-5.6-sol`. An install can differ: where `deep-high`'s OpenAI slice is
-`gpt-6-astra`, Astra *is* `deep-high-codex`. Nobody picks those rungs: the
-project's router does, from a task's kind and class hint, so the loop steers
-families through kinds and the reviewers' provider exclusion. The examples
-below assume that install — a code-design author routed to `deep-high-claude`
-(Fable), and reviewers, which exclude Anthropic, routed to `deep-high-codex`
-(Astra). On the shipped ladder that reviewer runs `gpt-5.6-sol`; record the
-model that actually ran.
+Profiles and model assignments come from the installed intelligence classes
+and harnesses. A class hint does not pin a provider or model. Read the route
+and observed attempts for each task; do not infer a family from a remembered
+rung id. Examples below use observed author/reviewer families.
 
 ### Family diversity is observed, not configured
 
 No flag guarantees which family runs a turn:
 
 - `aq review dispatch` names no profile. Each reviewer task excludes the
-  provider the author revision was observed on, and the router picks among the
-  other families; it is `class_only`, so it can fail over.
-- `aq review decide --decision request_changes` files the revision task
-  unrouted with the class hint, `class_only` — never `pinned`.
-- The author task carries a kind, not a profile: `--type design` routes it to
-  the code-design lane (Claude first, then Codex) and `--type art` to the
-  art-design lane (Codex, held). Only the local operator or a live supervisor
-  session may pin it to one family, with `aq task route-override` on a human's
-  word; nothing pins the later reviewer or revision tasks.
-- Failover inside one class crosses families. During an Anthropic outage a
-  task on `deep-high-claude` can be re-routed to `deep-high-codex`, which on
-  the install above is Astra — author and reviewer on one family, with no
-  profile name changing. An OpenAI outage does the reverse.
+  provider the author revision was observed on when known, and the router
+  picks among eligible providers; it is `class_only`, so it can fail over.
+- A `request_changes` ask decision files the revision task unrouted with a
+  class hint. It does not pin the original author's provider.
+- The author task carries a type and class hint. The project's current routing
+  policy determines its candidates. A local operator or live supervisor may
+  use `aq task route-override` for a human-requested exception.
+- Failover within a class can change providers. Check the provider and model
+  that actually ran; a route alone does not establish cross-family coverage.
 
 So a round's cross-family claim comes from what actually ran. For every
 writing and reviewing task in the round:
@@ -452,10 +489,8 @@ control they carry.
 
 ### Before the first round
 
-File the author task with the kind whose lane is the author's family, never a
-profile. On the shipped routing policy `--type design` (code design) runs at
-`deep-high` on Claude first and falls back to Codex, and `--type art`
-(art-heavy design) runs on Codex and holds for it:
+File the author task with the appropriate type and class hints. Inspect the
+project's routing policy rather than assuming a type selects one family:
 
 ```bash
 aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --type design
@@ -473,7 +508,7 @@ family, as a comment on the author task, and keep appending each round's result
 there:
 
 ```bash
-aq task comment <author-task> --body "Adversarial review plan: author on deep-high-claude (routed, Fable), reviewers exclude its provider, cap 3 rounds, deadline <date>."
+aq task comment <author-task> --body "Adversarial review plan: author on <observed provider/model>, reviewers exclude its provider, cap 3 rounds, deadline <date>."
 ```
 
 The revision number is **not** the round counter. An imported vault edit or
@@ -511,11 +546,19 @@ the same revision twice. Count rounds in your record.
    naming the responder class (a hint; the router routes the revision task):
 
    ```bash
-   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
+   aq ask show --ask-id <ask-id> --json
+   ```
+
+   Use [Preview and confirm a decision](#preview-and-confirm-a-decision) with
+   `request_changes`, the round note and the responder-class hint. Prepare and
+   confirm the same frozen packet:
+
+   ```text
+   Round 1 of 3: address or explicitly rebut every [blocking] finding
    ```
 
    The daemon files the revision task ([What happens when you
-   reject](#what-happens-when-you-reject)); find it in `aq task list --project
+   reject](#what-happens-to-decision-feedback)); find it in `aq task list --project
    <project>` by its title. When it has resubmitted, check its attribution and
    record in the round comment every finding's disposition and the new
    revision's content hash.
@@ -562,7 +605,7 @@ concrete failure scenario, and the correction asked for or a viable
 alternative:
 
 ```bash
-aq review comment --review-id <id> --revision 2 --quote "the daemon reopens the authoring task" --body "[blocking] Claim: rejection reopens the author. Evidence: src/commands/review_commands.py:_on_review_changes_requested (rev 2) always files a new task keyed review-revision:<review>:<revision>. Failure: the operator waits for a reopen that never comes. Fix: describe the new revision task."
+aq review comment --review-id <id> --revision 2 --quote "the daemon reopens the authoring task" --body "[blocking] Claim: rejection reopens the author. Evidence: src/commands/review_commands.py:_file_review_feedback (rev 2) files a new task keyed review-revision:<decision-id>. Failure: the operator waits for a reopen that never comes. Fix: describe the new revision task."
 ```
 
 No one has to manufacture a defect. A verdict of no material defects is valid
@@ -597,41 +640,23 @@ them:
 
 | Round | Revision | What happened | Record |
 |---|---|---|---|
-| 1 | 1 | Dispatched clean-room to `deep-high-codex`; attempts report `gpt-6-astra`. Two `[blocking]`, one `[nit]`. Request changes with `--responder-class deep-high`; the revision task's attempts report a Fable model and it resubmits revision 2: `fixed`, `rebutted`, `fixed`. | Cross-family. Hash of revision 2. |
-| 2 | 2 | Dispatched with comments to `deep-high-codex`; during an OpenAI outage the reviewer task was re-routed and its attempts report a Claude model. | **Inconclusive** for cross-family coverage; the round does not count as a pass. |
-| 2 (replaced) | 2 | After recovery, dispatched again with `--force` ("replacing inconclusive round 2"); attempts report `gpt-6-astra`. No `[blocking]` and the rebuttal is not re-raised; the verdict names the sections and code paths checked. | Cross-family. The decider checks the rebuttal and approves revision 2. |
+| 1 | 1 | Dispatched clean-room; attempts report a provider/model from family B. Two `[blocking]`, one `[nit]`. Request changes with `--responder-class deep-high`; the revision task's attempts report family A and it resubmits revision 2: `fixed`, `rebutted`, `fixed`. | Cross-family. Hash of revision 2. |
+| 2 | 2 | Dispatched with comments to the reviewer route; the reviewer task failed over and its attempts report family A. | **Inconclusive** for cross-family coverage; the round does not count as a pass. |
+| 2 (replaced) | 2 | After recovery, dispatched again with `--force` ("replacing inconclusive round 2"); attempts report family B. No `[blocking]` and the rebuttal is not re-raised; the verdict names the sections and code paths checked. | Cross-family. The decider checks the rebuttal and approves revision 2. |
 
 Had round 3 still left a `[blocking]` finding open, the loop would stop there:
 the review stays open, and the round comment lists what is unresolved.
 
-### Why this is not a playbook
+### Playbook boundary
 
-The loop stays a recipe because a playbook cannot drive it today:
-
-- `review_dispatch`, `review_show` and `review_decide` are not contracted
-  commands (nothing in `src/commands/contracts/`), so a V2 `command` step
-  cannot call them.
-- An `agent_task` step can start a reviewer, but that reviewer is not in the
-  dispatch ledger, so its `aq review comment` is refused `not_dispatched`.
-- `review.dispatched` is emitted but has no event schema, so a rule triggered
-  on it fails validation with `unknown_event`.
-- A playbook principal is not a permitted decider.
-
-The outline below is **not runnable**. It shows the shape a future executable
-loop would have if operators ask for one; contracting the verbs is that later
-feature.
-
-```text
-start:   operator or delegated supervisor opens round k on review R (manual)
-step 1:  dispatch R at revision n to the reviewer family
-step 2:  wait for the dispatch task to end; read attempt models
-step 3:  inconclusive or failed round -> wait for recovery, replace it (--force)
-step 4:  blocking findings -> request_changes on R at revision n, responder named
-step 5:  wait for the revision task's resubmission; record dispositions and hash
-step 6:  k < cap and before the deadline -> step 1 at revision n+1
-         otherwise stop and record the unresolved list
-never:   approve automatically, count rounds by revision number
-```
+The cross-family loop is an opt-in operator or delegated-supervisor recipe;
+no automatic loop is shipped. Generated contracts expose `review_dispatch`,
+`review_show` and `review_decide`, but catalogue coverage does not grant caller
+authority. A playbook principal cannot decide a review. An ordinary
+`agent_task` reviewer is outside the dispatch ledger and cannot add dispatched
+comments (`not_dispatched`). `review.dispatched` also lacks a registered event
+schema. A future policy needs those boundaries addressed, a durable wait and
+explicit human decision authority; command discovery alone does not provide it.
 
 ## The refusal codes you will see
 
@@ -641,7 +666,7 @@ most likely to meet:
 | Code | Meaning | Fix |
 |---|---|---|
 | `not_your_task` | The reviewer (worker or supervisor) tried to act on a review in a project they do not hold. | Re-run from the session that holds the task, or have the authoring task resubmit. |
-| `not_in_review` | A decision was attempted while the review was not in a state that accepts it (or the `--decision` value was not `approve` / `request_changes`). | `aq review show --review-id <id>` to see the actual state, then `withdraw` or wait. |
+| `not_in_review` | A decision was attempted outside `in_review`; an open revision task may still be answering feedback. | `aq review show --review-id <id>` to see the actual state, then `withdraw` or wait. |
 | `stale_revision` | `--revision` does not match the review's current revision. | `aq review show --review-id <id>` to read the latest, then decide or comment with that revision. |
 | `review_closed` | A `submit --review-id` was called after the review had been approved or withdrawn. | Reopen a withdrawn review with `aq review reopen --review-id <id> --revision N`, then revise it. An approved review requires a new review. |
 | `empty` | The file was empty after decoding. | Fill in the draft and retry. |
@@ -654,10 +679,14 @@ most likely to meet:
 | `duplicate_dispatch` | This revision has already been dispatched. | Inspect `aq review show`, or pass `--force` to dispatch more reviewers. |
 | `routing.choice_forbidden` | A profile or pin on a filing (`aq task create`), a `--to <profile>` on a dispatch, or a responder profile on a decision: the router routes every task. | Give hints instead: `--type`/`--intelligence-class` to a filing, `--count`/`--class` to dispatch, `--responder-class` to decide. |
 | `operator_only` | `aq review dispatch` from a session that is neither the local operator nor elevated. | Dispatch as the local operator or from the supervisor. |
-| `invalid_responder` / `invalid_responder_class` | Responder routing on an approval, or an unknown class. | `aq system list-intelligence-classes`, then name a class that exists. |
+| `invalid_responder` / `invalid_responder_class` | An unsupported responder route or unknown class. | `aq system list-intelligence-classes`, then name a class that exists. |
 | `local_operator_only` | A session-scoped principal tried to `delegate` or `import-edits`, or the supervisor tried to set `review_delegate_to`. | Re-run the command as the local operator. |
 | `vault_diverged` | The vault file no longer matches the current revision's hash. | `aq review import-edits --review-id <id>` to promote your Obsidian edits, then decide. |
 | `review_gate` | The task you filed with `--after-review <id>` hit the open gate and the scheduler refused to route it. | Approve the review, or `aq review withdraw --review-id <id> --reason "…"`. |
+
+Ask decisions additionally report `ask.preview_required` or stale-preview
+refusals; re-read the ask and prepare the current intent. Answering tasks can
+report `feedback.incomplete`; record evidence for the listed obligations.
 
 ## Troubleshooting
 
@@ -681,25 +710,25 @@ and the vault:
 
 ## Discord, and what reviews are not
 
-Review submission and revision are announced to the single configured
-Discord channel (`config.discord.channel_id`) with the title, kind,
-revision, "what changed" note, and a deep link to the review. A revision is
-posted at most once — `doc_reviews.notified_revision` tracks the last
-announced revision — and the transport retries are fire-and-forget: a
-failed send never blocks or fails a submission. Decision is not taken in
-Discord.
+Human-facing reviews can be announced to the configured Discord channel
+with a revision link. The durable `notified_revision` cursor prevents replay of
+an acknowledged announcement. Transient/unavailable sends retry on a later
+tick; ambiguous delivery advances the cursor to avoid duplication; a rejected
+send is suppressed until restart. Submission does not wait for transport.
+Supervisor-only internal reviews, paused projects and reviews owned by the ask
+delivery path skip the legacy notifier. Decisions use the authenticated ask
+surface, not Discord replies.
 
 Reviews are not merges, not gates on *code* changes, and not a replacement
 for the escalation flow. A review gates *documents*; the code that
 implements an approved document is ordinary work, subject to ordinary
-review the same way anything else is. The design spec's out-of-scope list
-(§13) is the authoritative boundary if you are tempted to extend reviews to
-something else.
+review the same way anything else is. See the system spec for the boundary
+with integration and delivery.
 
 ## Related pages
 
-- [The document review design spec](../../superpowers/specs/2026-09-21-document-review-design.md)
-  — the source for every claim on this page.
+- [Reviews and knowledge system spec](../specs/systems/reviews-and-knowledge.md)
+  — mechanisms, current gaps and the dated planning snapshot.
 - [The `aq-reviews` skill](../../src/skills/aq-reviews/SKILL.md) — the
   agent-facing version of this page: the author, the dispatched reviewer and
   the operator's side of the cross-family recipe.
@@ -722,8 +751,9 @@ something else.
 `src/reviews/` (service, diff, vault), `src/commands/review_commands.py`
 (API handlers and refusal codes), `src/cli/reviews.py` (the hand-written
 submit path; every other `aq review …` command is generated from
-`src/tools/definitions.py`), `src/models/` (the review and gate rows),
-`src/scheduler/` (gate enforcement on routing), `src/deliverables.py` and
+`src/tools/definitions.py`), `src/database/tables.py` (review and gate rows),
+`src/asks/review.py` and `src/asks/operations.py` (frozen decisions and feedback),
+`src/deliverables.py` and
 `_cmd_task_close` in `src/commands/session_commands.py` (the `review`
 deliverable and its close gate). Tests live in
 `tests/test_review_profile_rules.py` for the profile rule invariants,

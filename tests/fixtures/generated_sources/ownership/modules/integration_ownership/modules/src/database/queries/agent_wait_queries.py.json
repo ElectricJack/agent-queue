@@ -1,0 +1,14 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin._observe_agent_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin._observe_collaboration_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin._validate_wait_source": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin.reconcile_agent_waits": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin.register_agent_wait_in_transaction": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::_bounded_digest": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::import from src.agent_waits import MAX_DIGEST_BYTES, TERMINAL_TASK_STATUSES, ProducerObservation, WaitError, WaitResolution, job_wait_deadline, resolve_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::import from src.collaboration import PARTNER_GRACE_SECONDS, is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::import from src.database.tables import agents, archived_tasks, collaboration_messages, jobs, messages, projects, sessions, task_completion_records, tasks": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
