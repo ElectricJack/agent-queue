@@ -62,9 +62,15 @@ export function staticTarget(root, pathname, exists) {
 /** A server frame (never masked): FIN + opcode, then the payload. */
 function wsFrame(opcode, payload) {
   const len = payload.length;
-  const head = len < 126
-    ? Buffer.from([0x80 | opcode, len])
-    : Buffer.from([0x80 | opcode, 126, len >> 8, len & 255]);
+  let head;
+  if (len < 126) head = Buffer.from([0x80 | opcode, len]);
+  else if (len < 65536) head = Buffer.from([0x80 | opcode, 126, len >> 8, len & 255]);
+  else {
+    head = Buffer.alloc(10);
+    head[0] = 0x80 | opcode;
+    head[1] = 127;
+    head.writeBigUInt64BE(BigInt(len), 2);
+  }
   return Buffer.concat([head, payload]);
 }
 
@@ -111,13 +117,11 @@ export async function startStubServer({ distDir, fixtures }) {
   const requests = [];
   const unhandled = [];
   const terminalUpgrades = [];
-  // Input-only terminal sockets (phones typing; never an attach): url, frames, open.
-  const terminalInputs = [];
   const overrides = new Map();
   const paneStreams = new Map(); // sessionId -> Set<res>
   const paneFailures = new Map(); // sessionId -> status
   const eventSockets = new Set();
-  const inputSockets = new Set();
+  const terminalSockets = new Set();
   const terminalScreens = new Map();
   const terminalViewers = [];
 
@@ -140,6 +144,14 @@ export async function startStubServer({ distDir, fixtures }) {
     requests.push({ method: req.method, path: url.pathname, body });
     const pane = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pane$/);
     if (pane) return openPane(decodeURIComponent(pane[1]), res);
+    const access = url.pathname.match(/^\/ws\/terminal\/([^/]+)$/);
+    if (access && req.method === "GET") {
+      // The access probe a browser makes after a refused upgrade (WebSocket's
+      // 1006 says nothing): answered like the daemon's TerminalAccessResponse.
+      return send(res, 200, terminalScreens.has(decodeURIComponent(access[1]))
+        ? { status: "ready", code: 0, message: "", retryable: false }
+        : { status: "error", code: 4403, message: "Terminal access refused by the layout check.", retryable: false });
+    }
     if (url.pathname.startsWith("/api/") || url.pathname === "/health" || url.pathname === "/ready") {
       const key = `${req.method} ${url.pathname}`;
       const handler = overrides.get(key) ?? fixtures.routes.get(key);
@@ -161,32 +173,12 @@ export async function startStubServer({ distDir, fixtures }) {
   server.on("upgrade", (req, socket) => {
     const path = new URL(req.url, "http://stub.invalid").pathname;
     socket.on("error", () => {});
-    const input = path.match(/^\/ws\/terminal\/([^/]+)\/input$/);
-    if (input) {
-      // The phone's input-only socket: accept it like the daemon, and record
-      // what reaches it. It gets a ready frame and never any output.
-      const record = { url: req.url, sessionId: decodeURIComponent(input[1]), frames: [], open: true };
-      terminalInputs.push(record);
-      acceptUpgrade(req, socket, "aq-terminal-v1");
-      socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "ready", session_id: record.sessionId, mode: "input" }))));
-      socket.on("data", wsReader((opcode, payload) => {
-        if (opcode === 0x2) record.frames.push(payload.toString("utf8"));
-        else if (opcode === 0x1) {
-          const control = JSON.parse(payload.toString("utf8"));
-          record.frames.push({ control });
-          if (control.type === "ping") socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "pong" }))));
-        } else if (opcode === 0x8) socket.end(wsFrame(0x8, payload.subarray(0, 2)));
-      }));
-      inputSockets.add(socket);
-      socket.on("close", () => { record.open = false; inputSockets.delete(socket); });
-      return;
-    }
     if (path.startsWith("/ws/terminal")) {
-      // A focus route or a compact terminal must never attach (spec §4).
+      // An attach: refused unless the check allowed the session a screen.
       terminalUpgrades.push(req.url);
       const sessionId = decodeURIComponent(path.split("/")[3]);
       if (terminalScreens.has(sessionId)) {
-        const record = { sessionId, frames: [], socket };
+        const record = { url: req.url, sessionId, frames: [], socket, open: true };
         terminalViewers.push(record);
         acceptUpgrade(req, socket, "aq-terminal-v1");
         socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "ready", session_id: sessionId }))));
@@ -198,9 +190,10 @@ export async function startStubServer({ distDir, fixtures }) {
             record.frames.push(control);
             if (control.type === "ping") socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "pong" }))));
           }
+          if (opcode === 0x8) socket.end(wsFrame(0x8, payload.subarray(0, 2)));
         }));
-        inputSockets.add(socket);
-        socket.on("close", () => inputSockets.delete(socket));
+        terminalSockets.add(socket);
+        socket.on("close", () => { record.open = false; terminalSockets.delete(socket); });
         return;
       }
       socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
@@ -216,12 +209,19 @@ export async function startStubServer({ distDir, fixtures }) {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   return {
     url: `http://127.0.0.1:${server.address().port}`,
-    requests, unhandled, terminalUpgrades, terminalInputs,
+    requests, unhandled, terminalUpgrades,
     terminalViewers,
     // Attach is refused by default. Individual geometry checks opt in to a fake live PTY.
     allowTerminal: (sessionId, screen) => terminalScreens.set(sessionId, screen),
-    /** Every binary input frame the phone sent to `sessionId`, decoded, in order. */
-    typed: (sessionId) => terminalInputs.filter((r) => r.sessionId === sessionId).flatMap((r) => r.frames.filter((f) => typeof f === "string")),
+    /** Every binary input frame sent to `sessionId`, decoded, in order. */
+    typed: (sessionId) => terminalViewers.filter((r) => r.sessionId === sessionId)
+      .flatMap((r) => r.frames.filter((f) => typeof f === "string")),
+    /** Live output to every open attach of `sessionId`. */
+    terminalWrite(sessionId, text) {
+      for (const viewer of terminalViewers) {
+        if (viewer.sessionId === sessionId && viewer.open) viewer.socket.write(wsFrame(0x2, Buffer.from(text)));
+      }
+    },
     statePuts: () => requests.filter((r) => r.path === "/api/dashboard/state-put").map((r) => JSON.parse(r.body)),
     override: (key, handler) => overrides.set(key, handler),
     pushEvent(frame) {
@@ -243,7 +243,7 @@ export async function startStubServer({ distDir, fixtures }) {
     },
     async close() {
       for (const socket of eventSockets) socket.destroy();
-      for (const socket of inputSockets) socket.destroy();
+      for (const socket of terminalSockets) socket.destroy();
       for (const open of paneStreams.values()) for (const res of open) res.destroy();
       server.closeAllConnections();
       await new Promise((done) => server.close(done));

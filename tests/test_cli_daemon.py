@@ -22,6 +22,22 @@ from src.cli.app import cli
 from src.sessions.env import AQ_MARKER_KEYS, DAEMON_ENV_STRIP_KEYS, DB_ISOLATION_KEYS
 
 
+def test_post_start_doctor_uses_cli_instead_of_daemon_entrypoint(monkeypatch):
+    response = MagicMock()
+    response.__enter__.return_value.status = 200
+    run = MagicMock(return_value=SimpleNamespace(stdout="", stderr="", returncode=0))
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        daemon_mod, "_resolve_agent_queue_bin",
+        lambda: pytest.fail("daemon entrypoint treats doctor as a config path"),
+    )
+    with patch("urllib.request.urlopen", return_value=response):
+        daemon_mod._post_daemon_checks()
+    command = run.call_args.args[0]
+    assert command[:4] == [daemon_mod.sys.executable, "-m", "src.cli.app", "doctor"]
+    assert command[4:] == ["--check", "pools.stale_worktree_checkouts", "--fix"]
+
+
 def test_log_rotation_preserves_bytes_and_retains_only_its_newest_archives(tmp_path, monkeypatch):
     log = tmp_path / "custom.log"
     content = b"subprocess output\xff\n" * 10
