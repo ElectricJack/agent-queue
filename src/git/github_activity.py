@@ -46,6 +46,16 @@ def caller_component():
     return "unattributed"
 
 
+@contextmanager
+def attributed_github_caller():
+    """Carry fallback stack attribution into a task without changing quota policy."""
+    token = _component.set(caller_component())
+    try:
+        yield
+    finally:
+        _component.reset(token)
+
+
 def endpoint_template(key):
     """Keep endpoint structure without repository, ref, SHA or query values."""
     key = re.sub(r"repos/[^/]+/[^/]+", "repos/{owner}/{repo}", key)
