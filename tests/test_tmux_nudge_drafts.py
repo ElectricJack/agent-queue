@@ -17,6 +17,15 @@ if os.name != "posix":
 
 from src.sessions.provider import NotSubmitted, SessionHandle
 from src.sessions.tmux import TmuxCommandError, TmuxProvider
+from tests.test_session_runtime_units import session_clock as session_clock
+
+
+@pytest.fixture(autouse=True)
+def tmux_clock(session_clock):
+    from src.sessions import tmux
+
+    session_clock.patch(tmux)
+    return session_clock
 
 REMINDER = "No progress for 8 min. Report status, finish the task, or run aq ask."
 STALE_DRAFT = (
@@ -131,6 +140,21 @@ def handle():
 
 
 class TestBackgroundNudgeDrafts:
+    @pytest.mark.parametrize("prefix", ["› ", "❯ ", "> ", "┃"])
+    @pytest.mark.parametrize("fields,reason", [
+        ({"attached": 1}, "client attached"),
+        ({"in_mode": 1}, "pane in copy mode"),
+        ({"cursor_y": 8}, "cursor outside pane"),
+        ({"prefix": ""}, "unknown prompt prefix"),
+    ])
+    async def test_refusal_names_the_guard_condition_without_typing(self, prefix, fields, reason):
+        composer = Composer(**({"prefix": prefix} | fields))
+        provider = provider_for(composer)
+        with pytest.raises(NotSubmitted, match=reason):
+            await provider.nudge(handle(), "Handle `aq message status msg-test --json`.")
+        assert composer.mutations == []
+        assert composer.submitted == []
+
     @pytest.mark.parametrize(
         "composer",
         [

@@ -49,6 +49,18 @@ Tasks gain an optional `profile_id` field (nullable foreign key to `agent_profil
 > (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`); `tasks.route_source` records which.
 > Filers pass hints (`--type`, `--intelligence-class`) instead.
 
+Role routes bind agent identity as well as capabilities: a task with
+`route_source=role` may launch only on an enabled worker whose saved `profile_id`
+matches the role profile. Scheduler matching and the fresh prelaunch check both
+enforce this, preserving the agent's name and execution overrides. Definitions
+belonging to `triage`, `spec-ingest`, `reviewer` or `final-reviewer` accept only
+tasks routed to their own role; ordinary push tasks and pool launches cannot
+recruit them, even with compatible classes. When an existing role definition is
+busy, disabled, suppressed, owned by a live session or incompatible, demand waits
+rather than creating a replacement. A role with no existing definition may
+bootstrap one; projects share that durable global definition. Renaming edits the
+existing row and retains its id.
+
 ### Project Extension
 
 Projects gain an optional `default_profile_id` field (nullable foreign key to `agent_profiles.id`). This serves as the fallback when a task has no explicit `profile_id`.
