@@ -1,12 +1,12 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:32a2cdb9fe7ad734151e1ec5c9f5c94c867aa6acd937705d11e91027d69d8186
-source_sha256: sha256:a8602b6932f72311297d3a6b8b27c3c19383ea8022397eda7777cf1b6ac74e42
-contract_fingerprint: sha256:82a81a1588d65c999b24e78bbf360fd2aa86f5f0612c65a74806262c4fa07fcd
+artifact_sha256: sha256:0064f7e4b84733ae2d190fa6a420d48a8de100b13b5c406a0e770db5f893cafb
+source_sha256: sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02
+contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - ensure_task
+  - ensure_spec_ingest
   - gate_create
   - task_batch_commit
   harness_tools: []

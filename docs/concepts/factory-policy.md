@@ -52,6 +52,9 @@ Conflicting instructions are bugs; historical reports, reviews and superseded sp
 ## C. Recover or retire without losing evidence
 
 - One incident per failure, one responsible owner, bounded retries with the remaining budget visible.
+  A new diagnosis of the same stopped attempt is a recorded reclassification of that incident: its
+  id, hold, decision provenance and budgets carry forward, and retry stays automatic only if every
+  recorded diagnosis allows it.
 - No-attempt failures use a durable failure-transition generation. Comments, edits and same-status
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
@@ -83,6 +86,5 @@ those checks. Full-suite runs belong to CI or suite tasks. Compare against a rec
 never capture one per task. A pre-existing failure neither fails the task nor justifies weakening or
 skipping tests. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
 
-Shipped profiles and skills are seeded write-if-absent: edit installed profiles in the vault and re-copy
-drifted skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`
-rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.
+Profiles and skills are seeded write-if-absent: edit installed profiles in the vault; re-copy drifted
+skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py` rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.
