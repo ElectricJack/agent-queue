@@ -2394,6 +2394,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.cron import register_cron_contracts
 
     register_cron_contracts(registry)
+    from src.commands.contracts.schedule import register_schedule_contracts
+
+    register_schedule_contracts(registry)
     from src.commands.contracts.message_wait import register_message_wait_contract
 
     register_message_wait_contract(registry)

@@ -377,7 +377,11 @@ hash. Marking a comment resolved is a proposed answer, not decider acceptance.
   `--resolves` alone does not complete an obligation.
 
 Follow-up work does not mutate approved document bytes. If it changes approved
-requirements, submit an amendment for a new decision.
+requirements, submit an amendment for a new decision with the ordinary
+`aq review submit --task-id <follow-up-task> --file <draft> --kind spec --title "…"`
+command, omitting `--review-id`. AQ creates a separate review and records the
+approved predecessor's review id, revision and decision in its initial changes
+note. Revision tasks remain bound to the original review.
 
 ## The worker's side
 

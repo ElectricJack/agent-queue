@@ -15,6 +15,9 @@ AUTHOR_WINDOW_LIMIT = 10
 CHANNEL_WINDOW_LIMIT = 60
 #: The rate-limit window, and the bucket for one rate-limit notice per author.
 WINDOW_SECONDS = 600
+#: Supervisor-initiated posts per supervisor and per channel in the same window.
+SUPERVISOR_WINDOW_LIMIT = 10
+SUPERVISOR_CHANNEL_WINDOW_LIMIT = 60
 #: Longest outbound reply, marker and dashboard pointer included.
 MAX_REPLY_CHARS = 1900
 #: How far back one reconnect backfill pass reads.
@@ -36,6 +39,8 @@ __all__ = [
     "MAX_INPUT_CHARS",
     "MAX_REPLY_CHARS",
     "SUPERVISOR_DELAY_SECONDS",
+    "SUPERVISOR_WINDOW_LIMIT",
+    "SUPERVISOR_CHANNEL_WINDOW_LIMIT",
     "TEXT_RETENTION_DAYS",
     "TOMBSTONE_RETENTION_DAYS",
     "WINDOW_SECONDS",

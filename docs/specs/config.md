@@ -295,10 +295,14 @@ Hourly supervisor authoring is opt-in and defaults off. `full_fleet_visibility`
 must be explicitly true, and `discord.digest.project_ids` must be empty, before
 the global supervisor can author text for the shared destination. Quiet hours
 use local `HH:MM` times, may cross midnight, and suppress author wakes while
-the deterministic digest remains eligible to send. Omitting `quiet_hours`
+the one-line no-report notice remains eligible to send. Omitting `quiet_hours`
 disables that suppression. `grace_minutes` is 1–60; `max_requests_per_day` is
 1–24, with reservations counted even when a report falls back. An inactive
-authoring playbook keeps delivery deterministic. The request/CAS slice does
+authoring playbook sends only a one-line no-report notice for full-fleet hourly
+windows, as do missed submissions and unavailable author slots. The brief stays
+input only; the supervisor authors a short developer-style progress narrative.
+Feature-off and restricted-destination deterministic digests are unchanged.
+The request/CAS slice does
 not activate an authoring playbook by itself.
 
 Morning scheduling is opt-in. `time` must be a zero-padded local `HH:MM`;

@@ -138,7 +138,14 @@ class AdmissionReader:
         finally:
             _prepared.reset(token)
 
-    async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
+    async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False,
+                           blocker=None):
+        """Read current inputs for admission, or just one subscribed constraint.
+
+        A resource verification is not an admission grant. Re-reading unrelated
+        constraints for each subscription multiplies expensive frontier queries
+        while holding the graph fence. Never cache a verdict across observations.
+        """
         from src.database.queries.claim_queries import (
             _pool_profiles_predicate,
             claim_frontier_predicates,
@@ -153,7 +160,7 @@ class AdmissionReader:
                 raise WaitError("wait.source_unresolved", "admission observation must precede graph lock")
             async with self.prepared():
                 return await self.observe_task(conn, task_id, continuation_id=continuation_id,
-                                               migration_audit=migration_audit)
+                                               migration_audit=migration_audit, blocker=blocker)
         _, admission, ready_projects = prepared
         o = self.orchestrator
         config = o.config
@@ -186,76 +193,97 @@ class AdmissionReader:
         ready = task["project_id"] in ready_projects
         # Prepared stack views check cache expiry without Git I/O under the lock.
         project_model = await o.db.get_project(task["project_id"], conn=conn)
-        mode = admission.hierarchy_modes.get(task["project_id"], ProjectIntegrationMode.of(project_model))
-        _, stack = admission.hierarchy_evidence(task["project_id"])
-        if stack is not None and not await stack.fresh():
-            mode = replace(mode, stackable_prerequisite_ids=frozenset())
-        predicates = claim_frontier_predicates(hierarchy_mode=mode)
-        predicates["route"] = route_claimable(ready)
-        if profile:
-            predicates["compatible_profile"] = _pool_profiles_predicate({profile.id: profile})
-        checks = dict((await conn.execute(select(*(
-            expr.label(name) for name, expr in predicates.items()
-        )).where(tasks.c.id == task_id))).mappings().one())
+        batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                       "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
+        checks = {}
+        if blocker is None or blocker in {"policy_hold", "batch_hold", "workspace", "backoff"}:
+            mode = admission.hierarchy_modes.get(task["project_id"], ProjectIntegrationMode.of(project_model))
+            _, stack = admission.hierarchy_evidence(task["project_id"])
+            if stack is not None and not await stack.fresh():
+                mode = replace(mode, stackable_prerequisite_ids=frozenset())
+            predicates = claim_frontier_predicates(hierarchy_mode=mode)
+            predicates["route"] = route_claimable(ready)
+            if profile:
+                predicates["compatible_profile"] = _pool_profiles_predicate({profile.id: profile})
+            if blocker == "batch_hold":
+                predicates = {key: value for key, value in predicates.items() if key in batch_names}
+            elif blocker == "policy_hold":
+                predicates = {key: value for key, value in predicates.items()
+                              if key not in batch_names | {"claim_prepare_backoff", "workspace_requirement"}}
+            elif blocker in {"workspace", "backoff"}:
+                key = "workspace_requirement" if blocker == "workspace" else "claim_prepare_backoff"
+                predicates = {key: predicates[key]}
+            checks = dict((await conn.execute(select(*(
+                expr.label(name) for name, expr in predicates.items()
+            )).where(tasks.c.id == task_id))).mappings().one())
         from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
         from src.waits.occupancy import continuation_occupancy
 
-        resuming, reserved = await continuation_occupancy(o.db, config, conn=conn)
-        live = [dict(row) for row in (await conn.execute(select(sessions).where(
-            (sessions.c.lifecycle == "pool") | sessions.c.id.in_(resuming),
-            sessions.c.state.in_(("starting", "running", "draining")),
-        ))).mappings()]
-        current = [s for s in live if s["project_id"] == task["project_id"]]
-        idle = [s for s in current if s["profile_id"] == task["profile_id"]
-                and s['desired_state'] == 'running'
-                and s["state"] == "running" and not s["task_id"] and not s["claim_phase"]
-                and not idle_pool_claim_loop_stalled(SimpleNamespace(**s), now=self.clock(),
-                    stall_seconds=pool_claim_loop_stall_seconds(config.swarm))]
-        # Resumes start a new task session; an idle pool process cannot be
-        # reused as that fresh process and still occupies its configured seat.
-        if continuation_id:
-            idle = []
-        compatible = [s for s in live if s["profile_id"] == task["profile_id"]]
-        pending = [launch for launch in getattr(o, "_pool_launches", {}).values()
-                   if launch.session_id not in {s["id"] for s in live}]
-        fleet_count = len(live) + len(pending) + sum(reserved.values())
-        project_count = len(current) + sum(launch.project_id == task["project_id"] for launch in pending)
-        project_count += sum(n for (pid, _), n in reserved.items() if pid == task["project_id"])
-        profile_count = len(compatible) + sum(launch.profile_id == task["profile_id"] for launch in pending)
-        profile_count += sum(n for (_, pid), n in reserved.items() if pid == task["profile_id"])
-        cap = config.swarm.global_max_active
-        if cap is None:
-            cap = config.resources.max_concurrent_agents
-        profile_cap = profile.max_active if profile else 0
-        slot = not idle and (cap is not None and fleet_count >= cap
-                            or project_count >= project["max_concurrent_agents"]
-                            or profile_cap is not None and profile_count >= profile_cap)
-        worktrees = o._worktrees_enabled()
-        capacity = await o.db.count_available_workspaces(
-            task["project_id"], kind_id="project-repo",
-            worktree_slot_cap=o._project_slot_cap(project_model) if worktrees else None,
-            workspace_snapshot=[o.db._row_to_workspace(r) for r in (await conn.execute(
-                select(workspaces).where(workspaces.c.project_id == task["project_id"],
-                    func.coalesce(workspaces.c.kind_id, "project-repo") == "project-repo"),
-            )).mappings()],
-            kind_snapshot={"project-repo": await o.db.resolve_workspace_kind(
-                task["project_id"], "project-repo", conn=conn)},
-        )
-        capacity = max(0, capacity - sum(
-            launch.project_id == task["project_id"] and not launch.workspace_acquired
-            for launch in pending
-        ))
+        idle, pending = [], []
+        fleet_count = project_count = 0
+        slot = False
+        if blocker is None or blocker in {"slot", "workspace"}:
+            resuming, reserved = await continuation_occupancy(o.db, config, conn=conn)
+            live = [dict(row) for row in (await conn.execute(select(sessions).where(
+                (sessions.c.lifecycle == "pool") | sessions.c.id.in_(resuming),
+                sessions.c.state.in_(("starting", "running", "draining")),
+            ))).mappings()]
+            current = [s for s in live if s["project_id"] == task["project_id"]]
+            idle = [s for s in current if s["profile_id"] == task["profile_id"]
+                    and s['desired_state'] == 'running'
+                    and s["state"] == "running" and not s["task_id"] and not s["claim_phase"]
+                    and not idle_pool_claim_loop_stalled(SimpleNamespace(**s), now=self.clock(),
+                        stall_seconds=pool_claim_loop_stall_seconds(config.swarm))]
+            # Resumes start a new task session; an idle pool process cannot be
+            # reused as that fresh process and still occupies its configured seat.
+            if continuation_id:
+                idle = []
+            compatible = [s for s in live if s["profile_id"] == task["profile_id"]]
+            pending = [launch for launch in getattr(o, "_pool_launches", {}).values()
+                       if launch.session_id not in {s["id"] for s in live}]
+            fleet_count = len(live) + len(pending) + sum(reserved.values())
+            project_count = len(current) + sum(launch.project_id == task["project_id"] for launch in pending)
+            project_count += sum(n for (pid, _), n in reserved.items() if pid == task["project_id"])
+            profile_count = len(compatible) + sum(launch.profile_id == task["profile_id"] for launch in pending)
+            profile_count += sum(n for (_, pid), n in reserved.items() if pid == task["profile_id"])
+            cap = config.swarm.global_max_active
+            if cap is None:
+                cap = config.resources.max_concurrent_agents
+            profile_cap = profile.max_active if profile else 0
+            slot = not idle and (cap is not None and fleet_count >= cap
+                                or project_count >= project["max_concurrent_agents"]
+                                or profile_cap is not None and profile_count >= profile_cap)
+        capacity = 0
+        if blocker is None or blocker == "workspace":
+            worktrees = o._worktrees_enabled()
+            capacity = await o.db.count_available_workspaces(
+                task["project_id"], kind_id="project-repo",
+                worktree_slot_cap=o._project_slot_cap(project_model) if worktrees else None,
+                workspace_snapshot=[o.db._row_to_workspace(r) for r in (await conn.execute(
+                    select(workspaces).where(workspaces.c.project_id == task["project_id"],
+                        func.coalesce(workspaces.c.kind_id, "project-repo") == "project-repo"),
+                )).mappings()],
+                kind_snapshot={"project-repo": await o.db.resolve_workspace_kind(
+                    task["project_id"], "project-repo", conn=conn)},
+            )
+            capacity = max(0, capacity - sum(
+                launch.project_id == task["project_id"] and not launch.workspace_acquired
+                for launch in pending
+            ))
         availability = getattr(o, "provider_availability", None)
         provider = availability.provider_for_profile(
             profile, project_id=task["project_id"],
         ) if availability and profile else None
         provider_blocked = bool(availability and availability.suppresses(provider))
         quarantine, _ = o._pool_quarantine_state(task["project_id"], task["profile_id"], self.clock())
-        since = self.clock() - config.scheduling.rolling_window_hours * 3600
-        usage = dict((await conn.execute(select(
-            token_ledger.c.project_id, func.sum(token_ledger.c.tokens_used),
-        ).where(token_ledger.c.timestamp >= since).group_by(token_ledger.c.project_id))).all())
+        usage = {}
         global_budget = config.global_token_budget_daily
+        if (blocker is None or blocker == "budget") and (
+                global_budget is not None or project["budget_limit"] is not None):
+            since = self.clock() - config.scheduling.rolling_window_hours * 3600
+            usage = dict((await conn.execute(select(
+                token_ledger.c.project_id, func.sum(token_ledger.c.tokens_used),
+            ).where(token_ledger.c.timestamp >= since).group_by(token_ledger.c.project_id))).all())
         budget = (global_budget is not None and sum(usage.values()) >= global_budget
                   or project["budget_limit"] is not None
                   and usage.get(task["project_id"], 0) >= project["budget_limit"])
@@ -264,18 +292,17 @@ class AdmissionReader:
             integration_branch_owners.c.ref == task["branch_name"],
             integration_branch_owners.c.handoff_state != "released",
             integration_branch_owners.c.owner_id != task_id,
-        ))).mappings().all() if task["branch_name"] else []
+        ))).mappings().all() if task["branch_name"] and blocker in {None, "branch_owner"} else []
         holders = tuple((await conn.execute(select(tasks.c.id).where(
             tasks.c.id.in_([r["owner_id"] for r in owners]), tasks.c.project_id == task["project_id"],
         ).order_by(tasks.c.id))).scalars()) if owners else ()
         owns = bool(await conn.scalar(select(tasks.c.id).where(
             tasks.c.id == task_id, tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
-        )))
+        ))) if blocker in {None, "slot"} else False
         batch_reasons = []
-        if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
+        if blocker in {None, "batch_hold"} and (task_id not in admission.allowed
+                or not await admission.matches(conn=conn, task_id=task_id)):
             batch_reasons.append("delivery_not_verified")
-        batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                       "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
         batch_reasons.extend(name for name in batch_names if checks.get(name) is False)
         policy_reasons = [name for name, ok in checks.items() if not ok and name not in batch_names
                           and name not in {"claim_prepare_backoff", "workspace_requirement"}]
@@ -300,6 +327,8 @@ class AdmissionReader:
             "branch_owner": {"blocked": bool(owners), "holders": list(holders)},
             "batch_hold": {"blocked": bool(batch_reasons), "reasons": sorted(batch_reasons)},
         }
+        if blocker is not None:
+            constraints = {blocker: constraints[blocker]}
         binding = {
             "project_id": task["project_id"], "task_id": task_id,
             "scope": reservation_scope(task, project), "branch": task["branch_name"],
@@ -324,8 +353,9 @@ class AdmissionReader:
         # Resource snapshots describe constraints, never grant admission. This
         # path can re-observe migration projections of held tasks; direct
         # admission callers retain the default READY-only observation.
-        observed = await self.observe_task(conn, context.get("owner_id"), migration_audit=True)
         blocker = condition.parameters["blocker"]
+        observed = await self.observe_task(conn, context.get("owner_id"), migration_audit=True,
+                                           blocker=blocker)
         if (not observed or observed.task["project_id"] != context.get("project_id")
                 or observed.task["claim_epoch"] != context.get("claim_epoch")
                 or observed.identity(blocker) != condition.parameters["identity"]):

@@ -392,6 +392,15 @@ observation timed out, not that the queue is empty. `claim_conflict` and ordinar
 `no_ready_work` use the normal claim loop; preparation refusals use the bounded
 protocol below.
 
+An active claim whose `.aq/claim.json` is missing is recovered by the session
+reconciler: it stops the exact worker, then requeues the task with preparation
+backoff and `needs_attention = claim_file_missing`. The `session.claim_file_missing`
+event identifies the session, task and epoch. If process exit cannot be confirmed,
+the claim stays held and teardown retries. Attached branch owners retain the stopped
+writer's bindings for normal owner recovery. Unavailable checkouts and unreadable
+markers stay untouched. A marker write/readback failure during preparation drains
+the worker instead of leaving it idle on a claim it cannot use.
+
 ### Repeated claim preparation refusals
 
 Failed claim responses include `session.failed_preparation`, also visible in
@@ -1590,6 +1599,8 @@ that keeps your edits is `--grants-only`:
 
 ```bash
 aq doctor --check profiles.system_drift                          # which vault copies diverge, and how
+aq doctor --check profiles.capability_drift                      # missing default grants across shipped roles
+aq doctor --check profiles.capability_drift --fix                # additive repair; backup and edits kept
 aq agent profile-reseed --profile-id <id> --grants-only           # merge in only the missing grants
 ```
 
