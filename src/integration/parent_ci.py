@@ -14,7 +14,7 @@ from src.integration.ci import (
     AuthenticatedGitHubObserver, CIService, ParentCISubject, SubjectTrustError,
 )
 from src.integration.outbox import enqueue_integration_event
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 
 logger = logging.getLogger(__name__)
 

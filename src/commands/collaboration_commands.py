@@ -321,6 +321,7 @@ class CollaborationCommandsMixin:
                 )
             else:
                 next_step = f"Close with `aq collaboration close {thread_id}` when it is done."
+            await self._acknowledge_collaboration_read(caller, thread_id, page)
             return {
                 "success": True,
                 "thread": view,
@@ -334,6 +335,17 @@ class CollaborationCommandsMixin:
             return _refusal(exc)
         except (ValidationError, TypeError, ValueError) as exc:
             return _invalid(exc)
+
+    async def _acknowledge_collaboration_read(self, caller, thread_id, page):
+        if caller["kind"] != "member":
+            return
+        rows = await self.db.get_collaboration_read_messages(
+            thread_id, project_id=caller["project_id"], task_id=caller["task_id"],
+            message_ids=[item["message_id"] for item in page["messages"]
+                         if item.get("message_id") and item.get("body") is not None],
+        )
+        for message in rows:
+            await self._acknowledge_message_read(message)
 
     async def _cmd_collaboration_list(self, args):
         try:

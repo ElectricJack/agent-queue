@@ -37,7 +37,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.integration.models import BranchKey, Fence
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence
 from src.integration.outbox import enqueue_integration_event
 from src.integration.owner_recovery import (
     CHECKOUT_IN_USE,
@@ -49,7 +49,8 @@ from src.integration.owner_recovery import (
     _Refusal,
 )
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.integration.subjects import (
+from src.integration.row_query import select_row
+from src.integration.runtime_contracts import (
     Primitive,
     PrimitiveOutcome,
     PrimitivePorts,
@@ -120,11 +121,7 @@ class _ExactWriterRecovery(OwnerRecovery):
         async with self.db._engine.connect() as conn:
             session = None
             if row["session_id"]:
-                session = (
-                    (await conn.execute(select(sessions).where(sessions.c.id == row["session_id"])))
-                    .mappings()
-                    .one_or_none()
-                )
+                session = await select_row(conn, sessions, sessions.c.id == row['session_id'])
                 if session is None:
                     raise _Refusal("stop_unknown", "writer session record is missing")
             elif row["handoff_state"] != "reserved":
@@ -209,36 +206,16 @@ class _ReleaseCheckedDB:
                 )
                 if await self.db._read_manual_pause(conn, task_id) is not None:
                     raise _Refusal("subject_held", "task manually paused during stop proof")
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners)
-                        .where(
-                            integration_branch_owners.c.id == self.owner["id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn, integration_branch_owners,
+                integration_branch_owners.c.id == self.owner['id'],
+                lock=True,
             )
             fields = ("owner_id", "fence_token", "handoff_state", "session_id", "workspace_id")
             if row is None or any(row[field] != self.owner[field] for field in fields):
                 raise _Refusal("stale_fence", "writer binding changed during stop proof")
             if self.session is not None:
-                session = (
-                    (
-                        await conn.execute(
-                            select(sessions)
-                            .where(
-                                sessions.c.id == self.session["id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                session = await select_row(conn, sessions, sessions.c.id == self.session['id'], lock=True)
                 fields = (
                     "id",
                     "name",
@@ -265,18 +242,10 @@ class _ReleaseCheckedDB:
             ):
                 raise _Refusal(WRITER_LIVE, "writer was claimed during stop proof")
             if self.owner["workspace_id"]:
-                workspace = (
-                    (
-                        await conn.execute(
-                            select(workspaces)
-                            .where(
-                                workspaces.c.id == self.owner["workspace_id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                workspace = await select_row(
+                    conn, workspaces,
+                    workspaces.c.id == self.owner['workspace_id'],
+                    lock=True,
                 )
                 if workspace is None:
                     raise _Refusal("stop_unknown", "workspace disappeared during stop proof")
@@ -360,8 +329,7 @@ class WriterPrimitives:
         self.recovery = owner_recovery
         self.routing_policy = routing_policy
         self.clock = clock
-        # Shadow continues to use legacy execution. The active git-first
-        # adapter selects this port, without project-level write authority.
+        # Managed train leases do not carry project-level write authority.
         self.managed_leases = managed_leases
         self.ownership = ExpiringBranchOwnership(db, clock=clock)
 
@@ -445,17 +413,10 @@ class WriterPrimitives:
                 return PrimitiveOutcome(
                     primitive=p, outcome="configuration_blocked", reason="subject_stale_or_held"
                 )
-            existing = (
-                (
-                    await conn.execute(
-                        select(integration_subject_journal).where(
-                            integration_subject_journal.c.subject_id == subject.id,
-                            integration_subject_journal.c.idempotency_key == key,
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            existing = await select_row(
+                conn, integration_subject_journal,
+                integration_subject_journal.c.subject_id == subject.id,
+                integration_subject_journal.c.idempotency_key == key,
             )
             request = args.model_dump(mode="json")
             if existing is not None:
@@ -519,6 +480,12 @@ class WriterPrimitives:
                     task_type=TaskType.TEST
                     if args.role is WriterRole.VERIFIER
                     else TaskType.BUGFIX,
+                    # A repair writer holds the subject's target branch.
+                    **(
+                        {}
+                        if args.role is WriterRole.VERIFIER
+                        else {"priority": INTEGRATION_REPAIR_PRIORITY}
+                    ),
                     class_hint=args.intelligence_class,
                     dedup_key=f"{subject.id}:{key}",
                     created_by_kind="integration_writer",
@@ -662,19 +629,7 @@ class WriterPrimitives:
                     )
             if current.writer.fence_token is not None:
                 return PrimitiveOutcome(primitive=p, outcome="stale")
-            task = (
-                (
-                    await conn.execute(
-                        select(tasks)
-                        .where(
-                            tasks.c.id == args.owner_task_id,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            task = await select_row(conn, tasks, tasks.c.id == args.owner_task_id, lock=True)
             if (
                 task is None
                 or task["status"] != "BLOCKED"
@@ -715,9 +670,9 @@ class WriterPrimitives:
                             args.owner_task_id,
                             role=role,
                             conn=conn,
-                            ttl_seconds=min(
+                            ttl_seconds=(min(
                                 args.ttl_seconds, current.budget.deadline_at - self.clock()
-                            ),
+                            ) if current.budget.deadline_at is not None else args.ttl_seconds),
                         )
                     else:
                         fence = await self.ownership.acquire(
@@ -727,7 +682,9 @@ class WriterPrimitives:
                 return PrimitiveOutcome(
                     primitive=p, outcome="busy", detail={"holder": "racing_owner"}
                 )
-            expiry = min(self.clock() + args.ttl_seconds, current.budget.deadline_at)
+            expiry = self.clock() + args.ttl_seconds
+            if current.budget.deadline_at is not None:
+                expiry = min(expiry, current.budget.deadline_at)
             await conn.execute(
                 update(integration_branch_owners)
                 .where(
@@ -812,19 +769,7 @@ class WriterPrimitives:
                 # Filing is blocked until its first lease. A never-leased,
                 # never-started task has no write authority to transfer. Its
                 # stop proof changes no other owner's branch reservation.
-                task = (
-                    (
-                        await conn.execute(
-                            select(tasks)
-                            .where(
-                                tasks.c.id == args.task_id,
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                task = await select_row(conn, tasks, tasks.c.id == args.task_id, lock=True)
                 if (
                     task is None
                     or current.budget is None
@@ -879,10 +824,15 @@ class WriterPrimitives:
                 or (args.fence_token is not None and args.fence_token != token)
             ):
                 return PrimitiveOutcome.unknown(p, "writer_fence_stale")
-            preserved_ref = f"aq/preserved/{owner['id']}"
             if (
                 args.preserve_ref is not None
-                and args.preserve_ref.removeprefix("refs/heads/") != preserved_ref
+                and args.preserve_ref.removeprefix("refs/heads/") not in {
+                    owner["ref"].removeprefix("refs/heads/"),
+                    f"aq/preserved/{owner['id']}",
+                }
+                and not args.preserve_ref.removeprefix("refs/heads/").startswith(
+                    f"aq/recovery/{owner['id']}/"
+                )
             ):
                 return PrimitiveOutcome.unknown(p, "preservation_ref_must_use_existing_recovery")
             if await conn.scalar(
@@ -1007,27 +957,17 @@ class OperationSafety:
         """
         if operation["target_kind"] != "parent":
             return None, None
-        parent = (
-            await conn.execute(
-                select(tasks)
-                .where(tasks.c.id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        episode = (
-            await conn.execute(
-                select(integration_parent_episodes)
-                .where(integration_parent_episodes.c.id == operation["episode_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'], lock=True)
+        checkpoint = await select_row(
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+            lock=True,
+        )
+        episode = await select_row(
+            conn, integration_parent_episodes,
+            integration_parent_episodes.c.id == operation['episode_id'],
+            lock=True,
+        )
         if (
             parent is None
             or checkpoint is None
@@ -1090,54 +1030,6 @@ class OperationSafety:
         if transition.row is None:
             return None, "stale"
         return transition, None
-
-
-    @staticmethod
-    async def _locked_operation_on(conn: Any, operation_id: str) -> dict[str, Any] | None:
-        row = (
-            await conn.execute(
-                select(integration_repair_operations)
-                .where(integration_repair_operations.c.id == operation_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        return dict(row) if row is not None else None
-
-
-    @staticmethod
-    async def _locked_stage_on(conn: Any, operation: dict[str, Any]) -> dict[str, Any] | None:
-        row = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation["id"],
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        return dict(row) if row is not None else None
-
-
-    @staticmethod
-    async def _project_id_on(conn: Any, operation: dict[str, Any]) -> str:
-        if operation["target_kind"] == "batch":
-            statement = select(integration_batches.c.project_id).where(
-                integration_batches.c.id == operation["batch_id"]
-            )
-        else:
-            from src.database.queries.task_identity import resolve_task_identity_on
-
-            identity = await resolve_task_identity_on(conn, operation["parent_task_id"])
-            project_id = identity.project_id if identity is not None else None
-            if project_id is not None:
-                return str(project_id)
-            statement = select(tasks.c.project_id).where(tasks.c.id == operation["parent_task_id"])
-        project_id = (await conn.execute(statement)).scalar_one_or_none()
-        if project_id is None:
-            raise ValueError("operation target has no owning project")
-        return str(project_id)
-
 
     @staticmethod
     async def _ambiguous_writes_on(

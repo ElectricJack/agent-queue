@@ -7,7 +7,6 @@ with 20 ms per request; no external service or operator database is accessed.
 
 import asyncio
 import json
-import logging
 import time
 
 import pytest
@@ -15,6 +14,7 @@ from sqlalchemy import event, func, insert, select
 
 from src.database.tables import task_branch_origins, tasks
 from src.integration.git_truth import GitTruth
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.models import Task, TaskStatus
 from tests.test_integration_train_sources import (
     MAIN,
@@ -24,9 +24,10 @@ from tests.test_integration_train_sources import (
     world,  # noqa: F401 - imported pytest fixture
 )
 
+pytestmark = pytest.mark.perf
 
-@pytest.mark.perf
-async def test_cold_root_selection_after_main_move(world, monkeypatch, caplog, perf_strict):  # noqa: F811
+
+async def test_cold_root_selection_after_main_move(world, monkeypatch, perf_strict):  # noqa: F811
     db, origin = world.db, world.origin
     base = git(origin.clone, "rev-parse", "main")
     sources = {}
@@ -40,19 +41,21 @@ async def test_cold_root_selection_after_main_move(world, monkeypatch, caplog, p
             id=f"epic-{index}", project_id="p", repo_id="r", title="epic", description="",
             branch_name=f"aq/epic-{index}", status=TaskStatus.IN_PROGRESS,
         ))
-    children = [dict(
-        id=f"child-{index:04}", project_id="p", repo_id="r", title="historical child",
-        description="", branch_name=f"aq/child-{index:04}", status="COMPLETED",
-        parent_task_id=f"epic-{index % 10}", created_at=1, updated_at=2,
-    ) for index in range(4790)]
+    children = [{
+        "id": f"child-{index:04}", "project_id": "p", "repo_id": "r",
+        "title": "historical child", "description": "", "branch_name": f"aq/child-{index:04}",
+        "status": "COMPLETED", "parent_task_id": f"epic-{index % 10}",
+        "created_at": 1, "updated_at": 2,
+    } for index in range(4790)]
     async with db.immediate() as conn:
         await conn.execute(insert(tasks), children)
-        await conn.execute(insert(task_branch_origins), [dict(
-            id=child["id"] + "-origin", task_id=child["id"], repository_id="r",
-            branch_name=child["branch_name"], parent_task_id=child["parent_task_id"],
-            parent_repository_id="r", parent_ref="aq/" + child["parent_task_id"],
-            base_sha=base, creation_generation=0, reserved=True, materialized=True, created_at=1,
-        ) for child in children])
+        await conn.execute(insert(task_branch_origins), [{
+            "id": child["id"] + "-origin", "task_id": child["id"], "repository_id": "r",
+            "branch_name": child["branch_name"], "parent_task_id": child["parent_task_id"],
+            "parent_repository_id": "r", "parent_ref": "aq/" + child["parent_task_id"],
+            "base_sha": base, "creation_generation": 0, "reserved": True,
+            "materialized": True, "created_at": 1,
+        } for child in children])
     # Exactly 360 aq/* source refs (200 roots, 10 epics, 150 children), plus
     # retained provenance refs. Retired/missing historical refs must not add
     # per-task Git work at the unrelated root boundary.
@@ -108,15 +111,15 @@ async def test_cold_root_selection_after_main_move(world, monkeypatch, caplog, p
         statements += 1
 
     event.listen(db._engine.sync_engine, "before_cursor_execute", counted_sql)
+    metrics = SelectionMetrics()
     started = time.monotonic()
     try:
-        with caplog.at_level(logging.INFO, logger="src.integration.train_sources.timing"):
+        with selection_metrics_scope(metrics):
             selection = await train.batches.open_batch(MAIN, observed, service, seal_now=True)
     finally:
         event.remove(db._engine.sync_engine, "before_cursor_execute", counted_sql)
     elapsed = time.monotonic() - started
-    profile = next(record.args[1] for record in caplog.records
-                   if record.name == "src.integration.train_sources.timing")
+    profile = metrics.as_dict()
     print(json.dumps({
         "tasks": 5000, "aq_refs": 360, "root_candidates": 200, "cache": "cold_after_main_move",
         "seconds": elapsed, "git_commands": git_commands, "sql_statements": statements,
@@ -126,7 +129,9 @@ async def test_cold_root_selection_after_main_move(world, monkeypatch, caplog, p
     assert selection.batch is not None, selection.blockers
     assert {member.task_id: member.source_sha for member in selection.members} == sources
     assert not selection.blockers
-    assert profile["counts"]["completed_origins"] == 4990
-    assert profile["counts"]["routed_candidates"] == 200
-    assert profile["read_seconds"] < 45  # Margin below the 60 s read budget.
-    assert elapsed < 60  # Includes ordinary eligibility, provenance rechecks and freeze.
+    assert profile["counts"]["candidate_scans"] == 1
+    assert profile["counts"]["repository_ids"] == 4990
+    assert profile["counts"]["routed_ids"] == 200
+    # The incident visit spent 197 s here. Includes ordinary eligibility,
+    # provenance rechecks and freeze.
+    assert elapsed < 60
