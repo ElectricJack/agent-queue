@@ -1,0 +1,18 @@
+{
+  "shared_definitions": {
+    "src/cli/envelope.py::BRIEF_PROJECTIONS['integration']": {
+      "baseline_span": [
+        87,
+        104
+      ],
+      "landing_span": [
+        87,
+        104
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/envelope.py::_project_item": {
+      "reason": "Projects durable operator decisions in compact integration status and task views."
+    }
+  }
+}
