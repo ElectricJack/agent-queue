@@ -41,7 +41,6 @@ async def orch(orchestrator_factory):
     await orchestrator.db.create_profile(
         AgentProfile(id="coder", name="Coder", lifecycle="task")
     )
-    await orchestrator.db.update_project(PROJECT_ID, default_profile_id="coder")
     yield orchestrator
     await orchestrator.db.close()
 
@@ -177,12 +176,25 @@ def scoped(handler, sid, held_id):
 
 
 async def claimable(db):
+    """What the ``coder`` pool would claim, with every READY task routed to it.
+
+    Filings are unrouted (mandatory routing §5); a legacy route stands in for
+    the router here, so the frontier's phase gating is what decides.
+    """
     async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(
+                tasks.c.project_id == PROJECT_ID,
+                tasks.c.status == TaskStatus.READY.value,
+                tasks.c.profile_id.is_(None),
+            )
+            .values(profile_id="coder", route_source="legacy")
+        )
         return await db.select_ready_for_profile(
             conn,
             project_id=PROJECT_ID,
             profile_id="coder",
-            default_profile_id="coder",
             agent_id="agent-1",
         )
 
@@ -778,7 +790,9 @@ class TestAbandonedPhaseRecovery:
         assert (await db.get_task(late)).is_blocked is True
         assert await frontier(db) == set()
 
-        deleted = await handler._cmd_delete_task({"task_id": first["phase"]["id"]})
+        deleted = await handler._cmd_delete_task(
+            {"task_id": first["phase"]["id"], "confirmed": True}
+        )
         assert deleted.get("success") is not False, deleted
         assert await db.get_task(first["phase"]["id"]) is None
 
@@ -813,7 +827,9 @@ class TestAbandonedPhaseRecovery:
         await cascade(orch)
         assert await frontier(db) == {early}
 
-        deleted = await handler._cmd_delete_task({"task_id": second["phase"]["id"]})
+        deleted = await handler._cmd_delete_task(
+            {"task_id": second["phase"]["id"], "confirmed": True}
+        )
         assert deleted.get("success") is not False, deleted
 
         await cascade(orch)
@@ -950,12 +966,11 @@ class TestDevelopmentModeGate:
     """A phased graph gates correctly in ``development`` mode.
 
     This pins an escape that nothing else covers.  A ``blocks`` edge is
-    unsatisfied while the prerequisite is not COMPLETED **or**
-    ``_development_delivery_pending(prerequisite)`` is true, and that
-    predicate requires ``task.branch_name IS NOT NULL``
-    (``src/database/queries/blocked_state.py:146``).  A phase container never
-    owns a branch, so the delivery half is always false for an inter-phase
-    edge and the gate releases on COMPLETED alone — which for a container
+    unsatisfied while the prerequisite is not COMPLETED, and development
+    admission additionally withholds it until git proves the prerequisite's
+    artifact delivered (``src/integration/admission.py``).  A phase container
+    never owns a branch or records an artifact, so it is organizational (no
+    artifact) and the gate releases on COMPLETED alone — which for a container
     means every child COMPLETED.  Give a container a ``branch_name`` in
     development mode and every inter-phase gate silently stops releasing.
     """
@@ -970,9 +985,9 @@ class TestDevelopmentModeGate:
                 source_path=str(tmp_path / "repo"),
             )
         )
-        # With a repository configured, ``_development_delivery_pending``'s
-        # join resolves — so the only thing making it false is the container's
-        # NULL ``branch_name``.
+        # With a repository configured the container is in delivery scope —
+        # so the only thing making it organizational is its NULL
+        # ``branch_name`` and its lack of a recorded artifact.
         await db.update_project(
             PROJECT_ID,
             hierarchical_integration_mode="development",

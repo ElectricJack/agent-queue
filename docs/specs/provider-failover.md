@@ -18,6 +18,21 @@ the re-route engine), `.4` (in-flight failures), `.5` (dashboard, docs, end-to-e
 [worker pools](../guides/worker-pools.md),
 [assignment routing as a playbook](../superpowers/specs/2026-09-06-assignment-routing-as-playbook.md)
 
+> **Superseded in part by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`).** The project's router
+> (its bound routing playbook, `projects.assignment_playbook_id`) is now the only writer of a
+> worker route, and it writes `provider_intent` itself: `pinned` for a hold lane (art design,
+> say) or an audited `aq task route-override`, else `class_only`. No filing surface takes a
+> profile, a pin or an intent any more, so the D9 surfaces that set one are refused with
+> `routing.choice_forbidden`. There is no project default profile, so nothing here that
+> derives, prefers or falls back to "the project default" or its equivalent rung (D12's
+> `order`, D13's *Unrouted* row and allocation preference, D22's `order` comment, §9's load
+> balancing) applies. Failover, capacity spill, reroute-undo, a manual `aq provider reroute`
+> (even `--force`) and `aq pool provider apply` move a router-routed task only among the
+> candidates the router recorded in `tasks.route.candidates`; a move outside them is an
+> override. Empty `provider_failover.order` means `WORKER_PROVIDERS` order (`claude`, then
+> `codex`), then any other provider. Each affected rule below carries its own note.
+
 Every numbered decision below is marked **D<n>** so an implementation task can
 cite it. Where a decision rejects an alternative, the alternative and the reason
 are stated, because the next person to touch this will otherwise propose it
@@ -129,15 +144,29 @@ the digest layer; every rule in D3–D5 is a unit test with a fake clock.
 | `usage_snapshot` | Newest non-stale row per `(provider, window, scope)` in `provider_usage_snapshots` — staleness per the existing `providers.*stale_after_seconds` horizons | `used_percent`, `resets_at` | **Structured** — the provider's own number |
 | `auth_probe` | `probe_login` (`src/install/logins.py`) run off the event loop with a short timeout (D5) | `authenticated` / `not_authenticated` / `cannot_tell` | **Structured**. `cannot_tell` (timeout, `OSError`) is never evidence of anything. |
 | `startup_dialog` | `SessionDiedDuringStartup.detail` names the quarantine dialog; the rule's new `signal` field says what it means | `auth` / `usage` | **Strong** — a typed match during startup |
-| `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT`; also the stall ladder's usage-limit screen, and an idle pool worker recycled on that screen (D13) | `usage` | **Medium** — pane text. `RATE_LIMIT_PATTERNS` includes a bare `429` and `resets at`, so one match proves little. The usage-limit screen's pattern set is far stricter, but it is still pane text and records the same kind. |
+| `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT`; also the stall ladder's usage-limit screen, and an idle pool worker recycled on that screen (D13) | `usage`; strict retry screens may add `usage_exhausted` and absolute `resets_at` in detail | **Medium** for broad pane text, including a bare `429` or `resets at`. An explicit OpenCode free-quota statement paired with its own retry footer is sufficient exhaustion evidence (D3); long ordinary provider retries still need corroboration. |
 | `launch_failure` | Any other `SessionDiedDuringStartup` (`end_reason = startup_exit`) | — | **Weak** — may be the repository, not the provider |
-| `launch_success` | The session's first authenticated API call with its session token (`prime`, `claim`, `heartbeat`), or its first transcript usage line, whichever is first | — | **Structured** |
+| `launch_success` | The session's first authenticated API call with its session token (`prime`, `claim`, `heartbeat`), or its first transcript usage line, whichever is first — counted once per launch, and only for a launch this daemon run witnessed (below) | — | **Structured** |
 | `llm_call` | Direct path only: adapter outcome mapped to `ok` / `auth` (401/403) / `usage` (429 with a quota body, `insufficient_quota`) / `error` | as named | **Structured** |
 
 Only a startup death counts as `launch_failure`. The other callers of
 `_fail_session_launch` — routing mismatch, missing harness file, no `work_dir`,
 base-checkout refusal, integration attachment, workspace acquisition — are AQ's
 own faults and are never provider evidence.
+
+**`launch_success` is evidence about a launch, not about a call.** A session's
+later token calls — heartbeats, claims, durable-wait polls, hook-driven `aq`
+commands — prove only that the session process is still alive; none of them
+says the provider can serve a new launch, and some reach the daemon without a
+model turn at all. So a session is counted once, and only when this daemon run
+witnessed the launch: a session whose `started_at` predates the run (one adopted
+across a restart) has already launched, and its calls after the restart are
+existing-session daemon calls, never `launch_success`. The once-per-session
+memory need not outlive the process, because the `started_at` gate is durable.
+The cost is that a session launched just before a restart that makes its first
+call just after it goes uncounted; the next launch counts, and since the
+canary's slot (D4) is not durable either, a recovering provider admits a fresh
+canary after the restart.
 
 **The dialog signal lives in the harness file.** `DialogRule` gains an optional
 `signal: "auth" | "usage"`. Shipped values: `codex`/`login-required` → `auth`,
@@ -154,14 +183,14 @@ exception into `reason`.
 
 ### D3 — trip rules, and the hysteresis that keeps one flaky launch from flipping a provider
 
-No single unstructured observation changes the half a provider is in. A trip
-needs either the provider's own structured statement or **two independent
-signals**.
+No single broad pane-text observation changes the half a provider is in. A trip
+needs an explicit quota statement on the CLI's own retry screen, the provider's
+own structured statement, or **two independent signals**.
 
 | To | Trips when | `until` |
 |---|---|---|
 | `unauthenticated` | (a) one `startup_dialog(auth)` **and** the auth probe it triggers answers `not_authenticated`; or (b) two consecutive `startup_dialog(auth)` with no `launch_success` between them, whatever the probe says (a token can be present and dead); or (c) two consecutive scheduled probes ≥ 60 s apart answer `not_authenticated` | none |
-| `exhausted` | (a) a non-stale `usage_snapshot` on an **account-wide** window (scope empty or `all models`) at `used_percent ≥ usage.exhausted_percent`; or (b) two consecutive `startup_dialog(usage)`, or one plus a snapshot `≥ usage.degraded_percent`; or (c) `exit_rate_limit` from two distinct sessions inside `launch.window_seconds`, or one plus a snapshot `≥ usage.degraded_percent` | the fullest account-wide window's `resets_at` when known and in the future; else `now + rate_limit.cooldown_seconds × 2^level`, capped at `recovery.backoff_max_seconds` |
+| `exhausted` | (a) a non-stale `usage_snapshot` on an **account-wide** window (scope empty or `all models`) at `used_percent ≥ usage.exhausted_percent`; or (b) two consecutive `startup_dialog(usage)`, or one plus a snapshot `≥ usage.degraded_percent`; or (c) `exit_rate_limit` from two distinct sessions inside `launch.window_seconds`, or one plus a snapshot `≥ usage.degraded_percent`; or (d) a strict OpenCode free-quota retry footer carrying `usage_exhausted = true` | a retry screen's stated `resets_at`, taking the later account-wide reset if both are known; otherwise the fullest account-wide window's future `resets_at`; else `now + rate_limit.cooldown_seconds × 2^level`, capped at `recovery.backoff_max_seconds` |
 | `failing` | `launch.generic_failures_to_trip` consecutive `launch_failure` with no `launch_success`, inside `launch.window_seconds`, **and attributable**: the failures span ≥ 2 projects, *or* another provider recorded a `launch_success` in one of the same projects inside the window | `now + recovery.failing_backoff_seconds × 2^level`, capped |
 | `degraded` | a snapshot `≥ usage.degraded_percent`; a **model-scoped** window (e.g. Claude's `week`/`Opus`) at or past `exhausted_percent`; one uncorroborated `startup_dialog` or `exit_rate_limit`; the `failing` count reached without attribution; or probation (D4) | — |
 
@@ -201,7 +230,7 @@ An unavailable provider never jumps straight to `available`. It becomes
 
 | From | Moves to probation when |
 |---|---|
-| `exhausted` | `until + recovery.reset_grace_seconds` passes; or earlier, when a fresh snapshot shows the blocking window below `usage.degraded_percent` (an early reset, an upgraded plan). Claude's `/usage` probe keeps running every ten minutes whatever the state, so Claude recovers on evidence; Codex snapshots only arrive while a Codex session runs, so Codex recovers on the clock. |
+| `exhausted` | `until + recovery.reset_grace_seconds` passes; or earlier, when a fresh snapshot shows the blocking window below `usage.degraded_percent` (an early reset, an upgraded plan). Claude's `/usage` probe keeps running every ten minutes whatever the state, so Claude recovers on evidence; Codex snapshots only arrive while a Codex session runs, so Codex recovers on the clock. Neither path, nor a `launch_success`, applies while a fresh account-wide reading still at or above `usage.exhausted_percent` covers the window (below). |
 | `unauthenticated` | the auth probe, run every `recovery.auth_probe_interval_seconds` while in this state, answers `authenticated`. `aq provider recheck <provider>` runs it now. |
 | `failing` | `until` passes. |
 | `disabled` | the override expires or is cleared; the state is then **re-derived from evidence**, which may well be another unavailable state. |
@@ -225,9 +254,41 @@ simply stays `recovering` — launchable, harmless — until real work arrives. 
 pool with `min_active > 0` supplies the canary by itself.
 
 A `launch_success` observed while a provider is `exhausted` or `failing` (a
-session that was already running and is still making turns) is recovery
-evidence and moves it to probation early. It does not clear `unauthenticated` or
-`disabled`.
+session this run launched before the trip, whose first call lands after it) is
+recovery evidence and moves it to probation early. It does not clear
+`unauthenticated` or `disabled`.
+
+A blocking retry screen's stated reset also outranks delayed launch
+acknowledgements. Its exhaustion stays unavailable until that reset plus grace
+or a fresh low usage snapshot, even after the evidence ring evicts the pane
+observation. A failed canary carrying a new retry countdown uses that deadline.
+
+**A still-valid exhausted reading outranks every positive signal.** While the
+fullest fresh account-wide window (the `usage_view` the trip reads: not older
+than its `stale_after` horizon, `resets_at` not yet passed) stands at or above
+`usage.exhausted_percent`, an `exhausted` provider stays `exhausted`: no
+`launch_success`, `llm_call ok`, `authenticated` probe or passed `until` moves
+it to probation, because D3 rule (a) would trip it straight back on the next
+tick, and each round trip is two transitions, two notifications and a canary
+slot for a launch that will die on the usage screen. What releases it is the
+evidence that withdraws the reading:
+
+* a fresher snapshot below `usage.degraded_percent` (the early-recovery row
+  above);
+* the window's `resets_at` passing, which drops the reading from the view, and
+  then `until + recovery.reset_grace_seconds` or a `launch_success`;
+* the reading going stale (no snapshot inside `stale_after`, the normal case
+  for Codex once its sessions stop), after which the D4 rules apply as written
+  and a `launch_success` may start probation — a stale number is not a
+  statement about now;
+* an operator: `available` forces the launchable half until it expires (the
+  derived state stays `exhausted` underneath and returns with one transition at
+  expiry); `auto` clears the override and re-derives, which re-trips at once on
+  the same reading rather than flapping.
+
+A reading between `usage.degraded_percent` and `usage.exhausted_percent` does
+not hold the state: it no longer meets rule (a), so the D4 rules apply and
+probation completes into `degraded` (`usage_high`).
 
 ### D5 — the auth probe runs in the daemon, carefully
 
@@ -246,6 +307,53 @@ once per provider, and only:
 `vault/profile-activation.json` stays what it is — install-time eligibility,
 written by `aq install`. Runtime availability does not rewrite it; routing
 filters on both.
+
+### D5a — presence is not authentication
+
+`probe_login` (`src/install/logins.py`) reads three sources in the provider's
+own order of authority and never opens a credential: the provider's non-secret
+status command, the *names* of selected environment variables, and the
+*existence* of the provider's credential file. The third is the weakest of the
+three and it is the last resort, because an expired OAuth token leaves its
+credential file exactly where it was. A status command that **answered**
+"not signed in" therefore ends the search: the store's presence is reported as
+`stale_credential_store` and the probe answers `not_authenticated`, which is
+what D3 rules (a) and (c) need in order to fire. Only a status command that
+*could not answer* leaves the store standing as evidence — silence is not a
+denial. That covers a timeout, an `OSError`, and a subcommand the installed
+build does not have.
+
+The last case is the one an exit status cannot express: a CLI missing the
+subcommand complains about the *command* and exits non-zero, the same shape as
+a signed-out answer and about something else entirely. `_ask_status_command`
+therefore matches a **failed** run's output against a short list of "no such
+command" phrases (`unknown command`, `unrecognized subcommand`, `no such
+command`, …) and answers `CANNOT_TELL`. A zero exit is answered first and never
+downgraded: the output of a signed-in CLI can quote the operator's own last
+command or a session title, and none of that may turn an answer into silence.
+The text is read for that classification only, transiently, folded into the
+enum and discarded; it still never reaches a result, a record or a log, and the
+phrases are matched case-insensitively and narrowly, because a false match
+would put the expired-login bug this rule exists to remove back.
+
+Three consequences, all deliberate:
+
+* **A provider with no status subcommand keeps the old behaviour.** Gemini
+  documents no non-interactive way to ask, so nothing can outrank its OAuth
+  cache; a human at a browser is the only check there.
+* **A credential the operator configured is not presence.** A selected
+  environment variable — in the environment or in the provider's own
+  `settings.json` `env` block — still authenticates over a refused store. It is
+  an independently usable credential, and validating it would mean reading it,
+  which the probe is forbidden to do. It is equally the answer when the status
+  command could not answer at all.
+* **An unavailable command is not retried.** A command that answered is not
+  retried today, and one that does not exist cannot be made to exist by asking
+  again; only a command that failed to answer is worth a second try.
+
+AQ never refreshes or synthesises a credential, so recovery is always the
+provider's own login command followed by `aq provider recheck`, after which an
+`authenticated` probe releases the state through D4.
 
 ### D6 — operator override, always with an expiry story
 
@@ -354,6 +462,13 @@ A reader that finds `pinned`/`preferred` with `profile_id IS NULL` treats it as
 retirement paths already null or repoint `profile_id`, and a constraint would
 turn an operator's profile cleanup into a constraint violation.
 
+> **Superseded by mandatory task routing (2026-09-28):** `task_route_options` is gone; the
+> router plans with `task_route_plan` and writes with `task_route_apply`, and a task it
+> routes is `class_only` unless its lane holds (`pinned`). `preferred` survives only on
+> legacy rows and on role tasks. A different cross-column check now exists,
+> `ck_tasks_route_source_profile` (`(profile_id IS NULL) = (route_source = 'unrouted')`);
+> `delete_profile` satisfies it by setting `route_source = 'unrouted'` in the same statement.
+
 ### D9 — who sets which intent
 
 The command argument is `provider_intent`; the CLI sugar is `--pin` (= `pinned`)
@@ -382,6 +497,25 @@ follows **how the profile was chosen**:
 | `--profile-id` fill-in on `create_task_graph` for nodes that left it empty | `preferred` (the caller supplied it) |
 | Playbook `agent_task` step naming a profile | `preferred`; `pin_provider: true` → `pinned` |
 | Project default | never written to the row, so `class_only`. `projects.default_profile_id` expresses the project's *first choice of provider*, not a requirement (D13). |
+
+> **Superseded by mandatory task routing (2026-09-28):** every filing and routing row of
+> this table is gone. `aq task create` has no `--profile`, `--pin` or `--provider-intent`;
+> `aq task edit` has no `--profile-id`, `--pin` or `--provider-intent`; `aq task route` takes
+> no profile and only re-runs the router; a graph node, `defaults` or `parent:` with
+> `profile:` or `pin:`, a `--profile-id` fill-in, and a playbook `agent_task` step's
+> `pin_provider` are all refused with `routing.choice_forbidden`, and
+> `projects.default_profile_id` was dropped. A filer passes hints only: `--type` (the kind)
+> and `--intelligence-class`. The intent is written by:
+>
+> | Writer | Intent |
+> |---|---|
+> | The router (`task_route_apply`) | `pinned` when the chosen lane holds (art design, say), else `class_only` |
+> | `aq task route-override` (local operator or live supervisor, with a reason) | `pinned`, with `candidates = [profile]` |
+> | A role creator (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) | `preferred` |
+> | A new, unrouted task | `class_only` |
+>
+> The rest of D9 (the graph `pin` key, *Who may pin*, *Why an explicit profile is
+> `preferred`*) describes the retired filing surfaces and is kept as history.
 
 The graph grammar keeps refusing `provider`, `harness` and `model`
 (`src/task_graph/parser.py`, `unsupported_routing`): the profile already names
@@ -462,8 +596,9 @@ else in this section is active:
 1. **Launch suppression.** Nothing starts against an unavailable provider:
    `idle_workers` (`src/scheduler.py`) drops workers whose profile resolves to
    it, `AgentReconciler` grows none for it, `_measure_pools` sizes its pools to
-   zero, the pre-launch check in `src/orchestrator/execution.py` refuses, and a
-   claim from one of its sessions answers `drain_requested`.
+   zero, the pre-launch check in `src/orchestrator/execution.py` refuses,
+   `SessionLens` refuses cold supervisor starts (including message-triggered
+   starts), and a claim from one of its sessions answers `drain_requested`.
 2. **The derived hold.** A queued task whose effective profile is on an
    unavailable provider is *held*. It keeps its status — `READY` stays `READY` —
    and `aq task explain`, `task show` and the API report a computed
@@ -473,7 +608,10 @@ else in this section is active:
 3. **The catalog filter.** `build_route_options` annotates every row with
    `provider_key`, `provider_state` and `launchable`; automatic selection
    excludes non-launchable rows and reports them as `unavailable_options`,
-   beside the existing `disabled_options`.
+   beside the existing `disabled_options`. *Since mandatory task routing (2026-09-28)*
+   `build_route_options` is gone: the router's planner (`src/routing/planner.py`) reads
+   provider availability itself, never chooses an unlaunchable provider and answers `held`
+   when nothing is launchable.
 
 Moving a task is **policy**, so it is a command driven by a playbook, like
 assignment routing and the CI sentinel:
@@ -512,6 +650,15 @@ policy == "same_class":
 
 * **`order`** is `provider_failover.order`; empty means the project default's
   provider first, then `WORKER_PROVIDERS` order.
+  *Superseded by mandatory task routing (2026-09-28):* there is no project default, so an
+  empty `order` means `WORKER_PROVIDERS` order (`claude`, then `codex`), then any other
+  provider (`provider_order`, `src/providers/reroute.py`). And the loop above applies only
+  to a legacy task with no recorded candidates: a router-routed task moves to the next entry
+  of `tasks.route.candidates` whose profile still exists and whose provider is available,
+  in the router's order, and holds when none qualifies. A candidate's own class is kept,
+  so only the narrow lanes that map a class change it. `aq provider reroute --to-profile`
+  (even with `--force`) is limited to the candidates as well; a move outside them is an
+  `aq task route-override`.
 * **The class never changes.** v1 has exactly two policies, `same_class` and
   `hold`. Cross-class substitution (`astra-high → deep-high`) is a non-goal: it
   is precisely the silent model swap the operator ruled out, and a human who
@@ -547,6 +694,50 @@ policy == "same_class":
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
 
+**OpenCode retry screens (`vivid-stone-92`).** On harnesses whose executable is
+OpenCode, inspect the strict retry footer before the pane activity gate: its
+countdown can repaint for hours while the worker makes no progress. `Free limit
+reached` / `Free usage exceeded` with the bracketed retry status exhausts the
+provider in one observation. Recognised provider-error retry footers lasting
+at least an hour use the same exit path but retain D3's corroboration rule;
+brief server retries keep running. Claimed workers use the existing stop,
+checkpoint, push and handoff path in enforce mode. Idle unclaimed workers
+record this evidence through their guarded recycle in observe/enforce modes;
+one explicit free-quota footer can therefore trip that provider too. The
+[worker-pane specification](../superpowers/specs/2026-10-06-worker-provider-usage-exhaustion.md)
+defines matching and reset parsing.
+
+> **Superseded by mandatory task routing (2026-09-28):** the *Unrouted* row is gone. There
+> is no project default and no `_effective_default_profile_id`: an unrouted task
+> (`route_source = 'unrouted'`, `profile_id` NULL) is not claimable, adds no pool demand and
+> waits for its project's router. The router never chooses an unlaunchable provider (it stays
+> among the candidates, for a later move) and holds the task when nothing is launchable. In
+> the *Playbook `agent_task` steps* row, a step may name only a role profile and
+> `pin_provider` is refused; its task is routed like any other.
+
+**Project allocation preference (provider-worker-allocation-controls, Task 7).**
+When `projects.preferred_provider` is set (a harness provider key, such as
+`codex`), automatic routing for unrouted and `class_only` work filters the
+existing catalog to that provider. `preferred` and `pinned` task profiles keep
+their explicit routes. Class-match selection during task creation uses the
+same restriction; an unsupported class remains unrouted for the routing
+playbook. No enabled, launchable compatible option means waiting with
+`preferred_provider_unavailable`, using the existing `held` / `no_options`
+routing outcomes. There is no fallback to another provider. The project
+default is derived as its enabled, launchable same-class worker rung on the
+preferred provider, or no route when none exists. Pool demand, dispatch and
+claim default widening share that derived value; it is never persisted over
+`projects.default_profile_id`. Clearing the preference restores D13's normal
+availability fallback. The reviewed assignment-routing contract is unchanged.
+
+> **Superseded by mandatory task routing (2026-09-28):** `preferred_provider` is now an input
+> to the router only: its planner filters the candidates to that provider and answers
+> `no_candidates` with `preferred_provider_unavailable` when none remain. Creation does no
+> class-match selection, and there is no derived project default or default widening.
+> `aq pool provider apply` with `receive_new_work` resets the project's queued, unclaimed
+> router routes to `unrouted` so the router re-plans them with the preference applied,
+> instead of sweeping them to the preferred provider's rung.
+
 **As built (`bold-rapids.4`).** The decision is one pure function,
 `decide(availability, failure)` in `src/providers/inflight.py`, read *after*
 the failure's evidence is recorded: `tripped` when the provider is now in the
@@ -579,11 +770,29 @@ detail) into `_fail_session_launch`; the exit path is
   locked by the task, never a pool claim still `preparing` (`not_started`),
   and plan files -- left out of every task commit -- do not count as work at
   risk. It runs in the orchestrator cycle, so each is bounded by
-  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
-  hierarchy/train branch is left to its integration owner (`checkpoint:
-  integration_managed`), and a tripped task there takes a short provider pause
-  instead of READY, as the launch path does when the integration release is
-  unconfirmed.
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds.
+* **A hierarchy/train branch** keeps its integration owner, so its checkpoint
+  is `stranded_work.save_wip_to_task_branch`: the stopped writer's work becomes
+  one `WIP saved by AQ: <reason>` commit fast-forwarded onto the task's *own*
+  branch (never forced, only in the project's integration repository), with no
+  `aq/preserved` snapshot. Only the task's own writer is saved (owner role
+  `worker` or `repair`, owner id the task): a verifier's checkout is not the
+  task's work and is left untouched. The save records `failover_resume_checkpoint`
+  (repository, branch, base, saved sha) in task metadata; the next exact-origin
+  preparation starts from `origin/<branch>` while it still descends from that
+  sha (else from the filing base), and launch or pool-claim activation consumes
+  it. A pool claim is retained while its owner is attached, so once the save
+  leaves the checkout clean and pushed the exit path hands the owner back
+  (`arelease_integration_writer_for_retry(pool=True)`) before the teardown. A
+  branch that cannot fast-forward is left untouched (`checkpoint:
+  integration_managed`) for owner recovery, and a tripped task there takes a
+  short provider pause instead of READY, as the launch path does when the
+  integration release is unconfirmed.
+* **`aq task stop` on a hierarchy/train writer** (`stop_task`, and the forced
+  shutdown and delete paths) stops the process first and then saves the same
+  way instead of refusing because the writer or its workspace is still
+  attached; it records the same resume point. A dirty verifier keeps the
+  refusal.
 * **Order on the exit path:** checkpoint while the session row is still live
   (a daemon that dies mid-push re-runs the failover next tick, where a row
   already marked non-live would have let the orphan sweep BLOCK the task),
@@ -601,8 +810,16 @@ detail) into `_fail_session_launch`; the exit path is
   take) and `unknown`, because none of them proves the work is safe.
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
-  the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments.
+  the task-context section on its own with terminal context, alongside the full
+  comment history. It names the saved commit, tells the next
+  worker to continue from the branch tip rather than restart, and keeps the
+  stopped session's last ~80 screen lines (`screen_tail`, captured before the
+  stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
+  2 KiB (`PRIME_SCREEN_BYTES`) and points at `aq session logs` for the rest:
+  its body is required knowledge context, and a body over the context budget
+  fails `aq prime` outright (`context.required_over_budget`). The quote sits
+  inside a fence its content cannot close, labelled as quoted output.
+  Writing it emits `task.handoff` for the dashboard and supervisor playbooks.
 * **A move to another provider drops `session_resume_key`**
   (`ProviderRerouteService._move`): the carried conversation id belongs to the
   old CLI, and a harness without a transcript reader would take it unchecked.
@@ -650,7 +867,9 @@ So:
 `task_route_options` gains one outcome, **`held`**: the task has options in
 principle but every one is on an unavailable provider. The routing playbook ends
 the rule quietly on it, instead of failing a run every two minutes per task for
-the length of an outage.
+the length of an outage. (Since mandatory task routing, 2026-09-28, `task_route_options` is
+gone; its successor `task_route_plan` answers `held` in the same case, and `aq task explain`
+reports the task as `route_held`.)
 
 ## 4. Capacity protection
 
@@ -784,9 +1003,14 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   the automatic call (no `provider`, no `task_ids`). The `provider-failover` playbook
   already calls `provider_reroute` with no arguments on `timer.5m`, so no playbook,
   contract argument or result field changes and the reviewed bundle's fingerprint is
-  untouched. Spill decisions ride in the existing `moved` / `held` / `skipped` lists with
-  a `reason_code` key. The failover pass runs first; a task it moved or held is not
-  planned again by spill.
+  untouched. Spill decisions ride in the existing `moved` / `held` / `skipped` lists; every
+  decision carries a `reason_code` key naming its pass (`provider_unavailable`,
+  `operator_forced`, `capacity_spill`). The failover pass runs first; a task it decided is
+  not planned again by spill. Both passes are planned before either writes, and the
+  failover pass's planned moves count as READY on their targets in the spill view, so a
+  `dry_run` plan is the live one and a target never offers the same capacity twice.
+  The pool is measured only when some task has waited `after_seconds`; a failed
+  measurement plans no spill and never fails the failover pass.
 * **S2 — config.** `provider_failover.spill`: `enabled` (default `true`),
   `after_seconds` (default `300`, `>= 0`), `max_per_sweep` (default `5`, `>= 1`),
   hot-reloadable like its siblings (D22). Spill applies only when failover would —
@@ -843,6 +1067,15 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   headroom holds `spill_no_target`. At most `spill.max_per_sweep` tasks move per sweep;
   the rest hold `spill_sweep_limit` naming the target the next sweep would use and how many
   are `ahead`.
+  *Since mandatory task routing (2026-09-28):* a router-routed task spills only to its own
+  `tasks.route.candidates`, in the router's order, so a spill never breaks a lane (an
+  integration repair never spills to OpenCode, art design never leaves Codex); only a
+  legacy task with no candidates keeps the same-class search above.
+  Supply, demand and workspace room are matched to the task's primary repository
+  kind, using the claim path's `pool_primary_kind`. An idle worker or free
+  workspace of another kind cannot serve it. Per-kind placement rows must not
+  overwrite each other; profile, project and global launch limits remain shared
+  across kinds, including moves planned by either pass of the sweep.
 * **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
   only rungs on that provider are targets. Spill never moves a task off it: a task whose
   source is on the preferred provider with no other same-class pool on that provider
@@ -854,7 +1087,8 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   `spill-<UTC yyyymmddThhmm>` (one per sweep), a task comment naming the saturation — for
   example "standard-high-opencode had no free capacity for 9 min: 1/1 live, 0 idle" —
   and the undo command, one `task.rerouted` event per task and one `pool.spilled` summary
-  event per applying sweep. No supervisor message: a sweep every five minutes would spam.
+  event (batch id, moved count, `routes` per source and target, projects, holds by kind)
+  per sweep that spilled work. No supervisor message: a sweep every five minutes would spam.
   `aq provider reroute-undo --batch` and `--task-id` work unchanged. A spill move does
   not add its source to `left_providers`; that set is for providers a task fled because
   they were down.
@@ -892,6 +1126,9 @@ When a provider leaves the unavailable half:
   running or claimed (the `update_task_routing` guard), writes a `task_reroutes`
   row with `reason_code = operator_undo`, and clears the marker. Undo is refused
   while the original provider is still unavailable unless `--force`.
+  *Since mandatory task routing (2026-09-28):* for a router-routed task, undo is refused,
+  `--force` or not, when `rerouted_from` is not among `tasks.route.candidates`; returning
+  it there would be an override.
 * **Intent never changes on a re-route.** A `preferred` Codex task moved to
   Claude is still `preferred`; if Claude later fails and Codex is back, D12 may
   move it home, subject to `max_auto_per_task`.
@@ -968,6 +1205,15 @@ replay and the five-minute timer never notify twice:
 | Project supervisors | `message_send` to `session:supervisor-<pid>` | first sweep of a batch that moved or held a task **in that project** | that project's moved and held tasks by id. One per batch per project — never one per task, never one per top-up. |
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
 | Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
+
+Half-change notifications run in the availability service's tracked background work.
+Draining awaits them; closing cancels and awaits them before database teardown.
+
+Project supervisors are opt-in. A disabled project's notice routes to
+`session:supervisor-global` while retaining its project context and
+`reroute:<batch>:<project>` thread. Deduplication uses that thread regardless
+of recipient changes or read/archive state, so a later sweep never repeats
+the notice and projects sharing the global supervisor keep separate notices.
 
 **As built (`bold-rapids.6`).** The escalation half lives in
 `ProviderAvailabilityService.reconcile_escalations`
@@ -1056,15 +1302,25 @@ unchanged; the dashboard joins the two on provider key.
 
 **Dashboard** (`.5`):
 
+The WebSocket forwards `provider.*` events in both live delivery and persisted
+replay. Local operators and global supervisors receive the full payload;
+project supervisors receive provider state and aggregate reroute counts without
+other project identifiers. Allocation invalidations carry only `provider`,
+`vendor`, `request_id`, `actor` and `status`, with `redacted: true`, so their
+scoped status read supplies the authorized detail. Task-scoped worker sockets
+receive no provider events, matching the operator-only provider API.
+
 * **Provider cards** (`dashboard/src/pages/metrics/ProviderUsage.tsx`) gain a
   header per provider: a state pill (green / amber / red / grey for `disabled`),
   the reason, *since*, a countdown to expected recovery, an override badge with
   its expiry, held and re-routed counts, and actions — *Disable for…*,
   *Recheck*, *Clear override*. The rule the cards already follow applies: a state
   is server-derived and never recomputed in the browser.
-* **A banner** on every page while any provider is unavailable: *"Codex
+* **A banner** on every desktop page while any provider is unavailable: *"Codex
   unavailable — logged out since 12:04 · 5 tasks moved to Claude · 4 held"*,
-  linking to the card.
+  linking to the card. Hide it below the dashboard's 768 CSS px mobile
+  breakpoint; provider state remains available on mobile in the Metrics
+  provider cards.
 * **Task detail**: an intent chip (*Pinned* / *Preferred* / *Class only*),
   editable where routing is editable; *"re-routed from `standard-high-codex` ·
   undo"*; and the hold, rendered like `TaskAttention` with the `kind` in words.
@@ -1149,6 +1405,11 @@ llm:
   fallback: null                 # optional second credential block (D13a); restart-required like the rest of llm:
 ```
 
+> **Superseded by mandatory task routing (2026-09-28):** an empty `order` no longer puts the
+> project default's provider first — there is no project default. It means
+> `WORKER_PROVIDERS` order (`claude`, then `codex`), then any other provider, and it is
+> consulted only for a legacy task with no recorded route candidates.
+
 * **`mode`** — `off` does nothing. `observe` runs evidence, state, events,
   surfaces and `provider_reroute` in plan-only form, but suppresses no launch
   and moves no task; it is how an operator watches the detector on their own box
@@ -1207,7 +1468,10 @@ snapshots never trip; a model-scoped window never trips; attribution (one projec
 and no other provider ⇒ `degraded`); probation admits one launch, re-trips on one
 failure with `level + 1`, completes on one success; backoff doubling and its cap;
 level decay; override precedence, expiry, `auto` resetting counters; percent
-hysteresis; `generation` increments only on effective change.
+hysteresis; `generation` increments only on effective change; a still-valid
+exhausted reading holds `exhausted` against a success, an `authenticated` probe
+and a passed `until`, and releases on a fresher low reading, its reset or its
+staleness, with no transition in between.
 
 **Collectors and mechanism** (`tests/test_provider_evidence.py`,
 `test_provider_suppression.py`): the dialog `signal` field and the name-map
@@ -1217,7 +1481,29 @@ are `launch_failure`; **the 2026-09-20 replay** — `login-required` on every
 `startup_exit` session rows then stops growing; attributed startup deaths arm no
 key quarantine and bump no `sessions.restarts`; pools size to zero and idle
 sessions drain while busy ones are left alone; the push scheduler skips the
-provider; state survives a daemon restart; the auth probe never blocks the loop.
+provider; state survives a daemon restart; the auth probe never blocks the loop;
+**the 2026-10-01 replay** — a provider exhausted at 100 % across two daemon
+restarts records no `launch_success` for its adopted sessions and makes no
+transition, while a session launched after the restart still counts.
+
+**D5a** (`tests/test_install_logins.py`, `test_provider_evidence.py`,
+`test_harness_parser.py`): **the 2026-10-03 replay** — a credential store left
+behind by an expired login is not authentication, and the probe says so instead
+of reporting the file's presence; an answered "not signed in" outranks the store
+while a command that could not answer leaves it standing; a build without the
+status subcommand complains about the *command* and is classified
+`cannot_tell` rather than `signed_out`, so the store it never spoke for stands;
+the same fixtures' explicit "not signed in" answers still refuse it, and a
+*successful* answer is never downgraded by a phrase in what it printed; a
+provider with no status subcommand keeps the store as evidence; a configured
+environment credential still outranks a refused store; the same store
+authenticates again once the CLI confirms a fresh login; two `not_authenticated`
+probes ≥ 60 s apart carry the provider to `unauthenticated` /
+`probe_not_authenticated` with no launch admitted, and an `authenticated` probe
+recovers it through probation
+to `available`; the shipped Claude harness quarantines the
+`Login expired · Please run /login` screen as `login-required` / `signal: auth`
+and stays quiet on a bare composer.
 
 **Intent and migration** (`tests/test_provider_intent.py`, on PostgreSQL): every
 row of D9; pin refusal for a worker token and for an inline graph; a vault
@@ -1242,6 +1528,12 @@ an idle pool worker (`drain_requested`, never `not_admissible`) and sizes every
 pool to `(0, 0)` is pinned in `tests/test_provider_suppression.py` (D15's
 decision). A guard asserts the claim SQL references no provider table, and the existing
 claim-frontier perf test must still pass unchanged.
+
+> **Superseded by mandatory task routing (2026-09-28):** the D9 filing rows, the pin
+> refusal for a worker token or an inline graph (every principal is now refused with
+> `routing.choice_forbidden`), the vault formula pin and the availability-aware project
+> default no longer exist; `tests/test_routing_mandatory.py` pins the refusals. The re-route
+> and spill tests also pin that a routed task moves only among `tasks.route.candidates`.
 
 **In-flight** (`tests/test_provider_inflight.py`, `.4`): a startup death on a
 usage dialog leaves `retry_count` unchanged and resumes on the other provider; a
@@ -1287,6 +1579,10 @@ assertion takes `perf_strict`.
   the seam (D0).
 * **Load balancing.** `class_only` placement prefers the project default's
   provider and merely avoids unavailable ones; it does not spread load.
+  *Superseded by mandatory task routing (2026-09-28):* there is no project default. The
+  router places every task and balances at routing time by its policy's weights (pool
+  slots, routed backlog, provider usage and availability; ties go `codex`, `claude`,
+  `opencode`).
 * **`agent_task` waits.** `ChildTaskCompleted` has no producer in `src/` today, so
   an `agent_task` wait ends only at its step deadline whatever this design does to
   the child. No shipped playbook uses the step; recorded because D13 depends on

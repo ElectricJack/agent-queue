@@ -112,10 +112,10 @@ def test_release_metadata_declares_runtime_resources_and_the_root_base():
 
 def test_versioned_installation_release_record_matches_the_artifact_contract():
     """Keep the public release ledger aligned with the wheel it describes."""
-    document = (ROOT / "docs" / "validation" / "installation-release-0.1.0.md").read_text(
+    version = _release_builder().project_version(ROOT)
+    document = (ROOT / "docs" / "validation" / f"installation-release-{version}.md").read_text(
         encoding="utf-8"
     )
-    version = _release_builder().project_version(ROOT)
 
     assert f"# AQ {version} installation release record" in document
     assert f"agent_queue-{version}-py3-none-any.whl" in document
