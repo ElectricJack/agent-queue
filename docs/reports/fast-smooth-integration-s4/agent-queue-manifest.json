@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "kind": "proposed_operator_handoff",
+  "project_scope": "agent-queue",
+  "status": "not_ready_for_live_cutover",
+  "execution_authority": "owning agent-queue supervisor/operator",
+  "live_changes_performed": false,
+  "prepared_source_base": "3e60b49c6ec251d91862e31f6eb3c16a61e3dd44",
+  "specification": "operator-vault:projects/agent-queue/specs/2026-10-12-fast-smooth-integration.md",
+  "checklist": "operator-checklist.md",
+  "fixture_evidence": "fixture-manifests.json",
+  "inventory": {
+    "project_and_repository_ids": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "remotes_and_repository_identity": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "default_delivery_and_protected_refs": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "current_playbook_digest_and_enabled_state": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "current_required_checks_and_trusted_producers": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "claims_preparations_sessions_and_branch_owners": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "batches_repairs_candidates_and_uncertain_publications": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "generation_source_base_and_provenance_oids": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "fresh_parent_and_dev_ancestry_per_source": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "code_free_retired_and_missing_source_dispositions": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "equivalent_history_per_row_operator_dispositions": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "explicit_stacking_review_hold_and_release_overrides": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "deployment_or_package_binding_and_health": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "code_schema_and_configuration_versions": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "postgres_backup_and_verified_restore": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "git_ref_oid_and_private_object_recovery_manifest": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "dirty_ignored_untracked_and_lfs_recovery": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "preview_digest_and_fresh_stopped_writer_fence": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "compatible_strict_containment_rollback_version": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "live_multi_input_conflict_standalone_and_split_canaries": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "shared_frontier_demand_and_waiting_views": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "process_stalls_and_named_remediation_owners": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "24_hour_observation": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    },
+    "seven_day_full_cohort_latency_report": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    }
+  },
+  "rollback": {
+    "preserve_new_heads": true,
+    "preserve_original_sources_and_dirty_work": true,
+    "restore_receipt_authority": false,
+    "reset_dev_or_epic_refs": false,
+    "destructive_history_cleanup_authorized": false,
+    "approval": {
+      "status": "unresolved",
+      "owner": "owning agent-queue supervisor/operator",
+      "value": null
+    }
+  },
+  "source_measurement": {
+    "measured_tree": "e6ad3e8541bc79472694c9efec36898be35da85e",
+    "engine_lines": 84299,
+    "owned_lines": 159571,
+    "dedicated_table_count": 45,
+    "dedicated_table_categories": [
+      "epic_dependencies",
+      "integration_attestation_publications",
+      "integration_batch_members",
+      "integration_batches",
+      "integration_branch_owners",
+      "integration_candidate_member_results",
+      "integration_candidate_publications",
+      "integration_candidate_ref_mutations",
+      "integration_candidate_resolutions",
+      "integration_candidate_revisions",
+      "integration_check_evidence",
+      "integration_child_dispositions",
+      "integration_cleanup_items",
+      "integration_close_attempts",
+      "integration_delegate_releases",
+      "integration_episode_receipt_acceptances",
+      "integration_history_waiver_consumptions",
+      "integration_history_waivers",
+      "integration_legacy_deliveries",
+      "integration_legacy_suppression",
+      "integration_operation_artifact_pins",
+      "integration_outbox",
+      "integration_outbox_artifact_pins",
+      "integration_owner_recoveries",
+      "integration_parent_episodes",
+      "integration_parent_operation_completions",
+      "integration_parent_verification_evidence",
+      "integration_parent_verifications",
+      "integration_promotion_intents",
+      "integration_release_results",
+      "integration_repair_operations",
+      "integration_repair_stage_evidence",
+      "integration_repair_stages",
+      "integration_review_evidence",
+      "integration_rollout_transitions",
+      "integration_root_authorizations",
+      "integration_root_intent_members",
+      "integration_source_ci",
+      "integration_subject_journal",
+      "integration_subjects",
+      "project_integration_leases",
+      "project_integration_schedules",
+      "task_branch_origins",
+      "task_delivery_receipts",
+      "task_integration_checkpoints"
+    ],
+    "current_phase": "transition",
+    "fixed_baseline_owned_lines": 140499,
+    "replacement_allowance": 15000,
+    "original_transition_owned_cap": 155499,
+    "recorded_transition_owned_cap": 156792,
+    "over_recorded_cap": 2779,
+    "existing_batch77_exception": {
+      "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+      "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+      "original_owned_total_cap": 155499,
+      "measured_owned_total": 156792,
+      "delta": 1293,
+      "restore_task": "azure-ridge-72",
+      "expires_at": "s4_modules"
+    },
+    "historical_batch48_exception": {
+      "delta": 2166,
+      "status": "preserve separate historical authority; not added again",
+      "exact_source_batch_authority_binding": {
+        "status": "unresolved",
+        "owner": "integration repair owner",
+        "value": null
+      }
+    },
+    "temporary_category_authority": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
+    "temporary_table_authority": "msg-dbb0120c6172499081721c033e894b39",
+    "exact_current_batch_allowance_binding": {
+      "status": "unresolved",
+      "owner": "batch-56 integrated repair owner",
+      "value": null
+    },
+    "restoration_owner_task": "azure-ridge-72",
+    "final_caps": {
+      "engine": 11999,
+      "owned_total": 19999,
+      "tables": 10,
+      "target_tables": 5
+    },
+    "uninventoried_definitions": 86,
+    "unreviewed_writer_fingerprints": 69,
+    "ledger": "ownership-ledger.json",
+    "ratchets_changed_by_this_task": false
+  },
+  "implementation_blockers": [
+    "Approved revision-2 section14 Red batch: per-group parallel fixer branches, four-way fan-out cap, coverage cancellation and group merge-back/one-CI behavior absent in prepared single-family service; see acceptance-matrix.json",
+    "Inherited owned-code and inventory/category findings remain with integrated repair/restoration owners; not a validation-task paperwork wait"
+  ],
+  "approved_specification": {
+    "review_id": "rev-fair-lantern",
+    "revision": 2,
+    "sha256": "4518d9296649ddc2f0192ff73dd682864fb938e3d9687069282b4f6b0a86453f",
+    "verified_snapshot": "/tmp/aq-approved-fast-smooth-rev2.md",
+    "snapshot_retention": "worker-local; SHA pins native approved review revision, not current divergent vault file",
+    "source_key": "validation",
+    "governing_sections": [
+      11,
+      12,
+      14
+    ],
+    "acceptance_rows": 12,
+    "supervisor_disposition": "msg-6ea46b7503da4e408cbff30726d9ff4b",
+    "wait_reply": "msg-168f1f67262e443bb39249c768d3f22e",
+    "vault_state": "diverged",
+    "proposed_revision_3": "document-only / in_review; review reconciliation belongs to global/human owner"
+  }
+}

@@ -5,18 +5,14 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import insert
 
-from src.database import Database
 from src.database.tables import epic_dependencies
 from src.task_graph.integration_dependencies import declare, dependencies_for, order_members
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("epic-dependencies.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("epic-dependencies.db")
     yield database
-    await database.close()
 
 
 def _member(task_id: str) -> dict:

@@ -80,6 +80,7 @@ vi.mock("./pages/system/Playbooks", () => ({ default: () => <h1>Settings playboo
 vi.mock("./pages/system/Profiles", () => ({ default: () => <h1>Settings profiles</h1> }));
 vi.mock("./pages/system/Config", () => ({ default: () => <h1>Settings config</h1> }));
 vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>Settings intelligence classes</h1> }));
+vi.mock("./pages/PlanPage", () => ({ default: function PlanStub() { return <h1>Plan for {useParams().taskId}</h1>; } }));
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
 vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
 vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
@@ -130,6 +131,12 @@ function renderApp(path: string) {
     </QueryClientProvider>,
   );
 }
+
+it("opens the plan deep link without redirecting into the command center", async () => {
+  renderApp("/plans/solid-grove.13");
+  expect(await screen.findByRole("heading", { name: "Plan for solid-grove.13" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Current location")).toHaveTextContent("/plans/solid-grove.13");
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -490,6 +497,28 @@ describe("Roaming shell preferences", () => {
     await waitFor(() => expect(server.document("shell_preferences")).toMatchObject({ exists: false }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
     expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("resolves the system theme and follows operating-system changes", async () => {
+    const originalMatchMedia = window.matchMedia;
+    const media = Object.assign(new EventTarget(), {
+      matches: true,
+      media: "(prefers-color-scheme: light)",
+    });
+    const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation((query) =>
+      query === media.media ? media as unknown as MediaQueryList : originalMatchMedia(query));
+    try {
+      server.write("shell_preferences", saved({ theme: "system" }));
+      renderApp("/projects/p1/graph");
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+      act(() => {
+        media.matches = false;
+        media.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    } finally {
+      matchMedia.mockRestore();
+    }
   });
 
   it("shows the defaults and keeps navigating when preferences are unavailable", async () => {
