@@ -4,7 +4,7 @@
  * Both endpoints live outside the generated @aq/ts-client for the same
  * reason as dashboard/src/api/taskFiles.ts: `/file` returns raw
  * `text/plain` (or a binary-reason JSON body), and `browse`'s `entries`
- * shape isn't modelled in the OpenAPI spec either. Per dashboard/CLAUDE.md,
+ * shape isn't modelled in the OpenAPI spec either. Per dashboard/AGENTS.md,
  * legacy-fetch is the right home for routes not in the generated SDK.
  */
 import { legacyFetch } from "./legacy-fetch";

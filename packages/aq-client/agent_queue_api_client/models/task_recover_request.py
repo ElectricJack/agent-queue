@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="TaskRecoverRequest")
 
@@ -17,12 +19,19 @@ class TaskRecoverRequest:
         incident_id (str): Exact recovery incident ID from the supervisor notification
         decision (str):
         reason (str): Diagnosis and rationale for this decision
+        operator_release (bool | None | Unset): Local operator or live global supervisor only: release the exact prior
+            hold. With decision release, preserve task state and integration controls; with retry, authorize a reviewed
+            nonautomatic failure while retaining all ownership, liveness, gate and budget guards. Requires expected_hold_at.
+        expected_hold_at (float | None | Unset): Exact decided_at of the prior hold. Required for operator_release;
+            normal retry releases retain automatic recovery guards and remaining budgets.
     """
 
     task_id: str
     incident_id: str
     decision: str
     reason: str
+    operator_release: bool | None | Unset = UNSET
+    expected_hold_at: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,6 +43,18 @@ class TaskRecoverRequest:
 
         reason = self.reason
 
+        operator_release: bool | None | Unset
+        if isinstance(self.operator_release, Unset):
+            operator_release = UNSET
+        else:
+            operator_release = self.operator_release
+
+        expected_hold_at: float | None | Unset
+        if isinstance(self.expected_hold_at, Unset):
+            expected_hold_at = UNSET
+        else:
+            expected_hold_at = self.expected_hold_at
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -44,6 +65,10 @@ class TaskRecoverRequest:
                 "reason": reason,
             }
         )
+        if operator_release is not UNSET:
+            field_dict["operator_release"] = operator_release
+        if expected_hold_at is not UNSET:
+            field_dict["expected_hold_at"] = expected_hold_at
 
         return field_dict
 
@@ -58,11 +83,31 @@ class TaskRecoverRequest:
 
         reason = d.pop("reason")
 
+        def _parse_operator_release(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        operator_release = _parse_operator_release(d.pop("operator_release", UNSET))
+
+        def _parse_expected_hold_at(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        expected_hold_at = _parse_expected_hold_at(d.pop("expected_hold_at", UNSET))
+
         task_recover_request = cls(
             task_id=task_id,
             incident_id=incident_id,
             decision=decision,
             reason=reason,
+            operator_release=operator_release,
+            expected_hold_at=expected_hold_at,
         )
 
         task_recover_request.additional_properties = d

@@ -1,87 +1,485 @@
-# Durable human escalations
+# Escalations and the hourly digest
 
-Escalations are project-owned conversations between an authenticated human and the logical
-project supervisor. They are core state: Discord is only one transport, and disabling it does
-not disable persistence, dashboard access, or supervisor delivery.
+Setting up the one Discord channel AQ talks to, reading the hourly activity
+digest, and answering the escalation threads that ask you to decide something.
 
-The CLI and typed HTTP API expose six versioned-contract commands:
+If you have not met these ideas yet, read
+[Messaging, digests and escalations](../concepts/messaging.md) first: it
+explains what an escalation *is*. This page is the operator's procedure.
 
-| CLI | HTTP operation | Contract |
+## What you are setting up
+
+The default channel carries an **activity digest**, silent when nothing durable
+happened, and **legacy escalation posts and threads**. Both can be disabled
+independently; their durable records remain in the dashboard.
+
+Canonical **human asks** unify decisions from reviews, gates, questions, recoveries
+and other sources. In ask channel mode, roots and decisions stay in the channel
+without creating threads; legacy writers and replies are fenced after transfer.
+The dashboard's **Needs you** view is the canonical decision inbox. Inspect it with:
+
+```bash
+aq ask list --project-id PROJECT --view needs_you --json
+aq ask show --ask-id ASK_ID --json
+aq ask cutover-status --project-id PROJECT --json
+```
+
+These reads describe the current state; they do not enable a destination. Follow
+[Human asks: operator rollout and rollback](human-asks-rollout.md) for mode
+transitions, prerequisites and production receipts. H09 cleanup remains separate
+from enabling the shipped ask path; legacy domain tables still exist.
+
+Discord also supports opt-in [supervisor conversations](discord-conversations.md),
+[authored hourly and morning reports](supervisor-hourly-reports.md), decision
+buttons and the authenticated `/delete-task` operator action. The six former slash
+commands, general task controls and per-project channels remain retired.
+Conversation input reaches an elevated supervisor; enabling it is an explicit
+trust decision. Ask channel intake takes precedence over conversations.
+
+## Configure the channel
+
+Everything lives under `discord:` in `~/.agent-queue/config.yaml`. The digest
+and the escalation surface are enabled independently:
+
+```yaml
+discord:
+  bot_token: "…"
+  guild_id: "123456789012345678"
+  channel_id: "123456789012345679"
+  authorized_users:
+    - "123456789012345680"
+  digest:
+    enabled: true
+    interval_minutes: 60
+    project_ids: []
+    categories: ["work", "vcs", "budget", "system"]
+    catchup_hours: 24
+  escalation:
+    enabled: true
+    mention_user_ids: ["123456789012345680"]
+    mention_role_ids: []
+    reminder_minutes: 0
+    supervisor_delivery_timeout_minutes: 15
+```
+
+| Setting | Ships as | What it does |
 |---|---|---|
-| `aq escalation create` | `escalation_create` | Owning supervisor or trusted core source; source/incident replay returns the same row. |
-| `aq escalation list` | `escalation_list` | Scoped summaries with pending delivery status. |
-| `aq escalation get` | `escalation_get` | Authoritative incident, immutable message history, deliveries, and action receipts. |
-| `aq escalation reply` | `escalation_reply` | Dashboard human or trusted external adapter only; reply and supervisor notice commit atomically. |
-| `aq escalation update` | `escalation_update` | Owning supervisor CAS update using `expected_revision`. |
-| `aq escalation apply-reply` | `escalation_apply_reply` | Owning supervisor applies one verified reply through its bound question, human-gate, or task-recovery service. |
+| `channel_id` | empty | The one destination, addressed by ID so a rename cannot break delivery. Nothing is posted until it is set. |
+| `authorized_users` | empty | Accounts allowed to reply in an escalation thread. Empty means every account the gateway sees. |
+| `digest.interval_minutes` | `60` | Window length, 15–1440. Changing it starts a new schedule generation rather than re-evaluating old windows. |
+| `digest.project_ids` | empty (all) | The destination's visibility. Applied before any activity row is read. |
+| `digest.categories` | all four | `work`, `vcs`, `budget`, `system`. Provider availability contributes `system` facts and reroutes contribute `vcs`; `budget` has no producer yet. |
+| `digest.catchup_hours` | `24` | How far back one labelled catch-up window may reach after an outage, 1–168. A window older than this is dropped rather than posted as stale news. |
+| `escalation.mention_user_ids` / `mention_role_ids` | empty | The **only** source of a ping. Applied to the first post of an incident and nowhere else. |
+| `escalations.stateful` | `false` | Separate plural setting: enables state edits, auto-resolve and sweep behavior; enabling `escalation.enabled` alone does not enable these. |
+| `escalation.reminder_minutes` | `0` (off) | Optional nag interval for an unanswered incident, 5–1440 when set. |
+| `escalation.supervisor_delivery_timeout_minutes` | `15` | How long an internal supervisor notice may stay undelivered before the watchdog raises an operational incident. Also the interval for reminding the owner about an answered, unresolved escalation. |
 
-Every command returns `success: true` and its typed value on success. Refusals return
-`success: false`, a stable `error_code`, and an operator-facing `error`. Relevant codes are
-`invalid_request`, `not_found`, `out_of_scope`, `spoofed_identity`, `identity_conflict`,
-`stale_revision`, `invalid_state`, `invalid_binding`, `human_evidence_required`, and
-`action_failed`.
+Once a verified reply is recorded, routine human notifications stop. The
+escalation remains open until a supervisor records the action or decision;
+answered incidents do not appear in the digest's human attention count. If the
+answer remains unresolved after the configured timeout, the owning supervisor
+receives an internal reminder. Reminders survive daemon restarts and never
+stack behind an undelivered notice. The authenticated global supervisor can
+resolve or cancel escalations in any project; a project supervisor can act only
+within its own project. Resolving still requires a verified answer and revision
+checks; cancelling an unanswered question withdraws it without inventing one.
 
-Caller identity, human status, verified actor, project supervisor owner, transport authority,
-and thread binding are not request fields. They come from the server request principal. A
-trusted external adapter invokes the reply command with a service principal named
-`<transport>:<verified-external-actor>` after it validates its own allowlist and channel/thread
-mapping. The command derives the stored actor and transport from that principal. A supervisor
-session cannot call `escalation_reply`, so supervisor-authored text cannot become human
-evidence.
+Settings → Messaging in the dashboard edits the same values and shows a live
+preview; the config file is the source of truth either way.
 
-`escalation_apply_reply` binds `escalation_id`, `reply_id`, `expected_revision`, `action_kind`,
-`target_id`, and `idempotency_key`. `decision=retry|hold` is additionally required for
-`task_recover`. The core verifies that the immutable inbound reply belongs to the escalation,
-that it was accepted through the human boundary, and that the target is the original
-human-required question, human gate, or recovery incident. It reserves an action receipt
-before invoking the existing guarded service. Reusing the same idempotency key returns the
-receipt and never repeats the action.
+> **Note.** Enabling the digest does not enable escalations, and disabling
+> escalations does not stop incidents being created — it stops them being
+> *posted*. The dashboard's escalation inbox is unaffected by both switches.
 
-## Supervisor triage and worker questions
+## Check that it is working
 
-A terminal blocked-task notice is a request to investigate, not itself a human escalation.
-The project supervisor reloads the task explanation, exact attempt and log tail, comments,
-claim, gates, recovery history, and any integration operation before deciding. Dependency
-waits, active retry legs, and unchanged queue state do not create human incidents. If an
-integration operation owns repair or verification, its controls and existing retry/time budgets
-remain authoritative.
+`aq digest status` is the one health command. It answers "what is configured,
+when does it next speak, and is anything stuck?".
 
-Completed-turn worker questions also route first to the logical
-`supervisor-<project_id>` mailbox. The persisted question retains its session instance token,
-task, agent, and claim epoch. Narrow factual questions may be answered by the owning supervisor;
-human-required or ambiguous questions use `aq question escalate`, which creates/reuses a durable
-escalation with the question as its source. Question reads expose that source link as
-`escalation_id`. Direct human `question_answer` calls are refused: a human responds with
-`escalation_reply`, and the supervisor applies that evidence with `escalation_apply_reply`.
+```bash
+aq digest status
+```
 
-Supervisor mailboxes survive absence and restart. Messages target logical project ownership,
-never a historical session row. After the configured supervisor-delivery timeout (15 minutes by
-default), the watchdog creates at most one `supervisor_delivery` operational incident per source
-notice. That incident only reports unavailability; its source kind cannot be applied as approval
-for a question, gate, or recovery. A failed evidence-bound action records an outbound follow-up
-in the same escalation conversation and returns the incident to `reply_received` rather than
-resolving it.
+It reports the destination and configuration generation, `next_evaluation_at`,
+recent windows with their `suppression_reason`, `settings_errors` and
+`warnings` (including project IDs that do not exist), the `cutover` status,
+and `delivery_health` — how many digest windows and
+`pending_escalation_deliveries` are pending, retrying or `unknown`.
 
-The event bus publishes these versioned state hints after commits:
+Its `intake` block counts the inbound Discord messages the gateway ignored
+over the last hour, by reason code: `window_seconds` (3600), `total`, and
+`ignored`, a map of code → count. The counts live in the daemon's memory, so
+a restart empties them, and they hold at most 10,000 events, forgetting the
+oldest first. `available: false` means no gateway is connected to count
+anything. Each ignored message also writes one INFO line to the daemon log,
+`discord intake ignored reason=<code> guild=<id> channel=<id> message=<id> author=<id>`,
+carrying ids and the code but never the message text. Escalation codes, in the
+order its gate checks them:
 
-- `escalation.created.v1`
-- `escalation.reply_received.v1`
-- `escalation.updated.v1`
-- `escalation.delivery_status.v1`
+| Code | The message was ignored because |
+|---|---|
+| `disabled` | `discord.escalation.enabled` is false |
+| `own_message` | this bot posted it |
+| `bot_author` | another bot posted it |
+| `not_in_thread` | escalation intake saw a channel post or another message outside a thread, including a bot mention; the opt-in conversation router may still accept it |
+| `no_channel` | `discord.channel_id` is not set |
+| `foreign_channel` | the thread's parent is not the configured channel |
+| `author_not_allowlisted` | the author is not on `authorized_users` |
+| `thread_unbound` | the thread belongs to no escalation |
+| `binding_channel_mismatch` | the escalation's recorded channel disagrees with the one the gateway saw |
+| `binding_thread_mismatch` | the escalation's recorded thread disagrees with the one the gateway saw |
+| `empty_text` | the reply has no text |
+| `oversize` | the reply is longer than 16,000 characters |
+| `no_message_id` | Discord supplied no message ID |
+| `classify_error` | the gateway could not read or classify the message. The daemon log has a warning with the traceback |
 
-Every payload requires `version: 1`, `escalation_id`, and `project_id` plus its event-specific
-identity/status fields. Consumers must reload authoritative escalation state; event replay is
-never permission to repeat an external send or recovery.
+When supervisor conversations are enabled, the router also records these
+conversation codes. Shared codes such as `own_message`, `bot_author`,
+`foreign_channel`, `author_not_allowlisted`, `empty_text` and `classify_error`
+have the same meaning in both paths.
 
-## Discord delivery: one post and one thread per incident
+| Code | The conversation was ignored because |
+|---|---|
+| `preconditions_unmet` | one or more prerequisites are missing; `aq supervisor-inbox status` names them |
+| `webhook_author` | a webhook posted it |
+| `dm` | it is a direct message |
+| `edit` | an edit cannot rewrite previously accepted input |
+| `foreign_guild` | it is outside the configured guild |
+| `no_bot_mention` | a top-level message lacks a real bot-user mention |
+| `escalation_thread` | escalation intake exclusively owns the thread, even on refusal or failure |
+| `unknown_thread` | the thread has no matching conversation binding |
 
-External delivery is a thin renderer over that durable state (implementation spec §7). It is
-driven from the `escalation_deliveries` outbox by `src.escalations.EscalationDeliveryService`,
-which the daemon ticks once per orchestrator cycle when a Discord bot is present and
-`discord.escalation.enabled` is true. With no bot — or with the setting off — the incident, the
-supervisor loop and the dashboard inbox are unchanged; only the channel goes quiet.
+An escalation ignore does not prove a mention was dropped: the conversation
+router may subsequently accept it. Conversation command refusals log
+`discord conversation refused reason=<code>` separately. `oversize` (more than
+4,000 normalized code points), `rate_limited` and `conversation_closed` receive
+bounded, deduplicated notices. See [Discord supervisor conversations](discord-conversations.md)
+for the complete prerequisites, limits, backfill gaps and trust decision.
 
-What the channel sees:
+The gateway drops some messages before they reach this gate, and those are
+neither logged nor counted: its own posts, authors missing from a non-empty
+`authorized_users`, and everything that arrives before the cutover pass
+reports `complete`.
+
+To see what the next digest *would* say without sending it:
+
+```bash
+aq digest preview
+```
+
+The preview runs the same code path delivery uses, so it cannot disagree with
+the real message. It reserves no window, sends nothing and advances no cursor,
+so you may run it as often as you like. It returns either `would_send` with
+the exact text, or `suppression_reason`.
+
+> **Both commands are operator-scoped.** A worker session's token is refused
+> with `out of scope: digest_status`. Run them from an operator shell or the
+> dashboard.
+
+## Reading a digest
+
+One message, at most 600 characters, never split across posts:
+
+```text
+📊 Agent Queue — last hour · 2 completed · 1 progressed · 3 active · +3 more · 1 open escalation
+• agent-queue: completed — document the escalation guide (solid-grove.19)
+• agent-queue: progress — pull request ready — fix the claim race (solid-grove.7)
+<https://aq.your-tailnet.ts.net/focus/inbox>
+```
+
+The window and its counts share the first line, so two highlight sections are
+what a three-line budget leaves. Counts first, then the highlights, then the
+overflow count and the number of open escalations. The one link is the
+needs-you inbox on the dashboard, `dashboard.server.public_url` joined to the
+focus path — never the daemon's port and never a settings page. Without an
+origin the last line says `Remote dashboard link unavailable (...)`; see
+[dashboard links in Discord posts](dashboard.md#dashboard-links-in-discord-posts). If the highlights would
+push the message over the limit, the least informative one is folded into the
+`+N more` count rather than starting a second message.
+
+The budget is data, not a convention: `src/discord/render_budget.py` holds one
+row per kind of post and the renderer cuts to it, so a producer cannot opt
+out. `tests/test_discord_render_budgets.py` pins every row.
+
+### Why the channel is quiet
+
+Silence is a feature, and it is recorded as durably as a message. Every window
+that says nothing stores a reason, which `digest_status` and `digest_preview`
+both surface:
+
+| `suppression_reason` | Meaning | Is that right? |
+|---|---|---|
+| `no_activity` | Nothing durable happened and nothing is running | Yes |
+| `idle_only` | Tasks exist but are waiting — queued, paused, dependency-blocked, waiting on a human — or the only news is an open escalation | Yes; waiting is not progress, and an escalation speaks on its own path |
+| `all_filtered` | Work happened, but not in a project or category this destination may see | Check `digest.project_ids` and `digest.categories` |
+| `already_reported` | Everything in the window was already said in an earlier one | Yes; a re-evaluated window never repeats itself |
+
+Work facts include a task completion, an attempt that started, a task comment
+explicitly recorded as *progress* and a `pr_url` becoming available. Provider
+availability and provider reroutes are additional durable facts. Human waits
+remain attention facts rather than progress. Heartbeats, `updated_at` churn, layout rebuilds,
+periodic metrics and repeated notifications are not progress. "Active" means a
+task with a live, non-stale attempt right now — not a status column, so an
+`IN_PROGRESS` container with no running session, a stalled session and a
+worker parked on a human answer are all correctly counted as *not* active
+([`src/database/queries/digest_queries.py`](../../src/database/queries/digest_queries.py)).
+
+### Optional supervisor-authored digest
+
+`discord.digest.supervisor_authored` defaults to false. When enabled, P3 uses
+`cadence_minutes` (120 by default), quiet hours 22:00–07:00 in `reports.timezone`,
+and a frozen fact snapshot for each held window. `aq digest request` queues the
+supervisor author turn; `aq digest facts` reads that snapshot and `aq digest post`
+submits its body. Each command's help supplies the required window identity.
+If the supervisor misses `author_fallback_minutes` (10), deterministic rendering
+speaks instead. Three consecutive unchanged skips earn at most one quiet line
+per local day. Changed facts and needs-you items affect eligibility; routine
+heartbeats do not. This is separate from `reports.hourly` authoring; avoid treating
+the two switches as aliases. See [configuration](../specs/config.md).
+
+## Answering an escalation
+
+This section describes the retained legacy route. Once a destination transfers
+from legacy ownership, `legacy_human_delivery_blocked` refuses legacy replies and
+buttons; use the canonical ask context and prepare/decide flow instead. Human
+input must be verified, the source version current, and the prepared preview bound
+to the exact choice and idempotency key. Worker/supervisor prose is never human
+authority. An unknown application requires reconciliation, not a blind retry.
+
+New human escalations require a subject title, a project, and a plain-language
+explanation of why a person must decide. `escalation_create` uses the task's title
+when `task_id` is supplied; otherwise the caller supplies `task_title` (the subject
+title also applies to project-level decisions). `investigation` holds the reason
+and what was checked; `decision_requested` states the choice. Blank or whitespace-only
+fields are refused. The returned `deep_link` is the incident's canonical dashboard
+path, `/focus/escalations/<id>`; external posts join it to the configured dashboard origin.
+
+Creation commits the incident and its initial delivery together, even when Discord
+is disabled. The outbox keeps the request until delivery can run. Internal
+supervisor-delivery notices stay in the supervisor inbox. Replay reuses the existing
+delivery and repairs a legacy open incident with no root; it preserves confirmed
+receipts and ambiguous sends.
+
+`aq doctor --check escalations.undelivered` and `aq doctor --check stall.sweep`
+flag open human incidents with no confirmed root delivery after five minutes.
+Findings include the incident link, age, outbox status (including `missing`), and
+last error. Disabled delivery and paused projects retain their queued requests;
+the dedicated check reports those too, while the stall sweep checks active projects.
+
+When a supervisor escalates, the channel gets two body lines and one link: the
+decision needed, the context behind it, and the incident's page on the
+dashboard. What did not fit — what was already tried, the options — waits in
+the thread, and the escalation ID appears once, as the link. The configured
+mention is attached to that first post and nowhere else. When the incident
+closes, its root is edited down to a single line saying how it ended, with no
+link and no mention: the page is already linked from the root above it and from
+the thread.
+
+**Reply in the thread underneath it.** That is the whole interface. What
+happens next:
+
+1. The gateway checks the message: not a bot, in a thread whose parent is the
+   configured channel, from an account on `authorized_users`, and bound to a
+   known incident by the receipt stored on its root post.
+2. Your words are persisted as immutable evidence, and a message to
+   `session:supervisor-<project>` is queued in the *same* transaction.
+3. The thread gets one acknowledgement.
+4. The supervisor reads the evidence and decides. Applying that decision —
+   answering a question, resolving a gate, retrying or holding a task — is a
+   separate, explicitly bound call it makes with `escalation_apply_reply`.
+
+A reply never resolves a gate, edits a task or types into a worker's terminal
+by itself. If you reply to an incident that already closed, the words are
+still recorded, no supervisor work is queued, and the thread answers with
+closed-state guidance saying nothing has reopened.
+
+Messages that do not correlate are dropped silently — the channel is shared
+with people, and answering every unrelated line would make it a chatbot.
+
+### From the CLI or the dashboard instead
+
+Eight escalation commands back the CLI, HTTP API and MCP surface. All are
+operator- or supervisor-scoped; a worker session's token is refused.
+
+| CLI | HTTP operation | Who may call it |
+|---|---|---|
+| `aq escalation create` | `escalation_create` | The owning supervisor or a trusted core source; a replayed source/incident returns the same row |
+| `aq escalation list` | `escalation_list` | Anyone in scope; shows current external-delivery status |
+| `aq escalation get` | `escalation_get` | Anyone in scope; legacy incident diagnostics, history, deliveries and action receipts, plus canonical ask alias/context when available |
+| `aq escalation reply` | `escalation_reply` | A dashboard human or a trusted external adapter only — never a supervisor, so supervisor text can never become human evidence |
+| `aq escalation update` | `escalation_update` | The owning supervisor, with `--expected-revision` as the compare-and-set fence |
+| `aq escalation resolve` | `escalation_resolve` | The owning supervisor; closes an *answered* incident with `--outcome`, the one sentence the collapsed channel post shows |
+| `aq escalation apply-reply` | `escalation_apply_reply` | The owning supervisor; compatibility path requiring exact declared choice and current ask preview/source context |
+| `aq escalation sweep` | `escalation_sweep` | Operator; dry-run by default, `--apply` performs the stateful-gated cleanup |
+
+```bash
+aq escalation list --states '["needs_human"]'
+aq escalation get --escalation-id escalation-abc123
+aq escalation resolve --escalation-id escalation-abc123 --outcome "Shipped from main."
+```
+
+To clear a false delivery-watchdog alarm, the owning supervisor cancels its
+incident with an explanation and the revision from `aq escalation get`:
+
+```bash
+aq escalation update --escalation-id INCIDENT --expected-revision REVISION --state cancelled --terminal-outcome 'False alarm: work was hand landed'
+```
+
+The next watchdog scan cancels that generation's wait projection and stops
+redriving or paging it. The decision survives restart and applies only to that
+completion generation; it does not assert Git containment. The inventory also
+recognizes equal trees and content already on the target after hand landing.
+
+Pausing a project holds its escalation and review notifications silently, including
+human gate pings. The dashboard labels open requests **held while paused**. Existing
+workers receive a notice to stop at the next safe point and preserve their progress.
+Resuming the project releases pending notifications; withdrawn reviews stay silent.
+See [the project-pause contract](../specs/messaging/project-pauses.md).
+
+`escalation_resolve` is the supervisor's way to close what a human answered,
+whether the answer arrived as a thread reply, a tap on one of the post's choice
+buttons, or an answer on the escalation page. `--expected-revision` is optional
+(omit it to resolve the revision the incident has now), and the command refuses
+an incident nobody has answered — there is no outcome to report — as well as one
+that is already terminal. Every step is a compare-and-set, so a reply that lands
+mid-resolve wins and the command reports `stale_revision` instead of resolving
+over an answer the supervisor never read.
+
+Refusals return `success: false`, a stable `error_code` and an operator-facing
+message. The codes are `invalid_request`, `not_found`, `out_of_scope`,
+`spoofed_identity`, `identity_conflict`, `stale_revision`, `invalid_state`,
+`invalid_binding`, `human_evidence_required` and `action_failed`.
+
+Caller identity, human status, verified actor, supervisor ownership, transport
+authority and thread binding are never request fields — they come from the
+server request principal. A trusted external adapter calls `escalation_reply`
+under a service principal named `<transport>:<verified actor>`, and the core
+derives the stored actor and transport from it.
+
+`escalation_apply_reply` binds `--escalation-id`, `--reply-id`,
+`--expected-revision`, `--action-kind`, `--target-id` and
+`--idempotency-key`; `--decision retry|hold` is additionally required for
+`task_recover`. The core verifies that the inbound reply belongs to the
+escalation, that it arrived through the human boundary, and that the target is
+the original question, gate or recovery incident. It reserves an action
+receipt before invoking the guarded service, so reusing an idempotency key
+returns the receipt and never repeats the action. These binding fields alone
+are insufficient: compatibility calls also require current source-version and
+prepared-preview context and an exact stored declared choice. Otherwise the
+command directs the caller to the canonical ask prepare/decide path.
+
+## Where escalations come from
+
+Sources include supervisor judgment and deterministic operational watchdogs:
+
+* **A failed task.** The shipped system playbook
+  [`supervisor-failure-triage`](../../src/prompts/default_playbooks/supervisor-failure-triage.md)
+  reconciles every `task.failed` event with the task's durable failure incident.
+  Only a new actionable incident wakes the project supervisor to read the
+  evidence and decide: retry, hold, follow up, or ask the human. The retired
+  `blocked-task-escalation` recording remains available for audit, but its
+  source is no longer installed at startup.
+* **A worker question.** A question a supervisor cannot answer is escalated
+  with `aq question escalate <question-id> --reason "…"`, which creates or
+  reuses a durable escalation with the question as its source. A human
+  answering directly with `question_answer` is refused: the human replies to
+  the escalation, and the supervisor applies that evidence.
+* **A stuck worker question.** A question the supervisor has neither answered
+  nor escalated within `supervisor_delivery_timeout_minutes`
+  (`question_unanswered`), an accepted answer that still has not reached the
+  worker after that long (`question_delivery`), or an OpenCode dialog answer
+  the worker never resumed from (`question_resume`) raises at most one
+  incident per question and kind
+  ([`src/sessions/questions.py`](../../src/sessions/questions.py),
+  [Questions from live agents](../agent-questions.md)). Like the watchdog's,
+  these report a stuck worker only: they cannot answer, approve or re-route
+  the question, which stays the supervisor's.
+* **The supervisor delivery watchdog.** If an internal notice to a supervisor
+  stays undelivered past `supervisor_delivery_timeout_minutes`, at most one
+  operational incident per notice is raised
+  ([`src/escalations/supervisor.py`](../../src/escalations/supervisor.py)). It
+  reports unavailability only — its source kind is deliberately not applicable
+  as approval for anything.
+* **A provider outage.** When a provider needs a human — its CLI is logged
+  out, it has been `failing` longer than
+  `provider_failover.notify.escalate_failing_after_seconds`, or every provider
+  is down with none due back soon — the daemon files one incident per outage
+  (`source_kind` `provider_availability`) under the project whose queued work
+  it strands most, and resolves it itself when the provider recovers
+  ([`src/providers/availability_service.py`](../../src/providers/availability_service.py),
+  `docs/specs/provider-failover.md` D19). An `exhausted` provider with a known
+  reset time never pages anyone. Like the watchdog's, this source kind is not
+  approval for anything: reply to tell the supervisor what you did (for
+  example, that you ran `codex login`), and the recovery closes it. The
+  [provider outage runbook](provider-outage.md) covers what to do on the host.
+
+Dependency waits, in-flight retries and unchanged queue state never create an
+incident.
+
+## Sweeping the back-fill pile
+
+Before escalations were stateful, every incident the daemon ever raised got a
+channel post and nothing ever edited it, so the channel accumulated a pile of
+questions nobody was waiting on any more. One idempotent pass clears it:
+
+```bash
+aq escalation sweep                    # dry run: writes nothing, prints the plan
+aq escalation sweep --apply            # close and triage exactly what it printed
+aq doctor --check escalations.pile     # the same plan as a health line
+aq doctor --check escalations.pile --fix
+```
+
+What the sweep does, in order:
+
+1. resolve incidents whose gate has already resolved;
+   retire unanswered review notices only when the exact bound review is withdrawn
+   and its open gate has no waiters. The gate stays open and no document is approved;
+2. obsolete `supervisor_delivery` notices (the delivery backlog behind one has
+   drained, or it never reached a decision point);
+3. obsolete questions whose task reached `COMPLETED`;
+   read archived tasks as well. A supervisor request bound to an archived task
+   is retired as historical, with its actual archived status recorded. An active
+   failed or blocked task continues to need its decision;
+4. obsolete the two provable cases among the task-less questions — an incident
+   in a project that is not `ACTIVE`, and one whose own source record (a gate
+   row) no longer exists — and send the rest to the supervisor's inbox for
+   triage. Every remaining question keeps its `sweep: triage` audit row, so a
+   second run lists nothing twice.
+
+The legacy missing-worker-knowledge-grants incident can also retire after both
+installed worker templates parse successfully and contain the exact missing
+knowledge commands and harness tools. Unknown supervisor sources still require
+triage. These additional proofs are read again before the closing write; a new
+waiter, restored task, changed review revision or removed grant prevents closure.
+
+It never guesses. A source kind it cannot resolve (`core`,
+`provider_availability`) is listed for triage rather than called retired, because
+the cheap mistake is a line of text for the supervisor and the expensive one is
+closing a question somebody still wanted answered. Live gates are left alone: a
+gate that is still pending is a decision somebody is owed, not a leftover.
+
+Each closure records the rule that caused it in `escalations.outcome` and one
+`escalation_messages` row with `direction=system` and `text="sweep: <rule>"`, so
+the history shows why an incident closed without anybody speaking. Collapsing
+the channel post is not the sweep's job: a closed incident is already planned
+for one in-place `resolution` edit by the delivery pump, which owns the pacing,
+the retry backoff and the thread archive.
+
+The dry run is the default and `--apply` is the only way to write, so the plan
+can be reviewed first — which is how the rollout was meant to go. Both the
+command and `doctor --fix` build the same plan from
+[`EscalationSweeper`](../../src/escalations/sweep.py), gated on
+`discord.escalations.stateful`; with the flag off the pile is left exactly as it
+is. The check reports the open count against the ten-open-items target, so what
+is still open after a sweep is visible as a number rather than a scroll.
+
+## For contributors: how delivery stays exactly-once-ish
+
+External delivery is driven from the `escalation_deliveries` outbox by
+[`EscalationDeliveryService`](../../src/escalations/dispatch.py), ticked once
+per orchestrator cycle when a bot is present and `discord.escalation.enabled`
+is true.
 
 | Delivery kind | When | Where |
 |---|---|---|
@@ -90,73 +488,136 @@ What the channel sees:
 | `relay` | A correlated supervisor message | In the thread |
 | `resolution` | The incident reached a terminal state | In the thread, then the root is edited and the thread archived |
 
-The root post carries the project, task title and ID, the blocker, the exact decision needed,
-the configured mention, a dashboard link and the escalation ID. It is the only message that may
-mention anybody, and only the IDs in `discord.escalation.mention_user_ids` /
-`mention_role_ids`: every interpolated string — task titles, summaries, supervisor text, human
-replies — is neutralised first, so authored text can never produce a ping. The resolution edit
-drops the mention entirely.
+Identity is durable, never in memory:
 
-Delivery identity is durable, not in-memory:
+* one row per `(escalation, kind, generation)` through the outbox's unique
+  `dedup_key`, so a replayed event, a gateway reconnect and a second daemon
+  all converge on the same row;
+* `claim_escalation_deliveries` leases a row, so one sender owns it at a time
+  and an expired lease is reclaimed rather than duplicated;
+* a restart rebinds from the stored channel, message and thread IDs — never
+  from a task-thread naming heuristic.
 
-- one row per `(escalation, kind, generation)` via the outbox's unique `dedup_key`, so replayed
-  events, a gateway reconnect and a second daemon all converge on the same post;
-- `claim_escalation_deliveries` leases a row, so only one sender owns it at a time and an
-  expired lease is reclaimed rather than duplicated;
-- a restart rebinds from the stored channel/message/thread IDs — never from a task-thread
-  heuristic.
+An external send cannot be transactionally exactly-once with the database, and
+the code does not pretend otherwise. Every message embeds an
+`aq-esc:<dedup key>` marker (the digest uses `aq-dig:<hash>`); after an
+ambiguous timeout the next attempt searches recent history for it. Found, the
+delivery is recorded `sent` with that receipt and nothing is reposted. Not
+found, the row becomes `unknown` — attention-needed, visible on
+`escalation_get` and counted in `digest_status` — rather than being posted
+twice.
 
-An external send cannot be transactionally exactly-once with the database, and the code does
-not pretend otherwise. Each message embeds an `aq-esc:<dedup key>` marker; after an ambiguous
-timeout the next attempt searches recent history for it. If the marker is found the delivery is
-recorded `sent` with that receipt and nothing is re-posted. If it is not found, the row becomes
-`unknown` — attention-needed, visible on `escalation_get` and counted by `digest_status` —
-rather than being blindly re-posted.
+A deleted root or thread earns one explicit replacement generation: at most
+one may be pending at a time, and a closed incident never gets one, so a
+resolution can never reopen work. A missing channel or a missing permission is
+recorded as an actionable delivery fault; the daemon never creates a channel.
+Retries are bounded (six attempts, 15 s → 30 min backoff), and the Discord
+invalid-request rate guard holds sends rather than dropping them.
 
-A deleted root or thread earns an explicit replacement generation: at most one may be pending
-at a time, and a closed incident never gets one, so a resolution can never reopen work. Missing
-channel or missing permission is an actionable delivery fault recorded on the row; the daemon
-never creates a channel. Retries are bounded (six attempts, 15s → 30m backoff) and the existing
-Discord invalid-request rate guard holds escalation sends rather than dropping them.
+Escalations outrank digests. The digest pump asks how many escalation
+deliveries are owed a send and, if any are, declines to claim at all — it does
+not merely lose a race for the rate-limit budget
+([`src/digest/dispatch.py`](../../src/digest/dispatch.py)).
 
-## Replying from the thread
+The event bus publishes these versioned state hints after commit:
+`escalation.created.v1`, `escalation.reply_received.v1`,
+`escalation.updated.v1` and `escalation.delivery_status.v1`. Every payload
+carries `version: 1`, `escalation_id` and `project_id` plus its own identity
+and status fields. Consumers must reload authoritative state; an event replay
+is never permission to repeat an external send or a recovery.
 
-The thread is the only inbound Discord surface an escalation has, and
-`src.discord.escalation_intake.DiscordEscalationIntake` is the only path a Discord message
-takes into one — `on_message` does nothing else, because there is no longer any general
-channel chat, mention handling or task-thread routing to fall through to. A message it does
-not correlate is dropped having cost no database work. The gateway also ignores every message
-until the startup cutover pass reports `complete`, so a pre-cutover conversation can never be
-half-migrated and half-live (see the [migration runbook](discord-migration.md)).
+## For contributors: the inbound gate
 
-Every one of these must hold before a message becomes a reply, and each refusal is silent — the
-channel is shared with people, and answering unrelated lines would turn it into the chatbot the
-product contract rules out:
+[`DiscordEscalationIntake`](../../src/discord/escalation_intake.py) is the
+only path a Discord message takes into an escalation.
+[`DiscordInboundRouter`](../../src/discord/inbound.py) first checks durable ask
+channel ownership. In channel mode, ask intake exclusively owns the message, even
+when it refuses. Otherwise legacy escalation intake runs first: consumed
+or failed escalation intake stops routing, and a known escalation binding
+remains exclusive even when intake refuses. Only then may the deliberately
+opt-in conversation route accept an allowlisted channel message (subject to
+`require_mention`), permitted DM or bound conversation-thread follow-up. The retired general channel chat and task-thread
+worker routing remain removed; see [Discord supervisor conversations](discord-conversations.md).
+The gateway also ignores every
+message until the startup cutover pass reports `complete`, so a pre-cutover
+conversation can never be half-migrated and half-live (see the
+[migration runbook](discord-migration.md)).
 
-- the author is not this bot and not any bot (an acknowledgement must never acknowledge itself);
-- the message is in a thread, and that thread's parent is the configured `discord.channel_id`
-  (reconfigure the channel and old threads stop correlating on their own);
-- the author is on the existing `discord.authorized_users` allowlist;
-- the thread is bound to an incident by the *confirmed receipt* on its root delivery — the same
-  stored IDs a restart rebinds from, never a task-thread naming heuristic;
-- the reply has text, is at most 16,000 characters, and carries a transport message ID.
+Every one of these must hold for an escalation reply. A refusal is silent in the channel and logged
+once, with its reason code (see [Check that it is working](#check-that-it-is-working)):
 
-Identity is never taken from the request body. The adapter checks the account the gateway
-authenticated and then calls `escalation_reply` under an `ExecutionPrincipal.service(
-"discord:<user id>")`, which the core turns into `human:discord:<user id>`. A body carrying
-`actor`, `human`, `verified_actor` or a project ID is refused by `escalation_reply` itself, so a
-service principal cannot impersonate a human or a supervisor through this path.
+* the author is not this bot and not any bot — an acknowledgement must never
+  acknowledge itself;
+* the message is in a thread whose parent is the configured `channel_id`, so
+  moving a thread out of that channel stops it correlating on its own;
+* the author is on the `authorized_users` allowlist;
+* the thread is bound to an incident by the confirmed receipt on its root
+  delivery;
+* the reply has text, is at most 16,000 characters, and carries a transport
+  message ID.
 
-What an accepted reply does, and nothing more: the words are persisted as immutable inbound
-evidence and a message to `session:supervisor-<project>` is queued in the *same* transaction,
-which is what makes a duplicate gateway delivery a no-op (the reply is unique on
-`(transport, external_message_id)`) and a second reply an ordinary second row. Waking or
-recreating that supervisor is the existing delivery machinery's job — the intake holds no handle
-on a process. The intake never resolves a gate, reopens or edits a task, or types into a
-worker's terminal; `escalation_apply_reply` remains the supervisor's to call.
+The cheap checks run first against no binding at all, so ordinary channel
+chatter costs no database query
+([`src/escalations/intake.py`](../../src/escalations/intake.py) is the pure
+decision table; the Discord half only observes the message).
 
-A reply to an incident that is already `resolved`, `cancelled` or `stale` is still recorded, but
-no supervisor work is queued and the incident stays terminal. Its acknowledgement is closed-state
-guidance instead — it says the incident closed before the reply arrived and that nothing has
-reopened. Posting it un-archives the thread the way any Discord post does, so the dispatcher
-re-archives it afterwards and §7's archived state survives a late reply.
+Identity comes from the gateway, never the body: the adapter hands
+`escalation_reply` an `ExecutionPrincipal.service("discord:<user id>")`, which
+the core turns into `human:discord:<user id>`. A body carrying `actor`,
+`human`, `verified_actor` or a project ID is refused outright, so a service
+principal cannot impersonate a human or a supervisor through this path.
+
+## For contributors: why nothing can ping you by accident
+
+Two rules, both enforced in the renderer rather than trusted to callers
+([`src/escalations/render.py`](../../src/escalations/render.py),
+[`src/digest/render.py`](../../src/digest/render.py)):
+
+* every interpolated string — a task title, a supervisor note, a human reply —
+  is sanitised on the way in: mention tokens are removed, a bare `@` gains a
+  zero-width space, backticks are dropped and a pasted traceback is cut to its
+  first line;
+* the configured mention is rendered by the mention policy alone, and only on
+  an incident's *initial* root post. A reposted root and a resolution edit
+  deliberately drop it, and a digest never mentions anybody at all.
+
+## Troubleshooting
+
+| Symptom | Diagnose | What to do |
+|---|---|---|
+| Nothing has ever been posted | `aq digest status` → `settings_errors`, `cutover` | `channel_id` is unset, or the cutover pass has not reported `complete`. Both are named in the output |
+| `out of scope: digest_status` | Expected inside a worker session | Run it from an operator shell or the dashboard |
+| The digest is silent while work is happening | `aq digest preview` → `suppression_reason` | `idle_only` and `already_reported` are correct. `all_filtered` means `digest.project_ids` or `categories` excludes the work |
+| A digest window is `unknown` | `aq digest status` → `delivery_health` | The send was ambiguous and could not be reconciled, or the window aged past `catchup_hours`. AQ deliberately does not repost stale news |
+| An escalation shows a delivery as `unknown` | `aq escalation get --escalation-id <id>` | Check the channel for the post; if it is genuinely missing, resolve or re-raise the incident deliberately rather than expecting a retry |
+| A reply in the thread does nothing | Check `authorized_users`, and that the thread's parent is `channel_id` | Refusals are silent by design; the reason is in the daemon log |
+| My mention vanished | Read `aq supervisor-inbox status` → `preconditions`, `diagnostics` and `backfill.gaps`; search the log for `discord intake ignored` and `discord conversation refused`; `aq digest status` → `intake` shows ignore counts | Conversations are off by default. When explicitly enabled, an allowlisted channel message subject to `require_mention` reaches the project supervisor or falls back to global; ask channel mode takes precedence; `not_in_thread` describes escalation intake alone. See [Discord supervisor conversations](discord-conversations.md) |
+| The channel is posting but the supervisor never acts | `aq message list --to-kind session --to-id supervisor-<project>` | The reply was persisted but its supervisor message is undelivered; the watchdog raises an incident about that after `supervisor_delivery_timeout_minutes` |
+| An unanswered incident got a second post | Compare `generation` on the deliveries in `escalation_get` | Someone deleted the original post; a replacement generation is the intended response, and only one may be pending |
+
+## Related pages
+
+* [Messaging, digests and escalations](../concepts/messaging.md) — the
+  concepts and vocabulary this page assumes.
+* [Discord migration runbook](discord-migration.md) — moving an installation
+  that predates the single-channel model.
+* [Discord commands](discord-commands.md) and
+  [replacement checklist](discord-replacement-checklist.md) — the ledger of
+  what each retired Discord surface became.
+* [Module catalog: messaging, digests and escalations](../reference/modules/communications.md)
+  — every module behind this page, one row each.
+
+## Source and tests
+
+[`src/digest/`](../../src/digest/), [`src/escalations/`](../../src/escalations/)
+and [`src/discord/`](../../src/discord/), configured by the `discord:` section
+of [`src/config.py`](../../src/config.py). The spec is
+[the current messaging-and-human-asks system spec](../specs/systems/messaging-and-human-asks.md).
+The Discord simplification spec remains a historical design record.
+
+```bash
+aq test tests/test_digest.py tests/test_digest_dispatch.py tests/test_digest_commands.py \
+  tests/test_escalation_delivery.py tests/test_escalation_intake.py \
+  tests/test_escalation_sweep.py tests/test_discord_escalation_transport.py \
+  tests/test_discord_intake_diagnostics.py tests/test_discord_docs.py
+```
