@@ -1422,7 +1422,7 @@ class TaskRecoveryQueryMixin:
                         + ("\nExplicit operator hold release." if operator_release else "")
                         + (
                             f"\nCleared dangling assignment to agent {dangling_agent_id} "
-                            "(no live claim, session or agent hold)."
+                            "(no live claim, session or agent hold on this task)."
                             if dangling_agent_id else ""
                         )
                         + (
@@ -1756,28 +1756,28 @@ class TaskRecoveryQueryMixin:
     async def _recovery_assignment_is_live(self, conn, task, meta, attempt):
         """Whether the task's assigned agent still holds it, or might again.
 
-        A soft-deleted agent, or one whose sessions all stopped, leaves an
-        assignment nothing can act on (steady-impact-12). It is live while the
-        agent row still names this task, while any of the agent's sessions is
-        not stopped, or while the task's claim record names a session that is
-        not stopped. The caller already confirmed the incident's own session.
+        A soft-deleted agent, one whose sessions all stopped, or a pool agent
+        reused for another task leaves an assignment nothing here can act on
+        (steady-impact-12, wise-glacier-45). It is live while the agent row
+        names this task, or while a session that is not stopped and not bound
+        to another task is the claim record's holder or the agent's own (bound
+        here, or unbound while the agent is free). The caller already
+        confirmed the incident's own session.
         """
         agent_id = task["assigned_agent_id"]
-        not_stopped = or_(
-            sessions.c.state.not_in(("stopped", "quarantined")),
-            sessions.c.desired_state == "running",
-        )
-        holder = meta.get("claimed_by_session")
-        live = await conn.scalar(select(sessions.c.id).where(
-            sessions.c.id != attempt["session_id"],
-            or_(sessions.c.agent_id == agent_id,
-                *([sessions.c.id == holder] if isinstance(holder, str) else [])),
-            not_stopped,
-        ).limit(1))
-        if live is not None:
+        agent = (await conn.execute(select(agents.c.current_task_id).where(
+            agents.c.id == agent_id, agents.c.deleted_at.is_(None),
+        ))).first()
+        if agent is not None and agent.current_task_id == task["id"]:
             return True
-        return await conn.scalar(select(agents.c.id).where(
-            agents.c.id == agent_id,
-            agents.c.deleted_at.is_(None),
-            agents.c.current_task_id == task["id"],
-        )) is not None
+        here = sessions.c.task_id == task["id"]
+        free = agent is None or agent.current_task_id is None
+        holder = meta.get("claimed_by_session")
+        return await conn.scalar(select(sessions.c.id).where(
+            sessions.c.id != attempt["session_id"],
+            or_(sessions.c.state.not_in(("stopped", "quarantined")),
+                sessions.c.desired_state == "running"),
+            or_(here, sessions.c.task_id.is_(None)),
+            or_(and_(sessions.c.agent_id == agent_id, *([] if free else [here])),
+                *([sessions.c.id == holder] if isinstance(holder, str) else [])),
+        ).limit(1)) is not None

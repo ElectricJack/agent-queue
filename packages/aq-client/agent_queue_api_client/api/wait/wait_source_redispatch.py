@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitSourceRedispatchArgs,
 ) -> Response[WaitBridgeResponse | WaitSourceRedispatchResponse422]:
-    """Reobserve one durable source event in a supervisor project.
+    """Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
-     Reobserve one durable source event in a supervisor project.
+     Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
     Args:
         body (WaitSourceRedispatchArgs):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitSourceRedispatchArgs,
 ) -> WaitBridgeResponse | WaitSourceRedispatchResponse422 | None:
-    """Reobserve one durable source event in a supervisor project.
+    """Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
-     Reobserve one durable source event in a supervisor project.
+     Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
     Args:
         body (WaitSourceRedispatchArgs):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitSourceRedispatchArgs,
 ) -> Response[WaitBridgeResponse | WaitSourceRedispatchResponse422]:
-    """Reobserve one durable source event in a supervisor project.
+    """Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
-     Reobserve one durable source event in a supervisor project.
+     Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
     Args:
         body (WaitSourceRedispatchArgs):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitSourceRedispatchArgs,
 ) -> WaitBridgeResponse | WaitSourceRedispatchResponse422 | None:
-    """Reobserve one durable source event in a supervisor project.
+    """Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
-     Reobserve one durable source event in a supervisor project.
+     Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a
+    supervisor project.
 
     Args:
         body (WaitSourceRedispatchArgs):

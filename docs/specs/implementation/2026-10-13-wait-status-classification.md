@@ -16,6 +16,14 @@ supply instead; it must not also count as queued demand. Held continuations and
 other suspended states add no demand. Status and scaler share this observation;
 continuation admission still owns the launch and ordinary claims remain READY-only.
 
+A granted or consumed continuation reservation also retains the assigned agent
+while its task is `RESUME_PENDING`, including workspace preparation before the
+fresh session row exists and a held resume attempt. Agent reconciliation, restart
+recovery and dangling-agent diagnostics preserve this binding regardless of the
+ordinary launch heartbeat grace. Only active resume states (`reserved`,
+`launching`, `delivered`, `held`) with a retained grant qualify; a suspended task
+alone does not protect an agent. Continuation lifecycle commands own release.
+
 Existing terminal-complement readers already include suspended work. A list that
 controls routing, removal, repair or restart permission is an admission filter,
 even if the approved baseline calls its module an open-work view: adding suspended

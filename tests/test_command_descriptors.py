@@ -1835,7 +1835,7 @@ def _before_wait_source_redispatch_catalogue():
 def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     evidence = _wait_source_redispatch_changes()
     assert evidence["command"] == "wait_source_redispatch"
-    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+    assert _wait_source_recovery_changes()["previous_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
     catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
@@ -1937,7 +1937,7 @@ def _batch_authority_changes():
 def _before_batch_authority_catalogue(catalogue=None):
     evidence = _batch_authority_changes()
     if catalogue is None:
-        catalogue = _before_publication_hold_catalogue()
+        catalogue = _before_wait_source_recovery_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -1949,13 +1949,61 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_unread_inbox_catalogue(_before_publication_hold_catalogue())
+    catalogue = _before_unread_inbox_catalogue(_before_wait_source_recovery_catalogue())
     rendered = json.dumps(catalogue, indent=2) + "\n"
     previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
+
+
+def _wait_source_recovery_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/wait-source-recovery-contract-changes.json").read_text()
+    )
+
+
+def _before_wait_source_recovery_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = _before_publication_hold_catalogue(
+            _before_retained_holder_repair_catalogue(
+                _before_claim_abort_catalogue(
+                    _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                )
+            )
+        )
+    evidence = _wait_source_recovery_changes()
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
+    assert definition == evidence["definition"]
+    definition.clear()
+    definition.update(evidence["previous_definition"])
+    return catalogue
+
+
+def test_wait_source_recovery_only_extends_existing_scoped_command():
+    evidence = _wait_source_recovery_changes()
+    assert evidence["command"] == "wait_source_redispatch"
+    contract = CONTRACTS.require(evidence["command"]).contract
+    assert contract.fingerprint() == evidence["fingerprint"] != evidence["previous_fingerprint"]
+    assert canonical_execution_document(contract.execution) == evidence["execution"]
+    schema = evidence["definition"]["input_schema"]
+    assert schema["properties"]["action"]["enum"] == ["redispatch", "blockers", "retire"]
+    assert schema["properties"]["action"]["default"] == "redispatch"
+    assert schema["required"] == ["project_id"]
+    assert set(schema["properties"]) - set(evidence["previous_definition"]["input_schema"][
+        "properties"]) == {"action", "limit"}
+    catalogue = _before_unread_inbox_catalogue(
+        _before_batch_authority_catalogue(_before_publication_hold_catalogue(
+            _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
+                _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+            ))
+        ))
+    )
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"])
+    previous = json.dumps(_before_wait_source_recovery_catalogue(catalogue), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
 
 
 def _claim_abort_changes():
@@ -1967,7 +2015,7 @@ def _claim_abort_changes():
 def _before_claim_abort_catalogue(catalogue=None):
     evidence = _claim_abort_changes()
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_store_maintenance_catalogue()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
     catalogue["explicit"].remove(definition)
@@ -1982,7 +2030,7 @@ def test_claim_abort_catalogue_only_adds_fenced_supervisor_control():
         evidence["contract_fingerprint"]
     )
     catalogue = _before_retained_holder_repair_catalogue(
-        _before_publication_hold_catalogue(json.loads(render_command_catalogue()))
+        _before_publication_hold_catalogue(_before_store_maintenance_catalogue())
     )
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
@@ -2019,6 +2067,34 @@ def test_retained_holder_repair_only_adds_evidence_fenced_recovery_command():
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
     previous = json.dumps(_before_retained_holder_repair_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+def _store_maintenance_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/store-maintenance-contract-changes.json").read_text()
+    )
+
+
+def _before_store_maintenance_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    evidence = _store_maintenance_changes()
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_store_maintenance_catalogue_only_adds_scoped_control():
+    evidence = _store_maintenance_changes()
+    assert evidence["command"] == "integration_store_maintenance"
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
+    previous = json.dumps(_before_store_maintenance_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
 
 
 def _publication_hold_changes():

@@ -19,7 +19,7 @@ from src.waits.conditions import Scope, SleepDecision, WaitError
 from src.waits.dispatcher import WakeDispatcher
 from src.waits.holding import active_wait_for
 from src.waits.graph import recompute_from
-from src.waits.listener import ListenerUnavailable
+from src.waits.listener import WaitSourceListener
 from src.waits.mail import acknowledge_in_place
 from src.waits.source_locking import lock_database_source
 from tests.test_wait_dispatch import runtime
@@ -128,14 +128,15 @@ async def test_missing_priority_owner_rolls_back_outcome_and_leased_cursor(env):
     disp = dispatcher(env, recompute_priority=None)
     service = runtime(env, dispatcher=disp)
     await env.db.transition_task("source", TaskStatus.COMPLETED)
-    with pytest.raises(ListenerUnavailable, match="priority"):
-        await service.tick()
+    assert await service.tick()
     assert (await records(env))[0]["outcome"] == "pending"
     assert not await records(env, wait_measurements)
     assert not await records(env, messages)
     assert all(row["active"] for row in await records(env, wait_edges))
     assert all(row["dispatched_at"] is None for row in await records(env, wait_source_events))
+    assert all(row["dispatch_failures"] == 1 for row in await records(env, wait_source_events))
     disp.recompute_priority = recompute_from
+    service.listener.clock = lambda: NOW + 31
     assert await service.tick()
     assert (await records(env))[0]["outcome"] == "satisfied"
 
@@ -192,8 +193,7 @@ async def test_real_graph_retraction_rolls_back_then_commits_with_outcome(env):
     disp = dispatcher(env, recompute_priority=fail_after_recompute)
     service = runtime(env, dispatcher=disp)
     await env.db.transition_task("source", TaskStatus.COMPLETED)
-    with pytest.raises(RuntimeError, match="after retraction"):
-        await service.tick()
+    assert await service.tick()
     for task_id in ("source", "tail"):
         assert (await priorities())[task_id] == 10
     assert not await records(env, messages)
@@ -201,6 +201,7 @@ async def test_real_graph_retraction_rolls_back_then_commits_with_outcome(env):
     assert all(row["cleared_at"] is None for row in await records(env))
     assert all(row["active"] for row in await records(env, wait_edges))
     disp.recompute_priority = recompute_from
+    service.listener.clock = lambda: NOW + 31
     assert await service.tick()
     assert (await priorities())["source"] == 100
     # The completed source also retires its own scheduler wait, retracting the
@@ -235,8 +236,7 @@ async def test_unavailable_escalation_resolution_rolls_back_entire_outcome(env, 
     resolver = AsyncMock(return_value={"success": False}) if callback else None
     service = runtime(env, dispatcher=dispatcher(env, resolve_escalation=resolver))
     await env.db.transition_task("source", TaskStatus.COMPLETED)
-    with pytest.raises(ListenerUnavailable, match="escalation resolution"):
-        await service.tick()
+    assert await service.tick()
     assert (await records(env))[0]["outcome"] == "pending"
     assert all(row["active"] for row in await records(env, wait_edges))
     assert all(row["cancelled_at"] is None for row in await records(env, wait_deadlines))
@@ -374,6 +374,95 @@ async def test_parked_continuation_queues_once_without_message(env, proven_stop)
     assert len(await records(env, wait_measurements)) == 1
     assert await service.tick()
     assert (await records(env, continuations))[0]["version"] == 2
+
+
+@pytest.mark.parametrize("kind", ["task", "message"])
+@pytest.mark.parametrize("parked", [False, True])
+async def test_held_hibernate_wait_retains_source_without_blocking_other_waits(env, kind, parked):
+    condition = {"kind": "task", "task_id": "source"}
+    if kind == "message":
+        question = await env.db.create_message(
+            project_id="p", from_kind="session", from_id="s", to_kind="session",
+            to_id="supervisor-p", thread_id="held-thread", body="Question",
+        )
+        condition = {"kind": "message", "thread_id": "held-thread",
+                     "after_seq": question.created_seq}
+    receipt = await register(env, condition,
+                             decide_sleep=lambda *_: SleepDecision("hibernate", "test"))
+    other = await register(env, scope=Scope("p", "scheduler", "other", principal="service"),
+                           idempotency_key="other")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            status="HIBERNATED" if parked else "WAITING",
+            claim_epoch=2 if parked else 1, assigned_agent_id=None if parked else "a",
+        ))
+        if parked:
+            await conn.execute(update(sessions).where(sessions.c.id == "s").values(
+                state="stopped", desired_state="stopped", end_reason="hibernated",
+            ))
+        await conn.execute(insert(continuations).values(
+            id="held", task_id="owner", wait_id=receipt["wait_id"], suspension_generation=1,
+            facts={"hold_escalation_id": "existing-hold"}, branch="aq/owner",
+            prior_status="WAITING", held_cursor_seq=0, resume_state="held",
+            hold_reason="push_failed", stopped_at=NOW + 1 if parked else None,
+        ))
+    held = (await records(env, continuations))[0]
+    owner_before = await env.db.get_task("owner")
+    if kind == "message":
+        await env.db.create_message(
+            project_id="p", from_kind="session", from_id="supervisor-p", to_kind="session",
+            to_id="s", thread_id="held-thread", body="Answer",
+        )
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0], dispatcher=dispatcher(env))
+    assert await service.listener.tick()
+    waits = {row["id"]: row for row in await records(env)}
+    assert waits[receipt["wait_id"]]["outcome"] == "pending"
+    assert waits[other["wait_id"]]["outcome"] == "satisfied"
+    assert (await records(env, continuations))[0] == held
+    assert await env.db.get_task("owner") == owner_before
+    retained = [row for row in await records(env, wait_source_events)
+                if row["source_key"] == waits[receipt["wait_id"]]["source_key"]
+                and row["dispatched_at"] is None]
+    assert retained and all(row["dispatch_retry_at"] == NOW + 30 for row in retained)
+    assert not [row for row in await records(env, messages) if row["body_kind"] == "wait_outcome"]
+    # Leadership turnover must not erase backoff or mutate the held continuation.
+    await service.listener.lease(release=True)
+    service.listener = WaitSourceListener(service, clock=lambda: now[0])
+    assert await service.listener.tick()
+    assert (await records(env, continuations))[0] == held
+    # Emulate the separate recovery owner's proved park. Reuse the retained
+    # source, without publishing a replacement event or weakening its fences.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            status="HIBERNATED", claim_epoch=2, assigned_agent_id=None,
+        ))
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(
+            state="stopped", desired_state="stopped", end_reason="hibernated",
+        ))
+        await conn.execute(update(continuations).where(continuations.c.id == "held").values(
+            resume_state="sleeping", hold_reason=None, stopped_at=NOW + 1,
+        ))
+    now[0] += 31
+    assert await service.listener.tick()
+    assert next(row for row in await records(env) if row["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert (await records(env, continuations))[0]["resume_state"] == "queued"
+
+
+async def test_hibernate_intent_persistence_race_retains_only_affected_wait(env):
+    receipt = await register(env, decide_sleep=lambda *_: SleepDecision("hibernate", "test"))
+    other = await register(env, scope=Scope("p", "scheduler", "other", principal="service"),
+                           idempotency_key="other")
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    service = runtime(env, dispatcher=dispatcher(env))
+    assert await service.listener.tick()
+    waits = {row["id"]: row for row in await records(env)}
+    assert waits[receipt["wait_id"]]["outcome"] == "pending"
+    assert waits[other["wait_id"]]["outcome"] == "satisfied"
+    source = (await records(env, wait_source_events))[0]
+    assert source["dispatched_at"] is None and source["dispatch_retry_at"] == NOW + 30
 
 
 async def test_scheduler_hibernate_wait_does_not_require_an_agent_continuation(env):

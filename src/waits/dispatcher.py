@@ -1,7 +1,7 @@
 """Commit verified outcomes and durable delivery intents in the listener transaction.
 
 No terminal I/O, detached transaction or task launch happens here. Missing graph,
-transition or escalation owners refuse the batch, preserving its leased cursor.
+transition or escalation owners refuse the batch, retaining its source for retry.
 Source outcomes and supervisor wakes share the same terminal transaction.
 """
 
@@ -136,12 +136,27 @@ class WakeDispatcher:
         source = adapter.source_key(cond)
         if (source.identity, source.generation) != (row["source_key"], row["source_generation"]):
             return {"success": True, "committed": False}
+        if task and row["sleep_decision"] == "hibernate":
+            held = (await conn.execute(select(continuations).where(
+                continuations.c.wait_id == row["id"],
+                continuations.c.task_id == task["id"],
+                continuations.c.resume_state == "held",
+            ).with_for_update())).mappings().first()
+            if held:
+                # The hibernation owner already escalated this hold. Preserve
+                # its pending source and let other subscribers dispatch without
+                # authorizing an outcome, delivery or checkout release here.
+                return {"success": True, "committed": False, "outcome": "owner_held",
+                        "continuation_id": held["id"], "hold_reason": held["hold_reason"],
+                        "escalation_id": held["facts"].get("hold_escalation_id"),
+                        "retry_after": 30}
         try:
             scope, continuation = await fence_owner(conn, row, task, parked_required=True)
         except WaitError as exc:
             if exc.code == "wait.unavailable":
-                # Retain the cursor until the hibernation transition has parked.
-                raise ListenerUnavailable(str(exc)) from exc
+                # Intent persistence may race dispatch. Retain this source for
+                # retry without blocking other subscribers or the forward head.
+                return {"success": True, "committed": False, "retry_after": 30}
             return {"success": True, "committed": False}
         if row["verification_state"] != "verified":
             return {"success": True, "committed": False}
@@ -174,10 +189,19 @@ class WakeDispatcher:
                         "retry_after": max(1, exc.details.get("retry_after", 30))}
         if observed.state == "unsatisfied":
             return {"success": True, "committed": False}
+        return await self.settle(
+            conn, row, observed, event=event, task=task, continuation=continuation,
+            changed_keys=changed_keys,
+        )
+
+    async def settle(self, conn, row, observed, *, event, task, continuation, changed_keys):
+        """Finish a fenced wait from a fresh satisfied or unavailable observation."""
+        cond = Condition.from_record(row["condition"])
+        adapter = self.registry.adapter(cond.kind)
         outcome = "satisfied" if observed.state == "satisfied" else "source_unavailable"
         result_ref = adapter.project_result(cond, SourceEvent(
-            source, observed.revision, observed.result_ref or f"wait:{row['id']}:unavailable",
-            dict(observed.facts),
+            adapter.source_key(cond), observed.revision,
+            observed.result_ref or f"wait:{row['id']}:unavailable", dict(observed.facts),
         ))
         return await self.finish(
             conn, row, outcome=outcome, result_ref=result_ref, event=event,
