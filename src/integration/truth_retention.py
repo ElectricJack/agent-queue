@@ -19,6 +19,13 @@ from src.integration.provenance import GitProvenance
 PREFIX = "refs/aq/provenance/delivery/"
 
 
+def delivery_identity_key(request, source_oid):
+    """Stable identity of a retained completion, independent of mutable task edits."""
+    identity = [request.project_id, request.repository_id, request.task_id, request.completion_id,
+                request.legacy_generation, request.target_ref, source_oid]
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
 async def retain_objects(snapshot, oids):
     """Keep orphaned history without asserting that it was ever delivered."""
     provenance = GitProvenance(
