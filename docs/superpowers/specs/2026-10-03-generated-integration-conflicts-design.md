@@ -22,9 +22,28 @@ with the existing timeout and database refusal environment, and may change
 only paths marked generated. Failure retains the caller's conflict evidence
 and existing repair route. Scratch worktrees are removed on every outcome.
 
+The scratch subprocess environment is an allowlist with worker database
+refusal sentinels. Its tool lookup order is the daemon interpreter's directory,
+the daemon user's standard `~/.local/bin` installation directory, then
+`/usr/local/bin`, `/usr/bin` and `/bin` (duplicates removed). This supports a
+system-Python daemon with user-installed `openapi-python-client` and `ruff`
+without inheriting ambient PATH, database URLs or credentials. The canonical
+scripts retain their exact generator version and required-tool checks: a
+missing tool or wrong version fails regeneration, and no installation or
+editable-install mutation is performed.
+
 Regeneration constructs a tree; it grants no publication authority. Existing
 source review, branch fences, exact remote leases, ancestry, receipts and CI
 checks still apply to the resulting commit. Both merge parents are retained.
+
+The legacy bookkeeping guard measures new aggregate evidence against the
+source sides' shared history, even when the requested source merge uses an
+older explicit base. A single proven merge base supplies that evidence
+baseline; ambiguous merge bases retain the requested baseline. Deltas already
+represented in the other side's current shards also introduce no unported
+evidence. This changes only evidence validation, never the requested Git merge
+base. Refreshes carrying an older dev tree or an earlier dev merge must pass;
+pre-migration branches with unique aggregate deltas still refuse.
 
 Claim-time prerequisite stacks use this same mechanism. Generated-only overlaps
 are rebuilt from all merged sources. The stack snapshot records prerequisite
@@ -66,6 +85,12 @@ The repair checkout fetches those retained objects and starts at its reserved
 origin without automatically merging its conflicting parent. Admission proves
 the repair's exact passing published tip descends from every frozen input,
 then merges any newly proven parent/prerequisite before activating the child.
+
+When the local child ref is an ancestor of its published head, construct the
+overlay from the published head and let the fenced checkout preparation
+fast-forward the local branch. Retain a local descendant's unpublished commits;
+refuse when neither head descends from the other. Stack observation itself does
+not move the local branch or alter the immutable filing origin.
 
 The lower Git preparation boundary aborts an unsuccessful merge and emits a
 named conflict only after verifying the original HEAD and a clean index. Both
