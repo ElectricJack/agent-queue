@@ -66,6 +66,13 @@ aq --json knowledge create --project-id agent-queue \
   --idempotency-key 'reference-owner-repo-2026-10-07'
 ```
 
+Worker mutations must also carry `--claim-epoch N`, using the current
+`claim_epoch` from the held workspace's `.aq/claim.json`. This applies to the
+create/update templates here and to other worker writes. The CLI currently
+fills it automatically only for `knowledge propose`; a missing or stale epoch
+returns `record.stale_claim`. Local-operator templates omit this worker field.
+Do not invent an epoch or write without a held task.
+
 URL sources require `source_id`, `kind: url`, `url`, a timezone-bearing
 `observed_at` (use UTC), and an explicit `retained` boolean. `retained: false`
 records a consulted URL without claiming an archived artifact; `true` requires
