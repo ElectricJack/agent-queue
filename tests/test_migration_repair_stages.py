@@ -24,6 +24,10 @@ def _assert_schema(connection) -> None:
         "retained_handoff",
     } <= columns.keys()
     assert columns["intelligence_class"]["nullable"]
+    assert columns["deadline_at"]["nullable"]
+    reservations = {column["name"]: column for column in
+                    schema.get_columns("integration_candidate_resolutions")}
+    assert reservations["stage_deadline_at"]["nullable"]
     unique_names = {
         constraint["name"]
         for constraint in schema.get_unique_constraints("integration_repair_stages")
@@ -34,6 +38,22 @@ def _assert_schema(connection) -> None:
         for constraint in schema.get_unique_constraints("integration_repair_operations")
     }
     assert "uq_integration_repair_operations_batch_episode" in operation_unique
+    ordinal = next(item for item in schema.get_check_constraints("integration_repair_stages")
+                   if item["name"] == "ck_integration_repair_stages_ordinal")
+    assert ordinal["sqltext"].replace(" ", "").strip("()") == "ordinal>=0"
+    # Columns that copy the active stage accept every retained stage too.
+    for table, name, column in (
+        ("integration_candidate_resolutions", "ck_integration_candidate_resolutions_stage",
+         "stage_ordinal"),
+        ("integration_candidate_ref_mutations", "ck_integration_candidate_ref_mutations_stage",
+         "operation_stage"),
+    ):
+        check = next(item for item in schema.get_check_constraints(table) if item["name"] == name)
+        assert check["sqltext"].replace(" ", "").strip("()") == f"{column}>=0"
+    source = {column["name"]: column for column in schema.get_columns("integration_source_ci")}
+    assert {"source_head", "source_base", "generation", "policy_generation", "repair_history"} <= source.keys()
+    assert str(source["evidence"]["type"]) == "JSONB"
+    assert str(source["repair_history"]["type"]) == "JSONB"
 
 
 async def test_baseline_repair_stages_schema():

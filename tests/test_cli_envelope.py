@@ -106,6 +106,7 @@ class TestEnvelopeShape:
 class TestBriefProjections:
     def test_all_registered_entities_present(self):
         assert set(BRIEF_PROJECTIONS.keys()) == {
+            "ask",
             "task",
             "session",
             "gate",
@@ -115,6 +116,7 @@ class TestBriefProjections:
             "agent",
             "project",
             "pool",
+            "provider",
             "integration",
         }
 
@@ -455,10 +457,15 @@ class TestCrossFamilySuccessContract:
             (["restart"], "aq restart"),
         ],
     )
-    def test_local_operator_workflows_reject_json_before_side_effects(self, runner, args, command):
+    def test_local_operator_workflows_reject_json_before_side_effects(
+        self, runner, monkeypatch, args, command
+    ):
         """Human-only local operations still honor the one-document rule."""
         from src.cli.app import cli
 
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         result = runner.invoke(cli, ["--json", *args])
 
         assert result.exit_code == 2
@@ -1010,15 +1017,43 @@ class TestJsonErrorEnvelope:
         assert result.exit_code == 3
         assert json.loads(result.stdout)["error"]["code"] == "daemon_unreachable"
 
-    def test_human_mode_daemon_prompt_is_preserved(self, runner):
+    def test_human_mode_daemon_prompt_is_preserved(self, runner, monkeypatch):
         from src.cli.app import cli
         from src.cli.exceptions import DaemonNotRunningError
 
+        # The prompt is the operator-shell branch. A worker session exports both
+        # of these, and with either one set the CLI refuses to offer a start —
+        # so without the scrub this test fails whenever an agent runs it.
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         mock = _mock_client({"list_tasks": DaemonNotRunningError("http://127.0.0.1:8081")})
         with patch("src.cli.tasks._get_client", return_value=mock):
             result = runner.invoke(cli, ["task", "list"], input="n\n")
         assert result.exit_code == 3
         assert "Start the daemon?" in result.output
+
+    @pytest.mark.parametrize(
+        "worker_env",
+        [{"AQ_SESSION_ID": "pool-test"}, {"AQ_DB_SCOPE": "worker"}],
+        ids=["session_id", "worker_db_scope"],
+    )
+    def test_human_mode_never_offers_a_worker_the_daemon_start(
+        self, runner, monkeypatch, worker_env
+    ):
+        """Either marker alone is enough: a worker must never be handed the
+        `Start the daemon?` prompt, which would block on stdin and then start a
+        second daemon from inside a slot."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
+        mock = _mock_client({"list_tasks": DaemonNotRunningError("http://127.0.0.1:8081")})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "list"], input="", env=worker_env)
+        assert result.exit_code == 3
+        assert "Start the daemon?" not in result.output
+        assert "do not exit the pool loop" in result.output
 
 
 class TestErrorDetailsPlumbing:
@@ -1103,6 +1138,39 @@ class TestErrorDetailsPlumbing:
         finally:
             await client._http.aclose()
 
+    async def test_explain_timeout_and_subsequent_task_read_keep_independent_outcomes(self):
+        import httpx
+
+        from src.cli.client import CLIClient
+        from src.cli.exceptions import CommandResponseError
+
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            command = json.loads(request.content)["command"]
+            calls.append(command)
+            if command == "explain_task":
+                assert request.extensions["timeout"]["read"] == 120.0
+                raise httpx.ReadTimeout("explanation unavailable", request=request)
+            return httpx.Response(200, json={"ok": True, "result": {"id": "own-task"}})
+
+        client = CLIClient(base_url="http://x")
+        client._http = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(CommandResponseError) as exc:
+                await client._execute_generic("explain_task", {"task_id": "own-task"})
+            assert exc.value.details == {
+                "outcome": "unknown", "automatic_retry": False,
+                "failure_kind": "ReadTimeout", "read_timeout_seconds": 120.0,
+            }
+            assert await client._execute_generic("get_task", {"task_id": "own-task"}) == {
+                "id": "own-task",
+            }
+            assert calls == ["explain_task", "get_task"]
+            assert exc.value.details["outcome"] == "unknown"
+        finally:
+            await client._http.aclose()
+
     async def test_client_maps_403_to_scope_denied(self):
         import httpx
 
@@ -1125,3 +1193,150 @@ class TestErrorDetailsPlumbing:
             assert "not available" in exc.value.detail_message
         finally:
             await client._http.aclose()
+
+
+class TestSavedOutput:
+    def test_receipt_keeps_exact_unprojected_evidence_and_pagination(self, tmp_path, monkeypatch):
+        import hashlib
+        import stat
+
+        import click
+
+        monkeypatch.setenv("AQ_JSON_LEGACY", "1")
+        destination = tmp_path / "result.json"
+        rows = [{"id": f"t{i}", "log": "😀" * 500} for i in range(100)]
+        ctx = click.Context(click.Command("show"), obj={
+            "json": True, "brief": True, "save_output": destination,
+        })
+        with CliRunner().isolation() as streams:
+            emit(ctx, rows, entity="task", total=143)
+            output = streams[0].getvalue()
+        receipt = json.loads(output)["data"]["saved_output"]
+        raw = destination.read_bytes()
+        saved = json.loads(raw)
+        assert saved == envelope(rows, total=143)
+        assert receipt["path"] == str(destination)
+        assert receipt["bytes"] == len(raw)
+        assert receipt["sha256"] == hashlib.sha256(raw).hexdigest()
+        assert receipt["shape"] == {"type": "array", "count": 100}
+        assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+        assert len(output) < len(raw) / 100
+
+    @pytest.mark.parametrize("payload", [
+        {"success": False, "details": {"exact": "failure line 42"}},
+        {"items": [{"errors": ["exact failure"]}]},
+        {"warnings": ["check unavailable"]},
+        {"gate": {"status": "pending", "identity": "human-1"}},
+        {"next_claim": {"result": "drain_requested"}},
+        {"body": "Read authoritative security rules"},
+        {"status": "AWAITING_APPROVAL", "identity": "worker-1"},
+        {"constraints": ["Do not release claim"]},
+        {"exit_code": 1, "output": "Exact failing test output"},
+        {"description": "Required task instructions"},
+    ])
+    def test_actionable_results_remain_full_even_with_brief(self, tmp_path, payload):
+        import click
+
+        destination = tmp_path / "result.json"
+        ctx = click.Context(click.Command("show"), obj={
+            "json": True, "brief": True, "save_output": destination,
+        })
+        with CliRunner().isolation() as streams:
+            emit(ctx, payload, entity="task")
+            output = json.loads(streams[0].getvalue())
+        assert output["data"] == payload
+        assert json.loads(destination.read_bytes())["data"] == payload
+        assert output["evidence"]["path"] == str(destination)
+
+    def test_human_failure_keeps_full_details_even_if_formatter_would_drop_them(self, tmp_path):
+        import click
+
+        payload = {"success": False, "details": "exact failure"}
+        rendered = []
+        ctx = click.Context(click.Command("show"), obj={
+            "brief": True, "save_output": tmp_path / "result.json",
+        })
+        with CliRunner().isolation() as streams:
+            emit(ctx, payload, entity="task", render=rendered.append)
+            output = streams[0].getvalue().decode()
+        assert rendered == []
+        assert '"details": "exact failure"' in output
+
+    @pytest.mark.parametrize("symlink", [False, True])
+    def test_never_overwrites_existing_evidence_or_follows_leaf_symlink(self, tmp_path, symlink):
+        import click
+
+        destination = tmp_path / "result.json"
+        target = tmp_path / "missing-target"
+        if symlink:
+            destination.symlink_to(target)
+        else:
+            destination.write_text("original evidence")
+        ctx = click.Context(click.Command("show"), obj={"save_output": destination})
+        with CliRunner().isolation() as streams:
+            with pytest.raises(SystemExit) as error:
+                emit(ctx, {"success": True, "created": "held-task"})
+            output = json.loads(streams[0].getvalue())
+        assert error.value.code == 1
+        assert output["data"] == {"success": True, "created": "held-task"}
+        assert "Cannot save output" in output["output_save_error"]
+        assert output["automatic_retry"] is False
+        if symlink:
+            assert not target.exists()
+            assert destination.is_symlink()
+        else:
+            assert destination.read_text() == "original evidence"
+
+    @pytest.mark.parametrize("as_json", [False, True])
+    def test_command_failure_keeps_details_and_saves_original_error(self, tmp_path, as_json):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        destination = tmp_path / "error.json"
+        client = _mock_client({"task_show": CommandError("task_show", "exact command error")})
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "show", "task-1", "--save-output", str(destination),
+            ] + (["--json"] if as_json else []))
+        assert result.exit_code == 1, result.output
+        error = json.loads(result.output)
+        assert error["error"]["message"] == "exact command error"
+        saved = json.loads(destination.read_bytes())
+        assert saved == {key: value for key, value in error.items() if key != "evidence"}
+
+    def test_save_error_preserves_original_error_and_json_contract(self, tmp_path):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        destination = tmp_path / "already.json"
+        destination.write_text("original evidence")
+        client = _mock_client({"task_show": CommandError("task_show", "original command failure")})
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "--json", "--save-output", str(destination), "task", "show", "task-1",
+            ])
+        assert result.exit_code == 1, result.output
+        error = json.loads(result.output)["error"]
+        assert error["message"] == "original command failure"
+        assert "Cannot save output" in error["output_save_error"]
+        assert destination.read_text() == "original evidence"
+
+
+def test_ask_brief_keeps_canonical_snapshot_inside_versioned_envelope():
+    payload = {"items": [{"id": "ask-1"}], "count": 101, "snapshot_at": 123,
+               "next_cursor": "page-two", "source_health": "refreshing"}
+    result = envelope(apply_brief(payload, "ask"))
+    assert result["schema_version"] == 1
+    for key, value in payload.items():
+        assert result["data"][key] == value
+
+
+def test_autogenerated_ask_group_has_the_human_commands():
+    from click.testing import CliRunner
+    from src.cli.app import cli
+    result = CliRunner().invoke(cli, ["ask", "--help"])
+    assert result.exit_code == 0, result.output
+    for name in ("list", "show", "reply", "prepare", "decide", "history"):
+        assert name in result.output
+    help_result = CliRunner().invoke(cli, ["ask", "prepare", "--help"])
+    assert help_result.exit_code == 0 and "--expected" in help_result.output

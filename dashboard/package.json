@@ -1,7 +1,7 @@
 {
   "name": "dashboard",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "predev": "npm -w @aq/ts-client run generate",
@@ -13,7 +13,10 @@
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:layout": "node layout-checks/run.mjs",
+    "check:terminal-parity": "node layout-checks/playwright-terminal-parity.mjs",
+    "check:layout:selftest": "node layout-checks/selftest.mjs"
   },
   "dependencies": {
     "@aq/ts-client": "*",
@@ -27,7 +30,6 @@
     "@xyflow/react": "^12.11.3",
     "cmdk": "^1.1.1",
     "github-slugger": "^2.0.0",
-    "gray-matter": "^4.0.3",
     "mdast-util-to-string": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -40,6 +42,7 @@
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
     "uplot": "^1.6.32",
+    "yaml": "^2.9.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -61,7 +64,9 @@
     "globals": "^15.14.0",
     "jest-axe": "^11.0.0",
     "jsdom": "^30.0.1",
+    "playwright-core": "1.64.0",
     "postcss": "^8.4.49",
+    "puppeteer-core": "24.43.1",
     "tailwindcss": "^4.0.0",
     "typescript": "~5.7.0",
     "typescript-eslint": "^8.18.0",
