@@ -238,6 +238,25 @@ async def test_arun_git_result_preserves_status_stdin_and_scoped_environment(clo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("nice", [None, "/usr/bin/nice"])
+async def test_low_priority_git_uses_owned_process_with_available_nice(clone, mgr, nice):
+    from unittest import mock
+
+    from src.git.manager import run_owned_process
+
+    with (
+        mock.patch("src.git.manager.shutil.which", return_value=nice),
+        mock.patch("src.git.manager.run_owned_process", wraps=run_owned_process) as run,
+    ):
+        result = await mgr.arun_git_result(["rev-parse", "HEAD"], cwd=clone,
+                                          low_priority=True, timeout=25)
+    assert result.returncode == 0
+    prefix = ("nice", "-n", "10") if nice else ()
+    assert run.call_args.args == (*prefix, "git", "rev-parse", "HEAD")
+    assert 0 < run.call_args.kwargs['timeout'] <= 25
+
+
+@pytest.mark.asyncio
 async def test_remote_ref_result_distinguishes_absent_from_io_failure(clone, mgr, monkeypatch):
     absent = await mgr.als_remote_ref(clone, "missing")
     assert absent.state is RemoteRefState.ABSENT
