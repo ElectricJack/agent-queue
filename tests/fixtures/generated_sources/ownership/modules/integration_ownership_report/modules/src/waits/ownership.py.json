@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/ownership.py::fence_owner": {
+      "fingerprint": "229c150376f23c48525301185920db9ccaae966d8445cf34984cd2da0b102020",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}
