@@ -1852,6 +1852,7 @@ class WorktreeSlotManager:
             if session.work_dir
         }
         mine = _norm_path(slot_dir)
+        origin_refreshed = False
         for entry in entries:
             path = entry.get("path")
             if not path or entry.get("branch") != branch or _norm_path(path) == mine:
@@ -1872,11 +1873,19 @@ class WorktreeSlotManager:
                     raise GitError(f"branch {branch} is already used by worktree at {path}")
             if not Path(path).exists():
                 raise GitError(f"branch {branch} retains a missing managed worktree at {path}")
+            if not origin_refreshed:
+                await self.git.afetch_origin(
+                    base_ws.workspace_path,
+                    repository_url=await self._repository_url(holder.project_id),
+                    lock_held=True, all_heads=True,
+                )
+                origin_refreshed = True
             async with self._idle_branch_holder(
-                holder, allow_pool_reservation=True,
+                holder, allow_disabled=True, allow_pool_reservation=True,
             ) as reservation:
                 logger.warning("Detaching idle worktree %s from %s before preparation", path, branch)
-                await self._recover_abandoned_merge(holder, incoming_task_id=incoming_task_id)
+                if not reservation:
+                    await self._recover_abandoned_merge(holder, incoming_task_id=incoming_task_id)
                 await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
                 if reservation:
                     # The shared branch can advance in its new slot before
@@ -1887,12 +1896,11 @@ class WorktreeSlotManager:
 
     @guard_workspace("slot_ws")
     async def detach_idle_slot_branch(self, slot_ws: Workspace) -> bool:
-        """Free a stopped pool's clean branch without moving or discarding its tip.
+        """Free a taskless pool's clean, origin-published task branch.
 
-        Teardown calls this after releasing ownership and recording process
-        exit. Recheck acquisition fences under the repository mutex: a new
-        holder wins over this best-effort cleanup. Local branch refs retain
-        unpublished commits, and the sentinel retains their attribution.
+        Draining workers and confirmed teardown use the same acquisition
+        fences. A new holder wins over this best-effort cleanup; dirty or
+        unpublished work keeps its checkout and sentinel for recovery.
         """
         if not slot_ws.is_slot:
             return False
@@ -1900,14 +1908,34 @@ class WorktreeSlotManager:
         if base is None:
             return False
         async with self._git_mutex(base.workspace_path):
-            async with self._idle_branch_holder(slot_ws, allow_disabled=True):
+            if await self.git.aget_current_branch(slot_ws.workspace_path) == "HEAD":
+                return False
+            await self.git.afetch_origin(
+                base.workspace_path, repository_url=await self._repository_url(slot_ws.project_id),
+                lock_held=True, all_heads=True,
+            )
+            async with self._idle_branch_holder(
+                slot_ws, allow_disabled=True, allow_pool_reservation=True,
+            ) as reservation:
                 path = slot_ws.workspace_path
-                if await self.git.ahas_uncommitted_changes(path, strict=True) is not False:
-                    return False
-                if await self.git.aget_current_branch(path) == "HEAD":
+                if not await self._slot_branch_matches_origin(path):
                     return False
                 await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+                if reservation:
+                    sentinel = self.read_sentinel(path)
+                    self.write_sentinel(path, replace(sentinel, branch=None))
         return True
+
+    async def _slot_branch_matches_origin(self, path: str) -> bool:
+        """The caller holds the repo mutex and refreshed origin before this proof."""
+        branch = await self.git.aget_current_branch(path)
+        if (not branch.startswith(BRANCH_PREFIX)
+                or await self.git.ahas_uncommitted_changes(path, strict=True) is not False):
+            return False
+        head = await self.git.arev_parse(path, "HEAD")
+        return bool(head) and head == await self.git.arev_parse(
+            path, f"refs/remotes/origin/{branch}",
+        )
 
     @contextlib.asynccontextmanager
     async def _idle_branch_holder(
@@ -1922,25 +1950,40 @@ class WorktreeSlotManager:
 
         async with self.db._engine.begin() as conn:
             reservation = None
-            if allow_pool_reservation and holder.locked_by_agent_id:
+            if allow_pool_reservation:
                 # Claim selection locks its session before binding a task.
                 # NOWAIT avoids a cycle with a claimant queued for our repo mutex.
                 live = (await conn.execute(select(sessions).where(
                     or_(sessions.c.work_dir == holder.workspace_path,
-                        sessions.c.agent_id == holder.locked_by_agent_id),
-                    sessions.c.state.in_(("starting", "running", "draining")),
+                        sessions.c.agent_id == holder.locked_by_agent_id
+                        if holder.locked_by_agent_id else False),
+                    sessions.c.state.in_(("starting", "running", "draining", "sleeping")),
                 ).with_for_update(nowait=True))).mappings().all()
+                if not live:
+                    live = (await conn.execute(select(sessions).where(
+                        sessions.c.work_dir == holder.workspace_path,
+                        sessions.c.lifecycle == "pool",
+                        sessions.c.agent_id == holder.locked_by_agent_id
+                        if holder.locked_by_agent_id else True,
+                        sessions.c.state == "stopped", sessions.c.desired_state == "stopped",
+                        sessions.c.task_id.is_(None),
+                    ).order_by(sessions.c.started_at.desc()).limit(1).with_for_update(
+                        nowait=True,
+                    ))).mappings().all()
                 if len(live) == 1:
                     candidate = live[0]
                     if (candidate["lifecycle"] == "pool"
                             and candidate["project_id"] == holder.project_id
                             and candidate["work_dir"] == holder.workspace_path
-                            and candidate["agent_id"] == holder.locked_by_agent_id
+                            and (not holder.locked_by_agent_id
+                                 or candidate["agent_id"] == holder.locked_by_agent_id)
+                            and candidate["state"] != "sleeping"
                             and candidate["task_id"] is None
                             and candidate["claim_phase"] in (None, "claiming")
-                            and candidate["failed_preparation"] is None):
+                            and (candidate["failed_preparation"] is None
+                                 or candidate["claim_phase"] is None)):
                         reservation = candidate
-                if reservation is None:
+                if reservation is None and (holder.locked_by_agent_id or live):
                     raise GitError("branch holder is not an idle pool reservation")
             # The caller holds the repository mutex. Never wait for a row
             # held by preparation, which may itself be waiting for that mutex.
@@ -1958,15 +2001,14 @@ class WorktreeSlotManager:
                 raise GitError("branch holder changed; checkout left unchanged")
             if reservation is not None:
                 agent = (await conn.execute(select(agents).where(
-                    agents.c.id == holder.locked_by_agent_id,
+                    agents.c.id == reservation["agent_id"],
                 ).with_for_update(nowait=True))).mappings().one_or_none()
                 sentinel = self.read_sentinel(holder.workspace_path)
                 if (agent is None or agent["current_task_id"] is not None
                         or sentinel is None or sentinel.workspace_id != holder.id
                         or sentinel.project_id != holder.project_id
                         or sentinel.base_workspace_id != holder.base_workspace_id
-                        or await self.git.ahas_uncommitted_changes(
-                            holder.workspace_path, strict=True) is not False):
+                        or not await self._slot_branch_matches_origin(holder.workspace_path)):
                     raise GitError("branch holder reservation is not clean and taskless")
             if await conn.scalar(select(sessions.c.id).where(
                 sessions.c.work_dir == holder.workspace_path,

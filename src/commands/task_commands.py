@@ -4857,41 +4857,55 @@ class TaskCommandsMixin:
     async def _cmd_restart_task(self, args: dict) -> dict:
         from src.commands.supervisor_authority import operator_or_global_supervisor
         from src.database.queries.task_recovery_queries import RecoveryHoldError
+        from src.wait_runtime.restart import restart_attempt
+        from src.waits.conditions import WaitError
 
-        hold_override, error = await self.db.restart_hold_override(
-            args['task_id'], args.get('override_hold', False), args.get('reason'),
-            authority=operator_or_global_supervisor)
-        if error:
-            return {'success': False, 'error': error}
         try:
-            return await TaskCommandsMixin._restart_task(self, args, hold_override)
+            async with restart_attempt(args['task_id']):
+                hold_override, error = await self.db.restart_hold_override(
+                    args['task_id'], args.get('override_hold', False), args.get('reason'),
+                    authority=operator_or_global_supervisor)
+                if error:
+                    return {'success': False, 'error': error}
+                return await TaskCommandsMixin._restart_task(self, args, hold_override)
         except RecoveryHoldError as exc:
             return {'success': False, 'error_code': 'task_recovery.held',
                     'error': str(exc), 'recovery_hold': exc.incident}
+        except WaitError as exc:
+            return {'success': False, 'error_code': exc.code, 'error': str(exc)}
 
     async def _restart_task(self, args: dict, hold_override) -> dict:
         from src.integration.repair import OrdinaryRepairService
-        from src.wait_runtime.restart import readmit, release_continuations, restart_lock
+        from src.wait_runtime.restart import (
+            readmit, release_continuations, restart_lock, restart_phase,
+        )
         from src.waits.conditions import WaitError
 
+        restart_phase('recovery hold guard (task row lock)')
         await self.db.guard_restart_recovery_hold(args["task_id"], hold_override)
+        restart_phase('manual pause resume (task-control/repository locks)')
         refused = await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])
         if refused is not None:
             return refused
         # Resume's task-control lock covers continuation cleanup and readmission.
+        restart_phase('task-control lock')
         async with restart_lock(self, args["task_id"]):
+            restart_phase('task/recovery observation')
             task = await self.db.get_task(args["task_id"])
             if not task:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            restart_phase('recovery hold guard (task row lock)')
             await self.db.guard_restart_recovery_hold(task.id, hold_override)
+            restart_phase('integration repair observation')
             if stale := await OrdinaryRepairService(self.db).stale(task):
                 return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
                 released = await release_continuations(self, task)
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
+            restart_phase('integration restart admission')
             project = await self.db.get_project(task.project_id)
             from src.integration.train_policy import worker_integration_enabled
 

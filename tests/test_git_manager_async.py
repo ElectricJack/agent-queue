@@ -14,6 +14,7 @@ import pytest
 
 from src.git.manager import ChildPreparationConflict, GitError, GitManager, RemoteRefState
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
+from src.git.repository_lock import RepositoryLockTimeout, repository_lock_wait_limit
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
 from tests.git_seed_helpers import clone_seed, init_bare_seed
@@ -2475,6 +2476,55 @@ class TestRootDeliveryGatesTheWholeTree:
             ".aq/claim.json",
             ".codex/config.toml",
         ]
+
+
+async def test_repository_wait_bound_preserves_owner_and_does_not_bound_body(mgr, tmp_path):
+    reading, release, acquired, finish = (asyncio.Event() for _ in range(4))
+
+    async def owner():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            reading.set()
+            await release.wait()
+
+    async def protected_work():
+        with repository_lock_wait_limit(0.01):
+            async with mgr.arepository_transaction(str(tmp_path)):
+                acquired.set()
+                await finish.wait()
+
+    async def unbounded_work():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            return True
+
+    train = asyncio.create_task(owner())
+    work = unbounded = None
+    try:
+        await asyncio.wait_for(reading.wait(), timeout=5)
+        with repository_lock_wait_limit(0.01):
+            with pytest.raises(RepositoryLockTimeout):
+                async with mgr.arepository_transaction(str(tmp_path)):
+                    pytest.fail("busy repository was entered")
+        assert not train.done()
+        # The scope resets for unrelated callers: this wait survives a bound
+        # that applies only to the timed-out claimant above.
+        unbounded = asyncio.create_task(unbounded_work())
+        await asyncio.sleep(0.03)
+        assert not unbounded.done()
+        release.set()
+        await train
+        assert await unbounded
+        work = asyncio.create_task(protected_work())
+        await asyncio.wait_for(acquired.wait(), timeout=5)
+        await asyncio.sleep(0.03)
+        assert not work.done()
+    finally:
+        release.set()
+        finish.set()
+        await train
+        if unbounded is not None:
+            await unbounded
+        if work is not None:
+            await work
 
 
 @pytest.mark.parametrize("runner", ["local", "result"])

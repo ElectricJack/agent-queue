@@ -1410,6 +1410,7 @@ class TestReconcilePools:
 
     @pytest.mark.parametrize("mode", [
         "published", "unpublished", "dirty", "disabled", "owner", "stop_unproved", "successor",
+        "draining", "failed_preparation", "draining_dirty", "draining_unpublished",
     ])
     async def test_drain_frees_only_quiescent_clean_slot_branches(
         self, orch, db, tmp_path, monkeypatch, mode,
@@ -1437,11 +1438,11 @@ class TestReconcilePools:
         slot = await manager.create_slot(base, kind, 0)
         await manager.reset_slot_for_task(slot, await db.get_task("t1"))
         path = slot.workspace_path
-        if mode == "unpublished":
+        if mode in {"unpublished", "draining_unpublished"}:
             git(path, "commit", "--allow-empty", "-m", "private progress")
         else:
             git(path, "push", "origin", "HEAD:refs/heads/aq/t1")
-        if mode == "dirty":
+        if mode in {"dirty", "draining_dirty"}:
             from pathlib import Path
 
             Path(path, "private.txt").write_text("private bytes")
@@ -1474,14 +1475,28 @@ class TestReconcilePools:
 
             monkeypatch.setattr(manager, "detach_idle_slot_branch", acquired_before_detach)
 
-        await orch._terminate_pool_session(await db.get_session(session.id), reason="drained")
+        proactive = mode.startswith("draining") or mode == "failed_preparation"
+        if proactive:
+            await db.update_session(
+                session.id, state="draining", desired_state="stopped",
+                failed_preparation={"task_id": "t1"} if mode == "failed_preparation" else None,
+            )
+            await orch._detach_idle_pool_branch(await db.get_session(session.id))
+            assert (await db.get_session(session.id)).state == "draining"
+            assert (await db.get_workspace(slot.id)).locked_by_agent_id == session.agent_id
+        else:
+            await orch._terminate_pool_session(await db.get_session(session.id), reason="drained")
 
         assert git(path, "rev-parse", "HEAD") == head
         assert git(path, "rev-parse", "aq/t1") == head
-        assert manager.read_sentinel(path) == sentinel
-        expected = "HEAD" if mode in {"published", "unpublished", "disabled"} else "aq/t1"
+        expected = "HEAD" if mode in {
+            "published", "disabled", "draining", "failed_preparation",
+        } else "aq/t1"
+        assert manager.read_sentinel(path) == (
+            dataclasses.replace(sentinel, branch=None) if expected == "HEAD" else sentinel
+        )
         assert git(path, "rev-parse", "--abbrev-ref", "HEAD") == expected
-        if mode == "dirty":
+        if mode in {"dirty", "draining_dirty"}:
             assert Path(path, "private.txt").read_text() == "private bytes"
 
     @pytest.mark.parametrize("stop_confirmed", [False, True])
