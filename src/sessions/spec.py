@@ -237,7 +237,7 @@ SUPERVISOR_PATROL_PROMPT = (
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
 #: scope at launch; the worker claims its own work in a loop.  ``{}`` fields:
-#: project_name, profile_id.
+#: project_name, profile_id, message_wait_guidance.
 POOL_BOOTSTRAP_PROMPT = (
     "You are a pool worker for project {project_name} (profile {profile_id}).\n"
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
@@ -248,7 +248,7 @@ POOL_BOOTSTRAP_PROMPT = (
     "On a repeated identical refusal, report the blocker ONCE to the project supervisor.\n"
     "If idle (no held claim or preparation), run `aq session drain-ack` and exit 0.\n"
     "If preparation is retained, preserve it and end the turn awaiting the supervisor's\n"
-    "inbox delivery. With an active claim, use ONE durable message wait for the reply.\n"
+    "inbox delivery. {message_wait_guidance}\n"
     "Do not poll claims or inboxes, reread unchanged context, or repeat the report.\n"
     "A refusal_count >= 2 or a\n"
     "drain_requested with blocker instructions also requires that one report.\n"
@@ -458,6 +458,7 @@ class SessionSpecBuilder:
         wake: str = "fresh",
         resume_key: str | None = None,
         prompt: str | None = None,
+        workspace_source_type=None,
         knowledge=None,
     ) -> SessionSpec:
         """Spec for a persistent session (``lifecycle="named"``).
@@ -469,6 +470,9 @@ class SessionSpecBuilder:
         A *knowledge* selection prepared before this launch is wrapped for the
         harness and recorded on the spec; the bundle's delivery acknowledgment
         still requires the persisted live session row.
+
+        Callers with a verified isolated worktree may pass *workspace_source_type*;
+        otherwise permission bypass requires the profile's explicit opt-in.
         """
         profile_id = getattr(profile, "id", "") or ""
         # Keep the established global runtime name for restart adoption; the
@@ -517,9 +521,9 @@ class SessionSpecBuilder:
             resume_key=effective_resume,
             bootstrap=bootstrap,
             lifecycle="named",
-            # Named sessions have no workspace, so only the profile's
-            # explicit permission opt-in can grant the skip-permissions flag.
-            allow_skip_permissions=skip_permissions_allowed(profile, None, harness=harness),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             knowledge=knowledge,
         )
 
@@ -560,8 +564,17 @@ class SessionSpecBuilder:
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
         project_name = getattr(project, "name", "") or project_id
+        from src.waits.policy import enabled as waits_enabled
+
+        message_wait_guidance = (
+            "With an active claim, use ONE durable message wait for the reply."
+            if waits_enabled(self.config, project_id)
+            else "Wait registration is disabled for this project. With an active claim, "
+            "preserve it and end the turn awaiting the supervisor's inbox delivery."
+        )
         bootstrap = prompt if prompt is not None else POOL_BOOTSTRAP_PROMPT.format(
-            project_name=project_name, profile_id=profile_id
+            project_name=project_name, profile_id=profile_id,
+            message_wait_guidance=message_wait_guidance,
         )
         extra_env = {
             "AQ_SESSION_KIND": "pool",
