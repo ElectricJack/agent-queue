@@ -213,6 +213,14 @@ class SystemCommandsMixin:
             return {"success": False, "error": "Intelligence class could not be retired"}
 
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "get_stuck_tasks", args)
+        return await self._get_stuck_tasks_observation(args)
+
+    async def _get_stuck_tasks_observation(self, args: dict, *, max_tasks=None) -> dict:
         """Read aged active tasks, orphaned workers and unroutable READY tasks.
 
         Paused projects, containers and approved human holds are excluded.
@@ -233,7 +241,7 @@ class SystemCommandsMixin:
             if project_id and project_id != principal.project_id:
                 return {"success": False, "error": "out of scope: project_id"}
             project_id = principal.project_id
-        snapshot = await read_snapshot(self.db, project_id)
+        snapshot = await read_snapshot(self.db, project_id, max_tasks=max_tasks)
         # Only old READY leaves need canonical route/frontier explanations.
         # A failed read fails this tick instead of sending an incomplete list.
         for task in snapshot.tasks.values():

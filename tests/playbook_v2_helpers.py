@@ -550,6 +550,9 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
         return artifact["rules"][0]
 
     table: dict[str, dict[str, Any]] = {
+        "unsupported_feature": _mutate(
+            twin(), lambda a: a.update(required_features=["future_v9"])
+        ),
         "unknown_identifier": _mutate(
             twin(), lambda a: a["steps"]["act"].update(command="session_kill")
         ),
@@ -950,7 +953,11 @@ def write_graph_fixture() -> None:
 
 def refresh_golden_contracts() -> None:
     """Regenerate live command pins in authored goldens and their receipts."""
-    contracts = StubContracts()
+    # Projection intentionally leaves list_tasks unregistered, but the
+    # executable goldens still pin its real contract like every other step.
+    from src.playbooks.validation import RegistryContractLookup
+
+    contracts = RegistryContractLookup()
     for path in (GOLDEN, GOLDEN_V6):
         payload = json.loads(path.read_text())
         for name in payload["compiled_against"]["commands"]:

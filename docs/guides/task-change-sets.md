@@ -3,7 +3,7 @@
 Supervisors stage any change involving multiple tasks as one proposal. This
 prevents a scheduler tick from claiming a newly created task before its blockers
 have been added. Nothing in a proposal is live until the human decision and
-`task_batch_commit` succeed; creates, edits, dependencies, controls and comments
+its source application succeed; creates, edits, dependencies, controls and comments
 then become visible together.
 
 Preview a YAML or JSON file, then stage the same file:
@@ -64,9 +64,14 @@ containers; `parent-child` and valid `waits-for` membership keep their existing
 semantics. Routing profiles are chosen by the router; a proposal may carry hints
 but cannot choose a profile.
 
-The existing proposal preview presents the diff and comments. The pipeline's
-human gate must await the exact proposal id and resolve `approve` or `approved`.
-Then the pipeline commits it, or an authorized supervisor runs:
+The proposal preview presents the diff and comments. Approve and Discard first
+prepare a decision packet for the current proposal digest, project and gate;
+the confirmation applies that exact packet. Approval resolves the bound gate
+and materializes the proposal in one transaction. A materialization conflict
+rolls back the approval too. Decline discards the proposal and cancels its gate,
+retaining any approval hold without emitting an approval release.
+
+An authorized supervisor can still replay an already approved materialization:
 
 ```bash
 aq task batch-commit --proposal-id prop-abc123
@@ -92,3 +97,55 @@ transaction failure stays ready with its approval and rolls back all changes.
 Replaying a successful commit returns the original created ids and omissions.
 The proposal read endpoint retains its receipt, and `task.change_set_committed`
 records the actor, source, reviewed diff and receipt in the same transaction.
+
+Human command callers use `ask_prepare_decision` with the ask's
+`decision_generation`, `source_fingerprint` and `feedback_version`, then
+`ask_decide` with the returned preview id and a stable idempotency key.
+`gate_show` exposes the bound ask. An unversioned human `gate_resolve` refuses
+with the ask link instead of interpreting an actor label or arbitrary reply.
+Generic human gates additionally require producer-owned `approval_hold_v1`
+semantics and complete context. Missing context leaves an owned request with
+no decision controls. Decline keeps waiters blocked; `gate_reopen` requires the
+current version and creates a new decision generation. Technical and routing
+gates retain their specialized mechanisms.
+
+
+## Scoped edits to held ingestion batches
+
+The assigned live fidelity reviewer, or a project supervisor, can update a held
+batch with `task_batch_update`. Supply `proposal_id`, `expected_revision` and
+`operations` instead of the ordinary proposal `payload`. Every task reference
+must name an active batch member (its stable member key or task id), or a new
+leaf's `tempId` in the same update. No member may have an active claim.
+
+```json
+{
+  "proposal_id": "prop-example",
+  "expected_revision": 1,
+  "operations": [
+    {"kind": "rewrite", "task_id": "api", "changes": {"acceptance": ["Verify the approved API contract"]}},
+    {"kind": "reparent", "task_id": "api", "parent_id": "core"},
+    {"kind": "rewire", "edges": [{"from": "docs", "to": "api", "reason": "Documents the API output"}]}
+  ]
+}
+```
+
+Supported kinds are `rewrite` (`changes`), `reparent` (`parent_id`), `rewire`
+(`edges` / `remove_edges`), `add_leaf` (`task`), `split` (`task_id`, `tasks`,
+`reason`), `combine` (`task_ids`, `task`, `reason`), `move_to_root`
+(`delivery_targets`), and `retire` (`task_id`, `reason`, optional
+`replacement_task_id`, `satisfied_by`, `rewire`). New leaves carry the same
+source mapping, outcome, acceptance and constraints as ingestion tasks and
+require a structural parent or explicit operational placement. Retirement
+preserves history and rewires typed dependencies through the obsolete lifecycle;
+it records no successful implementation. References outside the batch and
+profile/provider/model pins are refused.
+
+The final graph and automatic checks run in the same transaction as every write.
+A hard finding rolls everything back with `validation_failed`. Structural edits
+bump the revision, recompute the canonical digest and supersede earlier review
+receipts. Title, priority, tags and whitespace-only description edits preserve
+the revision and usable receipts. The response includes the current revision,
+digest, membership and before/after diff; `check_results.last_diff` retains that
+diff. An applied scope answer permits editing a `needs_scope` batch again;
+the update keeps the graph held for review and release.

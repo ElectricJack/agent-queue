@@ -1116,12 +1116,90 @@ def test_update_is_a_top_level_command():
 # -- release selection: real remote tags, ancestry and detached activation ---
 
 
-def _release(repo, name, *, commit="HEAD", annotated=True):
+def _release(repo, name, *, commit="HEAD", annotated=True, admission=None):
     args = ["tag"]
     if annotated:
-        args += ["-a", "-m", f"Release {name}\n\nAQ-Promotion: test"]
+        message = f"Release {name}\n\nAQ-Promotion: test"
+        if admission is not None:
+            message += "\nAQ-Migration-Admission: " + json.dumps(admission, sort_keys=True)
+        args += ["-a", "-m", message]
     _git(repo.seed, *args, name, commit)
     _git(repo.seed, "push", "--quiet", "origin", f"refs/tags/{name}")
+
+
+def _breaking_admission(previous, current):
+    return {
+        "schema": "aq.migration-admission.v1",
+        "range": {"previous": previous, "current": current},
+        "previous_tag": "v0.1.0", "status": "breaking", "finding_count": 1,
+        "findings": ["migrations/versions/b.py:6: non-additive or unproven operation: execute"],
+        "findings_sha256": "a" * 64, "findings_truncated": False,
+        "override": {"identity": "human:local-operator", "github_login": "jack", "recorded_at": 1},
+    }
+
+
+def test_breaking_boundary_survives_skipped_release_and_disables_crossing_rollback(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    _release(repo, "v0.1.0")
+    boundary = repo.push("README.md", "breaking release\n")
+    audit = _breaking_admission(old, boundary)
+    _release(repo, "production-0.2.0", admission=audit)
+    repo.push("README.md", "compatible release after breaking\n")
+    _release(repo, "v0.3.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.3.0")
+    assert plan.selection.breaking_migrations[0]["admission"] == audit
+    description = update_module.describe(plan, backup=True, daemon_running=True)
+    assert any("production-0.2.0" in line and "jack" in line and "disabled" in line for line in description)
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["breaking_migrations"][0]["commit"] == boundary
+    # Returning to the breaking release itself keeps the schema boundary.
+    safe = plan_update(repo.checkout, state_dir=fake.state_dir, ref="production-0.2.0", allow_rollback=True)
+    assert safe.rollback
+    # The persisted record remains authoritative even if a remote tag disappears.
+    _git(repo.seed, "push", "origin", ":refs/tags/production-0.2.0")
+    calls = list(fake.calls)
+    with pytest.raises(UpdateRefused, match="rollback_crosses_breaking_migration"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True)
+    assert fake.calls == calls
+    assert repo.head() == plan.target
+
+
+def test_rollback_discovers_breaking_annotation_without_a_new_deploy_record(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    _release(repo, "v0.1.0")
+    new = repo.push("README.md", "breaking release\n")
+    _release(repo, "v0.2.0", admission=_breaking_admission(old, new))
+    _git(repo.checkout, "fetch", "origin")
+    _git(repo.checkout, "checkout", "--detach", new)
+    (fake.state_dir / "deploy.json").write_text(json.dumps({"selector": "v0.2.0", "commit": new}))
+    with pytest.raises(UpdateRefused, match="rollback_crosses_breaking_migration"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("change", ["wrong_source", "missing_override", "session_override", "unknown_schema", "false_additive"])
+def test_invalid_migration_annotation_refuses_before_update(repo, fake, monkeypatch, change):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    new = repo.push("README.md", "breaking release\n")
+    audit = _breaking_admission(old, new)
+    if change == "wrong_source":
+        audit["range"]["current"] = old
+    elif change == "missing_override":
+        audit["override"] = None
+    elif change == "session_override":
+        audit["override"]["identity"] = "session:supervisor"
+    elif change == "false_additive":
+        audit["status"] = "additive"
+    else:
+        audit["schema"] = "unknown"
+    _release(repo, "v0.2.0", admission=audit)
+    with pytest.raises(UpdateRefused, match="migration_evidence_invalid"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    assert fake.calls == [] and repo.head() == old
 
 
 def test_release_selection_uses_semver_and_pins_the_peeled_commit(repo, fake, monkeypatch):
@@ -1321,6 +1399,31 @@ def test_tag_preflight_through_the_cli_reports_the_selected_release(repo, fake, 
     assert "v0.2.0" in result.output and "release" in result.output
     assert fake.calls == []
     assert not (fake.state_dir / "deploy.json").exists()
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_tag_preflight_cli_displays_breaking_override_even_when_installed(
+    repo, fake, monkeypatch, installed,
+):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    current = repo.push("README.md", "breaking release\n")
+    _release(repo, "v0.2.0", admission=_breaking_admission(old, current))
+    if installed:
+        apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0"), fake.host())
+    calls = list(fake.calls)
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--check", "--ref", "v0.2.0"])
+    assert result.exit_code == 0, result.output
+    assert "v0.2.0" in result.output
+    assert "operator" in result.output
+    assert "rollback" in result.output and "disabled" in result.output
+    assert fake.calls == calls
 
 
 # -- automatic branch tracking ---------------------------------------------
