@@ -20,6 +20,7 @@ from src.git.github_contracts import GitHubAccessError
 from src.git.manager import (
     RETAINED_FSCK_TIMEOUT_SECONDS, GitError, RemoteRefState, safe_git_detail,
 )
+from src.git.repository_lock import RepositoryLockTimeout
 from src.integration.selection_metrics import selection_count, selection_stage
 
 logger = logging.getLogger(__name__)
@@ -400,6 +401,10 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                     no_transfer = False
                     await fetch()
             except (GitError, GitHubAccessError) as exc:
+                # A caller timeout leaves the shared check running. Starting
+                # recovery diagnosis now would duplicate that full-body scan.
+                if await git.aretained_store_check_running(str(directory)):
+                    raise
                 fetch_error = exc
             if not pending.exists() and await git.areuse_retained_verification(
                     str(directory), extend=reusable and fetch_error is None):
@@ -504,7 +509,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                     await asyncio.shield(accounting)
                 except asyncio.CancelledError:
                     await accounting
-            if isinstance(exc, TimeoutError):
+            if isinstance(exc, TimeoutError) and not isinstance(exc, RepositoryLockTimeout):
                 raise GitError("retained Git acquisition timed out") from exc
             raise
 
