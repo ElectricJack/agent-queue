@@ -1329,11 +1329,23 @@ async def test_authenticated_default_branch_discovery_uses_pinned_https_source(
 @pytest.mark.asyncio
 async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkeypatch):
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    _git(["init", "--initial-branch=main"], checkout)
-    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
     manager = GitManager(github_access=_BoundAppAccess())
-    lock = asyncio.Lock()
+    # This tests serialization, not subprocess latency on a busy CI runner.
+    async def read_origin(args, **kwargs):
+        assert args == ["config", "--get", "remote.origin.url"]
+        assert kwargs == {"cwd": str(checkout)}
+        return "https://github.com/acme/widgets.git"
+
+    monkeypatch.setattr(manager, "_arun", read_origin)
+    contended = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                contended.set()
+            return await super().acquire()
+
+    lock = ObservedLock()
     manager.set_lock_provider(lambda _cwd: lock)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -1341,6 +1353,7 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
 
     async def held_fetch(*_args, **_kwargs):
         nonlocal runs
+        assert lock.locked()
         runs += 1
         entered.set()
         await release.wait()
@@ -1349,15 +1362,23 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
     first = asyncio.create_task(
         manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
     )
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    second = asyncio.create_task(
-        manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
-    )
-    await asyncio.sleep(0.05)
-    assert runs == 1
-    release.set()
-    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
-    assert runs == 2
+    tasks = [first]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        tasks.append(asyncio.create_task(
+            manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
+        ))
+        await asyncio.wait_for(contended.wait(), timeout=1)
+        assert runs == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert runs == 2
+        assert not lock.locked()
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
