@@ -71,7 +71,7 @@ function WizardDialog({
   submit,
   onSuccess,
 }: ProjectOnboardingWizardProps) {
-  const [importPolicy, setImportPolicy] = useState(false);
+  const [policyProfile, setPolicyProfile] = useState<"none" | "default" | "exported">("none");
   const [createdForPolicy, setCreatedForPolicy] = useState<OnboardingResult | null>(null);
   const [state, dispatch] = useReducer(wizardReducer, projectIds, initialWizardState);
   const requestId = useRef(newRequestId()).current;
@@ -153,7 +153,7 @@ function WizardDialog({
     try {
       const result = await effectiveSubmit(request, { onPhase: (phase) => dispatch({ type: "submit_phase", phase }) });
       dispatch({ type: "submit_succeeded", result });
-      if (importPolicy) setCreatedForPolicy(result);
+      if (policyProfile !== "none") setCreatedForPolicy(result);
       else { onSuccess?.(result); onClose(); }
     } catch (err) {
       dispatch({ type: "submit_failed", error: toSubmissionError(err) });
@@ -169,7 +169,8 @@ function WizardDialog({
 
   const StepComponent = step.Component;
 
-  if (createdForPolicy) return <PolicyDialog projectId={createdForPolicy.project_id} onClose={() => {
+  if (createdForPolicy) return <PolicyDialog projectId={createdForPolicy.project_id}
+    initialProfile={policyProfile === "default" ? "default" : "exported"} onClose={() => {
     onSuccess?.(createdForPolicy); onClose();
   }} />;
 
@@ -271,10 +272,19 @@ function WizardDialog({
                 <section aria-labelledby={`${uid}-step-title`}>
                   <h3 id={`${uid}-step-title`} className="mb-3 text-sm font-medium text-gray-200">{step.title}</h3>
                   <StepComponent />
-                  {isReview && <label className="mt-4 block text-sm">
-                    <input type="checkbox" checked={importPolicy} disabled={submitting}
-                      onChange={event => setImportPolicy(event.target.checked)} /> Import a policy profile after creation
-                  </label>}
+                  {isReview && <div className="mt-4 text-sm"><label>
+                    Policy profile
+                    <select className="ml-3 rounded border border-gray-600 bg-gray-950 px-2 py-1"
+                      aria-describedby={`${uid}-policy-help`}
+                      value={policyProfile} disabled={submitting}
+                      onChange={event => setPolicyProfile(event.target.value as typeof policyProfile)}>
+                      <option value="none">None</option>
+                      <option value="default">Default (recommended project policy)</option>
+                      <option value="exported">Another exported profile</option>
+                    </select>
+                  </label>
+                    <p id={`${uid}-policy-help`} className="mt-1 text-gray-400">Review each item and choose project, global, or skip after creation.</p>
+                  </div>}
                 </section>
 
                 {submitting && (

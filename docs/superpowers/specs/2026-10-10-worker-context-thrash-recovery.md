@@ -36,6 +36,18 @@ Operator and elevated supervisor full views retain their current behavior.
 Expose the persisted failure streak in task_show and the read-only stall.sweep
 doctor report. Neither diagnostic automatically unblocks a task.
 
+Pool recovery requires the session's last claim epoch to equal the task's
+current claim epoch. Fixtures representing a held pool task must carry this
+identity; missing, older or newer epochs leave the task and session unchanged.
+Generated task-show requests include the paging defaults, and generic fallback
+preserves the caller's explicit paging arguments.
+
+Ordinary context/history rendering is separate from the live fenced
+parent-conflict snapshot. Only ordinary context is clipped to the worker budget;
+the conflict snapshot retains its session scope and complete authority fields.
+Review generic display dependencies and worker-recovery metadata writers in the
+ownership inventory without changing its pinned baseline or size allowance.
+
 Validation covers two separate pool claims, duplicate observations, daemon
 recreation, cause changes, explicit restart, stale identities, transcript
 quotations and missing evidence, live stalls, supervisor notification,
