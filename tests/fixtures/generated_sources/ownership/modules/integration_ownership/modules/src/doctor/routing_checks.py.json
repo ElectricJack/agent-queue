@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/routing_checks.py::routing_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
