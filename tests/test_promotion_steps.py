@@ -22,8 +22,9 @@ from src.integration.promotion_steps import (
     PROMOTION_PUBLISH, FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit,
     StepAdmission,
     StepPullRequestGate,
-    frozen_required_checks, promotion_ref, settle_promotion,
+    frozen_required_checks, promotion_ref, promotion_task_defect, settle_promotion,
 )
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import HostedGitHub
 
@@ -733,6 +734,9 @@ async def test_managed_publication_leases_cover_branch_tag_and_cleanup(promotion
     from src.integration.train_sources import LeasedPublish
 
     e = promotion
+    await e.db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     publisher = LeasedPublish(e.db, e.ops.git)
     e.service.publish = publisher
     e.service.publish_tag = publisher.qualified
@@ -748,6 +752,9 @@ async def test_busy_managed_target_defers_branch_and_tag(promotion):
     from src.integration.train_sources import LeasedPublish
 
     e = promotion
+    await e.db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     publisher = LeasedPublish(e.db, e.ops.git)
     fence = await publisher.locks.acquire(BranchKey(repository_id="r", branch=e.batch.target_ref),
                                           "another-publisher", role="integration")
@@ -819,7 +826,7 @@ async def test_admission_refuses_changed_or_unretained_inputs(promotion, change)
         await update_meta(e, step=step)
     elif change == "provenance":
         identity = CompletionIdentity("p", "r", e.member.task_id, "promotion:" + e.meta["request_id"])
-        git(e.ops.git.remote_path, "update-ref", "-d", "refs/heads/" + identity.branch)
+        git(e.ops.git.remote_path, "update-ref", "-d", identity.ref)
     else:
         async with e.db._engine.begin() as conn:
             if change == "profile":
@@ -831,10 +838,39 @@ async def test_admission_refuses_changed_or_unretained_inputs(promotion, change)
                 {"profile_id": "worker", "route_source": "override"}
                 if change == "profile" else {"status": "CANCELLED"}
             )))
-    with pytest.raises(PromotionIntentInvalid):
+    with pytest.raises(PromotionIntentInvalid) as refused:
         await e.admission.load(e.batch, (e.member,))
-    assert (await visit(e)).state == "held"
+    held = await visit(e)
+    assert held.state == "held" and held.detail["reason"] == "promotion_intent_invalid"
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
+    if change in {"profile", "status"}:
+        defect = {"profile": "is routed to profile 'worker'", "status": "is a CANCELLED"}[change]
+        repair = f"aq promote repair {e.meta['request_id']} --project {e.batch.project_id}"
+        assert defect in str(refused.value) and repair in str(refused.value)
+        assert defect in held.detail["error"] and repair in held.detail["error"]
+
+
+async def test_restart_stranded_promotion_task_names_its_repair(promotion):
+    """A restart's READY reset plus a worker route was the 2026-10-11 stranding."""
+    e = promotion
+    async with e.db._engine.begin() as conn:
+        await conn.execute(insert(agent_profiles).values(
+            id="worker", name="Worker", description="", model="test",
+            created_at=1, updated_at=1,
+        ))
+        await conn.execute(update(tasks).values(
+            status="READY", profile_id="worker", route_source="override"))
+        task = (await conn.execute(select(tasks))).mappings().one()
+    assert "READY promotion task, not an IN_PROGRESS" in promotion_task_defect(task)
+    held = await visit(e)
+    assert held.detail["reason"] == "promotion_intent_invalid"
+    assert "aq promote repair" in held.detail["error"]
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(tasks).values(
+            status="IN_PROGRESS", profile_id=None, route_source="unrouted", route=None))
+        task = (await conn.execute(select(tasks))).mappings().one()
+    assert promotion_task_defect(task) is None
+    assert (await visit(e)).state == "delivered"
 
 
 async def test_hold_after_attestation_withdraws_both_publications(promotion):
@@ -974,6 +1010,123 @@ def test_frozen_check_set_refuses_request_without_a_valid_one(frozen):
         frozen_required_checks({**meta, **frozen})
 
 
+async def test_locally_gated_step_publishes_without_hosted_attestation(promotion):
+    e = promotion
+    # A step the local runner gates has no hosted proof to attest, yet its PR
+    # identity and review gate still hold it.
+    e.service.attest = None
+    e.github.pull["draft"] = True
+    held = await visit(e)
+    assert held.state == "held" and held.detail["reason"] == "promotion_pr_draft"
+    e.github.pull["draft"] = False
+    assert (await visit(e)).state == "delivered"
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.source
+    assert git(e.ops.git.remote_path, "rev-parse", "refs/tags/v1.2.3^{}") == e.source
+
+
+def local_step_lanes(e, monkeypatch):
+    from src.integration.train_sources import DaemonLanes, DatabaseBatches
+
+    manifest = IntegrationTrustManifest(
+        schema="aq.integration-trust.v1", canonical_repository_id="r", repository_id=123,
+        full_name=e.github.full_name, ci_producer_app_id=15368, attestation_app_id=101,
+        attestation_name=ATTESTATION_CHECK_NAME,
+        promotion_attestation_names=(e.meta["step"]["gate"]["attestation"],),
+        required_checks={"version": "checks-v1", "names": ["unit"]},
+    )
+    # No attestation service: a local step reads its manifest from the store.
+    lanes = DaemonLanes(SimpleNamespace(db=e.db, git=e.ops.git),
+                        batches=DatabaseBatches(e.db))
+    monkeypatch.setattr(lanes, "_retained_manifest", AsyncMock(return_value=manifest))
+    monkeypatch.setattr(e.ops.git, "_github_client", lambda binding: e.github, raising=False)
+    return lanes
+
+
+async def test_local_ci_step_gate_runs_the_manifest_selected_checks(promotion, monkeypatch):
+    from src.integration.checks import LocalChecks, RequestedChecks
+    from src.integration.models import IntegrationCIPolicy
+    from src.integration.train import TrainTarget
+    from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
+
+    e = promotion
+    lanes = local_step_lanes(e, monkeypatch)
+    target = TrainTarget("p", "r", e.batch.target_ref, "promotion", step=e.meta["step"])
+    ci = IntegrationCIPolicy(source="local", commands={"unit": "aq test tests/test_x.py"})
+    lane = await lanes._promotion_lane(target, e.repo, e.repo.binding, e.ops, {}, e.snapshot,
+                                       ci=ci)
+    assert lane.service.attest is None
+    checks = await lane.checks.for_candidate(e.batch, e.source)
+    assert isinstance(checks, RequestedChecks) and isinstance(checks.provider, LocalChecks)
+    assert checks.required.names == ("unit",) and checks.required.version == "checks-v1"
+    assert checks.provider.producer.plan.commands == ("aq test tests/test_x.py",)
+    assert git(e.repo.store, "rev-parse", RETAINED_CANDIDATE_PREFIX + e.batch.id) == e.source
+
+
+async def test_local_ci_step_without_a_command_for_a_selected_check_is_refused(
+    promotion, monkeypatch,
+):
+    from src.integration.models import IntegrationCIPolicy
+    from src.integration.promotion_steps import PromotionIntentInvalid
+    from src.integration.train import TrainTarget
+
+    e = promotion
+    lanes = local_step_lanes(e, monkeypatch)
+    target = TrainTarget("p", "r", e.batch.target_ref, "promotion", step=e.meta["step"])
+    ci = IntegrationCIPolicy(source="local", commands={"lint": "ruff check src"})
+    lane = await lanes._promotion_lane(target, e.repo, e.repo.binding, e.ops, {}, e.snapshot,
+                                       ci=ci)
+    with pytest.raises(PromotionIntentInvalid, match="ci_command_missing:unit"):
+        await lane.checks.for_candidate(e.batch, e.source)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("canonical_repository_id", "elsewhere"), ("repository_id", 999),
+    ("full_name", "elsewhere/repo"), ("ci_producer_app_id", 999),
+    ("attestation_app_id", 999), ("attestation_name", "another check"),
+    (None, None),
+])
+async def test_local_promotion_manifest_enforces_repository_and_app_identity(
+    promotion, field, value,
+):
+    from src.integration.ci import SubjectTrustError, TRUST_MANIFEST_PATH
+    from src.integration.train_sources import DaemonLanes, DatabaseBatches
+
+    e = promotion
+    manifest = IntegrationTrustManifest(
+        schema="aq.integration-trust.v1", canonical_repository_id=e.repo.repository_id,
+        repository_id=123, full_name=e.github.full_name, ci_producer_app_id=15368,
+        attestation_app_id=101, attestation_name=ATTESTATION_CHECK_NAME,
+        required_checks={"version": "checks-v1", "names": ["unit"]},
+    ).model_dump(mode="json", by_alias=True)
+    if field:
+        manifest[field] = value
+    sha = commit(e.repo.store, {TRUST_MANIFEST_PATH: json.dumps(manifest)}, base=e.source)
+    e.ops.git._github_client = lambda binding: e.github
+    lanes = DaemonLanes(SimpleNamespace(db=e.db, git=e.ops.git), batches=DatabaseBatches(e.db))
+    policy = {"root": {"required_checks": {"producer_id": "15368"}}}
+    if field:
+        with pytest.raises(SubjectTrustError) as refused:
+            await lanes._retained_manifest(e.repo, sha, binding=e.repo.binding, policy=policy)
+        assert refused.value.cause == "identity_mismatch"
+        assert field in refused.value.fields
+    else:
+        result = await lanes._retained_manifest(e.repo, sha, binding=e.repo.binding, policy=policy)
+        assert result.repository_id == 123
+
+
+async def test_local_promotion_manifest_has_the_hosted_size_limit(promotion):
+    from src.integration.attestation import _MAX_TRUST_BYTES
+    from src.integration.ci import SubjectTrustError, TRUST_MANIFEST_PATH
+    from src.integration.train_sources import DaemonLanes, DatabaseBatches
+
+    e = promotion
+    sha = commit(e.repo.store, {TRUST_MANIFEST_PATH: " " * _MAX_TRUST_BYTES + "{}"}, base=e.source)
+    lanes = DaemonLanes(SimpleNamespace(db=e.db, git=e.ops.git), batches=DatabaseBatches(e.db))
+    with pytest.raises(SubjectTrustError) as refused:
+        await lanes._retained_manifest(e.repo, sha, binding=e.repo.binding, policy={})
+    assert refused.value.cause == "too_large"
+
+
 async def test_publish_command_refuses_worker_then_settles_via_service(promotion):
     from src.commands.integration_commands import IntegrationCommandsMixin
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -1004,3 +1157,54 @@ async def test_publish_command_refuses_worker_then_settles_via_service(promotion
         assert json.loads(await conn.scalar(select(task_context.c.content))) == e.meta
         assert json.loads(await conn.scalar(select(task_metadata.c.value).where(
             task_metadata.c.key == "promotion_result")))["tag_oid"]
+
+
+async def test_aborting_a_promotion_intent_fails_its_task(promotion):
+    """`aq integration abort` must not leave the intent's task IN_PROGRESS forever."""
+    from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY
+
+    e = promotion
+    await e.store.set_intent(e.batch.id, "aborted", reason="red on dev", operator_id="operator")
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.status)) == "FAILED"
+        assert await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.key == RECOVERY_FAILURE_AT_KEY)) is not None
+
+
+async def test_stranded_promotion_task_reaches_sweep_and_cleanup_fails_it(promotion):
+    from importlib import import_module
+
+    from src.config import AppConfig
+    from src.doctor.models import DoctorContext
+    from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
+
+    e = promotion
+    stall = import_module("src.doctor.stall_checks")
+    ctx = DoctorContext(db=e.db, config=AppConfig())
+    assert await stall._stranded_promotion_findings(ctx, {"p"}) == []
+    async with e.db._engine.begin() as conn:
+        # A terminal intent written by a path that never projected its task.
+        await conn.execute(update(integration_batches).values(
+            intent="aborted", lifecycle="aborted", human_abort_reason="red on dev"))
+    [finding] = await stall._stranded_promotion_findings(ctx, {"p"})
+    assert finding["kind"] == "stranded_promotion_task" and finding["severity"] == "error"
+    assert finding["task_id"] == e.member.task_id and finding["batch_id"] == e.batch.id
+    assert finding["human_abort_reason"] == "red on dev"
+    assert stall._SUBJECTS[finding["kind"]] == ("task", "task_id")
+    assert await stall._stranded_promotion_findings(ctx, {"other"}) == []
+    async with e.db.immediate() as conn:
+        assert await fail_stranded_promotion_tasks_on(e.db, conn, now=2) == [e.member.task_id]
+    async with e.db.immediate() as conn:
+        assert await fail_stranded_promotion_tasks_on(e.db, conn, now=3) == []
+    assert await stall._stranded_promotion_findings(ctx, {"p"}) == []
+
+
+async def test_promoted_intent_task_is_never_failed_as_stranded(promotion):
+    from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
+
+    e = promotion
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="promoted"))
+    async with e.db.immediate() as conn:
+        assert await fail_stranded_promotion_tasks_on(e.db, conn, now=2) == []
+        assert await conn.scalar(select(tasks.c.status)) == "IN_PROGRESS"

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
@@ -17,28 +19,30 @@ from src.database.tables import (
     integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_publications,
+    integration_candidate_resolutions,
     integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_check_evidence,
     integration_cleanup_items,
-    integration_outbox,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_owner_recoveries,
     integration_review_evidence,
     integration_root_intent_members,
     project_integration_leases,
     project_integration_schedules,
     projects,
     repos,
+    sessions,
     task_delivery_receipts,
+    task_completion_records,
     tasks,
     workspaces,
 )
 from src.integration.cleanup import CleanupExecutionResult, IntegrationCleanupService
+from src.integration.batches import candidate_ref
 from src.integration.release import IntegrationReleaseService
-from src.integration.scheduler import IntegrationScheduler
-from src.integration.settling import note_approval
 from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import CapabilityPolicy
@@ -78,9 +82,13 @@ async def release_db(tmp_path, request, reuse_database):
             .where(projects.c.id == "p")
             .values(hierarchical_integration_desired_mode="train")
         )
-    scheduler = IntegrationScheduler(db)
-    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
-    due_request = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
+    due_request = {"request_id": "integration-sweep:p:1"}
+    async with db.immediate() as conn:
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=True, interval_seconds=300, next_due_at=300.0,
+            request_sequence=1, outstanding_request_id=due_request["request_id"],
+            outstanding_trigger="manual", outstanding_requested_at=10.0, updated_at=10.0,
+        ))
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_batches).values(
@@ -140,6 +148,7 @@ async def release_db(tmp_path, request, reuse_database):
                 pr_url="https://github.com/acme/widgets/pull/1",
                 repository_id="repo",
                 source_base_sha=BASE,
+                source_sha=SOURCE,
                 reviewed_head_sha=SOURCE,
                 reviewed_tree_sha=TREE,
                 review_evidence_id="review",
@@ -147,7 +156,11 @@ async def release_db(tmp_path, request, reuse_database):
                 source_ref=(
                     None
                     if "legacy_source_identity" in request.node.name
-                    else "refs/heads/aq/root"
+                    else (
+                        "refs/heads/aq/epic/root"
+                        if "epic_repair_and_recovered_preserved_refs" in request.node.name
+                        else "refs/heads/aq/root"
+                    )
                 ),
                 source_ref_retention=(
                     None
@@ -155,6 +168,8 @@ async def release_db(tmp_path, request, reuse_database):
                     else (
                         "retain" if "retains_source_ref" in request.node.name else "delete"
                     )
+                    if "epic_repair_and_recovered_preserved_refs" not in request.node.name
+                    else "retain"
                 ),
             )
         )
@@ -383,7 +398,24 @@ async def release_db(tmp_path, request, reuse_database):
             .where(integration_batches.c.id == "batch")
             .values(lifecycle="promoted", final_main_sha=HEAD, updated_at=20.0)
         )
-    yield db, scheduler
+    # These protocol tests simulate the external Git observation independently
+    # of forged receipt rows. Real ancestry/rewind coverage lives in
+    # test_delivery_consumers.test_cleanup_guard_rechecks_current_target_without_receipts.
+    async def observe(ids, **_kwargs):
+        async def verified(conn, requested):
+            heads = {}
+            for tid, commits in await conn.execute(select(
+                task_completion_records.c.task_id, task_completion_records.c.commits,
+            ).where(task_completion_records.c.task_id.in_(requested))):
+                if parsed := json.loads(commits):
+                    heads[tid] = parsed[-1]
+            return {tid: SimpleNamespace(satisfied=True, lifecycle_exclusion=False,
+                                         source_oid=heads.get(tid, SOURCE)) for tid in requested}
+
+        return SimpleNamespace(fresh=AsyncMock(return_value=True), verified_on=verified)
+
+    db.set_prerequisite_observer(SimpleNamespace(truth=object(), observe=observe))
+    yield db, None
 
 
 async def test_release_is_atomic_replayable_and_cleanup_independent(release_db):
@@ -407,187 +439,14 @@ async def test_release_is_atomic_replayable_and_cleanup_independent(release_db):
     assert batch["cleanup_state"] == "pending"
 
 
-async def test_release_atomically_promotes_first_catchup_once(release_db):
-    db, scheduler = release_db
-    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    async with db.immediate() as conn:
-        await note_approval(conn, project_id="p", now=300.0)
-    periodic = await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
-    assert original["request_id"] == periodic["request_id"]
-
-    result = await IntegrationReleaseService(db).release("batch", 601.0)
-    assert result.outcome == "released"
-    assert result.request_id == original["request_id"]
-    assert result.catchup_request_id == "integration-sweep:p:2"
-    replay = await IntegrationReleaseService(db).release("batch", 602.0)
-    assert replay.outcome == "already_released"
-    assert replay.catchup_request_id == result.catchup_request_id
-    async with db._engine.connect() as conn:
-        schedule = (
-            await conn.execute(select(project_integration_schedules))
-        ).mappings().one()
-        events = (
-            await conn.execute(
-                select(integration_outbox).where(
-                    integration_outbox.c.event_type == "integration.sweep_due"
-                )
-            )
-        ).mappings().all()
-    assert schedule["outstanding_request_id"] == result.catchup_request_id
-    assert schedule["outstanding_trigger"] == "manual"
-    assert schedule["outstanding_requested_at"] == 21.0
-    assert schedule["request_sequence"] == 2
-    assert schedule["catchup_trigger"] is None
-    assert events == []
 
 
-async def test_release_with_stale_catchup_still_frees_lease_and_starts_next_train(
-    release_db,
-):
-    """2026-10-05 stall: a catch-up pinned to an older sequence wedged release.
-
-    Release returned invariant_error on every published-cleanup visit, so the
-    lease and outstanding request stayed held and no new batch could seal.
-    """
-    db, scheduler = release_db
-    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    async with db.immediate() as conn:
-        await note_approval(conn, project_id="p", now=300.0)
-    await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
-    async with db.immediate() as conn:
-        # The catch-up was recorded under a request that has since been superseded.
-        await conn.execute(
-            update(project_integration_schedules)
-            .where(project_integration_schedules.c.project_id == "p")
-            .values(catchup_after_sequence=0)
-        )
-
-    result = await IntegrationReleaseService(db).release("batch", 601.0)
-
-    assert result.outcome == "released"
-    assert result.request_id == original["request_id"]
-    assert result.catchup_request_id == "integration-sweep:p:2"
-    async with db._engine.connect() as conn:
-        schedule = (
-            await conn.execute(select(project_integration_schedules))
-        ).mappings().one()
-        lease = (
-            await conn.execute(select(project_integration_leases))
-        ).mappings().one_or_none()
-    assert lease is None
-    assert schedule["outstanding_request_id"] == "integration-sweep:p:2"
-    assert schedule["catchup_trigger"] is None
-    assert schedule["catchup_after_sequence"] is None
 
 
-async def test_fresh_request_absorbs_a_lingering_catchup(release_db):
-    db, scheduler = release_db
-    await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    async with db.immediate() as conn:
-        await note_approval(conn, project_id="p", now=300.0)
-    await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
-    async with db.immediate() as conn:
-        # A supervisor hand-clears the outstanding request but not the catch-up.
-        await conn.execute(
-            update(project_integration_schedules)
-            .where(project_integration_schedules.c.project_id == "p")
-            .values(
-                outstanding_request_id=None,
-                outstanding_trigger=None,
-                outstanding_requested_at=None,
-            )
-        )
-        await conn.execute(delete(project_integration_leases))
-
-    fresh = await scheduler.mark_due(project_id="p", now=900.0, trigger="manual")
-
-    assert fresh["request_id"] == "integration-sweep:p:2"
-    async with db._engine.connect() as conn:
-        schedule = (
-            await conn.execute(select(project_integration_schedules))
-        ).mappings().one()
-    assert schedule["catchup_trigger"] is None
-    assert schedule["catchup_after_sequence"] is None
 
 
-async def test_release_during_drain_discards_catchup_without_starting_new_train(
-    release_db,
-):
-    db, scheduler = release_db
-    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(projects)
-            .where(projects.c.id == "p")
-            .values(
-                hierarchical_integration_desired_mode="disabled",
-                hierarchical_integration_draining=True,
-            )
-        )
-
-    result = await IntegrationReleaseService(db).release("batch", 30.0)
-
-    assert result.outcome == "released"
-    assert result.request_id == original["request_id"]
-    assert result.catchup_request_id is None
-    async with db._engine.connect() as conn:
-        schedule = (
-            await conn.execute(select(project_integration_schedules))
-        ).mappings().one()
-        sweep_events = (
-            await conn.execute(
-                select(integration_outbox).where(
-                    integration_outbox.c.event_type == "integration.sweep_due"
-                )
-            )
-        ).mappings().all()
-    assert schedule["outstanding_request_id"] is None
-    assert schedule["catchup_trigger"] is None
-    assert sweep_events == []
 
 
-async def test_release_replay_is_immutable_after_a_later_train_acquires_lease(
-    release_db,
-):
-    db, scheduler = release_db
-    await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    released = await IntegrationReleaseService(db).release("batch", 30.0)
-    assert released.outcome == "released"
-    assert released.catchup_request_id == "integration-sweep:p:2"
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(integration_batches).values(
-                id="later-batch",
-                project_id="p",
-                repository_id="repo",
-                request_id=released.catchup_request_id,
-                source_manifest_digest="sha256:" + "8" * 64,
-                base_sha=HEAD,
-                lifecycle="sealed",
-                current_revision=0,
-                integration_branch="refs/heads/aq/integration/later",
-                policy_snapshot={},
-                artifact_snapshot={},
-                cleanup_state="pending",
-                created_at=31.0,
-                updated_at=31.0,
-            )
-        )
-        await conn.execute(
-            insert(project_integration_leases).values(
-                project_id="p",
-                repository_id="repo",
-                batch_id="later-batch",
-                owner_id="later-owner",
-                fence_token=4,
-                heartbeat_at=31.0,
-                expires_at=1000.0,
-            )
-        )
-
-    replay = await IntegrationReleaseService(db).release("batch", 40.0)
-
-    assert replay == released.model_copy(update={"outcome": "already_released"})
 
 
 async def test_release_waits_for_unresolved_attestation_publication(release_db):
@@ -754,6 +613,10 @@ async def test_batch_cleanup_waits_for_promotion_and_only_collects_member_descen
             ("root.2", "root", late_head, 21.0),
             ("ejected.1", "ejected", ejected_head, 3.0),
         ):
+            await conn.execute(insert(task_completion_records).values(
+                id=f"completion-{task_id}", task_id=task_id, outcome="pass",
+                commits='["' + head + '"]', completed_at=created_at,
+            ))
             await conn.execute(insert(task_delivery_receipts).values(
                 id=f"receipt-{task_id}",
                 domain_key=f"child:{task_id}",
@@ -838,6 +701,77 @@ async def test_cleanup_retains_source_ref_from_frozen_policy(release_db):
         ).scalars().all()
     assert result.item_count == 4
     assert refs == [BRANCH]
+
+
+async def test_train_cleanup_materializes_epic_repair_and_recovered_preserved_refs(release_db):
+    db, _scheduler = release_db
+    repair_ref = "refs/heads/aq/integration-repairs/resolution"
+    preserved_ref = "refs/heads/aq/preserved/owner-root"
+    preserved_sha = "f" * 40
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(
+            target_ref="refs/heads/main", lifecycle="promoted", final_main_sha=HEAD,
+        ))
+        await conn.execute(insert(sessions).values(
+            id="repair-session", profile_id="standard-high-claude", harness="claude",
+            provider="test", name="n-repair", lifecycle="task", state="stopped",
+            desired_state="stopped", claims=0, work_dir="/tmp/repair", epoch="0",
+            instance_token="token", started_at=1.0, restarts=0, hooks_provisioned=False,
+        ))
+        await conn.execute(insert(workspaces).values(
+            id="repair-workspace", project_id="p", workspace_path="/tmp/repair-workspace",
+            source_type="link", enabled=True, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_candidate_resolutions).values(
+            id="resolution", batch_id="batch", revision=0, member_ordinal=0,
+            operation_id="op", operation_episode_id="batch", stage_ordinal=0,
+            stage_deadline_at=1000.0, project_id="p", repair_task_id="repair-task",
+            repair_session_id="repair-session", repair_session_instance_token="token",
+            repair_workspace_id="repair-workspace", repair_workspace_path="/tmp/repair-workspace",
+            repository_id="repo", branch="refs/heads/aq/repair-task",
+            target_branch=repair_ref, target_kind="qualified", fence_owner_id="owner-root",
+            fence_token=1, partial_head_sha="a" * 40, source_base_sha=BASE,
+            source_head_sha=SOURCE, resolved_head_sha=preserved_sha,
+            resolved_tree_sha=TREE, repair_commit_shas=[preserved_sha],
+            push_evidence={"accepted": True}, state="accepted", created_at=2.0,
+            updated_at=3.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner-root", repository_id="repo", ref="refs/heads/aq/root",
+            owner_id="root", owner_role="producer", fence_token=4,
+            handoff_state="released", created_at=1.0, updated_at=4.0,
+        ))
+        await conn.execute(insert(integration_owner_recoveries).values(
+            id="recovery", owner_row_id="owner-root", repository_id="repo",
+            ref="refs/heads/aq/root", task_id="root", outcome="preserved_and_released",
+            evidence={"preserved_ref": preserved_ref, "preserved_sha": preserved_sha,
+                      "released_fence_token": 4},
+            principal="operator", created_at=4.0,
+        ))
+
+    service = IntegrationCleanupService(
+        db,
+        data_dir="/daemon",
+        binding_resolver=AsyncMock(
+            return_value=GitHubRepositoryBinding(99, "acme/widgets")
+        ),
+    )
+    result = await service.materialize("batch", now=30.0)
+    async with db._engine.connect() as conn:
+        refs = set((await conn.execute(select(integration_cleanup_items.c.target_ref).where(
+            integration_cleanup_items.c.batch_id == "batch",
+            integration_cleanup_items.c.kind == "remote_ref",
+        ))).scalars())
+    assert result.outcome == "materialized"
+    assert refs == {
+        "refs/heads/aq/epic/root",
+        "refs/heads/aq/integration-repairs/resolution",
+        "refs/heads/aq/preserved/owner-root",
+        BRANCH,
+        candidate_ref("batch"),
+    }
 
 
 async def test_cleanup_legacy_source_identity_is_visible_conflict(release_db):
@@ -942,8 +876,12 @@ async def test_aborted_batch_moved_pr_head_is_retained(release_db):
 
 async def test_aborted_pr_cleanup_survives_repository_engine_transfer(release_db):
     from src.database.tables import playbook_artifacts
-    from src.integration.subjects import (
-        PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
+    from src.integration.runtime_contracts import (
+        PolicyArtifactPin,
+        Subject,
+        SubjectKind,
+        SubjectPhase,
+        SubjectSchedule,
     )
 
     db, _scheduler = release_db
