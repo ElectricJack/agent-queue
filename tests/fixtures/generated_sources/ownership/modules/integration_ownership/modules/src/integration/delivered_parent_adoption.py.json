@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/delivered_parent_adoption.py::DeliveredParentAdoption.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 727,
+      "owner": "DeliveredParentAdoption.run",
+      "owner_fingerprint": "38fd4722d1d5f99312fe9807e52c2222df36263be49e83f83aca31d3a8c242c0",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -9,6 +9,7 @@ rule and the publishing check.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import time
@@ -464,12 +465,15 @@ async def test_installation_default_set_show_and_clear(db, tmp_path):
 # --- pool refresh: a new claim never inherits a stale identity -----------------
 
 
-@pytest.fixture
-async def claim_env(db, tmp_path):
+@pytest.fixture(params=[0.5, 0.0], ids=["warm", "deferred"])
+async def claim_env(db, tmp_path, request, monkeypatch):
     from src.intelligence_classes import IntelligenceClass
     from src.orchestrator import Orchestrator
     from tests.assignment_routing_helpers import route_source_for
 
+    monkeypatch.setattr(
+        "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", request.param
+    )
     await db.create_project(Project(id="p", name="p"))
     await db.create_profile(
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
@@ -533,7 +537,15 @@ async def claim_env(db, tmp_path):
             "kind": "session", "session_id": sid, "task_id": None, "project_id": "p",
             "elevated": False,
         }
-        return await handler._cmd_task_claim({"next": True})
+        result = await handler._cmd_task_claim({"next": True})
+        if result["result"] == "claim_in_progress":
+            # Identity assertions concern the settled claim, independent of
+            # whether preparation outlives the no-wait response allowance.
+            key = (sid, result["task_id"], result["claim_epoch"])
+            preparation = orch.claim_preparations[key]
+            await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+            result = await handler._cmd_task_claim({"next": True})
+        return result
 
     return SimpleNamespace(config=config, db=db, task=task, session=session, claim=claim)
 
@@ -831,6 +843,40 @@ async def test_a_published_stacked_prerequisite_is_not_judged(push_env, identity
     assert result.get("oid") == _git(env.work, "rev-parse", "HEAD"), result
     assert env.pushed()
     assert _ident(env.work, head) == "Claude <noreply@anthropic.com>|Claude <noreply@anthropic.com>"
+
+
+@pytest.mark.parametrize("foreign_commit", [False, True])
+async def test_a_retained_stack_source_survives_branch_cleanup(push_env, foreign_commit):
+    from src.database.tables import task_branch_origins
+
+    env = push_env
+    await env.session(JACK.digest)
+    await env.db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.LINK, source_path=str(env.work),
+    ))
+    await env.db.update_task("t1", repo_id="r")
+    head = await _source_head(env)
+    await _declare_prerequisite(env, repo_id="r")
+    base = _git(env.work, "rev-parse", "origin/main")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="prepared", task_id="t1", repository_id="r", branch_name="aq/t1",
+            parent_ref="main", base_sha=base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+            stack_snapshot={"prerequisites": {"prerequisite": {
+                "retained": True, "repository_id": "r", "checkpoint_sha": head,
+            }}},
+        ))
+    _git(env.work, "push", "origin", ":aq/source")
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge retained source", head, env=JACK.env())
+    env.commit("new-work", CLAUDE if foreign_commit else JACK.env())
+    result = await env.push()
+    if foreign_commit:
+        assert "refusing to publish: 1 new commit(s)" in result["error"], result
+        assert not env.pushed()
+    else:
+        assert result.get("oid") == _git(env.work, "rev-parse", "HEAD"), result
+        assert env.pushed()
 
 
 async def test_a_prerequisite_tracking_ref_cannot_hide_a_new_foreign_commit(push_env):
