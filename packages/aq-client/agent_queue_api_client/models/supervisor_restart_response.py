@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, TypeVar
+
+from attrs import define as _attrs_define
+from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
+
+T = TypeVar("T", bound="SupervisorRestartResponse")
+
+
+@_attrs_define
+class SupervisorRestartResponse:
+    """
+    Attributes:
+        session_id (str):
+        name (str):
+        state (str):
+        mode (str):
+        success (bool | Unset):  Default: True.
+    """
+
+    session_id: str
+    name: str
+    state: str
+    mode: str
+    success: bool | Unset = True
+    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        session_id = self.session_id
+
+        name = self.name
+
+        state = self.state
+
+        mode = self.mode
+
+        success = self.success
+
+        field_dict: dict[str, Any] = {}
+        field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "session_id": session_id,
+                "name": name,
+                "state": state,
+                "mode": mode,
+            }
+        )
+        if success is not UNSET:
+            field_dict["success"] = success
+
+        return field_dict
+
+    @classmethod
+    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        d = dict(src_dict)
+        session_id = d.pop("session_id")
+
+        name = d.pop("name")
+
+        state = d.pop("state")
+
+        mode = d.pop("mode")
+
+        success = d.pop("success", UNSET)
+
+        supervisor_restart_response = cls(
+            session_id=session_id,
+            name=name,
+            state=state,
+            mode=mode,
+            success=success,
+        )
+
+        supervisor_restart_response.additional_properties = d
+        return supervisor_restart_response
+
+    @property
+    def additional_keys(self) -> list[str]:
+        return list(self.additional_properties.keys())
+
+    def __getitem__(self, key: str) -> Any:
+        return self.additional_properties[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.additional_properties[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.additional_properties[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.additional_properties
