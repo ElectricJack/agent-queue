@@ -38,6 +38,22 @@ class IntelligenceClass:
     customized: bool = False  # Explicit editor saves opt out of default migration.
 
 
+def is_class_source(path: str | os.PathLike) -> bool:
+    """True for an ``<id>.md`` class source; a generated vault hub is navigation, not a class."""
+    from src.vault_index import is_generated_hub_file
+
+    path = os.fspath(path)
+    if not path.endswith(".md") or is_generated_hub_file(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            frontmatter = _FRONTMATTER_RE.match(f.read(4096))
+    except (OSError, UnicodeError):
+        return True  # Absent or unreadable sources stay visible to their callers.
+    hub = r"^type:[ \t]*hub[ \t]*$"
+    return not (frontmatter and re.search(hub, frontmatter.group(1), re.MULTILINE))
+
+
 def _parse_file(path: str) -> IntelligenceClass | None:
     with open(path, "rb") as f:
         raw = f.read()
@@ -161,10 +177,8 @@ def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
         return {}
     out: dict[str, IntelligenceClass] = {}
     for name in sorted(os.listdir(root)):
-        if not name.endswith(".md"):
-            continue
         path = os.path.join(root, name)
-        if os.path.islink(path) or not os.path.isfile(path):
+        if os.path.islink(path) or not os.path.isfile(path) or not is_class_source(path):
             continue
         try:
             cls = _parse_file(path)

@@ -194,7 +194,7 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
 def _guidance_files() -> list[Path]:
     """Every static document that hands a reader a command line to run."""
     return (
-        sorted(SKILLS_DIR.glob("*/SKILL.md"))
+        sorted(SKILLS_DIR.rglob("*.md"))
         + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
         + [path for path in OPERATOR_DOCS if path.exists()]
         + sorted(CLI_REFERENCE_DIR.glob("*.md"))
@@ -202,8 +202,8 @@ def _guidance_files() -> list[Path]:
 
 
 def _label(path: Path) -> str:
-    if path.name == "SKILL.md":
-        return f"src/skills/{path.parent.name}/SKILL.md"
+    if path.is_relative_to(SKILLS_DIR):
+        return f"src/skills/{path.relative_to(SKILLS_DIR).as_posix()}"
     if path.is_relative_to(PRIME_TEMPLATES_DIR):
         return f"src/prime/templates/{path.relative_to(PRIME_TEMPLATES_DIR)}"
     return str(path.relative_to(_REPO_ROOT))
