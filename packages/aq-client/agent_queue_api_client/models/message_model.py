@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.message_model_pane_open_type_0 import MessageModelPaneOpenType0
+    from ..models.message_model_provenance_type_0 import MessageModelProvenanceType0
 
 
 T = TypeVar("T", bound="MessageModel")
@@ -44,6 +45,7 @@ class MessageModel:
         via (None | str | Unset):
         body_kind (None | str | Unset):
         pane_open (MessageModelPaneOpenType0 | None | Unset):
+        provenance (MessageModelProvenanceType0 | None | Unset):
     """
 
     id: str
@@ -70,10 +72,12 @@ class MessageModel:
     via: None | str | Unset = UNSET
     body_kind: None | str | Unset = UNSET
     pane_open: MessageModelPaneOpenType0 | None | Unset = UNSET
+    provenance: MessageModelProvenanceType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.message_model_pane_open_type_0 import MessageModelPaneOpenType0
+        from ..models.message_model_provenance_type_0 import MessageModelProvenanceType0
 
         id = self.id
 
@@ -181,6 +185,14 @@ class MessageModel:
         else:
             pane_open = self.pane_open
 
+        provenance: dict[str, Any] | None | Unset
+        if isinstance(self.provenance, Unset):
+            provenance = UNSET
+        elif isinstance(self.provenance, MessageModelProvenanceType0):
+            provenance = self.provenance.to_dict()
+        else:
+            provenance = self.provenance
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -229,12 +241,15 @@ class MessageModel:
             field_dict["body_kind"] = body_kind
         if pane_open is not UNSET:
             field_dict["pane_open"] = pane_open
+        if provenance is not UNSET:
+            field_dict["provenance"] = provenance
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.message_model_pane_open_type_0 import MessageModelPaneOpenType0
+        from ..models.message_model_provenance_type_0 import MessageModelProvenanceType0
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -391,6 +406,23 @@ class MessageModel:
 
         pane_open = _parse_pane_open(d.pop("pane_open", UNSET))
 
+        def _parse_provenance(data: object) -> MessageModelProvenanceType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                provenance_type_0 = MessageModelProvenanceType0.from_dict(data)
+
+                return provenance_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(MessageModelProvenanceType0 | None | Unset, data)
+
+        provenance = _parse_provenance(d.pop("provenance", UNSET))
+
         message_model = cls(
             id=id,
             from_kind=from_kind,
@@ -416,6 +448,7 @@ class MessageModel:
             via=via,
             body_kind=body_kind,
             pane_open=pane_open,
+            provenance=provenance,
         )
 
         message_model.additional_properties = d

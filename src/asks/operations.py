@@ -71,8 +71,12 @@ async def reserve_fidelity_review_dispatch(db, batch, *, conn):
     decision = await db.get_ask_decision(batch["decision_id"], conn=conn)
     if (not decision or decision["packet"]["source"]["project_id"] != batch["project_id"]):
         raise AskError("ask.not_found", "Batch approval decision was not found")
-    op = await operation(db, decision, FIDELITY_REVIEW_DISPATCH, conn=conn,
-                         parameters={"batch_id": batch["batch_id"]})
+    # Materialization reserved it with the revision it held at; later
+    # revisions reuse that row rather than conflicting on its parameters.
+    op = await get_operation(conn, decision["id"], FIDELITY_REVIEW_DISPATCH)
+    if op is None:
+        op = await operation(db, decision, FIDELITY_REVIEW_DISPATCH, conn=conn,
+                             parameters={"batch_id": batch["batch_id"]})
     if op["parameters"].get("batch_id") != batch["batch_id"]:
         raise AskError("ask.idempotency_conflict", "Decision dispatch belongs to another batch")
     return op
