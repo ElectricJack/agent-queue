@@ -1,6 +1,7 @@
 """Git facts for the reduced train, without delivery records or state mutations.
 
 A visit reuses the fetched delivery snapshot and the completion source locator.
+Overlapping readers share only fetches started after their own arrival.
 Only immutable Git facts survive visits, keyed by repository and source/target
 OIDs. Task identity, authorization and remote freshness are checked separately
 at use; a cached fact never authorizes a close or publication on its own.
@@ -9,24 +10,36 @@ Legacy consumers remain on delivery_truth until the protocol cutover.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.delivery_truth import (
+    CONTAINMENT_CONTRACT_VERSION,
+    INVALID_PARENT_COMPLETION,
     MISSING_PROVENANCE,
+    DeliveryAnswer,
     DeliveryEvidence,
     DeliveryRequest,
     DeliverySnapshot,
     DeliveryState,
+    delivered,
     delivery_snapshot,
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.integration.selection_metrics import selection_count
 
 logger = logging.getLogger(__name__)
+LEGACY_CONTRACT_VERSION = "legacy-equivalence-v1"
+
+
+class SharedFetchCancelled(RuntimeError):
+    """The fetching reader was cancelled; overlapping readers can retry a later visit."""
 
 
 class _HistoricalPatchFailure(GitError):
@@ -77,12 +90,22 @@ class _PairFacts:
     trailers: dict[str, bool] = field(default_factory=dict)
     patches: dict[str, bool] = field(default_factory=dict)
     equal_tree: bool | None = None
+    merge_noop: bool | None = None
 
 
 @dataclass(frozen=True)
 class GitDeliveryEvidence(DeliveryEvidence):
     source_base: str | None = None
     error_detail: str | None = None
+
+
+@dataclass
+class _SharedFetch:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    fetch_starts: int = 0
+    snapshot: GitTruthSnapshot | None = None
+    error: Exception | None = None
+    readers: int = 0
 
 
 class GitTruth:
@@ -92,31 +115,90 @@ class GitTruth:
         self, git: GitManager, *, cache_limit: int = 2048,
         retry_delay: float = 1, max_retry_delay: float = 60,
         clock: Callable[[], float] = time.monotonic,
+        share_fetches: bool = False,
+        contract_version: str = LEGACY_CONTRACT_VERSION,
     ):
         if cache_limit < 1 or retry_delay <= 0 or max_retry_delay < retry_delay:
             raise ValueError("invalid Git truth cache/backoff limits")
         self.git = git
+        if contract_version not in {LEGACY_CONTRACT_VERSION, CONTAINMENT_CONTRACT_VERSION}:
+            raise ValueError("unsupported delivery proof contract")
+        self.contract_version = contract_version
         self.cache_limit = cache_limit
         self.retry_delay, self.max_retry_delay, self.clock = retry_delay, max_retry_delay, clock
-        self._cache: OrderedDict[tuple[str, str, str, str], _PairFacts] = OrderedDict()
+        self._cache: OrderedDict[tuple, _PairFacts] = OrderedDict()
+        # Validated immutable records and whole proofs must be cached too:
+        # caching ancestry alone still launches eight processes per warm task.
+        self._completions: OrderedDict[tuple, dict] = OrderedDict()
+        self._proofs: OrderedDict[tuple, GitDeliveryEvidence | DeliveryAnswer] = OrderedDict()
+        self._objects: OrderedDict[tuple, str] = OrderedDict()
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
+        self.share_fetches = share_fetches
+        self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
 
     async def snapshot(
         self, store: str, *, project_id: str, repository_id: str,
         repository_url: str, target_ref: str,
     ) -> GitTruthSnapshot:
-        """Fetch once; all sources and additional targets share that observation."""
+        """Share only an observation whose fetch starts after this caller arrives.
+
+        A caller arriving during a fetch waits for the next one; readers queued
+        behind that fetch share its successor, bounding a burst to two fetches.
+        There is no age-based cache. The lock covers fetch and ref capture.
+        Unexpected failures propagate to overlapping readers without retrying.
+        If the fetching caller is cancelled, only it receives CancelledError;
+        other readers receive SharedFetchCancelled. A later visit can try again.
+        """
+        if not self.share_fetches:
+            return await self._snapshot(store, project_id=project_id,
+                repository_id=repository_id, repository_url=repository_url, target_ref=target_ref)
+        key = str(store), project_id, repository_id, repository_url
+        shared = self._fetches.setdefault(key, _SharedFetch())
+        arrival = shared.fetch_starts
+        shared.readers += 1
+        try:
+            async with shared.lock:
+                if shared.error is not None:
+                    raise shared.error
+                if shared.fetch_starts <= arrival:
+                    shared.fetch_starts += 1
+                    try:
+                        shared.snapshot = await self._snapshot(store, project_id=project_id,
+                            repository_id=repository_id, repository_url=repository_url,
+                            target_ref=target_ref)
+                    except asyncio.CancelledError:
+                        shared.error = SharedFetchCancelled("shared fetch was cancelled")
+                        raise
+                    except Exception as exc:
+                        shared.error = exc
+                        raise
+                else:
+                    selection_count("shared_fetch_hits")
+                assert shared.snapshot is not None
+                return shared.snapshot.for_target(target_ref)
+        finally:
+            shared.readers -= 1
+            if not shared.readers:
+                del self._fetches[key]
+
+    async def _snapshot(
+        self, store: str, *, project_id: str, repository_id: str,
+        repository_url: str, target_ref: str,
+    ) -> GitTruthSnapshot:
         key = repository_id, repository_url
         failure = self._failures.get(key)
         if failure is not None and self.clock() < failure[0]:
             return GitTruthSnapshot(self, DeliverySnapshot(
                 self.git, str(store), project_id, repository_id, repository_url,
                 target_ref, None, {}, error=failure[2],
+                contract_version=self.contract_version,
             ), retry_at=failure[0])
+        selection_count("fetch_starts")
         observation = await delivery_snapshot(
             self.git, store, project_id=project_id, repository_id=repository_id,
             repository_url=repository_url, target_ref=target_ref,
         )
+        observation = replace(observation, contract_version=self.contract_version)
         retry_at = None
         if observation.error and observation.error.startswith("snapshot_git_error:"):
             delay = min(failure[1] * 2 if failure else self.retry_delay, self.max_retry_delay)
@@ -126,13 +208,61 @@ class GitTruth:
             self._failures.pop(key, None)
         return GitTruthSnapshot(self, observation, retry_at=retry_at)
 
-    def _pair(self, snapshot: DeliverySnapshot, source_oid: str) -> _PairFacts:
-        key = snapshot.repository_id, snapshot.repository_url, source_oid, snapshot.target_oid
+    def _pair(self, snapshot: DeliverySnapshot, source_oid: str, *,
+              contract_version=LEGACY_CONTRACT_VERSION) -> _PairFacts:
+        key = (snapshot.store, snapshot.repository_id, snapshot.repository_url,
+               source_oid, snapshot.target_oid, contract_version)
         facts = self._cache.setdefault(key, _PairFacts())
         self._cache.move_to_end(key)
         while len(self._cache) > self.cache_limit:
             self._cache.popitem(last=False)
         return facts
+
+    def _remember(self, cache, key, value):
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > self.cache_limit:
+            cache.popitem(last=False)
+        return value
+
+    def _record_key(self, snapshot: DeliverySnapshot, identity: CompletionIdentity) -> tuple:
+        return (snapshot.store, snapshot.repository_id, snapshot.repository_url, identity, tuple(
+            snapshot.source_heads.get(ref) for ref in identity.read_refs
+        ))
+
+    async def _completion(self, snapshot: DeliverySnapshot, identity: CompletionIdentity):
+        """Validate once per pinned metadata OID and exact completion identity.
+
+        Ref absence and failed validation are never cached. Retargets, new
+        generations, repositories and stores cannot consume an earlier record.
+        """
+        key = self._record_key(snapshot, identity)
+        if key in self._completions:
+            selection_count("completion_cache_hits")
+            self._completions.move_to_end(key)
+            return deepcopy(self._completions[key])
+        selection_count("completion_cache_misses")
+        record = await GitProvenance(self.git, snapshot.store,
+                                    repository_url=snapshot.repository_url).read_completion(
+            identity, refs=snapshot.source_heads,
+        )
+        if record is not None:
+            self._remember(self._completions, key, deepcopy(record))
+        return record
+
+    async def exact(self, snapshot: DeliverySnapshot, oid: str, *, cached_only=False) -> bool:
+        key = snapshot.store, snapshot.repository_id, snapshot.repository_url, oid
+        if key not in self._objects:
+            selection_count("object_cache_misses")
+            if cached_only:
+                return False
+            await GitProvenance(self.git, snapshot.store,
+                                repository_url=snapshot.repository_url).exact(oid)
+            self._remember(self._objects, key, oid)
+        else:
+            selection_count("object_cache_hits")
+            self._objects.move_to_end(key)
+        return True
 
 
 @dataclass(frozen=True)
@@ -140,23 +270,47 @@ class GitTruthSnapshot:
     truth: GitTruth
     observation: DeliverySnapshot
     retry_at: float | None = None
+    #: Diagnostics can consume only proofs populated by a background reader.
+    cached_only: bool = False
 
     @property
     def target_oid(self) -> str | None:
         return self.observation.target_oid
+
+    async def delivered(self, request: DeliveryRequest, target_ref: str | None = None):
+        return await delivered(request, target_ref or request.target_ref, observation=self)
+
+    async def strict_is_delivered(self, request: DeliveryRequest, *, source_base=None):
+        """Compatibility projection of the common strict contract for shadow consumers."""
+        answer = await self.delivered(request)
+        return GitDeliveryEvidence(request, answer.state, answer.target_oid, answer.source_oid,
+                                   answer.reason, source_base, answer.diagnostic)
+
+    async def strictly_contains_source(self, source_oid: str) -> bool | None:
+        """Frozen-input delegate to the same replacement-disabled ancestry primitive."""
+        try:
+            return await strict_source_ancestry(self, source_oid)
+        except (GitError, OSError, ValueError):
+            return None
 
     def for_target(self, target_ref: str) -> GitTruthSnapshot:
         """Another target from the same fetched repository, without a second fetch."""
         if not target_ref.startswith("refs/heads/"):
             raise ValueError("target must be a full branch ref")
         observation = self.observation
+        if observation.acquisition_error:
+            return replace(self, observation=replace(
+                observation, target_ref=target_ref, target_oid=None,
+                error="target_ref_missing" if target_ref in observation.absent_target_refs
+                else observation.acquisition_error,
+            ))
         oid = observation.source_heads.get(
             "refs/remotes/origin/" + target_ref.removeprefix("refs/heads/")
         )
         return replace(self, observation=replace(
             observation, target_ref=target_ref, target_oid=oid,
-            error=observation.error if observation.error not in {None, "missing_target"} else (
-                None if is_valid_git_oid(oid) else "missing_target"
+            error=observation.error if observation.error not in {None, "target_ref_missing"} else (
+                None if is_valid_git_oid(oid) else "target_ref_missing"
             ),
         ))
 
@@ -164,6 +318,9 @@ class GitTruthSnapshot:
         self, request: DeliveryRequest, *, source_base: str | None = None
     ) -> GitDeliveryEvidence:
         return await is_delivered(self, request, source_base=source_base)
+
+    async def read_completion(self, identity: CompletionIdentity):
+        return await self.truth._completion(self.observation, identity)
 
     async def evaluate_many(self, requests):
         return {request.task_id: await self.is_delivered(request) for request in requests}
@@ -181,6 +338,8 @@ class GitTruthSnapshot:
         The caller separately revalidates ordinary identity and authorization.
         None is an unavailable observation and never permission to collect.
         """
+        if self.truth.contract_version == CONTAINMENT_CONTRACT_VERSION:
+            return await self.strictly_contains_source(source_oid)
         observed = self.observation
         if observed.error or not all(is_valid_git_oid(oid) for oid in (
             source_oid, source_base, observed.target_oid,
@@ -215,8 +374,14 @@ class GitTruthSnapshot:
                 return True
             if facts.equal_tree is None:
                 facts.equal_tree = await _equal_tree(observed, source_oid, observed.target_oid)
-            if not facts.equal_tree and patch_error is not None:
-                raise patch_error
+            if not facts.equal_tree:
+                if facts.merge_noop is None:
+                    facts.merge_noop = await merge_noop(
+                        observed, source_oid, observed.target_oid)
+                if facts.merge_noop:
+                    return True
+                if patch_error is not None:
+                    raise patch_error
             return facts.equal_tree
         except (GitError, OSError, ValueError):
             return None
@@ -251,6 +416,41 @@ async def _run(snapshot: DeliverySnapshot, *args: str) -> str:
     return result.stdout
 
 
+async def _diff_paths(snapshot: DeliverySnapshot, base: str, head: str) -> list[str]:
+    return (await _run(snapshot, "diff", "--no-renames", "--name-only", "-z",
+                       base, head, "--")).split("\0")[:-1]
+
+
+@dataclass
+class _GeneratedPaths:
+    """Classify exact paths using attributes from the immutable target, once each."""
+
+    snapshot: DeliverySnapshot
+    known: dict[str, bool] = field(default_factory=dict)
+
+    async def select(self, paths: Sequence[str]) -> set[str]:
+        missing = sorted(set(paths) - self.known.keys())
+        if missing:
+            result = await self.snapshot.git.arun_git_result(
+                ["--no-replace-objects", "check-attr", f"--source={self.snapshot.target_oid}",
+                 "-z", "--stdin", "merge"],
+                cwd=self.snapshot.store, stdin="\0".join(missing) + "\0",
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "generated attribute probe failed")
+            fields = result.stdout.split("\0")[:-1]
+            if len(fields) != 3 * len(missing) or any(
+                fields[i] != path or fields[i + 1] != "merge"
+                for i, path in zip(range(0, len(fields), 3), missing, strict=True)
+            ):
+                raise GitError("invalid generated attribute result")
+            self.known.update(
+                (fields[i], fields[i + 2] == "aq-generated")
+                for i in range(0, len(fields), 3)
+            )
+        return {path for path in paths if self.known[path]}
+
+
 async def _whole_patch(
     snapshot: DeliverySnapshot, source: str, base: str, target: str,
 ) -> bool:
@@ -265,19 +465,30 @@ async def _whole_patch(
     await provenance.exact(base)
     if not await provenance.ancestor(base, source):
         raise GitError("source base is not its ancestor")
-    patch = await snapshot.git.apatch_id(snapshot.store, base, source)
+    generated = _GeneratedPaths(snapshot)
+
+    async def patch_id(start: str, head: str, paths: list[str]) -> str | None:
+        excluded = await generated.select(paths)
+        if excluded:
+            return await snapshot.git.apatch_id(
+                snapshot.store, start, head, exclude_paths=sorted(excluded),
+            )
+        return await snapshot.git.apatch_id(snapshot.store, start, head)
+
+    paths = await _diff_paths(snapshot, base, source)
+    patch = await patch_id(base, source, paths)
     if patch is None:
         return False
+    paths = [path for path in paths if not generated.known[path]]
     common_base = await provenance.ancestor(base, target)
     # Restrict expensive diff probes to commits touching source paths. Read
     # actual object parents with %P; path-limited rev-list rewrites parents.
-    paths = (await _run(snapshot, "diff", "--no-renames", "--name-only", "-z",
-                        base, source, "--")).split("\0")
     history = await _run(snapshot, "log", "--full-history", "--topo-order", "--reverse",
-                         "--format=%H %P", target,
-                         "--", *(path for path in paths if path))
+                         "--format=%H %P", target, *(("^" + base,) if common_base else ()),
+                         "--", *paths)
     starts = {base} if common_base else set()
     first_error = None
+    probes = 0
     for row in history.splitlines():
         head, *parents = row.split()
         after_base = common_base and await provenance.ancestor(base, head)
@@ -288,8 +499,16 @@ async def _whole_patch(
         for start in candidates:
             if start == head or not await provenance.ancestor(start, head):
                 continue
+            probes += 1
+            if probes > HISTORICAL_PATCH_PROBE_LIMIT:
+                # Every probe so far was negative: the search answers "not
+                # found" (pending), never unknown, so a long-lived source
+                # cannot block forever. A failed probe stays unavailable.
+                if first_error is not None:
+                    raise _HistoricalPatchFailure(first_error) from first_error
+                return False
             try:
-                candidate = await snapshot.git.apatch_id(snapshot.store, start, head)
+                candidate = await patch_id(start, head, await _diff_paths(snapshot, start, head))
             except (GitError, OSError) as exc:
                 # An optional historical probe cannot invalidate the retained
                 # source or prevent a later patch/tree from proving delivery.
@@ -307,6 +526,49 @@ async def _whole_patch(
     return False
 
 
+#: Patch-id comparisons one whole-source proof may run. The range search is
+#: quadratic in the commits after the source base that touch the source's
+#: paths; an old task on a hot path (2026-10-06: tests/selection_catalogue.json)
+#: ran for over 120 s each and kept the root visit past its timeout. Spent, the
+#: search answers negative unless a probe failed, and the cheaper no-op merge
+#: and tree proofs still run. History is bounded to base..target when the base
+#: is on the target: delivered work can only follow its base.
+HISTORICAL_PATCH_PROBE_LIMIT = 150
+
+
+async def merge_noop(
+    snapshot: DeliverySnapshot, source: str, target: str, *, target_tree: str | None = None,
+) -> bool:
+    """Merging the exact source changes only the target's generated artifacts.
+
+    Every change the source makes relative to the merge base is already in the
+    target, whatever commits carried it (squash, cherry-pick, re-delivery). A
+    non-generated conflict or difference is no proof. Read attributes from the
+    pinned target, so neither checkout state nor source edits can hide missing work.
+    """
+    result = await snapshot.git.arun_git_result(
+        ["--no-replace-objects", "merge-tree", "--write-tree", "--name-only", "-z",
+         target, source],
+        cwd=snapshot.store,
+    )
+    if result.returncode not in {0, 1}:
+        return False
+    merged, _, _ = (result.stdout or "").partition("\0")
+    if not is_valid_git_oid(merged):
+        return False
+    generated = _GeneratedPaths(replace(snapshot, target_oid=target))
+    if result.returncode:
+        # NUL output begins with the tree, conflicted filenames, then an empty
+        # field before informational messages. Filenames may contain newlines.
+        conflicts = result.stdout.split("\0\0", 1)[0].split("\0")[1:]
+        if not conflicts or set(conflicts) - await generated.select(conflicts):
+            return False
+    if merged == (target_tree or await snapshot.git.atree_sha(snapshot.store, target)):
+        return True
+    paths = await _diff_paths(snapshot, target, merged)
+    return not (set(paths) - await generated.select(paths))
+
+
 async def _equal_tree(snapshot: DeliverySnapshot, source: str, target: str) -> bool:
     tree = await snapshot.git.atree_sha(snapshot.store, source)
     # Historical equality, rather than only the current tree: subsequent work
@@ -320,26 +582,34 @@ async def is_delivered(
 ) -> GitDeliveryEvidence:
     """Ancestry, exact reachable AQ-Source, whole-source patch, then full tree.
 
-    Resolve the current ordinary completion from pinned Git provenance on every
-    call. Branch names, reported heads, settlements and receipts never locate
-    an artifact or satisfy delivery here. Missing input or failed Git is unknown.
+    Bind the current ordinary completion to pinned Git provenance on every call;
+    validation is reusable only for its exact immutable metadata OIDs. Full
+    proofs additionally bind every request field, source base and target OID.
+    Branch names, reported heads, settlements and receipts never locate an
+    artifact or satisfy delivery here. Missing input or failed Git is unknown.
     """
+    if snapshot.truth.contract_version == CONTAINMENT_CONTRACT_VERSION:
+        return await snapshot.strict_is_delivered(request, source_base=source_base)
     observed = snapshot.observation
     source = None
+    proof_key = None
 
     def answer(
         state: DeliveryState, reason: str, *, error_detail: str | None = None,
     ) -> GitDeliveryEvidence:
-        return GitDeliveryEvidence(
+        evidence = GitDeliveryEvidence(
             request, state, observed.target_oid, source, reason, source_base, error_detail,
         )
+        if proof_key is not None and state is not DeliveryState.UNKNOWN:
+            snapshot.truth._remember(snapshot.truth._proofs, proof_key, evidence)
+        return evidence
 
     if (request.project_id, request.repository_id, request.target_ref) != (
         observed.project_id, observed.repository_id, observed.target_ref,
     ):
         return answer(DeliveryState.UNKNOWN, "scope_mismatch")
     if observed.error or not observed.target_oid:
-        return answer(DeliveryState.UNKNOWN, observed.error or "missing_target")
+        return answer(DeliveryState.UNKNOWN, observed.error or "target_ref_missing")
     if request.task_status != "COMPLETED":
         return answer(DeliveryState.PENDING, "task_not_completed")
     step = "completion_identity"
@@ -348,16 +618,45 @@ async def is_delivered(
             request.project_id, request.repository_id, request.task_id,
             request.completion_id or request.legacy_generation,
         )
+        proof_key = (snapshot.truth._record_key(observed, identity),
+                     observed.target_oid, request, source_base)
+        if proof_key in snapshot.truth._proofs:
+            selection_count("delivery_cache_hits")
+            snapshot.truth._proofs.move_to_end(proof_key)
+            return snapshot.truth._proofs[proof_key]
+        selection_count("delivery_cache_misses")
+        if snapshot.cached_only:
+            return answer(DeliveryState.UNKNOWN, "proof_unavailable")
         provenance = GitProvenance(observed.git, observed.store,
                                    repository_url=observed.repository_url)
         step = "completion_provenance"
-        record = await provenance.read_completion(identity, refs=observed.source_heads)
+        record = await snapshot.read_completion(identity)
+        if record is None and request.container_children and not request.has_recorded_source:
+            # A container closes with no artifact of its own: Git proves it
+            # delivered once every child is. Short of that, its missing
+            # provenance stays unknown for the recovery path, as before.
+            step = "container_children"
+            for child, base in request.container_children:
+                if not (await is_delivered(snapshot, child, source_base=base)).satisfied:
+                    break
+            else:
+                return answer(DeliveryState.CONTAINED, "children_contained")
         if record is None:
             return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
         step = "source_identity"
         source = record["source_oid"]
         step = "target_object"
-        await provenance.exact(observed.target_oid)
+        await snapshot.truth.exact(observed, observed.target_oid)
+        if (request.completion_commits == () and request.completion_outcome == "pass"
+                and source_base is not None and source == source_base):
+            # Empty descriptive commits alone prove nothing. The retained
+            # generation locates its exact head; the recorded origin is its
+            # base. Only their equality and exact target ancestry prove that
+            # this passing completion added no work owed to the target.
+            step = "no_change_completion"
+            if await provenance.ancestor(source, observed.target_oid):
+                return answer(DeliveryState.NO_CHANGE, "git_no_change")
+            return answer(DeliveryState.PENDING, "no_change_base_not_delivered")
         if not record["artifact"]:
             return answer(DeliveryState.NO_ARTIFACT, "git_no_artifact")
         step = "source_ancestry"
@@ -394,6 +693,11 @@ async def is_delivered(
             facts.equal_tree = await _equal_tree(observed, source, observed.target_oid)
         if facts.equal_tree:
             return answer(DeliveryState.CONTAINED, "full_tree")
+        step = "merge_noop"
+        if facts.merge_noop is None:
+            facts.merge_noop = await merge_noop(observed, source, observed.target_oid)
+        if facts.merge_noop:
+            return answer(DeliveryState.CONTAINED, "merge_noop")
         if patch_error is not None:
             step = "whole_source_patch"
             raise patch_error
@@ -405,6 +709,116 @@ async def is_delivered(
             request.task_id, request.target_ref, detail,
         )
         return answer(DeliveryState.UNKNOWN, "missing_or_ambiguous_source", error_detail=detail)
+
+
+async def strict_source_ancestry(snapshot: GitTruthSnapshot, source_oid: str) -> bool:
+    """Shared exact-OID primitive for completed generations and frozen inputs."""
+    observed = snapshot.observation
+    if observed.error or not is_valid_git_oid(observed.target_oid):
+        raise GitError("target_unavailable")
+    if observed._freshness.get(observed.target_ref) is False:
+        raise GitError("observation_stale")
+    if not is_valid_git_oid(source_oid):
+        raise ValueError("provenance requires a full lowercase Git OID")
+    facts = snapshot.truth._pair(observed, source_oid,
+                                contract_version=CONTAINMENT_CONTRACT_VERSION)
+    if facts.ancestor is None:
+        if snapshot.cached_only:
+            raise GitError("proof_unavailable")
+        await snapshot.truth.exact(observed, source_oid)
+        await snapshot.truth.exact(observed, observed.target_oid)
+        store = GitProvenance(observed.git, observed.store, repository_url=observed.repository_url)
+        facts.ancestor = await store._strict_ancestor(source_oid, observed.target_oid)
+    return facts.ancestor
+
+
+async def strict_delivery(
+    snapshot: GitTruthSnapshot, request: DeliveryRequest, target_ref: str,
+) -> DeliveryAnswer:
+    """Implementation of delivery_truth.delivered; legacy proofs cannot enter its caches."""
+    observed = snapshot.observation
+    source = None
+    proof_key = None
+
+    def answer(state, reason, diagnostic=None):
+        value = DeliveryAnswer(request, state, source, target_ref, observed.target_oid,
+                               observed.observed_at, observed.observation_token, reason, diagnostic)
+        if proof_key is not None and state is not DeliveryState.UNKNOWN:
+            snapshot.truth._remember(snapshot.truth._proofs, proof_key, value)
+        return value
+
+    if not target_ref.startswith("refs/") or target_ref != request.target_ref:
+        return answer(DeliveryState.UNKNOWN, "invalid_target_binding")
+    if (request.project_id, request.repository_id, target_ref) != (
+        observed.project_id, observed.repository_id, observed.target_ref,
+    ):
+        return answer(DeliveryState.UNKNOWN, "scope_mismatch")
+    if observed._freshness.get(target_ref) is False:
+        return answer(DeliveryState.UNKNOWN, "observation_stale")
+    if request.task_status != "COMPLETED":
+        return answer(DeliveryState.PENDING, "task_not_completed")
+    if request.completion_outcome not in {None, "pass"}:
+        return answer(DeliveryState.PENDING, "completion_not_passing")
+    if request.requires_parent_completion and (
+        request.parent_completion is None and request.parent_adoption is None
+    ):
+        return answer(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
+    if not request.completion_id:
+        return answer(DeliveryState.UNKNOWN, "missing_completion_identity")
+    # A branchless/missing ref is not a proof of code-free work.
+    if request.code_free_proven and not (
+        request.branch_name or request.has_recorded_source or request.retained_source_oid
+        or request.reported_source or request.completion_commits or request.requires_parent_completion
+    ):
+        return answer(DeliveryState.NOT_APPLICABLE, "explicit_code_free")
+    if observed.error or not is_valid_git_oid(observed.target_oid):
+        return answer(DeliveryState.UNKNOWN, "target_unavailable")
+    try:
+        identity = CompletionIdentity(request.project_id, request.repository_id,
+                                      request.task_id, request.completion_id)
+        proof_key = (CONTAINMENT_CONTRACT_VERSION, snapshot.truth._record_key(observed, identity),
+                     observed.target_oid, request)
+        cached = snapshot.truth._proofs.get(proof_key)
+        if cached is not None:
+            snapshot.truth._proofs.move_to_end(proof_key)
+            # Facts survive visits; collector time/token belong to this observation.
+            return replace(cached, observed_at=observed.observed_at,
+                           observation_token=observed.observation_token)
+        if snapshot.cached_only:
+            return answer(DeliveryState.UNKNOWN, "proof_unavailable")
+        record = await snapshot.read_completion(identity)
+        parent = request.parent_completion
+        if parent is not None:
+            if (parent.project_id, parent.repository_id, parent.completion_id) != (
+                request.project_id, request.repository_id, request.completion_id,
+            ) or parent.branch.removeprefix("refs/heads/") != (
+                request.branch_name or ""
+            ).removeprefix("refs/heads/"):
+                return answer(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
+            source = parent.source_oid
+            if record is not None and (record["source_oid"] != source or not record["artifact"]):
+                return answer(DeliveryState.UNKNOWN, "parent_provenance_mismatch")
+        elif record is not None:
+            source = record["source_oid"]
+        else:
+            return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
+        if request.retained_source_oid is not None and request.retained_source_oid != source:
+            return answer(DeliveryState.UNKNOWN, "completion_source_mismatch")
+        if request.parent_adoption is not None and (
+            request.parent_adoption.completion_id != request.completion_id
+            or request.parent_adoption.source_oid != source or not record["artifact"]
+        ):
+            return answer(DeliveryState.UNKNOWN, "parent_adoption_provenance_mismatch")
+        if record is not None and not record["artifact"]:
+            return answer(DeliveryState.NOT_APPLICABLE, "git_no_artifact")
+        contained = await strict_source_ancestry(snapshot, source)
+        return answer(DeliveryState.CONTAINED if contained else DeliveryState.PENDING,
+                      "ancestor" if contained else "source_not_contained")
+    except (GitError, OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if str(exc) in {
+            "incomplete_shallow_history", "observation_stale", "proof_unavailable",
+        } else "missing_or_ambiguous_source"
+        return answer(DeliveryState.UNKNOWN, reason, _failure_message(exc))
 
 
 async def epic_complete(
@@ -427,7 +841,10 @@ async def epic_complete(
         proof = await is_delivered(snapshot, child, source_base=(source_bases or {}).get(child.task_id))
         if proof.state == DeliveryState.UNKNOWN:
             return None
-        if proof.state not in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}:
+        if proof.state not in {
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+            DeliveryState.NOT_APPLICABLE,
+        }:
             return False
     if green_oid != snapshot.target_oid:
         return False
