@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/event_commands.py::EventCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
