@@ -111,6 +111,14 @@ async def daemon_functional_preflight(
 
     project = await orchestrator.db.get_project(project_id)
     repository = await orchestrator.db.get_repo(repository_id)
+    missing_origins = ()
+    if getattr(orchestrator.db, "_engine", None) is not None:
+        from src.integration.hierarchy import missing_origin_tasks_on
+
+        async with orchestrator.db._engine.connect() as conn:
+            missing_origins = tuple(await missing_origin_tasks_on(conn, project_id, repository_id))
+        if missing_origins:
+            blockers.append("branch_origins_missing")
     binding = None
     if project is None or repository is None or repository.project_id != project_id:
         blockers.append("repository_mismatch")
@@ -145,6 +153,9 @@ async def daemon_functional_preflight(
                 required_classes.add(boundary.verifier_intelligence_class)
             if None in required_classes or not required_classes.issubset(class_ids):
                 blockers.append("intelligence_route_unavailable")
+            if boundary.route is None:
+                # Route-free (git-first train) policy: no playbook to check.
+                continue
             try:
                 definition = store.load(boundary.route.artifact.artifact_sha256)
             except Exception:
@@ -222,6 +233,7 @@ async def daemon_functional_preflight(
             identity=credential_identity,
             policy=policy,
             promotion_flow=await read_stored_promotion_flow(orchestrator.db, project_id),
+            missing_origins=missing_origins,
         )
     )
     return FunctionalPreflight([*blockers, *report.blockers], report.warnings)

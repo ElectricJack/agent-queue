@@ -1,5 +1,10 @@
 # Exact completion provenance in Git
 
+The additive [strict containment shadow contract](strict-git-containment.md)
+defines the revision 2 fast-smooth-integration reader and the current consumer
+inventory. Its explicit contract version rejects equivalent-content delivery;
+the legacy default described below remains active until fenced cutover.
+
 Implements shared-contract items 4–6 of the approved
 `projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md`.
 The development publisher and the train's Git delivery checks share this primitive.
@@ -81,6 +86,12 @@ no durable local/remote refs, configuration, index or database rows. Optional
 copy-before-delete rule; attached worktree branches are held. Fetch with pruning
 removes obsolete remote-tracking copies after the remote migration.
 
+The daily per-project branch backstop also runs this bounded namespace migration.
+It rechecks live tasks, owners, protected targets and attached worktrees under
+the shared ref exclusion before deleting an old branch, records a pre-delete
+audit entry and reports migrated/blocked counts to the project supervisor. It
+does not infer completion bindings for unlabelled sources.
+
 Close allocates its completion ID before verification, verifies the clean,
 exactly pushed final task source, publishes the provenance ref, verifies that
 exact remote OID, and rechecks the source before terminal transition. It refuses
@@ -93,6 +104,15 @@ also retain their clean owned source slot at its exact recorded origin base,
 without requiring a published task branch. Missing base, changed source or failed
 provenance publication refuses close with the claim and workspace retained.
 Branchless and non-Git outcomes keep their existing completion behavior.
+
+Single and batched writes retain each ref's immutable publication result until a
+final authorized readback proves the exact deterministic metadata OID. An uncertain
+transfer followed by that exact OID succeeds. Otherwise the refusal names the ref,
+expected OID, final observation and publication observation, including a bounded,
+credential-scrubbed transfer error even when the transfer's readback itself failed
+or reported another OID. A publication result alone cannot override the final
+readback. Batched failures remain scoped to their own completion identity; no
+generation/source/claim binding or create-only lease changes for diagnostics.
 
 For an unheld Git root, `aq integration record-root-noop TASK_ID` previews an
 explicit no-artifact completion. A local operator or a live named supervisor of
@@ -141,6 +161,13 @@ reports `blocked` and projects the delivery reason, including
 `missing_git_provenance`, with its task and target in integration status. Legacy
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
+
+An operator or live authorized supervisor may explicitly retain an unlabelled
+completed epic leaf through `integration redrive-child --adopt-source`. This
+dry-run-first recovery binds the existing passing generation to its verified
+published checkpoint source, with an exact-head apply and an audited reason.
+The admission and writer fences are specified in [work-graph](work-graph.md).
+It supplies source identity only; Git containment and train gates still decide delivery.
 
 The git-first evaluator reports an explicit `no_change` state for a passing
 completion whose recorded commit list is empty, whose immutable retained Git

@@ -22,6 +22,7 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
+POSTGRES_IMAGE = 'mirror.gcr.io/library/postgres:18'
 
 
 def workflow(name='tests.yml'):
@@ -339,6 +340,133 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert list(workflow()['jobs']) == ['test', 'e2e-cli', 'dashboard']
 
 
+def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit():
+    # Run 37990643989 (2026-10-09) failed all 15 Postgres jobs with Docker Hub's
+    # `toomanyrequests` before a test ran. Google's Docker Hub mirror serves the
+    # same official image with no secret, so fork pull requests can pull it too.
+    jobs = workflow()['jobs']
+    start = next(step for step in jobs['test']['steps'] if step['name'] == 'Start PostgreSQL')
+    assert POSTGRES_IMAGE in start['run'].split()
+    assert jobs['e2e-cli']['services']['postgres']['image'] == POSTGRES_IMAGE
+    for path in WORKFLOWS.glob('*.yml'):
+        text = path.read_text()
+        assert not re.search(r'(?<![\w./-])postgres:\d', text), path
+        for job in workflow(path.name)['jobs'].values():
+            images = [service['image'] for service in (job.get('services') or {}).values()]
+            images += [job['container']['image']] if 'container' in job else []
+            for image in images:
+                registry = image.split('/', 1)[0]
+                assert '.' in registry and 'docker.io' not in registry, (path, image)
+
+
+@pytest.mark.parametrize(
+    ("pull_failures", "run_status", "readiness_failures", "exit_status"),
+    [
+        (0, 0, 0, 0),
+        (1, 0, 0, 0),
+        (2, 0, 0, 0),
+        (99, 0, 0, 125),
+        (0, 125, 0, 125),
+        (0, 0, 3, 0),
+        (0, 0, 99, 1),
+    ],
+)
+def test_postgres_start_recovers_pull_errors_and_preserves_startup_failures(
+    tmp_path, pull_failures, run_status, readiness_failures, exit_status
+):
+    # Execute the actual Actions step. The failing train shards never ran tests:
+    # their implicit image pull exited 125 with `unknown blob`.
+    start = next(
+        step for step in workflow()["jobs"]["test"]["steps"] if step["name"] == "Start PostgreSQL"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker_stub = bin_dir / "docker"
+    docker_stub.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import json
+import os
+import sys
+from pathlib import Path
+
+trace = Path('docker-calls.json')
+calls = json.loads(trace.read_text()) if trace.exists() else []
+calls.append(sys.argv[1:])
+trace.write_text(json.dumps(calls))
+operation = sys.argv[1]
+count = sum(call[0] == operation for call in calls)
+if operation == 'pull':
+    if count <= int(os.environ['CI_POSTGRES_PULL_FAILURES']):
+        print('docker: unknown blob', file=sys.stderr)
+        sys.exit(125)
+    sys.exit(0)
+if operation == 'run':
+    sys.exit(int(os.environ['CI_POSTGRES_RUN_STATUS']))
+if operation == 'exec':
+    sys.exit(1 if count <= int(os.environ['CI_POSTGRES_READINESS_FAILURES']) else 0)
+raise AssertionError(sys.argv)
+"""
+    )
+    docker_stub.chmod(0o755)
+    sleep_stub = bin_dir / "sleep"
+    sleep_stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> retry-delays\n')
+    sleep_stub.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", start["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "CI_POSTGRES_PULL_FAILURES": str(pull_failures),
+            "CI_POSTGRES_RUN_STATUS": str(run_status),
+            "CI_POSTGRES_READINESS_FAILURES": str(readiness_failures),
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == exit_status, result.stdout + result.stderr
+    calls = json.loads((tmp_path / "docker-calls.json").read_text())
+    pulls = [call for call in calls if call[0] == "pull"]
+    starts = [call for call in calls if call[0] == "run"]
+    probes = [call for call in calls if call[0] == "exec"]
+    assert pulls == [["pull", POSTGRES_IMAGE]] * min(pull_failures + 1, 3)
+    if pull_failures >= 3:
+        assert not starts and not probes
+        assert "::error::PostgreSQL image pull failed" in result.stdout
+    else:
+        assert len(starts) == 1
+        assert "--pull=never" in starts[0] and POSTGRES_IMAGE in starts[0]
+        assert calls[: len(pulls)] == pulls
+        if run_status:
+            assert not probes
+        else:
+            assert probes == [
+                [
+                    "exec",
+                    "ci-postgres",
+                    "pg_isready",
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "agent_queue",
+                    "-d",
+                    "agent_queue",
+                ]
+            ] * min(readiness_failures + 1, 60)
+            if readiness_failures >= 60:
+                assert "::error::PostgreSQL did not become ready" in result.stdout
+    delays = tmp_path / "retry-delays"
+    expected_delays = ["5"] * min(pull_failures, 2)
+    if pull_failures < 3 and not run_status:
+        expected_delays += ["1"] * min(readiness_failures, 60)
+    assert (delays.read_text().splitlines() if delays.exists() else []) == expected_delays
+
+
 def test_dashboard_checks_the_candidate_with_locked_workspace_dependencies():
     job = workflow()['jobs']['dashboard']
     assert job['if'] == workflow()['jobs']['test']['if']
@@ -493,18 +621,20 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
 
 def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_together():
     scenarios = [scenario for group in SCENARIO_GROUPS.values() for scenario in group]
-    expected = {f'S{index}' for index in range(1, 21)} - {'S16'} | {'S16a', 'S16b'}
+    expected = {f'S{index}' for index in range(1, 22)} - {'S16'} | {'S16a', 'S16b'}
     assert set(scenarios) == expected
     assert len(scenarios) == len(expected)
     assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')
     assert 'S20' in SCENARIO_GROUPS['cli']
+    assert 'S21' in SCENARIO_GROUPS['graphs']
 
 
 @pytest.mark.parametrize(
     ('job', 'run_step', 'run_seconds'),
     [
-        # The slowest passing default shard in the 40 runs up to 36831813696.
-        ('test', 'Run tests', 332),
+        # Run 38601833262 cancelled progressing default shards at ten minutes,
+        # before pytest could print failure diagnostics or finish teardown.
+        ('test', 'Run tests', 600),
         # tests/test_e2e_cli_stateful.py gives each item its own limit; let it
         # fire first, with a minute for its diagnostics and runner overhead.
         ('e2e-cli', 'Run scenario group', E2E_TEST_TIMEOUT_SECONDS + 59),
@@ -521,9 +651,55 @@ def test_a_slow_cache_miss_install_cannot_spend_the_run_budget(job, run_step, ru
     run = int(steps[run_step]['timeout-minutes'])
     assert install * 60 > 600
     assert run * 60 > run_seconds
+    if job == 'test':
+        assert run_seconds <= run * 60 * 0.7
     # Checkout, PostgreSQL, interpreter, cache restore and save, the editable
     # refresh, migrations and artifact upload take well under three minutes.
     assert int(spec['timeout-minutes']) >= install + run + 3
+
+
+@pytest.mark.parametrize('elapsed', [595, 719, 720, 721, 900])
+def test_runtime_warning_uses_wall_time_and_warns_only_above_80_percent(tmp_path, elapsed):
+    steps = workflow()['jobs']['test']['steps']
+    run = next(step for step in steps if step['name'] == 'Run tests')
+    check = next(step for step in steps if step['name'] == 'Check test runtime budget')
+    assert steps.index(check) == steps.index(run) + 1
+    assert check['if'] == "${{ always() && steps.tests.outputs.started_at != '' }}"
+    assert check['env']['TEST_STARTED_AT'] == '${{ steps.tests.outputs.started_at }}'
+    assert check['env']['TEST_SUITE'] == '${{ matrix.suite.name }}'
+    budget = int(check['env']['TEST_BUDGET_SECONDS'])
+    assert budget == int(run['timeout-minutes']) * 60
+
+    # Execute the actual workflow shell, with a deterministic clock rather than sleeping.
+    date = tmp_path / 'date'
+    date.write_text(f'#!/bin/sh\necho {1000 + elapsed}\n')
+    date.chmod(0o755)
+    result = subprocess.run(
+        ['bash', '-e', '-o', 'pipefail', '-c', check['run']],
+        env={**os.environ, 'PATH': f'{tmp_path}:{os.environ["PATH"]}',
+             'TEST_STARTED_AT': '1000', 'TEST_SUITE': 'default-8/8',
+             'TEST_BUDGET_SECONDS': str(budget)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f'default-8/8 took {elapsed}s' in result.stdout
+    assert ('::warning' in result.stdout) == (elapsed > budget * 0.8)
+
+
+@pytest.mark.parametrize('test_status', [0, 7])
+def test_run_step_records_start_and_preserves_test_exit_status(tmp_path, test_status):
+    run = next(step for step in workflow()['jobs']['test']['steps']
+               if step['name'] == 'Run tests')
+    script = run['run'].replace('${{ matrix.suite.command }}',
+                                f"bash -c 'exit {test_status}' --")
+    output = tmp_path / 'output'
+    result = subprocess.run(
+        ['bash', '-e', '-o', 'pipefail', '-c', script],
+        env={**os.environ, 'GITHUB_OUTPUT': str(output)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == test_status, result.stderr
+    assert re.fullmatch(r'started_at=\d+\n', output.read_text())
 
 
 def _install_steps():

@@ -60,6 +60,18 @@ attestation names. App verification, functional preflight and
 the committed manifest. Missing or different promotion names remain a trust
 failure; projects without a flow keep the original manifest format.
 
+Manifest generation takes a hierarchical CI policy from `--policy FILE`, or
+from the project's bound policy when that has the same format. A bound
+development policy supplies local validation commands and budgets; it has no
+hosted required check names, check-set version or CI producer App identity.
+For that format, the renderer returns `policy_missing` with instructions to
+supply a reviewed hierarchical policy JSON through `--policy FILE`. It does
+not change the project's binding or activate a flow. Both
+`parent.required_checks` and `root.required_checks` must name the same numeric
+producer App, and the root's exact names and version become the manifest's
+required checks. Preserve all required checks, including platform-specific
+checks; an added Linux check does not replace a required Windows check.
+
 A delivery-branch push validated by the fallback reusable workflow produces
 checks named `unattested-ci / <required name>`. To allow that evidence when
 requesting a promotion, commit `check_sets.promotion-source-audit` in
@@ -67,12 +79,60 @@ requesting a promotion, commit `check_sets.promotion-source-audit` in
 required check. Agent-queue's manifest includes this set for all sixteen checks.
 The manifest renderer preserves committed named sets when writing a fresh copy.
 
+To bootstrap trust before configuring hierarchical routes, write a CI-only
+JSON document, for example `hosted-check-policy.json`:
+
+```json
+{
+  "version": "demo-ci-v1",
+  "names": ["Native Windows build and tests", "Linux foundation"],
+  "producer_id": "15368",
+  "check_sets": {
+    "promotion-source-audit": [
+      "unattested-ci / Native Windows build and tests",
+      "unattested-ci / Linux foundation"
+    ]
+  }
+}
+```
+
+Use the reviewed check names and version exactly, in order. Include every
+required native platform check; a Linux foundation check does not replace
+native Windows validation. `producer_id` is the CI producer's positive numeric
+App ID as a string. Unknown fields, duplicate JSON fields, duplicate checks,
+empty names and coerced values are refused. `check_sets` is optional; supplied
+sets replace matching committed sets and preserve all other valid committed sets.
+
+```bash
+aq integration trust-manifest demo --hosted-check-policy hosted-check-policy.json --repository-id demo-repo --print
+aq integration trust-manifest demo --hosted-check-policy hosted-check-policy.json --repository-id demo-repo --write .github/agent-queue-integration.json
+aq integration trust-manifest demo --hosted-check-policy hosted-check-policy.json --repository-id demo-repo --check
+```
+
+`--write` writes a local file for repository review. `--check` compares the
+default-branch copy: identity differences fail, while check-set differences
+warn. The daemon resolves the repository's numeric ID and full name through
+its authenticated binding, and the attestation App ID through its own client.
+It refuses missing App identity or existing-login credentials; the document
+cannot supply an attestation App ID. This works without a bound hierarchical
+policy and leaves integration mode and release/operator gates unchanged.
+`--policy FILE` still accepts a full hierarchical policy; the two input flags
+are mutually exclusive. `app-verify` and `app-setup` retain their full-policy
+inputs.
+
 Source admission uses this alternative only when all canonical check names are
 missing from a completed push run. The complete configured audit set must pass
 on the exact source commit under the trusted CI App and workflow attempt.
 Partial canonical evidence and real failures still block the request. The
 private promotion ref, candidate checks and promotion attestation continue to
 use the step's canonical names.
+
+If a completed `aq/batches/` push run on the same commit was cancelled or
+skipped, source admission can retain green checks from another run. This
+requires alternative evidence for each affected name under the trusted App
+and a valid successful workflow attempt. Real failures, pending checks and
+cancellations without coverage still block promotion. Candidate and
+attestation gates continue to require their newest checks.
 
 Activation requires this configuration on the designated default branch and
 the updated source-admission code in the running daemon. After delivery, an
@@ -144,6 +204,7 @@ not commands executed as part of this documentation task:
 | `aq promote request --project demo --step release --from S --version V` | Opens the private PR and an idempotent intent. Replace S with a full commit OID and V with the version at that commit. Omit `--from` to pin the current source tip. |
 | `aq promote approve REQUEST_ID --project demo` | The local human operator posts a GitHub review as their authenticated `gh` user. It does not write a second approval gate in AQ. |
 | `aq promote cancel REQUEST_ID --project demo` | The operator or requester closes an unpublished PR and aborts its intent; publication already underway or proved delivered is refused. |
+| `aq promote repair REQUEST_ID --project demo` | The operator or supervisor backs up a stranded open intent's task row as JSON under `<data_dir>/backups/promotion/`, then restores it to `IN_PROGRESS` and unrouted so the train admits it again. A healthy task returns `already_healthy` and is not written. |
 | `aq promote status --project demo --step release` | Reads intent state, cached evidence and request age. |
 | `aq promote list --project demo --step release --limit 20` | Lists recorded promotion intents from the local cache. It is not a fresh enumeration of remote release tags. |
 
@@ -156,7 +217,20 @@ A draft or closed PR, a changed head, or unavailable evidence hold publication.
 The integration service observes the PR again before its fenced write. Sources:
 [src/commands/promote_commands.py](../../src/commands/promote_commands.py) and
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
-(`StepPullRequestGate`, `PromotionPublisher`).
+(`StepPullRequestGate`, `PromotionVisit`).
+
+One promotion task is open per project, repository and target ref. A chained
+flow legitimately holds one intent per step target. An intent that ends without
+delivery, through `promote cancel`, `aq integration abort` or a failed
+lifecycle, fails its task. A new request on that target fails, and reports in
+`superseded_task_ids`, any task an older aborted or failed intent left
+`IN_PROGRESS`, and integration cleanup repairs the rest. `aq doctor --check
+stall.sweep` reports any such task as `stranded_promotion_task` until then.
+Sources: `fail_stranded_promotion_tasks_on` in
+[src/integration/promotion_steps.py](../../src/integration/promotion_steps.py),
+[src/integration/batches.py](../../src/integration/batches.py) (`set_intent`),
+[src/integration/cleanup.py](../../src/integration/cleanup.py) (`reconcile_aborted`) and
+[src/doctor/stall_checks.py](../../src/doctor/stall_checks.py).
 
 The candidate is S itself. The target must be an ancestor of S; the lane creates
 no merge commit. After the checks and PR gate pass, it emits the step's
@@ -209,6 +283,15 @@ They request or replace intents, wait and notify on holds, drive the existing PR
 gate, and trigger backmerge after delivery. Both ship inactive; activate the
 reviewed artifact hash for the intended project before starting delivery.
 
+Active Git-first mode dispatches promotion policy events through the durable
+outbox, including source observations after CI finishes. Legacy integration
+events remain isolated. Use `aq doctor --check integration.continuous_promotion_lag`
+or `aq doctor --check stall.sweep` to find continuous steps with source-only
+work older than six hours. The check reports the oldest unpromoted first-parent
+commit's age and exact ahead/behind counts; a newer dev head does not reset that
+age. Missing branch evidence is reported as unavailable. Inspect source CI,
+promotion status and the project's reviewed activation when a step lags.
+
 ## Inputs and outputs
 
 Input is a validated flow, committed trust, selected S and its version/notes.
@@ -235,6 +318,7 @@ deployment and restore retain their operator restrictions.
 | `promotion_not_fast_forward` | Inspect target/source ancestry; cancel and request a source that contains the target. |
 | PR gate waiting or unknown | Inspect the exact pinned PR head, required checks and reviewer identity; retry observation after a provider outage. |
 | `promotion_tag_conflict` | Inspect both tag-object OID and peeled commit; preserve the immutable tag and resolve with the operator. |
+| Intent stays `sealed`; the log says `promotion … held: promotion_intent_invalid` | The intent's task is no longer the daemon-owned `IN_PROGRESS`, unrouted row the train admits, for example after a restart reset it to `READY` and routed it. `aq doctor --check integration.promotion_stranded` names each such intent; run the `aq promote repair` command it prints. |
 | Remote warnings | Have the repository administrator reconcile rulesets and triggers, then repeat `validate --remote`. |
 
 ## Related pages
