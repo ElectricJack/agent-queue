@@ -205,6 +205,7 @@ class TestRegistry:
         assert reg.unregister("x.y") is False
 
     def test_default_registry_has_all_builtins(self):
+        from src.doctor.advisory_lock_checks import advisory_lock_checks
         from src.doctor.ask_checks import ask_checks
         from src.doctor.capability_checks import capability_checks
         from src.doctor.dashboard_server_checks import dashboard_server_checks
@@ -256,6 +257,7 @@ class TestRegistry:
             | {c.id for c in workspace_checks()}
             | {c.id for c in profile_checks()}
             | {c.id for c in db_checks()}
+            | {c.id for c in advisory_lock_checks()}
             | {c.id for c in dashboard_state_checks()}
             | {c.id for c in dashboard_server_checks()}
             | {c.id for c in discord_config_checks()}

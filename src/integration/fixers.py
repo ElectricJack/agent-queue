@@ -65,8 +65,13 @@ class BatchFixerService:
         ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def _block(self, conn, batch, state, reason):
-        from src.integration.fixer_batches import defer_on
+        from src.integration.fixer_batches import defer_on, is_deferred
 
+        # Liveness and push probes run outside the row lock. An operator may
+        # have withdrawn this batch while the probe was in flight.
+        if ((batch["intent"] != "open" and not is_deferred(batch))
+                or state.get("status") == "aborted"):
+            return {"success": True, "outcome": "held"}
         if state["status"] == "green":
             return {"success": True, "outcome": "green"}
         # One incident per allocation, including races between launch and observation.
@@ -169,8 +174,11 @@ class BatchFixerService:
             ).with_for_update())).mappings().one_or_none()
             if batch is None:
                 return {"success": False, "outcome": "missing_batch"}
+            queue = batch["fixer_queue"] or {}
             if target_ref not in {candidate_ref(batch_id), batch["target_ref"]}:
                 raise ValueError("fixer target is not this batch's branch")
+            if (batch["fixer_state"] or {}).get("status") == "aborted":
+                return {"success": True, "outcome": "held"}
             if batch["intent"] == "aborted" and queue.get("status") in {"deferred", "companion"}:
                 return {"success": True, "outcome": "deferred", "reason": queue["reason"],
                         "session_id": (batch["fixer_state"] or {}).get("session_id")}
@@ -185,6 +193,8 @@ class BatchFixerService:
                     integration_batches.c.fixer_state["family_id"].astext == family,
                     integration_batches.c.fixer_state["session_id"].astext.is_not(None),
                 ).with_for_update())).mappings().one_or_none()
+                if owner and (owner["fixer_state"] or {}).get("status") == "aborted":
+                    return {"success": True, "outcome": "held"}
                 # Before launch retries, a failed launch blocked its family
                 # forever. A successor takes over an identity that left no process.
                 fresh = (await self._relaunchable(conn, owner["fixer_state"])
@@ -406,6 +416,8 @@ class BatchFixerService:
             if row is None:
                 return
             state = dict(row["fixer_state"] or {})
+            if state.get("status") == "aborted":
+                return
             if state and state.get("green_notified_sha") != head_sha:
                 state.update(status="green", green_sha=head_sha, green_notified_sha=head_sha)
                 await self._write(conn, batch_id, state)

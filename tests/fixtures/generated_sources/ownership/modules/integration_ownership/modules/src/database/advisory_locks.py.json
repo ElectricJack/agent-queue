@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/advisory_locks.py::session_advisory_lock": "Generic named session advisory lock on a dedicated autocommit connection; integration-specific callers and their lock names remain independently charged."
+  }
+}

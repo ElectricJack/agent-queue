@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 class WorktreeCommandsMixin:
     """Worktree command methods mixed into CommandHandler."""
 
+    async def _cmd_recover_retained_holder(self, args: dict) -> dict:
+        from src.commands.retained_holder_repair import repair
+
+        return await repair(self, args)
+
     async def _cmd_repair_workspace_checkout(self, args: dict) -> dict:
         from src.commands.workspace_checkout_repair import repair
 
