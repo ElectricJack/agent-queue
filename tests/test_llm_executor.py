@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.principal import TRUSTED_LOCAL, ExecutionPrincipal, PrincipalKind
@@ -81,6 +81,7 @@ def context(
         principal=principal,
         scope=ResolutionScope(),
         services=EngineServices(
+            private_values=AsyncMock(),
             contracts=ContractRegistry(),
             llm=LLMClient.with_provider(provider, config=LLMConfig()),
             clock=lambda: 100.0,
@@ -220,9 +221,7 @@ async def test_prompt_inputs_are_rendered_but_not_exposed_in_receipts() -> None:
 
     assert "never-receipt-me" in provider.calls[0].messages[0]["content"]
     assert "never-receipt-me" not in str(result.receipt_inputs)
-    assert result.receipt_inputs == {
-        "prompt_digest": hashlib.sha256(provider.calls[0].messages[0]["content"].encode()).hexdigest()
-    }
+    assert result.receipt_inputs["prompt_digest"].startswith("sensitive:")
 
 
 async def test_single_call_routing_model_receives_reason_length_constraint() -> None:
