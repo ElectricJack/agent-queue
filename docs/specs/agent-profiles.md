@@ -12,6 +12,12 @@ tags: [spec, agents, profiles]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+For current behavior, use [profiles and classes](../reference/profiles-and-classes.md),
+[agents and routing](../concepts/agents-and-routing.md), and the
+[system spec](systems/routing-and-profiles.md).
+The original DB-only storage, project-default cascade, profile model pins and
+in-process runtime descriptions below are historical, superseded designs.
+
 ## Overview
 
 See [design/profiles](design/profiles.md) for the hybrid markdown profile format and vault storage.

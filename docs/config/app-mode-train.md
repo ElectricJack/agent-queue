@@ -2,7 +2,7 @@
 
 > Historical runbook: the old train/development publisher, shadow cutover and
 > rollback controls were removed on 2026-10-04. Commands for those paths below
-> are retained as historical context. Use the [current Subject integration guide](../guides/hierarchical-integration-trains.md)
+> are retained as historical context. Use the [current Git-first train runbook](../guides/git-first-train-runbook.md)
 > for configuration, delivery and recovery. `app-setup`, `app-verify` and
 > `trust-manifest` remain available for App diagnostics.
 
@@ -84,11 +84,16 @@ generation() {
 - `integration.github_app` is configured (`app_id`, `installation_id`,
   `private_key_path`). The private key is readable only by the daemon user:
   `OwnerFilePrivateKeyProvider` refuses anything broader than 0600.
-- The App registration grants exactly `actions: read`, `actions_variables:
+- The App registration grants `actions: read` by default, `actions_variables:
   read`, `administration: read`, `checks: write`, `contents: write`, `issues:
   write`, `metadata: read`, `pull_requests: write` and `workflows: write`. The
   token mint refuses a grant that differs, and `app-verify` reports it as
   `credential` `app_token_unavailable`.
+- For stuck-job recovery, the operator grants and approves Actions write and
+  explicitly sets `integration.github_app.actions_permission: write`, then
+  restarts the daemon. Default-read installations need no change. Token minting
+  and validation require the configured level; denied job requests remain
+  pending with durable permission guidance and are never retried automatically.
 - The installation covers every repository a train will use.
 - The shared or project routes are imported and active
   ([train-onboarding.md §1](train-onboarding.md#1-the-shared-routes-once-per-install),
