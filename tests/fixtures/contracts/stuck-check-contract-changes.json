@@ -1,0 +1,56 @@
+{
+  "source_base": "db8f7d606b6de25923a83c55499e621bec559c04",
+  "merged_source": "597b44ff5bbe10216492e5199fe9aa318f2d742f",
+  "reason": "Add exact-head authenticated stuck-check recovery with a durable one-request bound. Preserve the reviewed command dispatch and all existing descriptor bytes.",
+  "previous_cli_catalogue_sha256": "00f36a2dd10cb430c4d14fb590a6188be2fc523957d89be71421058dc718b451",
+  "cli_catalogue_sha256": "ef12003251677f05da45c498ef2fb8edcb3fe627c817deec07eb57ccca8e9fb3",
+  "command": "integration_rerequest_check",
+  "transport_definition": {
+    "name": "integration_rerequest_check",
+    "description": "Authenticated hierarchical integration operational control.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "minLength": 1,
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "dry_run": {
+          "default": true,
+          "title": "Dry Run",
+          "type": "boolean"
+        },
+        "check_name": {
+          "minLength": 1,
+          "title": "Check Name",
+          "type": "string"
+        },
+        "expected_candidate_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Candidate Sha"
+        }
+      },
+      "required": [
+        "batch_id",
+        "check_name"
+      ],
+      "title": "IntegrationRerequestCheckArgs",
+      "type": "object"
+    }
+  },
+  "contract_fingerprint": "sha256:f20e945298f6121cad228cdaab7d3a765a3f6df46f2f61c6e0e8a68011763777"
+}

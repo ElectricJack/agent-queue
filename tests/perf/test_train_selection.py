@@ -24,8 +24,9 @@ from tests.test_integration_train_sources import (
     world,  # noqa: F401 - imported pytest fixture
 )
 
+pytestmark = pytest.mark.perf
 
-@pytest.mark.perf
+
 async def test_cold_root_selection_after_main_move(world, monkeypatch, perf_strict):  # noqa: F811
     db, origin = world.db, world.origin
     base = git(origin.clone, "rev-parse", "main")

@@ -11,15 +11,13 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import update
 
-from src.database import Database
 from src.database.tables import projects
 from src.git.manager import GitManager
 from src.integration.branch_sweep import SweepSafety, sweep_checkout
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
-from tests.db_fixtures import lease_dsn
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -188,7 +186,7 @@ async def test_daily_sweep_includes_non_active_registered_projects(tmp_path, mon
 
 
 @pytest.fixture
-async def guarded_repo(tmp_path):
+async def guarded_repo(tmp_path, reuse_database):
     origin, checkout = tmp_path / "origin.git", tmp_path / "checkout"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
     _git(tmp_path, "clone", str(origin), str(checkout))
@@ -196,15 +194,13 @@ async def guarded_repo(tmp_path):
     _git(checkout, "push", "origin", "main")
     _git(checkout, "branch", "aq/candidate")
     _git(checkout, "push", "origin", "aq/candidate")
-    db = Database(lease_dsn("branch-sweep"))
-    await db.initialize()
+    db = await reuse_database("branch-sweep")
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(RepoConfig(
         id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin),
         checkout_base_path=str(checkout),
     ))
     yield db, GitManager(), checkout, origin
-    await db.close()
 
 
 @pytest.mark.parametrize("hold", ["task", "owner", "flow", "attached"])
@@ -301,6 +297,41 @@ async def test_daily_retry_skips_projects_already_reported_before_restart(tmp_pa
     assert (tmp_path / "maintenance/git-branch-sweep-last-date").read_text().strip() == "2026-10-09"
 
 
+def _reporting_orchestrator(tmp_path, result):
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[
+            SimpleNamespace(id="p", name="One", storage_binding=None),
+        ]),
+        list_repos=AsyncMock(return_value=[]), list_workspaces=AsyncMock(return_value=[]),
+    )
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
+    orchestrator._command_handler = SimpleNamespace(execute=AsyncMock(return_value=result))
+    return orchestrator
+
+
+async def test_queued_supervisor_report_marks_day_complete(tmp_path):
+    # message_send answers a queued send with no "success" key; reading that
+    # as a refusal re-sent every project's report on each tick (2026-10-10).
+    queued = {"message_id": "msg-1", "state": "queued", "message": {"id": "msg-1"}}
+    await _reporting_orchestrator(tmp_path, queued)._run_daily_git_branch_sweep("2026-10-09")
+    assert (tmp_path / "maintenance/git-branch-sweeps/p").read_text().strip() == "2026-10-09"
+    assert (tmp_path / "maintenance/git-branch-sweep-last-date").read_text().strip() == (
+        "2026-10-09"
+    )
+    restarted = _reporting_orchestrator(tmp_path, queued)
+    await restarted._run_daily_git_branch_sweep("2026-10-09")
+    restarted._command_handler.execute.assert_not_awaited()
+
+
+async def test_refused_supervisor_report_without_success_key_is_retried(tmp_path):
+    orchestrator = _reporting_orchestrator(tmp_path, {"error": "Project 'p' not found"})
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    assert orchestrator._last_git_branch_sweep_date is None
+    assert not (tmp_path / "maintenance/git-branch-sweeps/p").exists()
+    assert not (tmp_path / "maintenance/git-branch-sweep-last-date").exists()
+
+
 async def test_daily_backstop_sweeps_registered_checkout_with_fresh_holds(guarded_repo, tmp_path):
     db, git, checkout, origin = guarded_repo
     await db.create_task(Task(
@@ -327,6 +358,280 @@ async def test_daily_backstop_sweeps_registered_checkout_with_fresh_holds(guarde
     assert "deleted 1 Git-proven remote refs" in report
 
 
+async def test_daily_backstop_resolves_linked_source_and_shared_origin(
+    guarded_repo, tmp_path, monkeypatch,
+):
+    db, git, checkout, origin = guarded_repo
+    await db.update_repo(
+        "repo", source_type=RepoSourceType.LINK, url="", source_path=str(checkout),
+        checkout_base_path="",
+    )
+    # A second project's registration must not make this project's origin ambiguous.
+    await db.create_project(Project(id="q", name="other project"))
+    await db.create_repo(RepoConfig(
+        id="other-repo", project_id="q", source_type=RepoSourceType.CLONE, url=str(origin),
+    ))
+    clone, slot = tmp_path / "clone", tmp_path / "slot"
+    _git(tmp_path, "clone", str(origin), str(clone))
+    _git(checkout, "worktree", "add", "--detach", str(slot), "main")
+    monkeypatch.setattr(db, "list_workspaces", AsyncMock(side_effect=lambda project_id: [
+        SimpleNamespace(workspace_path=str(path), kind_id=None, is_slot=path == slot)
+        for path in (clone, slot)
+    ] if project_id == "p" else []))
+    await BranchLock(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/candidate"), "live-owner",
+    )
+    _git(checkout, "branch", "aq/missed-landing")
+    _git(checkout, "push", "origin", "aq/missed-landing")
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.await_args_list[0].args[1]["body"]
+    assert "Checkouts: 2;" in body  # source + clone; linked slot shares the source's refs
+    assert "Failures" not in body
+    assert await git.arev_parse(str(checkout), "aq/missed-landing") is None
+    assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+
+
+@pytest.mark.parametrize("has_workspace", [False, True])
+@pytest.mark.parametrize("path_fields", ["source", "base", "both"])
+async def test_missing_repository_notice_survives_restart_and_does_not_fail_sweep(
+    guarded_repo, tmp_path, has_workspace, path_fields,
+):
+    db, git, checkout, origin = guarded_repo
+    missing = tmp_path / "gone"
+    registration = dict(
+        id="missing", project_id="p", url="",
+        source_type=RepoSourceType.CLONE if path_fields == "base" else RepoSourceType.LINK,
+        source_path=str(missing) if path_fields != "base" else "",
+        checkout_base_path=str(missing) if path_fields != "source" else "",
+    )
+    await db.create_repo(RepoConfig(**registration))
+    if has_workspace:
+        await db.create_workspace(Workspace(
+            id="missing-ws", project_id="p", workspace_path=str(missing),
+            source_type=RepoSourceType.LINK,
+        ))
+
+    async def run(date):
+        orch = _reporting_orchestrator(tmp_path / "state", {"success": True})
+        orch.db, orch.git = db, git
+        await orch._run_daily_git_branch_sweep(date)
+        return orch._command_handler.execute.call_args.args[1]["body"]
+
+    first = await run("2026-10-17")
+    assert "Checkouts: 1;" in first
+    assert "Failures" not in first
+    assert str(missing) in first
+    assert first.count(str(missing)) == 1
+    if not has_workspace:
+        assert "repair-repository-checkout" in first
+    assert "restore the directory" in first
+    if has_workspace:
+        assert "aq project remove-workspace --workspace-id missing-ws" in first
+    second = await run("2026-10-18")
+    assert "Failures" not in second
+    assert str(missing) not in second
+    assert await db.get_repo("missing") is not None
+    if has_workspace:
+        assert await db.get_workspace("missing-ws") is not None
+
+    # Restoring/retiring a registration clears its notice state. A new
+    # disappearance must be actionable again, even after a daemon restart.
+    await db.delete_repo("missing")
+    if has_workspace:
+        await db.delete_workspace("missing-ws")
+    await run("2026-10-19")
+    await db.create_repo(RepoConfig(**registration))
+    assert str(missing) in await run("2026-10-20")
+
+
+async def test_missing_path_notice_retries_after_delivery_refusal(tmp_path):
+    orch = _reporting_orchestrator(tmp_path, {"success": False, "error": "offline"})
+    orch.db.list_repos.return_value = [RepoConfig(
+        id="missing", project_id="p", url="", source_type=RepoSourceType.LINK,
+        source_path=str(tmp_path / "gone"),
+    )]
+    await orch._run_daily_git_branch_sweep("2026-10-17")
+    marker = tmp_path / "maintenance/git-branch-sweeps/p.missing-paths"
+    assert not marker.exists()
+    orch._command_handler.execute.return_value = {"success": True}
+    await orch._run_daily_git_branch_sweep("2026-10-17")
+    body = orch._command_handler.execute.call_args.args[1]["body"]
+    assert "restore the directory" in body
+    assert marker.exists()
+
+
+async def test_repointed_checkout_clears_warning_on_next_sweep(
+    guarded_repo, tmp_path, command_handler_factory,
+):
+    db, git, checkout, _ = guarded_repo
+    stale = str(tmp_path / "old-checkout")
+    await db.update_repo("repo", checkout_base_path=stale)
+    await db.create_workspace(Workspace(
+        id="live-ws", project_id="p", workspace_path=str(checkout),
+        source_type=RepoSourceType.CLONE,
+    ))
+    orch = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orch.db, orch.git = db, git
+    await orch._run_daily_git_branch_sweep("2026-10-17")
+    assert stale in orch._command_handler.execute.call_args.args[1]["body"]
+
+    handler = await command_handler_factory()
+    await handler.db.close()
+    handler.orchestrator.db, handler.orchestrator.git = db, git
+    args = dict(project_id="p", repository_id="repo", expected_path=stale,
+                replacement_path=str(checkout), reason="Checkout moved")
+    preview = await handler.execute("repair_repository_checkout", args)
+    assert preview["success"] and preview["before"]["checkout_base_path"] == stale
+    result = await handler.execute("repair_repository_checkout", {**args, "apply": True})
+    assert result["success"] and result["after"] == preview["after"]
+
+    restarted = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    restarted.db, restarted.git = db, git
+    await restarted._run_daily_git_branch_sweep("2026-10-18")
+    report = restarted._command_handler.execute.call_args.args[1]["body"]
+    assert "Checkouts: 1;" in report
+    assert "Failures" not in report and stale not in report
+    assert (await db.get_repo("repo")).checkout_base_path == str(checkout)
+    assert (tmp_path / "state/maintenance/git-branch-sweeps/p.missing-paths").read_text() == "[]\n"
+
+
+@pytest.mark.parametrize("origin_state", ["missing", "empty", "conflicting"])
+async def test_daily_backstop_restores_retained_store_origin_from_registration(
+    guarded_repo, tmp_path, origin_state,
+):
+    from src.integration.branch_discard import BranchDiscardService
+
+    db, git, checkout, origin = guarded_repo
+    # Only the retained store is registered as a checkout for this test. Its
+    # configured repository URL, rather than a project-wide guess, is authority.
+    await db.update_repo("repo", checkout_base_path="")
+    await db.update_project("p", repo_url=str(tmp_path / "wrong-project.git"))
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+    store = BranchDiscardService(db, data_dir=orchestrator.config.data_dir).retained_store("repo")
+    store.parent.mkdir(parents=True)
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(store))
+    # A local-only branch with unique work must survive the recovered sweep.
+    _commit(checkout, "retained work", "local.txt", "keep\n")
+    head = _git(checkout, "rev-parse", "HEAD")
+    _git(store, "fetch", str(checkout), f"{head}:refs/heads/aq/local-only")
+    conflicting = str(tmp_path / "foreign.git")
+    if origin_state != "missing":
+        _git(store, "config", "remote.origin.url", conflicting if origin_state == "conflicting" else "")
+    await BranchLock(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/candidate"), "live-owner",
+    )
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert _git(store, "remote", "get-url", "origin") == (
+        conflicting if origin_state == "conflicting" else str(origin)
+    )
+    assert await git.arev_parse(str(store), "refs/heads/aq/local-only") == head
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+    if origin_state == "conflicting":
+        assert "Checkouts: 0;" in body and "origin differs" in body
+    else:
+        assert "Checkouts: 1;" in body and "Failures" not in body
+
+
+async def test_daily_backstop_does_not_guess_origin_for_unregistered_checkout(
+    guarded_repo, tmp_path,
+):
+    db, git, checkout, origin = guarded_repo
+    _git(checkout, "remote", "remove", "origin")
+    await db.update_project("p", repo_url=str(origin))
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    assert _git(checkout, "remote") == ""
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "origin unavailable" in body and "Checkouts: 0;" in body
+
+
+@pytest.mark.parametrize("binding", ["bound-repo", None, "mismatched-repo"])
+async def test_daily_backstop_uses_project_binding_only_among_origin_matches(
+    guarded_repo, tmp_path, binding,
+):
+    db, git, checkout, origin = guarded_repo
+    for repo_id, url in (("bound-repo", str(origin)),
+                         ("mismatched-repo", str(tmp_path / "different.git"))):
+        await db.create_repo(RepoConfig(
+            id=repo_id, project_id="p", source_type=RepoSourceType.CLONE, url=url,
+            default_branch="aq/candidate" if repo_id == "bound-repo" else "main",
+        ))
+    await db.update_project("p", integration_repository_id=binding)
+    # The bound registration's default stays protected, even though it isn't the first match.
+    _git(checkout, "branch", "aq/missed-landing")
+    _git(checkout, "push", "origin", "aq/missed-landing")
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    if binding == "bound-repo":
+        assert "Checkouts: 1;" in body
+        assert "Failures" not in body
+        assert await git.arev_parse(str(checkout), "aq/missed-landing") is None
+        assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None
+    else:
+        assert "Checkouts: 0;" in body
+        assert "origin has no unique registered repository" in body
+        assert await git.arev_parse(str(checkout), "aq/missed-landing")
+        assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing")
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+
+
+@pytest.mark.parametrize("registration", ["project-url", "no-url", "other-url", "other-project"])
+async def test_daily_backstop_falls_back_to_project_repository_without_registration(
+    guarded_repo, tmp_path, monkeypatch, registration,
+):
+    # jackkern.com and agent-queue-site have workspaces but no repos row; the
+    # sweep reported "no unique registered repository" every day (fleet-grove-42).
+    db, git, checkout, origin = guarded_repo
+    await db.delete_repo("repo")
+    project_url = {"project-url": str(origin), "other-url": str(tmp_path / "elsewhere.git")}
+    await db.update_project("p", repo_url=project_url.get(registration, ""))
+    if registration == "other-project":
+        await db.create_project(Project(id="q", name="other project"))
+        await db.create_repo(RepoConfig(
+            id="other-repo", project_id="q", source_type=RepoSourceType.CLONE, url=str(origin),
+        ))
+    monkeypatch.setattr(db, "list_workspaces", AsyncMock(side_effect=lambda project_id: [
+        SimpleNamespace(workspace_path=str(checkout), kind_id=None, is_slot=False),
+    ] if project_id == "p" else []))
+    await db.create_task(Task(
+        id="candidate", project_id="p", title="live", description="",
+        branch_name="aq/candidate", status=TaskStatus.IN_PROGRESS,
+    ))
+    _git(checkout, "branch", "aq/missed-landing")
+    _git(checkout, "push", "origin", "aq/missed-landing")
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.await_args_list[0].args[1]["body"]
+    swept = registration in {"project-url", "no-url"}
+    assert ("Checkouts: 1;" if swept else "Checkouts: 0;") in body
+    assert ("origin has no unique registered repository" in body) is not swept
+    assert (await git.arev_parse(str(checkout), "aq/missed-landing") is None) is swept
+    assert (await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None) is swept
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+
+
 async def test_sweep_rechecks_task_that_resumes_after_git_proof(guarded_repo, tmp_path, monkeypatch):
     from src.integration import branch_sweep
 
@@ -350,3 +655,69 @@ async def test_sweep_rechecks_task_that_resumes_after_git_proof(guarded_repo, tm
     )
     assert report.local_deleted == report.remote_deleted == []
     assert report.local_held == report.remote_held == 1
+
+
+async def test_sweep_lists_stashes_of_a_bare_store_read_only(tmp_path):
+    origin, checkout, store = tmp_path / "origin.git", tmp_path / "checkout", tmp_path / "store.git"
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
+    _git(tmp_path, "clone", str(origin), str(checkout))
+    _commit(checkout, "base", "README", "base\n")
+    _git(checkout, "push", "origin", "main")
+    _git(tmp_path, "clone", "--bare", str(origin), str(store))
+    sweep = {"repository_url": str(origin), "default_branch": "main", "holds": {},
+             "backup_path": tmp_path / "audit.tsv"}
+
+    assert (await sweep_checkout(GitManager(), str(store), **sweep)).stashes == []
+
+    # A linked worktree's stash lives in the bare store's shared refs/stash.
+    linked = tmp_path / "linked"
+    _git(store, "worktree", "add", "--detach", str(linked), "main")
+    (linked / "README").write_text("stashed change\n")
+    _git(linked, "stash", "push", "-m", "linked stash")
+    expected = _git(linked, "stash", "list", "--format=%gd %H %s").splitlines()
+    report = await sweep_checkout(GitManager(), str(store), **sweep)
+    assert report.stashes == expected and "linked stash" in expected[0]
+    assert _git(linked, "stash", "list", "--format=%gd %H %s").splitlines() == expected
+
+
+async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origin_once(tmp_path):
+    other, snapshot_source = tmp_path / "other.git", tmp_path / "snapshot-source.git"
+    for bare in (other, snapshot_source):
+        _git(tmp_path, "init", "--bare", "--initial-branch=main", str(bare))
+    paths = {name: tmp_path / name for name in ("first", "second", "snapshot")}
+    _git(tmp_path, "clone", str(other), str(paths["first"]))
+    _git(tmp_path, "clone", str(other), str(paths["second"]))
+    _git(tmp_path, "clone", str(snapshot_source), str(paths["snapshot"]))
+    workspaces = [
+        SimpleNamespace(workspace_path=str(paths["snapshot"]), kind_id="job-snapshot",
+                        is_slot=False, enabled=False),
+        SimpleNamespace(workspace_path=str(paths["first"]), kind_id=None, is_slot=False),
+        SimpleNamespace(workspace_path=str(paths["second"]), kind_id=None, is_slot=False),
+    ]
+    registered = SimpleNamespace(id="repo", url=str(tmp_path / "registered.git"),
+                                 source_path="",
+                                 checkout_base_path=str(tmp_path / "absent"),
+                                 default_branch="main")
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[
+            SimpleNamespace(id="p", name="One", storage_binding=None),
+        ]),
+        list_repos=AsyncMock(return_value=[registered]),
+        list_workspaces=AsyncMock(return_value=workspaces),
+        resolve_workspace_kind=AsyncMock(side_effect=AssertionError("snapshot inspected")),
+    )
+    orchestrator.git = GitManager()
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path / "state"),
+                                          vault_projects=str(tmp_path / "vault"))
+    orchestrator._command_handler = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True}),
+    )
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "Failures (1): " in body
+    assert body.count("origin has no unique registered repository") == 1
+    assert "skipped 2 checkouts of it" in body
+    assert str(paths["snapshot"]) not in body

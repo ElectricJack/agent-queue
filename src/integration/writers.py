@@ -37,7 +37,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.integration.models import BranchKey, Fence
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence
 from src.integration.outbox import enqueue_integration_event
 from src.integration.owner_recovery import (
     CHECKOUT_IN_USE,
@@ -519,6 +519,12 @@ class WriterPrimitives:
                     task_type=TaskType.TEST
                     if args.role is WriterRole.VERIFIER
                     else TaskType.BUGFIX,
+                    # A repair writer holds the subject's target branch.
+                    **(
+                        {}
+                        if args.role is WriterRole.VERIFIER
+                        else {"priority": INTEGRATION_REPAIR_PRIORITY}
+                    ),
                     class_hint=args.intelligence_class,
                     dedup_key=f"{subject.id}:{key}",
                     created_by_kind="integration_writer",
@@ -1095,54 +1101,6 @@ class OperationSafety:
         if transition.row is None:
             return None, "stale"
         return transition, None
-
-
-    @staticmethod
-    async def _locked_operation_on(conn: Any, operation_id: str) -> dict[str, Any] | None:
-        row = (
-            await conn.execute(
-                select(integration_repair_operations)
-                .where(integration_repair_operations.c.id == operation_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        return dict(row) if row is not None else None
-
-
-    @staticmethod
-    async def _locked_stage_on(conn: Any, operation: dict[str, Any]) -> dict[str, Any] | None:
-        row = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation["id"],
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        return dict(row) if row is not None else None
-
-
-    @staticmethod
-    async def _project_id_on(conn: Any, operation: dict[str, Any]) -> str:
-        if operation["target_kind"] == "batch":
-            statement = select(integration_batches.c.project_id).where(
-                integration_batches.c.id == operation["batch_id"]
-            )
-        else:
-            from src.database.queries.task_identity import resolve_task_identity_on
-
-            identity = await resolve_task_identity_on(conn, operation["parent_task_id"])
-            project_id = identity.project_id if identity is not None else None
-            if project_id is not None:
-                return str(project_id)
-            statement = select(tasks.c.project_id).where(tasks.c.id == operation["parent_task_id"])
-        project_id = (await conn.execute(statement)).scalar_one_or_none()
-        if project_id is None:
-            raise ValueError("operation target has no owning project")
-        return str(project_id)
-
 
     @staticmethod
     async def _ambiguous_writes_on(
