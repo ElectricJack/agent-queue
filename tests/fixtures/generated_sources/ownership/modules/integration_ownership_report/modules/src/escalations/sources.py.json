@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/escalations/sources.py::OPERATIONAL_SOURCES": {
+      "fingerprint": "5aeb12d9610719c21cc25a95d62e8d74931fe87a7ebe2a4c4333476d2fd060b9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/escalations/sources.py::operational_source": {
+      "fingerprint": "4a67bc5aa9bf5b61fdb2d01771a40862356f60db73f0970d1bb2c41fda1f1c65",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

@@ -1022,7 +1022,7 @@ async def active_tiles_measurement(any_db, tmp_path, monkeypatch):
     observer._store = AsyncMock(side_effect=AssertionError("tiles initiated network Git"))
     db.set_delivery_observer(observer)
     service = DevelopmentPrimitives(db, git=GitManager(), data_dir=tmp_path)
-    db._admission_reader = partial(observe_admission, db, service=service)
+    db._admission_reader = AsyncMock(wraps=partial(observe_admission, db, service=service))
     authorize = AsyncMock(wraps=stacked_branches._unauthorized_sources)
     monkeypatch.setattr(stacked_branches, "_unauthorized_sources", authorize)
     body = {"variant": "active", "rect": {"x0": -8, "y0": -8, "x1": 16, "y1": 16},
@@ -1049,7 +1049,12 @@ async def active_tiles_measurement(any_db, tmp_path, monkeypatch):
     observer._store.assert_not_awaited()
     # The eight independent cards have no prerequisite sources. No historical
     # task may enter the recursive authorization walk, regardless of SQL count.
-    assert authorize.await_count
+    # Branchless independent cards now short-circuit authorization. Verify the
+    # admission boundary still receives only visible active tasks; if any source
+    # walk is needed, its prerequisite set must remain empty.
+    assert db._admission_reader.await_count
+    assert all(set(call.args[0]) == {f"live{n}" for n in range(8)}
+               for call in db._admission_reader.await_args_list)
     assert all(not call.args[1] for call in authorize.await_args_list)
     return samples
 
@@ -1143,9 +1148,15 @@ async def test_active_tiles_profile_and_query_budget(any_db, tmp_path, monkeypat
     print(f"\n[active tiles {mode}] cold={samples[0] * 1000:.1f}ms; "
           f"warm p50={statistics.median(samples[1:]) * 1000:.1f}ms")
     # Includes real cached admission; no cost for the other 992 finished cards.
+    # 143d1b41d / 04b3d44f6 fence source rows, completions and metadata in
+    # _frontier_inputs before and after observation: 2 x 3 batched SELECTs.
+    # The unknown-evidence changes also remove two hierarchy display reads
+    # (net +4 there). SQL tracing confirms IN-scoped reads, never per-card I/O;
+    # scoped required_projects read also adds one hierarchy checkout.
+    # No-network assertions still guard provider I/O.
     statements, transactions = {
-        "disabled": (60, 18), "development": (64, 19),
-        "hierarchy": (87, 27), "train": (87, 27),
+        "disabled": (66, 18), "development": (70, 19),
+        "hierarchy": (91, 28), "train": (91, 28),
     }[mode]
     assert counts["statements"] <= statements
     assert counts["transactions"] <= transactions

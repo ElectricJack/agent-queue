@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, subagent_events, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "fingerprint": "350f42297ec49afa01935202a592f91ca2df08be7e4aef40c504df7dc995a9d7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/database/queries/session_queries.py::SessionQueryMixin.has_supervision_work": {
       "baseline_span": [

@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/sessions/obsolete.py::prepare_retirement_on": {
+      "fingerprint": "170ef9bd5b6fc26112fbb9ca7b45ebcc7cc67cc0ebadf05481a76ff292f37dae",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/sessions/obsolete.py::ObsoleteClose._refuse_unsafe": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."

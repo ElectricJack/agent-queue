@@ -4,9 +4,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 296,
+      "line": 315,
       "owner": "SettledTaskPullRequestClosure.run",
-      "owner_fingerprint": "aeed57c9110f95ebdab3f18aef6c2fda11edd5f930f47325f80b5132f14fbd08",
+      "owner_fingerprint": "1dd0fa14154b24f8670831db9b8eb7ca3c58e34cac675628eabea5751e38f95a",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/pr_cleanup.py::retry_settled_task_prs::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {

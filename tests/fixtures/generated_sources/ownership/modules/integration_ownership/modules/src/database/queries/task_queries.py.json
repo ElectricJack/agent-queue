@@ -232,18 +232,18 @@
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 2121,
+      "line": 2317,
       "owner": "TaskQueryMixin._apply_transition",
-      "owner_fingerprint": "e363c1d4ba8ad14cc42844cc440e1c0e366ec3170d56eef3f13df30b83c35d8c",
+      "owner_fingerprint": "9347b73f46c312c62f361bace4625df50233fda7b708157999e0cff60b108982",
       "reason": "Cleans transition-specific task metadata, claim bindings, pause/recovery markers and stale completion pointers; typed transition and handoff guards govern cleanup, not this storage call."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 2319,
+      "line": 2828,
       "owner": "TaskQueryMixin._delete_one",
-      "owner_fingerprint": "d4319c8a462675b9056cfd21b165edd019baf125b78c43d5c0d8a8df4b9f081c",
+      "owner_fingerprint": "c344b044288ad635522f43dbecd5a39593504eb44db3535e261e0632ff580080",
       "reason": "Ordinary task metadata cleanup after audited operator deletion; completion records, comments, subtask evidence and integration audit identities remain intact. No ref replay or duplicate integration lifecycle storage."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
@@ -286,10 +286,19 @@
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1557,
+      "line": 1723,
       "owner": "TaskQueryMixin._resume_locked",
-      "owner_fingerprint": "8ec653f5146188407bf24adb8aab07cf5f1f31bd18ed246666588aa91a1c87e2",
+      "owner_fingerprint": "943c93394a293a08b671a8fa5f89ac05afcaa284d42d8f8ec9385df8e5df8fba",
       "reason": "Deletes manual-pause and attention metadata as part of guarded resume; managed integration episodes retain their separate pause and handoff controls."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._retry_slot_reset_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1548,
+      "owner": "TaskQueryMixin._retry_slot_reset_locked",
+      "owner_fingerprint": "59ceb5f1322890410759c85fa1a3bd63c80b2c0457637f96baea9a3767608135",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.delete_task_meta::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "call": "delete",
@@ -299,6 +308,24 @@
       "owner": "TaskQueryMixin.delete_task_meta",
       "owner_fingerprint": "0c91483eb816281600c7cc15700a2aa743aedb2050f033387dcc1c7b07e1fc02",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.discard_task_pause_checkpoint::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1237,
+      "owner": "TaskQueryMixin.discard_task_pause_checkpoint",
+      "owner_fingerprint": "549248b7ee6dfb247963b7cb69cf67d96d7636b144f0d85b18b13e05822716b8",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.finish_task_pause::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1382,
+      "owner": "TaskQueryMixin.finish_task_pause",
+      "owner_fingerprint": "49a112a0687e0856863fc71c0f0b91034084f0e746fc105e92d3859c705ce991",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.resume_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "call": "delete",

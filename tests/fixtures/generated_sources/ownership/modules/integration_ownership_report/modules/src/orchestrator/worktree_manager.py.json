@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._checkpoint_row": {
+      "fingerprint": "908fc672e39461ab5972f17ac37c0ab20a7064bccfd3808a7ac28af5abd55496",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
       "baseline_span": null,

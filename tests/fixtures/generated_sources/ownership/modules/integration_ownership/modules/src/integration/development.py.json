@@ -103,9 +103,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 940,
+      "line": 782,
       "owner": "DevelopmentPrimitives.stale_branches",
-      "owner_fingerprint": "65b3e8213e67f1399deb2e887c6cb924ace5ef5946609c43fb962f2923121eb8",
+      "owner_fingerprint": "1f173a3c75d29afd835477d8e4998dcc98f0c1d9c42733a2b893cb0e9d67aeef",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     }
   }

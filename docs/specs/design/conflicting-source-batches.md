@@ -45,10 +45,20 @@ between admitted members, or introduced by target movement after freezing,
 remain candidate integration work. Existing explicit epic refresh controls
 remain available.
 
-Construction merges every frozen source onto the fetched target with its merge
-parents intact. Generated overlaps take the current artifact as a temporary
-tree input, then one regeneration sweep rebuilds the derived artifacts after all
-sources have merged. A source conflict stops automatic construction and retains
+Phase A6 supersedes new whole-batch repairs for ordinary root and development
+builds. A conflict found after freezing ejects that member and its transitive
+task and Git dependents, records their exact source/target pair, and rebuilds
+the healthy remainder from the target. Repeated visits retain the pair exclusion
+until either head changes and retry the original-source refresh durably. An
+empty remainder withholds publication. This does not relax dirty PR admission
+before freezing. Existing repair writers, epic collection/refresh and unsafe
+regenerator output retain the repair contract below.
+
+For those retained repair paths, construction merges every frozen source onto
+the fetched target with its merge parents intact. Generated overlaps take the
+current artifact as a temporary tree input, then one regeneration sweep rebuilds
+the derived artifacts after all sources have merged. A source conflict stops
+automatic construction and retains
 the exact partial head. One bounded ordinary batch repair owns the conflicting
 member and every remaining frozen member. It resolves all source conflicts,
 retains each exact source as an ancestor and runs regeneration once after the

@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._changed": {
+      "fingerprint": "11b033e3e0614bdcf6ef8aab79658d8206a0da4eb918acf850141a0bbbad6645",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.admission import AdmissionReader, admission_pass, branch_holders": {
+      "fingerprint": "f576f14d071a4ebe09145f436951ef823df44e174b80360a30f716617a687197",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/wait_runtime/scheduler.py::SchedulerWaitService.__init__": {
       "landing_span": [
