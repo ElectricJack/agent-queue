@@ -1,0 +1,55 @@
+{
+  "approval_evidence": "docs/reports/2026-10-28-retained-store-repack-budget-ownership.json",
+  "base_revision": "b7fc79d107710a46d5bbf16af02cd3de19d0404e",
+  "charged_files": {
+    "src/integration/repository_maintenance.py": {
+      "after": 219,
+      "before": 173,
+      "delta": 46
+    },
+    "src/orchestrator/core.py": {
+      "after": 2927,
+      "before": 2924,
+      "delta": 3
+    }
+  },
+  "delta": {
+    "engine": 46,
+    "owned": 49,
+    "shared": 3,
+    "tables": 0
+  },
+  "dev": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64139,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161805,
+    "unknown_count": 66,
+    "unknown_sinks_count": 59
+  },
+  "merged": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84871,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64142,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161854,
+    "unknown_count": 66,
+    "unknown_sinks_count": 59
+  },
+  "method": "Complete origin/dev archive and merged source inventory with the unchanged merged scanner and classifications. Compose the existing approved +49 owned/+46 engine/+3 shared/0 tables repack grant with every incoming dev grant; preserve historical baselines, fingerprints and grant pins, with zero additional headroom.",
+  "source_revision": "88ee3ab56d82f0fb402c9e4b13104b70caea4833",
+  "task_id": "calm-lantern-36"
+}

@@ -391,6 +391,20 @@ target.
 | `batch_inputs_delivered_to_project` | Frozen epic inputs already landed at the project root | Abort the duplicate batch before retiring origins |
 | `visit_timeout` | Visit exceeded its time budget | Inspect `evidence.stage`, target, batch and candidate; fix the named operation |
 
+A `visit_timeout` whose detail lists `carried_stages` is progress, not a stall.
+A retained-store fetch (`fetch_snapshot`) and a candidate assembled from frozen
+inputs (`build_candidate`) keep running past their visit's deadline, so a large
+epic whose stages together exceed the budget advances across visits instead of
+starting over on each. The lane's next visit adopts the running stage, or its
+result while that result is no older than one visit budget, and continues with
+the following stage. Changed inputs restart the stage. A lane whose carried stage
+is still running holds its repository slot, and train status shows the stages as
+`carried_stages`. A carried stage is cancelled after three visit budgets, which
+the next visit reports as `CarriedStageExpired`; it is also cancelled when the
+lane retires or the train stops. Only stages that write Git objects without
+progress records are carried; publication, gates and settlement stay inside the
+bounded visit.
+
 Conflict evidence in each target and batch's `detail` names the member,
 partial head, reason and files; the daemon log records the same build result.
 For a supervisor-filed fixer that works directly on an existing candidate, bind

@@ -53,6 +53,9 @@
       ],
       "reason": "Integration import, registered surface, schema, policy or adapter."
     },
+    "src/commands/task_commands.py::TaskCommandsMixin._explain_task": {
+      "reason": "Shared integration admission and delivery explanation extracted from _cmd_explain_task so project_ready can reuse request-scoped observations; remains fully charged."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_get_task": {
       "baseline_span": [
         3554,
