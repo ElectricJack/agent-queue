@@ -4,10 +4,11 @@ Lifting, digest rendering and dispatch belong to the human-wait service.
 """
 
 import time
+from dataclasses import replace
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
-from src.database.tables import doc_reviews, messages, task_comments, tasks
+from src.database.tables import doc_reviews, messages, task_comments, tasks, wait_source_events
 from src.waits.adapters.base import fields, foreign, integer, invalid, row, string, unresolved
 from src.waits.adapters.message import MessageAdapter, addressed
 from src.waits.conditions import Condition, DeadlinePolicy, Observation, Snapshot, SourceKey
@@ -41,6 +42,10 @@ class HumanAdapter(MessageAdapter):
         return Condition(self.kind, params, raw.get("generation"))
 
     async def authorise(self, conn, cond, scope):
+        if cond.parameters['subject'] == 'legacy_escalation':
+            from src.waits.adapters.legacy_escalation import authorise
+
+            return await authorise(conn, cond, scope)
         if cond.parameters["subject"] == "message_thread":
             cond = await super().authorise(conn, cond, scope)
             human_recipient = await conn.scalar(
@@ -67,20 +72,34 @@ class HumanAdapter(MessageAdapter):
                     foreign()
                 if review["state"] != "in_review" and not human_decision(review):
                     unresolved("review is not awaiting a human decision")
+                if "revision" not in cond.parameters:
+                    cond = replace(cond, parameters={**cond.parameters,
+                                                     "revision": review["current_revision"]})
         if cond.parameters["subject"] == "task_comment":
             # task_comments has no sequence column. Capture the server clock;
             # the human-event writer/dispatcher will supply its durable seq.
-            cond = cond.bind(generation=cond.generation, after_at=self.clock())
+            task = await row(conn, tasks, tasks.c.id == cond.parameters["task_id"])
+            if task and task["project_id"] != scope.project_id:
+                foreign()
+            if task and task["status"] in {"COMPLETED", "FAILED"}:
+                unresolved("task is no longer open for a human response")
+            cond = cond.bind(generation=cond.generation, after_at=self.clock(),
+                             task_created_at=task["created_at"] if task else None)
         return cond
 
     async def snapshot(self, conn, cond):
         p = cond.parameters
+        if p['subject'] == 'legacy_escalation':
+            from src.waits.adapters.legacy_escalation import snapshot
+
+            return await snapshot(conn, cond)
         if p["subject"] == "review":
             review = await row(conn, doc_reviews, doc_reviews.c.id == p["review_id"])
             if not review:
                 return None
             if "revision" in p and p["revision"] != review["current_revision"]:
-                unresolved("review revision has changed")
+                return Snapshot(review["project_id"], review["current_revision"],
+                                Observation("revision_changed", "unavailable"), "human:review")
             decided = human_decision(review)
             state = "satisfied" if decided else "unsatisfied"
             if review["state"] == "withdrawn":
@@ -100,14 +119,26 @@ class HumanAdapter(MessageAdapter):
             task = await row(conn, tasks, tasks.c.id == p["task_id"])
             if not task:
                 return None
+            if task["created_at"] != cond.context.get("task_created_at"):
+                return Snapshot(task["project_id"], task["claim_epoch"],
+                                Observation("task_replaced", "unavailable"), "human:task_comment")
             comment = (
                 (
                     await conn.execute(
                         select(task_comments)
                         .where(
                             task_comments.c.task_id == task["id"],
+                            task_comments.c.project_id == task["project_id"],
                             task_comments.c.author_kind == "user",
-                            task_comments.c.created_at > cond.context["after_at"],
+                            or_(
+                                task_comments.c.created_at > cond.context["after_at"],
+                                select(wait_source_events.c.seq).where(
+                                    wait_source_events.c.source_key == f"human:task_comment:{task['id']}",
+                                    wait_source_events.c.seq > cond.context.get(
+                                        "source_watermark_seq", 2**63 - 1),
+                                    wait_source_events.c.source_revision == task_comments.c.id,
+                                ).exists(),
+                            ),
                         )
                         .order_by(task_comments.c.created_at, task_comments.c.id)
                         .limit(1)
@@ -119,9 +150,11 @@ class HumanAdapter(MessageAdapter):
             state = "satisfied" if comment else "unsatisfied"
             if task["status"] in {"COMPLETED", "FAILED"} and not comment:
                 state = "unavailable"
+            # Parking deliberately advances the owner's claim epoch. Comments
+            # still answer this task incarnation, including after that fence.
             return Snapshot(
                 task["project_id"],
-                task["claim_epoch"],
+                cond.generation if cond.generation is not None else task["claim_epoch"],
                 Observation(
                     str(comment["id"] if comment else task["updated_at"]),
                     state,
@@ -170,6 +203,10 @@ class HumanAdapter(MessageAdapter):
 
     def source_key(self, cond):
         p = cond.parameters
+        if p['subject'] == 'legacy_escalation':
+            from src.waits.adapters.legacy_escalation import source_key
+
+            return source_key(cond)
         if p["subject"] == "review":
             return SourceKey("review", p["review_id"], cond.generation)
         if p["subject"] == "message_thread":

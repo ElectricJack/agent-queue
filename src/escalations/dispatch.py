@@ -344,6 +344,10 @@ class EscalationDeliveryService:
 
     async def _before_write(self, row: MutableMapping[str, Any]) -> None:
         await self._ensure_project_active(row)
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        blocked = getattr(self.db, "legacy_human_delivery_blocked", None)
+        if incident and blocked and await blocked(incident["project_id"]):
+            raise _ProjectPaused
         # A later pause must retain the attempt so resume searches for posts
         # whose receipt is only recorded once this whole delivery finishes.
         row["external_write_started"] = True

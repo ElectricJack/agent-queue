@@ -16,7 +16,6 @@ from src.database.tables import task_branch_origins, tasks
 from src.integration.git_truth import GitTruth
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.models import Task, TaskStatus
-from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_integration_train_sources import (
     MAIN,
     completed,
