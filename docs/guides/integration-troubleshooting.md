@@ -1,19 +1,40 @@
-# Integration troubleshooting with durable Subjects
+# Integration troubleshooting
 
-The reconciler owns enabled root, parent and development delivery. Read the
-Subject's recorded phase, policy pin, wait reason, last decision and next visit:
+The Git-first train owns enabled root, epic and development delivery. Inspect
+current target visits, batch intent, exact candidate/check evidence and blockers:
 
 ```bash
 aq integration status PROJECT_ID
 aq task show TASK_ID
+aq doctor --check integration.delivery_engine
+aq doctor --check integration.train_batches_stalled
+```
+
+These are read-only projections. `integration.git_first: active` constructs the
+train; the code default `shadow` starts no delivery engine. After project train
+policy installation, a disabled activation preserves sources and candidates
+while stopping admission and fenced writes. Check that binding before treating
+a paused lane as a broken publisher. See the [train runbook](git-first-train-runbook.md).
+
+Historical Subject rows retain their gates and ownership evidence. A restart
+or configuration edit never grants authority to bypass a hold. Status can read
+Git to verify delivery but never advances a target.
+
+The retained Subject diagnostics still inspect unfinished rows in
+`integration_subjects`:
+
+```bash
 aq doctor --check integration.subjects_overdue
 aq doctor --check integration.subjects_held
 ```
 
-These are read-only projections. An overdue visit is retried from durable state
-once the daemon can run it. A held Subject needs the named gate resolved;
-configuration changes and daemon restarts do not clear that gate or grant a
-writer authority. Status can read Git to verify delivery evidence; it never advances delivery.
+`integration.subjects_overdue` reports rows whose `next_due_at` is more than
+60 seconds overdue; `integration.subjects_held` reports rows with no
+`next_due_at`. Inspect their `wait_reason` and `gate_id` for the recorded blocker.
+These checks expose historical Subject state; use the train diagnostics above
+for current delivery progress. For a stranded branch owner, preview the separate
+ownership proof with `aq integration release-owner --task-id TASK_ID --dry-run`
+as described below.
 
 Inspect App credentials and branch protection with `aq integration app-verify
 PROJECT_ID`. `app-setup` prints the fixes; applying GitHub settings is a separate
@@ -22,16 +43,41 @@ repository administrator action. See [App-mode setup](../config/app-mode-train.m
 ## A passed task blocked at delivery
 
 Passing close records execution, while delivery requires the exact revision to
-be present on its target. Check `task show` for its checkpoint, current receipts
-and blockers. Resolve missing source evidence or CI under the reviewed policy.
-For a missing no-code receipt, a local operator records a no-code child's disposition with `aq integration record-noop`.
-No worker or supervisor session can invoke that operator control.
+be present on its target. Check `task show` for its checkpoint, current Git delivery
+ evidence and blockers. Historical receipts alone do not prove current delivery.
+Resolve missing source evidence or CI under the reviewed policy. For a missing
+no-code receipt, a local operator or live elevated named supervisor can use
+`aq integration record-noop`; ordinary workers cannot invoke that control.
+
+`obsolete_child` means the child's diff only edits paths the parent has removed.
+Review the reported source and parent heads and the parent commit removing those
+paths. A local operator or project/global supervisor can run
+`aq integration redrive-child CHILD_ID --dispose-obsolete --superseded-by SHA
+--apply --head SOURCE --parent-head TARGET --reason "Why the work is obsolete"`.
+Omit `--apply` to preview. The fenced ours merge preserves the parent's files,
+records the reason and actor, and makes the child a real ancestor. Active writers,
+batches, changed heads or missing supersession proof refuse it. No human gate is
+required. `record-noop` continues to require a code-free completion.
 
 A completed child missing from a parent's collection can be inspected through
 `aq integration redrive-child CHILD_ID`. A completed root missing its PR can be
 inspected through `aq integration redrive-root ROOT_ID`. Preview first; apply
 uses the exact head and reason and repeats the proof. Changed remote ancestry,
 source identity, live writers or human holds are blockers, never retry overrides.
+
+For an older completed code leaf reporting `missing_git_provenance`, a local
+operator or live project supervisor can preview source recovery:
+
+```bash
+aq integration redrive-child CHILD_ID --adopt-source
+aq integration redrive-child CHILD_ID --adopt-source --apply --head FULL_PREVIEWED_OID --reason "Recover missing completion source"
+```
+
+This retains the existing passing generation after proving its published branch
+matches its checkpoint and materialized parent origin. A conflicting recorded
+source, missing passing completion or live writer refuses recovery. Adoption
+lets the train evaluate the source; its usual review, check and containment
+requirements still apply.
 
 ## Human holds and repair progress
 
@@ -42,11 +88,17 @@ reviewing the gate answer, release that exact hold:
 aq integration release-held-gate SUBJECT_ID GATE_ID --apply --expected-version VERSION --reason REASON
 ```
 
-Repair delegates keep their frozen starting commit, fence, deadline and attempt
-budget. A stopped writer's preserved work can be inspected with
-`recover-preserved-repair`; detached attachments can be inspected with
-`rebind-detached-repair`. These controls repeat their Git and ownership proofs
-before applying. See [repair recovery](hierarchical-integration-trains.md#repair-and-collection-recovery).
+Current batch repairs use one task-free fixer session and retained checkout.
+Inspect the batch's fixer state, failure evidence, current head and finite revisit
+rather than looking for a new repair task. Distinct red results reuse the same
+session; exhaustion reports once to the supervisor and preserves work. A fixer
+publishes through `aq integration batch-fix --action push` and changes its clean
+binding only with `--action rebind`. Exact green can still deliver after exhaustion.
+Existing ordinary repair tasks retain their frozen input, ancestry checks and
+close handoff. The retired `recover-preserved-repair`, `rebind-repair` and
+`rebind-detached-repair` controls are unavailable; use the retained
+[repair recovery procedures](hierarchical-integration-trains.md#repair-and-collection-recovery)
+for the named current blocker.
 
 A historical cancelled parent collection can be previewed with
 `aq integration reopen-collection PARENT_ID`. It reuses the existing episode and
@@ -151,20 +203,62 @@ aq integration release-owner --task-id repair-repair-batch-…-1 --dry-run
 
 # Satisfied. Run it for real — this pushes the preserved ref and writes the
 # audit row in the same logical step as the release.
-aq integration release-owner --task-id repair-repair-batch-…-1
+aq integration release-owner --task-id repair-repair-batch-…-1 --apply
 # => same shape, dry_run: false, one row now in integration_owner_recoveries
 ```
 
 You can also target a specific owner row directly instead of a task:
 
 ```bash
-aq integration release-owner --owner-row-id o-a3f7…
+aq integration release-owner --owner-row-id o-a3f7… --apply
 ```
 
-`release-owner` takes no `--project-id`: the task (or the owner row's repository) names the
+`release-owner` previews by default; `--apply` explicitly preserves work and releases
+the stopped attachment. `--dry-run` and `--apply` are mutually exclusive.
+Preservation first proves the local task ref, recorded task origin, claim time
+and matching slot sentinel. An unrelated detached slot is skipped; a missing
+local ref appears as `skip_preserve` with reason `missing_local_ref`. Unpublished
+work without provenance returns `unproven_task_work`, leaving it in place.
+Detached checkouts skipped for a missing task ref or mismatched sentinel remain
+intact and their released slots are disabled, including clean checkouts, until
+their unknown commits can be reviewed. A slot whose sentinel names another task is
+never a push source, even when its detached HEAD holds commits origin lacks.
+
+`--no-push` releases without publishing anything, combined with either the preview or
+`--apply`. Nothing is proved, snapshotted or pushed, so unpublished work does not
+refuse the release with `unproven_task_work`. Each unpublished source appears in
+`evidence.unpublished` and as a `skip_preserve` step with reason `no_push`; it stays in
+its checkout or local branch ref. The row's own slot is retained and disabled, and the
+release comment names what was left behind. Use it when the work belongs elsewhere or
+will be preserved by hand:
+
+```bash
+aq integration release-owner --task-id TASK_ID --no-push            # preview
+aq integration release-owner --task-id TASK_ID --no-push --apply
+```
+It takes no `--project-id`: the task (or the owner row's repository) names the
 project, and the caller's token has to name the same one. A project's supervisor session may
 therefore run this recovery for its own work and is refused for another project's — see
 [aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
+If a task branch was contaminated by an earlier recovery, the local operator or
+live project supervisor can restore its recorded origin after releasing its
+writer. Preview supplies the origin id, current remote SHA and released fence:
+
+```bash
+aq integration restore-task-origin --task-id TASK_ID --json
+aq integration restore-task-origin --task-id TASK_ID --apply \
+  --origin-id ORIGIN_ID --expected-remote-oid BEFORE_SHA \
+  --expected-fence-token FENCE --reason "Remove unrelated slot history"
+```
+
+Apply retains the displaced head at the preview's `backup_ref`, then uses an
+exact remote lease to publish only the recorded origin (the preview's `after_sha`). A changed origin,
+fence, remote head or active writer refuses the operation. The audit events
+`integration.task_origin_restore_started` and `integration.task_origin_restored`
+record the principal and before/after SHAs. This control never resets a checkout.
+It refuses checked-out branches and other local work; an existing local ref
+matching the displaced head is repaired with an exact compare-and-swap.
 
 **Refusal reasons and how to resolve them.**
 
@@ -176,10 +270,28 @@ as the recovery result. Dry runs do not write an audit row.
 |---|---|---|
 | `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate, or still bound to a task whose close already committed, is stopped automatically (see the repair-delegate section and the paragraph below this table). |
 | `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
+| `unproven_task_work` | Unpublished work lacks the recorded origin, claim time, matching slot sentinel or task-ref ancestry. | Inspect the preview evidence and preserve the work under its actual task. Do not substitute the slot HEAD for a missing task ref. To release without publishing, rerun with `--no-push`. |
 | `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
 | `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
 | `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Preview the current task with `aq integration release-owner --task-id TASK_ID --dry-run`. |
 | `not_recoverable_state` | The row's `owner_role` is `collector`, or its `handoff_state` is `released`. Only `worker`/`repair` rows in `attached` or `handoff_pending` are recoverable. | Do nothing — the row is in a correct state. |
+
+**A live worker blocked on its own failed preparation.** A retry automatically
+rechecks a self-owned pending handoff using the exact unactivated pool claim and
+clean, published checkout proof. If it remains fenced, the operator or project
+supervisor can preview and restore that reservation without killing the session:
+
+```bash
+aq integration release-owner --task-id TASK_ID --self-owned --dry-run
+aq integration release-owner --task-id TASK_ID --self-owned --apply
+```
+
+This requires a retained failure record for the same session instance, claim epoch
+and workspace generation. It retains the claim and workspace locks for retry, even
+if repeated failures requested drain and disabled the workspace. It refuses active
+claims, incomplete child cleanup, changed bindings, dirty or unpublished work.
+An apply writes `integration.preparation_handoff_restored` and a task comment.
+Without `--self-owned`, the ordinary stopped-writer proof still applies.
 
 **A worker still bound to a closed task.** A daemon restart during
 `aq task close` can commit the terminal transition and lose everything after
