@@ -55,6 +55,9 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+
     "ask_intake", "ask_button",
     "reconcile_agent_cron",
     "cron_delivery_begin",
@@ -62,6 +65,7 @@ API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 
@@ -177,6 +181,9 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "policy_export",
             "policy_diff",
             "policy_apply",
+            "wait_register", "wait_get", "wait_list", "wait_cancel",
+            "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+            "wait_decide", "wait_lift", "wait_legacy_bridge",
         }
     )
     | DASHBOARD_STATE_COMMANDS
