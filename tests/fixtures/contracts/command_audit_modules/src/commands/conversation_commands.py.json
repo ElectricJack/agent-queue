@@ -168,13 +168,14 @@
         "return": "_error('invalid_envelope', 'a follow-up must name the channel conversation or its observed thread')"
       }
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Conversation intake correction: recipient resolution occurs inside accept_conversation_input; after commit both new inputs and gateway replays emit the delivery wake for the existing durable notice. Reviewed return branches, argument reads, resource gates and typed result contract remain unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:01c742ff4e41328de9bc690f038f6531c19d1dc953f1719987de5e893648bb63",
+    "source_digest": "sha256:c8924f02bfa52481c6c455f5e97f0e7ed24be74a5f991babf4448367c45369f6",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_conversation_wiring.py::test_committed_conversation_wakes_delivery_without_a_cycle"
     ]
   },
   "supervisor_inbox_reply": {
@@ -262,7 +263,7 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+    "source_digest": "sha256:6a00315773a676d08cf8af34d8dbe78708f0478f2369cb207e9b80c8e6e17545",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

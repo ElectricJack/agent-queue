@@ -269,6 +269,16 @@ principal `discord-gateway`:
 
 1. If the destination is in ask **channel mode** (§2.10), every message goes
    to `ask_intake`. There is no fallthrough.
+   A Discord reply reference resolves either an ask binding or a conversation
+   reply's outbound receipt in the observed transport/channel. Conversation
+   replies continue that conversation, preserve the reference in the input and
+   supervisor notice, and bypass inference of a pending ask from words such as
+   “yes”. Destination and conversation audience must still agree. A reply in
+   the parent channel may continue a conversation that retains a bound thread;
+   a reply inside a thread must match that conversation's bound thread.
+   An unresolved reference produces a durable clarification receipt, a supervisor
+   notice and a deduplicated public resend request. A correlation failure keeps
+   the input queued for reconciliation and records the same visible notice.
 2. Otherwise, with conversations off, only escalation thread intake runs.
 3. With conversations on, escalation intake runs first, then
    `classify_conversation`, then `supervisor_inbox_post` (§2.7).
@@ -310,11 +320,20 @@ allowlist.
    `(transport, external_message_id)`. Text is nulled after 30 days.
 3. `src/asks/intake.py` inserts a message `msg-<input_id>` with
    `body_kind=conversation_input`, addressed to the supervisor, or to
-   `conversation-queued` if no supervisor can take it yet. A cycle step
-   (`route_queued_conversation_inputs`) retries the routing.
+   `conversation-queued` only if no addressed supervisor exists. Resolution and
+   notice insertion share the acceptance transaction. A stopped supervisor retains
+   its address and is woken through the named-session delivery path. A cycle step
+   (`route_queued_conversation_inputs`) recovers genuinely unassigned notices.
+   After commit, intake emits `message.sent`; conversation inputs wake the independent
+   delivery service immediately, bypassing its routine delivery interval. Replays
+   repair a missed wake using the original notice and notification deduplication.
+   Another supervisor may inspect the notice but cannot consume it through inbox
+   injection or mark it read.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
-   `outbound_deliveries`.
+   `outbound_deliveries`. For channel and DM conversations, the Discord reply
+   reference is the answered input's `external_message_id`, including follow-up
+   inputs. The conversation's root and destination stay unchanged.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages

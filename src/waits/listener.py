@@ -177,34 +177,28 @@ class WaitSourceListener:
                     return count
                 track_graph_lock(conn)
                 cursor = await self.locked_lease(conn)
-                started_at = self.clock()
-                # Renewal cadence is not a query deadline. The cursor row lock
-                # fences this batch; expiration still rolls it back below.
+                # Commit each event with its cursor before reacquiring the
+                # graph fence. Renewal cadence must never define lock scope.
+                # One slow event retains the lease budget and rolls back whole.
                 async with asyncio.timeout(self.lease_seconds):
                     rows = (await conn.execute(select(wait_source_events).where(
                         wait_source_events.c.seq > cursor["last_seq"],
                         wait_source_events.c.seq <= watermark,
-                    ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings().all()
+                    ).order_by(wait_source_events.c.seq).limit(1))).mappings().all()
                     if not rows:
                         return count
-                    processed = []
-                    for event in rows:
-                        await self._dispatch(conn, dict(event))
-                        processed.append(event)
-                        # Finish a slow event, then commit a shorter prefix so
-                        # renewal can proceed without replaying the whole batch.
-                        if self.clock() - started_at >= self.renewal_seconds:
-                            break
+                    event = rows[0]
+                    await self._dispatch(conn, dict(event))
                     if cursor["lease_expires_at"] <= self.clock():
                         raise LeaseLost("wait source lease expired during dispatch")
                     await conn.execute(update(wait_source_events).where(
-                        wait_source_events.c.seq.in_([row["seq"] for row in processed]),
+                        wait_source_events.c.seq == event["seq"],
                     ).values(dispatched_at=self.clock()))
                     await conn.execute(update(wait_listener_cursors).where(
                         wait_listener_cursors.c.listener_key == "source",
                         wait_listener_cursors.c.lease_owner == self.owner,
-                    ).values(last_seq=processed[-1]["seq"], updated_at=self.clock()))
-            count += len(processed)
+                    ).values(last_seq=event["seq"], updated_at=self.clock()))
+            count += 1
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
 

@@ -797,6 +797,7 @@ areas:
       - tests/test_scheduler.py
       - tests/test_project_constraint*.py
       - tests/test_schedule.py
+      - tests/test_project_schedules.py
       - tests/test_timer_service*.py
   - id: metrics
     description: "Metrics: per-second sampling, roll-ups and retention, series API and WebSocket, chat-analyzer outcomes, fixed histograms, perf registry and loop lag, host attribution, PSI and test slots, relay deltas, route latency, pool waits, query timing and the dashboard-perf kit."
