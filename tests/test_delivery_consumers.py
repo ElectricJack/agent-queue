@@ -16,6 +16,7 @@ import asyncio
 import json
 import subprocess
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,6 +32,9 @@ from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
 from tests.git_seed_helpers import clone_seed, init_bare_seed
+
+# The retirement assertions inspect the complete source tree as data.
+BAZEL_DATA = ("src/",)
 
 CHILDREN = ("done", "wrong", "missing", "reopened")
 
@@ -1202,6 +1206,9 @@ async def reopen_command(db, task_id):
     from src.commands.task_commands import TaskCommandsMixin
 
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     return await handler._cmd_reopen_with_feedback({
         "task_id": task_id, "feedback": "Recover the unlabelled completion; retain the branch",

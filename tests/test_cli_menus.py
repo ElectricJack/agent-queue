@@ -9,6 +9,11 @@ import pytest
 from src.cli import menus
 
 
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """Mocked menu prompts never allocate or read a database."""
+
+
 def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(monkeypatch):
     """Removing required-field validation or defaults would change the creation payload."""
     responses = iter(["project-1", "A task", "Description", None, "feature", "direct"])

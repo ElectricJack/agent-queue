@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.config import AppConfig, DatabaseConfig
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.tables import (
     admission_reservations,
     continuations,
@@ -1164,6 +1165,9 @@ class TestExitHandling:
         class Git:
             detached = False
 
+            async def _arun(self, args, *, cwd):
+                return await self._arun_unlocked(args, cwd=cwd)
+
             async def aget_current_branch(self, _path, *, strict=False):
                 return "HEAD" if self.detached else "aq/t1"
 
@@ -1626,6 +1630,7 @@ class TestIdleStopIntent:
         )
         detach = pool_reconciler.test_orch._detach_idle_pool_branch = AsyncMock()
         await pool_reconciler._step_drain_ack([row], NOW)
+        await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
         detach.assert_awaited_once()
         assert len(provider.sent_nudges) == 1
         assert "aq session drain-ack" in provider.sent_nudges[0][1]
@@ -1638,6 +1643,46 @@ class TestIdleStopIntent:
         await pool_reconciler._step_drain_ack([row], NOW + (59 if acknowledge else 61))
         assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
         assert (await db.get_session(row.id)).state == "stopped"
+
+    async def test_slow_branch_release_never_holds_the_tick(
+        self, db, provider, pool_reconciler, tmp_path,
+    ):
+        # 2026-10-27: drain-ack awaited an origin fetch queued ~160s behind a
+        # slot preparation; every tick hit its stage bound and exits, stalls
+        # and orphans never ran anywhere in the fleet.
+        row = await self._finished_worker(
+            db, provider, tmp_path, claims=0, failed_preparation={"task_id": "t1"},
+        )
+        fetching, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def slow_detach(session):
+            calls.append(session.id)
+            fetching.set()
+            await release.wait()
+
+        pool_reconciler.test_orch._detach_idle_pool_branch = slow_detach
+        ran = []
+        for name in ("_step_exits", "_step_stall_ladder"):
+            step = getattr(pool_reconciler, name)
+
+            async def recorded(live, now, step=step, name=name):
+                ran.append(name)
+                return await step(live, now)
+
+            setattr(pool_reconciler, name, recorded)
+        try:
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW), 5)
+            await asyncio.wait_for(fetching.wait(), 5)
+            assert ran == ["_step_exits", "_step_stall_ladder"]
+            assert len(provider.sent_nudges) == 1
+            # The next pass neither waits on nor duplicates the release in flight.
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW + 1), 5)
+            assert calls == [row.id]
+        finally:
+            release.set()
+            await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
+        assert pool_reconciler._branch_detaches == {}
 
     @pytest.mark.parametrize("deferred", [False, True])
     async def test_taskless_drain_retries_submission_without_extending_grace(
@@ -2370,6 +2415,70 @@ class TestStallLadder:
         )
         await reconciler.tick(now=NOW)
         assert provider.sent_nudges == []
+
+
+class TestClaimBinding:
+    """bold-rapids-90.3: a live holder whose claim binding cannot publish.
+
+    The resumed worker kept heartbeating and commenting while push and
+    message send refused it, so neither the stall ladder nor the exit path
+    saw anything; the binding itself has to be surfaced.
+    """
+
+    async def _holder(self, db, provider, tmp_path):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        task = await db.get_task("t1")
+        return await _session(
+            db, provider, agent_id="a1", last_claim_epoch=task.claim_epoch,
+            started_at=NOW - 100, last_activity=NOW,
+        )
+
+    async def test_empty_binding_is_flagged_once_and_clears_when_bound(
+        self, db, provider, reconciler, bus, tmp_path
+    ):
+        row = await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "")  # what park leaves
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_empty"
+        assert bus.payload("task.needs_attention")["reason"] == "claim_binding_empty"
+        assert bus.payload("task.needs_attention")["session_id"] == row.id
+        await reconciler.tick(now=NOW + 10)
+        assert bus.types().count("task.needs_attention") == 1
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, row.id)
+        await reconciler.tick(now=NOW + 20)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+
+    async def test_binding_to_another_session_is_a_mismatch(
+        self, db, provider, reconciler, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "old-session")
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_mismatch"
+
+    async def test_unpinned_agent_is_flagged(self, db, provider, reconciler, tmp_path):
+        await self._holder(db, provider, tmp_path)
+        await db.update_agent("a1", state=AgentState.IDLE, current_task_id=None)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_agent_unpinned"
+
+    async def test_scheduler_launch_without_a_record_is_healthy(
+        self, db, provider, reconciler, bus, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert "task.needs_attention" not in bus.types()
+
+    async def test_an_unrelated_flag_is_neither_overwritten_nor_cleared(
+        self, db, provider, reconciler, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", "needs_attention", "stuck_timeout")
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "")
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "stuck_timeout"
 
 
 class TestLiveRefLeases:
