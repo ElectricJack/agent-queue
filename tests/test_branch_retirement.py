@@ -111,6 +111,28 @@ async def request(db, *, request_id="decision", reason="abandoned"):
         await request_task_retirement_on(conn, "retired", request_id=request_id, reason=reason)
 
 
+async def test_retired_member_branch_cleanup(setup):
+    db, git, service, checkout, remote, head = setup
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description=""))
+    await db.create_task(Task(id="replacement", project_id="p", title="replacement", description=""))
+    await db.add_dependency("retired", "epic", "parent-child")
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="train",
+        ))
+    await db.archive_task(
+        "retired", disposition="obsolete", abandon_undelivered=True,
+        abandon_reason="duplicate", archive_reason="duplicate", replacement_task_id="replacement",
+    )
+    assert all(state == "complete" for state, _ in await service.drain_due())
+    audit = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert audit["evidence"]["remote"]["sha"] == head
+    assert Path(audit["evidence"]["remote"]["bundle"]).is_file()
+    assert await git.arev_parse(str(remote), BRANCH) is None
+    assert await git.arev_parse(str(checkout), BRANCH) is None
+    assert await service.drain_due() == []
+
+
 async def rows(db):
     async with db._engine.connect() as conn:
         return [dict(row) for row in (await conn.execute(

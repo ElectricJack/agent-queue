@@ -1,7 +1,6 @@
 """Real Git/PostgreSQL invariants for the shared retained-clone primitives."""
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -50,6 +49,7 @@ from src.integration.runtime_contracts import (
     WriterStatus,
 )
 from src.models import Project, RepoConfig, RepoSourceType
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 ARTIFACT = "sha256:" + "1" * 64
 NOW = 1700000000.0
@@ -196,14 +196,13 @@ class LocalGit(GitManager):
             raise GitError("lost successful delete response")
 
 
-@pytest.fixture(scope="session")
-def git_history_template(tmp_path_factory):
-    """Seed history once, then copy both repositories before each scenario."""
-    tmp_path = tmp_path_factory.mktemp("gitops-history")
+@pytest.fixture
+def git_history_template(tmp_path):
+    """Build fresh repositories and history for this scenario."""
     remote = tmp_path / "remote.git"
-    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    init_bare_seed(remote)
     store = tmp_path / "retained"
-    git(tmp_path, "clone", str(remote), str(store))
+    clone_seed(remote, store)
     git(store, "config", "user.name", "Tester")
     git(store, "config", "user.email", "tester@example.test")
     base = commit(store, {"base.txt": "base\n"})
@@ -214,12 +213,7 @@ def git_history_template(tmp_path_factory):
 
 @pytest.fixture
 async def setup(tmp_path, reuse_database, git_history_template):
-    source_remote, source_store, base, head = git_history_template
-    remote = tmp_path / "remote.git"
-    store = tmp_path / "retained"
-    shutil.copytree(source_remote, remote)
-    shutil.copytree(source_store, store)
-    git(store, "remote", "set-url", "origin", str(remote))
+    remote, store, base, head = git_history_template
     db = await reuse_database("gitops")
     async with db._engine.begin() as conn:
         await conn.execute(
@@ -589,7 +583,8 @@ async def test_generated_conflict_rebuilds_merged_sources_and_rejects_stray_writ
     assert "non-generated" in result.detail["reason"]
 
 
-async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup):
+@pytest.mark.parametrize("changed_output", [True, False])
+async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup, changed_output):
     """A repository with no regenerate command is a project configuration gap.
 
     The member's content is fine, so the merge must not park it: the batch
@@ -603,8 +598,12 @@ async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup
         base=base,
     )
     git(repo.store, "push", "origin", f"{common}:main")
-    a = commit(repo.store, {"generated.txt": "ours\n", "a.txt": "a\n"}, base=common)
-    b = commit(repo.store, {"generated.txt": "theirs\n", "b.txt": "b\n"}, base=common)
+    a = commit(repo.store, {"a.txt": "a\n", **(
+        {"generated.txt": "ours\n"} if changed_output else {}
+    )}, base=common)
+    b = commit(repo.store, {"b.txt": "b\n", **(
+        {"generated.txt": "theirs\n"} if changed_output else {}
+    )}, base=common)
     unconfigured = replace(repo, regenerate=None)
 
     async def resolver(_):
@@ -615,10 +614,10 @@ async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup
                                       merge_args(s, common, a, b).members,
                                       created_at=NOW)
     assert merged["outcome"] == "no_regenerator", merged
-    # The first member merged on its own; the second is the one whose generated
-    # overlap cannot be rebuilt, and its own source is named.
-    assert [member["member"] for member in merged["members"]] == ["t0"]
-    assert merged["member"] == "t1"
+    # Even the first member's output must be regenerated from combined sources.
+    assert merged["members"] == []
+    if changed_output:
+        assert merged["member"] == "t0"
     assert is_valid_git_oid(merged["head"])
 
     result = await ops.merge_members(s, merge_args(s, common, a, b))
@@ -871,7 +870,8 @@ async def test_cleanup_retention_expected_old_ambiguous_delete_and_replay(setup)
     assert ops.git.deletes == 1
 
 
-async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
+@pytest.mark.parametrize("mode", ["development", "disabled"])
+async def test_subject_cleanup_keeps_default_and_every_flow_target(setup, mode):
     db, ops, s, _, repo, _, head, _ = setup
     await db.create_project(Project(id="p", name="Promotion cleanup"))
     await db.create_repo(RepoConfig(
@@ -881,6 +881,7 @@ async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
     async with db.immediate() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
             promotion_flow=[{"target": "staging"}, {"target": "aq/release"}],
+            hierarchical_integration_mode=mode, integration_repository_id="r",
         ))
     protected = ("dev", "staging", "aq/release", "gh-pages")
     items = []
@@ -897,10 +898,12 @@ async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
         return False
 
     result = await SubjectCleanup(ops, inventory=inventory, held=held)(s, CleanupArgs())
-    assert result.outcome == "clean", result
+    assert result.outcome == ("clean" if mode == "development" else "pending"), result
     assert result.detail["retained"] == [f"refs/heads/{branch}" for branch in protected]
-    assert result.detail["deleted"] == ["refs/heads/aq/ordinary"]
-    assert ops.git.deletes == 1
+    assert result.detail["deleted"] == (["refs/heads/aq/ordinary"] if mode == "development" else [])
+    assert ops.git.deletes == (1 if mode == "development" else 0)
+    if mode == "disabled":
+        assert await ops.git.aremote_branch_head(repository=repo.binding, branch="aq/ordinary") == head
     for branch in protected:
         assert await ops.git.aremote_branch_head(repository=repo.binding, branch=branch) == head
 
