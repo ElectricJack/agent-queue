@@ -19,19 +19,21 @@ tags: [spec, logging, llm, observability]
 **Related config:** `LLMLoggingConfig` in `src/config.py` (see [specs/config](config.md))
 **Related spec:** `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`
 
+Current implementation notes below were checked on 2026-10-22. The original
+Claude-platform session integration has been retired.
+
 ## 1. Overview
 
-The LLM logging system captures every interaction with language models — both
-direct-path `LLMClient.complete()` calls (playbook nodes/transitions, plugin
-`invoke_llm`, the reference-stub enricher, `aq vault rebuild-index
---with-summaries`) and Claude Code agent sessions (task execution). The goal is
+The current LLM logging system captures direct API attempts through
+`LLMClient.complete()` (API playbook steps, plugin `invoke_llm`, the reference-stub
+enricher, `aq vault rebuild-index --with-summaries`). It does not capture headless
+`transport: cli` calls or tmux coding-agent sessions. The goal is
 prompt optimization: understanding what context is provided, how long
 responses take, and what outputs look like.
 
 Logs are written as JSONL files (one JSON object per line) organized by date
-under `logs/llm/`. The system is off by default and enabled via
-configuration. When disabled, no files are created and all logging calls are
-no-ops.
+under `logs/llm/`. Logging is enabled by default (`llm_logging.enabled: true`).
+When disabled, no files are created and all logging calls are no-ops.
 
 `LLMLogger` is the single component: it writes JSONL entries and manages
 retention. `LLMClient.complete()` times each call itself and calls
@@ -39,23 +41,25 @@ retention. `LLMClient.complete()` times each call itself and calls
 decorator/wrapper type; logging is inline in the client, not a separate
 provider subclass.
 
-Agent sessions are logged separately via a direct `LLMLogger.log_agent_session()`
-call in the Claude platform, since agent execution does not go through
-`LLMClient`.
+`LLMLogger.log_agent_session()` remains as a legacy helper with no production
+caller. Its `claude_agent.jsonl` and per-task files describe the retired integration,
+not output to expect from current tmux sessions. Session token accounting comes
+from transcript ingestion; see [usage accounting](../reference/usage-accounting.md).
+Availability refusals happen before an SDK attempt and are not logged here.
 
 ## 2. Log Directory Structure
 
 ```
 logs/llm/
   2026-02-25/
-    llm.jsonl              # Every LLMClient.complete() call
-    claude_agent.jsonl     # Claude Code agent task sessions
-    prompt_analytics.jsonl # Periodic aggregated metrics (see §5)
+    llm.jsonl              # Each attempted SDK call
+    claude_agent.jsonl     # Legacy helper output; not produced by current sessions
+    prompt_analytics.jsonl # Periodic aggregated metrics (see §3.4)
     tasks/
       <task_id>.jsonl       # Per-task copy of that task's agent-session entries
   2026-02-26/
     llm.jsonl
-    claude_agent.jsonl
+    claude_agent.jsonl     # Legacy helper output only
 ```
 
 - Date directories use UTC dates in `YYYY-MM-DD` format.
@@ -86,10 +90,10 @@ Logs a single direct-path LLM call. Called by `LLMClient.complete()` in a
 |-----------|------|-------------|
 | `caller` | `str` | Call site identity — the `caller` on the resolved `LLMCallSpec` (e.g. `"playbook.node"`, `"playbook.transition"`, `"plugin.invoke_llm"`, `"stub_enricher"`, `"vault.summarize"`) |
 | `model` | `str` | Model name from the provider |
-| `provider` | `str` | Provider id (e.g. `"anthropic"`, `"google"`, `"openai"`) |
+| `provider` | `str` | Adapter class name supplied by the client (e.g. `AnthropicProvider`) |
 | `messages` | `list[dict]` | The message history sent to the LLM |
 | `system` | `str` | System prompt |
-| `tools` | `list[dict] \| None` | Tool definitions (logged as names only) |
+| `tools` | `list[dict] \| None` | Full tool definitions and a separate name summary |
 | `max_tokens` | `int` | Max tokens parameter |
 | `response` | `Any \| None` | The response object (logged as text_parts + tool use name/input) |
 | `error` | `str \| None` | Error message if the call failed |
@@ -102,7 +106,7 @@ Logs a single direct-path LLM call. Called by `LLMClient.complete()` in a
   "timestamp": "2026-08-30T14:30:00.123456+00:00",
   "caller": "playbook.transition",
   "model": "claude-sonnet-4-5-20250929",
-  "provider": "anthropic",
+  "provider": "AnthropicProvider",
   "duration_ms": 1500,
   "prompt_fingerprint": "3f9a1c2b4d5e",
   "input": {
@@ -123,15 +127,15 @@ Logs a single direct-path LLM call. Called by `LLMClient.complete()` in a
 
 **Data reduction rules:**
 - Tool definitions: only tool names are logged in the `tool_names` summary field (the full `tools` array is also logged as-given, schemas included).
-- Messages and system prompt are logged in full (no truncation) — `llm.jsonl` is off by default and git-ignored precisely because entries carry full prompts.
-- Token counts are **estimates only** (roughly 1 token ≈ 4 characters) — there is no provider-reported `usage` field on `LLMResponse`/`LLMRunResult`; see the direct-path spec's "Deviations applied during implementation" §3.
+- Messages, system prompts and tool schemas are logged in full (no truncation). Logs are git-ignored and logging can be disabled with `llm_logging.enabled: false`.
+- JSONL token fields are **estimates** (roughly 1 token ≈ 4 characters). `LLMResponse` and `LLMRunResult` separately expose provider-reported `TokenUsage` for budget enforcement; those counts are not written to the token ledger by this logger.
 - A `prompt_fingerprint` (md5 of the first 100 chars of the system prompt + sorted tool names) tags entries by prompt template for A/B comparison.
 
 ### 3.3 `log_agent_session()`
 
-Logs a Claude Code agent task session. Called by the Claude adapter's `wait()`
-method after each execution completes (success, failure, or pause). Also
-writes a copy to `tasks/<task_id>.jsonl` when `task_id` is provided.
+Legacy helper for a Claude Code agent task session; there is no production caller
+in the current session runtime. If explicitly invoked, it also writes a copy to
+`tasks/<task_id>.jsonl` when `task_id` is provided.
 
 **Parameters (all keyword-only):**
 
@@ -203,33 +207,25 @@ exist).
 - `complete()` times the call, resolves the `LLMCallSpec` (which supplies
   `caller`), delegates to the provider adapter, and calls
   `llm_logger.log_llm_call()` in a `finally` block — both success and error
-  paths are logged.
+  paths for SDK attempts are logged. Gate refusals happen before this block.
 
-### 4.3 Claude Platform (`src/runtimes/claude.py` and session adapters)
+### 4.3 Coding-agent sessions and headless CLI calls
 
-- Accepts optional `llm_logger` in constructor.
-- In `wait()`: records `start_time` at entry, calls `_log_session()` before
-  every return path (success, cancellation, exception, CLI error, zero-token
-  failure).
-- The `_log_session()` helper computes duration and calls
-  `llm_logger.log_agent_session()`.
-
-### 4.4 Main (`src/main.py`)
-
-- Creates the orchestrator first (which owns `llm_logger` and `llm`), then
-  wires the same logger into session-adapter construction.
+The retired Claude platform logging integration is no longer wired into production.
+Tmux sessions are accounted for by `src/sessions/transcripts/watcher.py` instead.
+`src/llm/cli.py` reports usage to its playbook step but does not call this logger.
 
 ## 5. Configuration
 
 ```yaml
 llm_logging:
-  enabled: true          # default: false
-  retention_days: 14     # default: 30
+  enabled: true          # default: true
+  retention_days: 30     # default: 30
 ```
 
 | YAML key | Type | Default | Description |
 |----------|------|---------|-------------|
-| `enabled` | `bool` | `false` | When false, all logging is a no-op |
+| `enabled` | `bool` | `true` | When false, all logging is a no-op |
 | `retention_days` | `int` | `30` | Date directories older than this are deleted by periodic cleanup |
 
 Represented by `LLMLoggingConfig` dataclass in `src/config.py`, nested under
@@ -247,7 +243,7 @@ jq 'select(.duration_ms > 5000)' logs/llm/*/llm.jsonl
 # Find all calls from one call site
 jq 'select(.caller == "playbook.transition")' logs/llm/*/llm.jsonl
 
-# Agent session summary
+# Legacy agent-session files, if retained from an older installation
 jq '{task: .task_id, tokens: .output.tokens_used, duration_s: (.duration_ms/1000)}' \
   logs/llm/*/claude_agent.jsonl
 ```
