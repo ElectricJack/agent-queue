@@ -22,7 +22,7 @@ class AskPrepareDecisionRequest:
         ask_id (str):
         expected (AskPrepareDecisionRequestExpected):
         option_key (str):
-        overall_note (None | str | Unset):
+        overall_note (str | Unset):  Default: ''.
         dispositions (list[Any] | None | Unset):
         responder_class (None | str | Unset):
     """
@@ -30,7 +30,7 @@ class AskPrepareDecisionRequest:
     ask_id: str
     expected: AskPrepareDecisionRequestExpected
     option_key: str
-    overall_note: None | str | Unset = UNSET
+    overall_note: str | Unset = ""
     dispositions: list[Any] | None | Unset = UNSET
     responder_class: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -42,11 +42,7 @@ class AskPrepareDecisionRequest:
 
         option_key = self.option_key
 
-        overall_note: None | str | Unset
-        if isinstance(self.overall_note, Unset):
-            overall_note = UNSET
-        else:
-            overall_note = self.overall_note
+        overall_note = self.overall_note
 
         dispositions: list[Any] | None | Unset
         if isinstance(self.dispositions, Unset):
@@ -92,14 +88,7 @@ class AskPrepareDecisionRequest:
 
         option_key = d.pop("option_key")
 
-        def _parse_overall_note(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        overall_note = _parse_overall_note(d.pop("overall_note", UNSET))
+        overall_note = d.pop("overall_note", UNSET)
 
         def _parse_dispositions(data: object) -> list[Any] | None | Unset:
             if data is None:

@@ -12,7 +12,10 @@ from src.asks.standalone import StandaloneSpecAdapter
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 
 
-class AskCommandsMixin:
+from src.commands.ask_communication_commands import AskCommunicationCommandsMixin
+
+
+class AskCommandsMixin(AskCommunicationCommandsMixin):
     def _ask_service(self):
         from src.asks.sources import source_adapters
         return AskService(self.db, AdapterRegistry([
@@ -21,6 +24,10 @@ class AskCommandsMixin:
         ]))
 
     async def _apply_ask_decision(self, decision):
+        async with self.db._engine.connect() as conn:
+            ask = await self.db.get_ask(decision["ask_id"], conn=conn)
+        if ask and ask["context"].get("legacy_discarded"):
+            raise AskError("ask.discarded", "This decision belongs to discarded legacy work")
         if decision["packet"]["source"]["kind"] not in {"review", "standalone_spec"}:
             from src.asks.source_operations import apply
             try:
@@ -97,7 +104,8 @@ class AskCommandsMixin:
     async def _ask_source_for_caller(self, ask_id, *, conn):
         ask = await self.db.get_ask(str(ask_id), conn=conn)
         principal = current_principal() or TRUSTED_LOCAL
-        if not ask or (principal.project_id and principal.project_id != ask["project_id"]):
+        from src.asks.authority import visible
+        if not ask or not visible(ask):
             raise AskError("ask.not_found", "Request was not found")
         if principal.kind is PrincipalKind.SESSION and not principal.elevated:
             raise AskError("ask.not_decider", "Workers cannot decide human requests")
@@ -207,8 +215,9 @@ class AskCommandsMixin:
         ask = await self._publish_source_ask(source)
         if not args.get("expected") or not args.get("preview_id"):
             return {"success": False, "error_code": "ask.context_missing",
-                    "error": "Open this request, review its effects and prepare a versioned decision",
-                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
+                    "error": "Run aq ask show, then aq ask prepare with the returned expected version; "
+                             "pass its preview_id and the same intent to aq ask decide",
+                    "ask_id": ask["id"], "ask_url": f"/focus/asks/{ask['id']}",
                     "expected": {k: ask[k] for k in (
                         "decision_generation", "source_fingerprint", "feedback_version")}}
         return await self._cmd_ask_decide({
