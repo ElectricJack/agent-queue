@@ -1,7 +1,7 @@
 """``src/review_keys.py`` — the one place the pipeline's review dedup keys live.
 
 The default pipeline writes ``review:task:<id>`` and ``branch-review:<branch>``
-rows; the doctor's ``integration.unreviewed_prs`` looks for the first, and
+rows; the playbook and
 ``Orchestrator._emit_task_event`` flags a finishing task that carries either so
 the review rules never review a review.  All three must agree on the strings.
 """
@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.doctor.integration_checks import _review_dedup_key
 from src.review_keys import (
     BRANCH_REVIEW_DEDUP_PREFIX,
     REVIEW_PROFILE_IDS,
     REVIEW_TASK_DEDUP_PREFIX,
     branch_review_dedup_key,
+    fidelity_review_dedup_key,
     is_pipeline_review_task,
     is_review_completion,
     is_review_role,
@@ -28,10 +28,9 @@ def test_keys_match_the_shipped_pipeline():
     assert branch_review_dedup_key("aq/x") == "branch-review:aq/x"
     assert review_task_dedup_key("t1").startswith(REVIEW_TASK_DEDUP_PREFIX)
     assert branch_review_dedup_key("aq/x").startswith(BRANCH_REVIEW_DEDUP_PREFIX)
+    assert fidelity_review_dedup_key("b1") == "fidelity-review:batch:b1"
 
 
-def test_doctor_uses_the_same_key():
-    assert _review_dedup_key("t1") == review_task_dedup_key("t1")
 
 
 @pytest.mark.parametrize(
@@ -39,6 +38,7 @@ def test_doctor_uses_the_same_key():
     [
         ("review:task:abc", True),
         ("branch-review:aq/feature", True),
+        ("fidelity-review:batch:b1", True),
         ("spec-ingest:docs/specs/x.md", False),
         ("triage-open", False),
         ("", False),
@@ -88,16 +88,10 @@ def _dedup_key_prefix(artifact: dict, step_id: str) -> str:
 
 
 def test_reviewed_pipeline_artifact_uses_these_prefixes():
-    """The reviewed artifact is the source of truth; the constants must not drift."""
+    """The integration-only pipeline must not recreate retired review keys."""
     artifact = _reviewed_pipeline_artifact()
-    assert (
-        _dedup_key_prefix(artifact, "per-task-review--create-review")
-        == REVIEW_TASK_DEDUP_PREFIX
-    )
-    assert (
-        _dedup_key_prefix(artifact, "per-branch-final-review--ensure-final")
-        == BRANCH_REVIEW_DEDUP_PREFIX
-    )
+    assert "per-task-review--create-review" not in artifact["steps"]
+    assert "per-branch-final-review--ensure-final" not in artifact["steps"]
 
 
 @pytest.mark.parametrize(
@@ -105,6 +99,7 @@ def test_reviewed_pipeline_artifact_uses_these_prefixes():
     [
         ("reviewer", True),
         ("final-reviewer", True),
+        ("fidelity-reviewer", True),
         ("worker", False),
         ("spec-ingest", False),
         ("Reviewer", False),
@@ -141,6 +136,8 @@ def test_git_ops_no_code_fallback_shares_the_role_set():
         # the review rules exist for.
         (None, "worker", False),
         ("spec-ingest:docs/specs/x.md", "spec-ingest", False),
+        ("fidelity-review:batch:b1", "fidelity-reviewer", True),
+        ("fidelity-review:batch:b1", None, True),
         ("", "", False),
     ],
 )
@@ -153,21 +150,23 @@ def test_shipped_review_profiles_exist_with_these_ids():
     from pathlib import Path
 
     defaults = Path(__file__).parent.parent / "src" / "profiles" / "defaults"
-    for profile_id in REVIEW_PROFILE_IDS:
+    # ``fidelity-reviewer`` ships with its profile in held batches L5.1; drop
+    # this exception there.
+    for profile_id in REVIEW_PROFILE_IDS - {"fidelity-reviewer"}:
         assert (defaults / profile_id / "profile.md").is_file(), (
             f"REVIEW_PROFILE_IDS names '{profile_id}' but no such shipped profile exists"
         )
 
 
 def test_reviewed_pipeline_artifact_pins_the_review_profiles():
-    """The reviewed artifact is the source of truth for the profile ids too."""
+    """The integration-only pipeline does not delegate retired review roles."""
     artifact = _reviewed_pipeline_artifact()
     pinned = {
         step["inputs"]["profile_id"]["value"]
         for step in artifact["steps"].values()
         if isinstance(step.get("inputs"), dict) and "profile_id" in step["inputs"]
     }
-    assert set(REVIEW_PROFILE_IDS) <= pinned
+    assert not set(REVIEW_PROFILE_IDS) & pinned
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,11 @@
 # Error Recovery Monitor
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 ## Intent
 Detect failed tasks and hooks, then take corrective action or notify
 the operator with actionable context.
