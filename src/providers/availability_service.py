@@ -1294,6 +1294,16 @@ class ProviderAvailabilityService:
             logger.debug("provider availability: could not count held tasks", exc_info=True)
         return {"roles": sorted(roles), "held": held}
 
+    def notify_state_change_soon(self, provider: str, generation: int | None = None) -> None:
+        """Schedule a notice owned by this service's drain/close lifecycle."""
+        async def _send() -> None:
+            try:
+                await self.notify_state_change(provider, generation)
+            except Exception:
+                logger.warning("provider state notification failed", exc_info=True)
+
+        self._spawn(_send())
+
     async def notify_state_change(
         self, provider: str, generation: int | None = None
     ) -> dict[str, Any]:
@@ -1592,6 +1602,7 @@ class ProviderAvailabilityService:
             source_identity=f"{provider}:{row.generation}",
             incident_key=f"provider:{provider}:{row.generation}",
             supervisor_owner=f"supervisor-{project_id}",
+            task_title=f"Restore {provider} availability for {project_id}",
             summary=self._escalation_summary(provider, trigger, now)[:4000],
             investigation=self._escalation_investigation(
                 provider, trigger, session, affected, now
