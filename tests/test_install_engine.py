@@ -50,6 +50,25 @@ def _pg_backend():
     """The installer engine is pure; it never allocates a database."""
 
 
+def test_installer_public_exports_keep_identity_and_star_imports():
+    import src.install as installer
+    from src.install import InstallEngine as exported_engine
+    from src.install.registry import build_registry
+    from src.install.wizard import question_plan
+
+    assert exported_engine is InstallEngine
+    assert installer.build_registry is build_registry
+    assert installer.question_plan is question_plan
+    assert installer.InstallOutcome is InstallOutcome
+    assert set(installer.__all__) <= set(dir(installer))
+    namespace = {}
+    exec("from src.install import *", namespace)
+    for name in installer.__all__:
+        assert namespace[name] is vars(installer)[name]
+    with pytest.raises(AttributeError, match="has no attribute 'unknown_export'"):
+        installer.unknown_export
+
+
 SUPPORTED = SupportVerdict(
     host_path="windows-wsl2",
     tier="supported",

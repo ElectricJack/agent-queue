@@ -1385,11 +1385,29 @@ def test_cli_requeue_sends_continuation_and_generation(cli_transport):
         expected_generation=2, note='Infrastructure repaired'))
 
 
-async def test_source_redispatch_requires_live_scoped_supervisor(commands, env):
+@pytest.mark.parametrize('missing', ['continuation_id', 'expected_generation'])
+def test_retire_requires_explicit_continuation_generation(missing):
+    args = dict(decision='retire', continuation_id='c', expected_generation=1, note='Retire')
+    args.pop(missing)
+    with pytest.raises(ValidationError, match='retire requires'):
+        WaitDecideArgs.model_validate(args)
+
+
+def test_cli_retire_dispatches_supervisor_decision_by_continuation_id(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ['retire', 'c', '--expected-generation', '2',
+                                      '--note', 'Stranded holder', '--project', 'p'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ('wait_decide', dict(decision='retire', continuation_id='c',
+        expected_generation=2, note='Stranded holder', project_id='p'))
+
+
+@pytest.mark.parametrize("action", ["redispatch", "blockers", "retire"])
+async def test_source_redispatch_requires_live_scoped_supervisor(commands, env, action):
     name = "wait_source_redispatch"
     callback = AsyncMock(return_value={"success": True, "result": {}})
     commands.orchestrator.wait_v2_handlers[name] = callback
-    args = {"project_id": "p", "source_seq": 1, "note": "recover completion"}
+    args = {"project_id": "p", "source_seq": 1, "note": "recover completion", "action": action}
     denied = await execute(commands, name, args)
     assert denied["error_code"] == "wait.out_of_scope"
     denied = await execute(commands, name, args, replace(WORKER, elevated=True))
@@ -1410,3 +1428,15 @@ def test_cli_source_redispatch_uses_scoped_command(cli_transport):
     assert result.exit_code == 0, result.output
     assert calls == [("wait_source_redispatch", {"source_seq": 42, "project_id": "p",
                                                "note": "retry completion"})]
+
+
+@pytest.mark.parametrize("verb", ["source-blockers", "source-retire"])
+def test_cli_source_controls_share_scoped_recovery_authority(cli_transport, verb):
+    group, calls = cli_transport
+    options = (["--limit", "10"] if verb == "source-blockers" else
+               ["--source-seq", "42", "--note", "obsolete candidate"])
+    result = CliRunner().invoke(group, [verb, "--project", "p", *options])
+    assert result.exit_code == 0, result.output
+    assert calls == [("wait_source_redispatch", {"project_id": "p", **(
+        {"action": "blockers", "limit": 10} if verb == "source-blockers" else
+        {"action": "retire", "source_seq": 42, "note": "obsolete candidate"})})]

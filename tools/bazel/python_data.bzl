@@ -4,7 +4,7 @@ def python_repository_data(name):
         name = name,
         srcs = native.glob(
             ["*", ".github/**", "scripts/**", "migrations/**", "packages/aq-client/**"],
-            exclude = ["BUILD.bazel", "**/__pycache__/**", "**/*.pyc", "**/node_modules/**"],
+            exclude = ["BUILD.bazel", ".git", "**/__pycache__/**", "**/*.pyc", "**/node_modules/**"],
             allow_empty = True,
         ) + ["//tools/bazel:repository_inputs"],
         visibility = ["//visibility:public"],

@@ -1683,6 +1683,22 @@ def ensure_default_harnesses(data_dir: str) -> dict:
     return sync_vault_harnesses(data_dir)
 
 
+def shipped_skill_files(skill_dir: str) -> list[str]:
+    """Markdown files of one shipped skill, relative to ``skill_dir``.
+
+    ``SKILL.md`` comes first, then any reference files it links to
+    (``reference/<topic>.md``) in sorted order, always with ``/`` separators.
+    """
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(skill_dir):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
+        for filename in filenames:
+            if filename.endswith(".md"):
+                rel = os.path.relpath(os.path.join(dirpath, filename), skill_dir)
+                out.append(rel.replace(os.sep, "/"))
+    return sorted(out, key=lambda rel: (rel != "SKILL.md", rel))
+
+
 def ensure_default_aq_skills(data_dir: str) -> dict:
     """Install shipped aq-* skills into every supported harness' skill dir.
 
@@ -1691,8 +1707,10 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
     supervisor sessions get a small set of skills that explain aq CLI
     usage instead, and rely on Bash + the shipped ``aq`` binary.
 
-    Each skill lives in-tree at ``src/skills/<name>/SKILL.md`` and gets
-    seeded to every discovery path we know about:
+    Each skill lives in-tree at ``src/skills/<name>/SKILL.md``, with any
+    reference files it links to beside it (``reference/<topic>.md``), and
+    the whole skill directory gets seeded to every discovery path we know
+    about:
 
     * ``~/.claude/skills/<name>/SKILL.md`` — Claude Code (native).
     * ``~/.gemini/skills/<name>/SKILL.md`` — Gemini CLI, npm-installed.
@@ -1703,8 +1721,9 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
       skills`` subcommand today, but the runtime scans the directory —
       see ``codex features list`` for the ``skill_*`` flags).
 
-    **Idempotent per-path**: an existing SKILL.md at a given path is
-    never overwritten. Editing a shipped skill (in any of the four
+    **Idempotent per-file**: an existing SKILL.md or reference file at a
+    given path is never overwritten; a reference file added in a later
+    release is still copied in beside an existing SKILL.md. Editing a shipped skill (in any of the four
     locations) survives daemon restarts. To pick the shipped version
     back up in one place, delete that copy and restart.
 
@@ -1712,7 +1731,7 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
     skill is *corrected* in-tree, every install that already has the old
     file keeps handing agents stale guidance. ``aq doctor --check
     skills.installed_drift`` (:mod:`src.doctor.skill_checks`) reports it,
-    and ``--fix`` backs each drifted copy up as ``SKILL.md.bak`` beside
+    and ``--fix`` backs each drifted file up as ``<file>.bak`` beside
     itself before re-copying the shipped version. An agent inside a task
     worktree cannot do this — the installed copies live outside the
     workspace — so a skill fix ships here and the operator runs the check.
@@ -1722,7 +1741,8 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
             cross-session discovery works.
 
     Returns:
-        Dict with per-target ``created`` and ``skipped`` skill-name lists.
+        Dict with per-target ``created`` and ``skipped`` skill-name lists. A
+        skill is ``created`` when any of its files was copied this call.
     """
     defaults_root = os.path.join(os.path.dirname(__file__), "skills")
     if not os.path.isdir(defaults_root):
@@ -1758,15 +1778,17 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
             continue
         os.makedirs(dst_root, exist_ok=True)
         for skill_name in skill_names:
-            src_path = os.path.join(defaults_root, skill_name, "SKILL.md")
+            src_dir = os.path.join(defaults_root, skill_name)
             dst_dir = os.path.join(dst_root, skill_name)
-            dst_path = os.path.join(dst_dir, "SKILL.md")
-            if os.path.exists(dst_path):
-                target_result["skipped"].append(skill_name)
-                continue
-            os.makedirs(dst_dir, exist_ok=True)
-            shutil.copy2(src_path, dst_path)
-            target_result["created"].append(skill_name)
+            copied = False
+            for rel in shipped_skill_files(src_dir):
+                dst_path = os.path.join(dst_dir, *rel.split("/"))
+                if os.path.exists(dst_path):
+                    continue
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                shutil.copy2(os.path.join(src_dir, *rel.split("/")), dst_path)
+                copied = True
+            target_result["created" if copied else "skipped"].append(skill_name)
         if target_result["created"]:
             logger.info(
                 "Installed %d default aq skill(s) into %s (%s): %s",

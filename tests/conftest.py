@@ -12,7 +12,6 @@ import pytest
 from hypothesis import settings
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
-from tests.db_fixtures import lease_dsn
 
 # Fresh per-test PostgreSQL databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
@@ -27,9 +26,16 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
 def _resolve_base_dsn() -> str | None:
-    from tests.db_fixtures import base_dsn
+    from tests.pg_dsn import ensure_worker_postgres_dsn
 
-    return base_dsn()
+    return ensure_worker_postgres_dsn()
+
+
+def lease_dsn(name: str = "test") -> str:
+    """Load the lease pool only when a fixture actually requests a database."""
+    from tests.db_fixtures import lease_dsn as acquire
+
+    return acquire(name)
 
 
 def _refuse_production_database() -> None:

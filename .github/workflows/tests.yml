@@ -2,12 +2,12 @@ name: Tests
 
 # The full suite runs on candidate work before branch promotion:
 #
-# * `pull_request` into `dev`, `staging` or `main` tests the PR merge with its base.
+# * `pull_request` into `dev` tests the PR merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
 #   the root train promotes that exact tested SHA to `dev`.
 # * A push to `aq/batches/**` tests the git-first train's batch candidate
 #   (`src/integration/batches.py:candidate_ref`) the same way.
-# * A push to `aq/promote/**` tests the exact promotion source SHA.
+# * AQ dispatches this workflow on a private promotion ref only for ci: rerun.
 # * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref. The parent-CI
 #   publisher that pushed these refs is retired; the trigger is kept.
@@ -21,20 +21,17 @@ name: Tests
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
 # with the required check names the train observes on a candidate. A committed
 # promotion-source-audit check set may trust these names for source admission;
-# candidate CI and publication attestations still require the canonical names.
+# reuse_source promotions retain these names; rerun CI uses canonical names.
 on:
   pull_request:
     branches:
       - dev
-      - staging
-      - main
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - 'aq/parent/**'
       - 'aq/integration/**'
       - 'aq/batches/**'
-      - 'aq/promote/**'
       - 'aq/backmerge/**'
   workflow_dispatch:
   workflow_call:
@@ -59,12 +56,14 @@ jobs:
     name: Tests (${{ matrix.suite.name }})
     # A draft PR waits for `ready_for_review`. A same-repository PR from an
     # `aq/integration/**` branch is skipped because the push trigger above
-    # already tests that head SHA, and its checks appear on the PR.
+    # already tests that head SHA, and its checks appear on the PR. Promotion
+    # PR jobs also skip: the project step policy decides whether AQ dispatches CI.
     if: >-
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        !(github.event.pull_request.head.repo.full_name == github.repository &&
-         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+         (startsWith(github.event.pull_request.head.ref, 'aq/integration/') ||
+          startsWith(github.event.pull_request.head.ref, 'aq/promote/'))))
     runs-on: ubuntu-latest
     # The cache-miss install and the tests each have their own step deadline;
     # this total is their sum plus setup and cleanup, so a slow PyPI cannot
@@ -289,7 +288,8 @@ jobs:
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        !(github.event.pull_request.head.repo.full_name == github.repository &&
-         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+         (startsWith(github.event.pull_request.head.ref, 'aq/integration/') ||
+          startsWith(github.event.pull_request.head.ref, 'aq/promote/'))))
     runs-on: ubuntu-latest
     # Include setup and post-job cleanup around the real daemon scenarios.
     # A passing graphs group consumed 261 seconds before its cleanup steps.
@@ -421,7 +421,8 @@ jobs:
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        !(github.event.pull_request.head.repo.full_name == github.repository &&
-         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+         (startsWith(github.event.pull_request.head.ref, 'aq/integration/') ||
+          startsWith(github.event.pull_request.head.ref, 'aq/promote/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

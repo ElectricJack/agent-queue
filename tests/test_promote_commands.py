@@ -372,6 +372,8 @@ async def source_audit(promote_env):
     listing = e.github.paged_items
 
     async def audit_listing(path, *, key):
+        if "check_name=" in path:
+            return await listing(path, key=key)
         if key == "jobs":
             return attempt_jobs(path, e.audit_checks, e.audit_workflows)
         if e.source in path:
@@ -386,8 +388,15 @@ async def source_audit(promote_env):
 
 
 @pytest.mark.parametrize("pin_source", [False, True])
-async def test_staging_request_accepts_configured_green_push_audit_and_pins_pr(source_audit, pin_source):
+@pytest.mark.parametrize("ci_mode", ["reuse_source", "rerun"])
+async def test_staging_request_accepts_configured_green_push_audit_and_pins_pr(
+    source_audit, pin_source, ci_mode,
+):
     e = source_audit
+    async with e.db._engine.begin() as conn:
+        flow = await conn.scalar(select(projects.c.promotion_flow))
+        flow[0]["ci"] = ci_mode
+        await conn.execute(update(projects).values(promotion_flow=flow))
     args = {"project_id": "p", "step_id": "staging"}
     if pin_source:
         args["source_sha"] = e.source
@@ -395,12 +404,43 @@ async def test_staging_request_accepts_configured_green_push_audit_and_pins_pr(s
     assert opened["outcome"] == "requested", opened
     meta = opened["promotion"]
     assert meta["source_sha"] == e.source and meta["base_sha"] == e.base
-    assert meta["check_names"] == list(e.trust.required_checks.names)
+    assert meta["step"]["ci"] == ci_mode
+    expected = (e.trust.check_sets["promotion-source-audit"] if ci_mode == "reuse_source"
+                else e.trust.required_checks.names)
+    assert meta["check_names"] == list(expected)
     assert e.github.created == 1
     assert e.github.pull["head"]["sha"] == e.source
     assert e.github.pull["base"]["ref"] == "staging"
     assert git(e.ops.git.remote_path, "rev-parse", promotion_ref(meta["step"], meta)) == e.source
     assert git(e.ops.git.remote_path, "rev-parse", "staging") == e.base
+
+
+async def test_reused_audit_checks_gate_and_attest_without_new_runs(source_audit):
+    from src.integration.promotion_steps import StepAdmission, publish_step_attestation
+    from src.integration.train import TrainTarget
+    from src.integration.train_sources import DaemonLanes, DatabaseBatches
+
+    e = source_audit
+    opened = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    assert opened["success"], opened
+    meta = opened["promotion"]
+    batch = await BatchStore(e.db).get(opened["batch_id"])
+    members = await BatchStore(e.db).members(batch.id)
+    orchestrator = SimpleNamespace(db=e.db, git=e.ops.git,
+        integration_attestation_service=SimpleNamespace(
+            _load_trust=AsyncMock(return_value=(e.trust, e.github))))
+    lanes = DaemonLanes(orchestrator, batches=DatabaseBatches(e.db))
+    target = TrainTarget("p", "r", batch.target_ref, "promotion", step=meta["step"])
+    lane = await lanes._promotion_lane(target, e.repo, e.repo.binding, e.ops, {}, e.snapshot)
+    checks = await lane.checks.for_candidate(batch, e.source)
+    head = await lane.checks.head(batch, e.source)
+    assert (await checks.refresh(head)).green
+    assert await publish_step_attestation(
+        StepAdmission(e.db, e.ops, meta["step"]), batch, members, e.trust, e.github,
+    ) == "published"
+    assert e.github.dispatches == []
+    proof = json.loads(e.github.records[-1]["output"]["text"])
+    assert [check["name"] for check in proof["checks"]] == meta["check_names"]
 
 
 @pytest.mark.parametrize("condition,outcome", [
