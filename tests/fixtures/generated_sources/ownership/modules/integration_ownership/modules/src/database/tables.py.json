@@ -22,6 +22,7 @@
     "src/database/tables.py::agent_waits": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::agents": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::api_session_tokens": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::approved_document_snapshots": "Generic immutable approved document bytes and approval provenance when no review revision is available (docs/specs/database.md). Ingestion release reads this source evidence; it stores no integration subject, branch, code publication or ref replay authority. The release command and shared outbox adapter remain independently charged.",
     "src/database/tables.py::archived_tasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
     "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",

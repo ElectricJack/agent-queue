@@ -13,6 +13,9 @@
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
     },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._sync_owner": {
+      "reason": "Per-owner reconciliation extracted from the charged scheduler sync; retains integration admission and branch-owner authority, so remains charged without changing the cap."
+    },
     "src/wait_runtime/scheduler.py::SchedulerWaitService.authorize": {
       "landing_span": [
         47,

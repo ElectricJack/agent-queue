@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.asks.intake import clear_intent
 from src.commands.principal import ExecutionPrincipal, principal_context
-from src.database.tables import ask_decisions, ask_reconciliation_cases, conversation_inputs
+from src.database.tables import (
+    ask_decisions, ask_reconciliation_cases, conversation_inputs, human_communication_modes,
+)
 from tests.test_ask_discussion import ask_for
 from tests.test_ask_discussion import env as env  # noqa: F401
 from tests.test_discord_inbound_router import GUILD, MESSAGE, message, router
@@ -58,6 +60,64 @@ async def admit(handler, text, ident=MESSAGE, source="gateway"):
     with principal_context(ExecutionPrincipal.service("discord-gateway")):
         return await handler.execute(
             "ask_intake", {"envelope": envelope(text, ident), "source": source}
+        )
+
+
+@pytest.mark.parametrize("fence", ["project", "fingerprint"])
+async def test_gateway_requires_own_project_and_current_config(env, monkeypatch, fence):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    if fence == "project":
+        # The row still belongs to p; its fingerprint even matches the new
+        # configured project. Neither caller may borrow p's channel ownership.
+        from src.asks.delivery import config_fingerprint
+
+        handler.config.discord.project_id = "other"
+        async with db.immediate() as conn:
+            await conn.execute(update(human_communication_modes).values(
+                config_fingerprint=config_fingerprint(handler.config)
+            ))
+    else:
+        async with db.immediate() as conn:
+            await conn.execute(update(human_communication_modes).values(config_fingerprint="stale"))
+    result = await admit(handler, "hello")
+    assert result["error_code"] == "ask.channel_disabled", result
+    async with db.immediate() as conn:
+        assert await conn.scalar(select(func.count()).select_from(conversation_inputs)) == 0
+
+
+@pytest.mark.parametrize("fingerprint", ["stale", "absent", "current"])
+async def test_unscoped_gateway_checks_selected_ask_project_fingerprint(
+    env, monkeypatch, fingerprint,
+):
+    from src.asks.delivery import config_fingerprint, destination
+
+    handler, db = env
+    await enable(handler, monkeypatch)
+    _, ask = await ask_for(handler)
+    handler.config.discord.project_id = ""
+    async with db.immediate() as conn:
+        await conn.execute(update(human_communication_modes).values(
+            config_fingerprint=config_fingerprint(handler.config) if fingerprint == "current"
+            else "stale"
+        ))
+        if fingerprint == "absent":
+            await conn.execute(human_communication_modes.delete().where(
+                human_communication_modes.c.project_id == "p"
+            ))
+        await db.advance_ask_mode({
+            "project_id": "other", "destination": destination(handler.config), "mode": "channel",
+            "config_fingerprint": config_fingerprint(handler.config), "updated_at": 1,
+        }, expected_generation=0, conn=conn)
+    result = await admit(handler, f"Explain {ask['id']}")
+    assert result["success"], result
+    assert result["receipt"]["state"] == (
+        "queued" if fingerprint == "current" else "clarification"
+    ), result
+    async with db.immediate() as conn:
+        item = await db.get_ask_input(result["input_id"], conn=conn)
+        assert item["routing_state"] == (
+            "discussion" if fingerprint == "current" else "clarification"
         )
 
 

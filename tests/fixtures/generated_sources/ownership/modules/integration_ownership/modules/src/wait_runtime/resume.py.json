@@ -1,5 +1,12 @@
 {
   "shared": {
+    "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
+      "landing_span": [
+        83,
+        149
+      ],
+      "reason": "Locked resume admission and reservation extracted from the charged reserve wrapper; both remain charged within the approved footprint."
+    },
     "src/wait_runtime/resume.py::ResumeTransaction.bind_launch": {
       "landing_span": [
         229,

@@ -60,6 +60,20 @@ def recovery_ask_meaning(task, incident, attempt, owner, meta=None):
 
 logger = logging.getLogger(__name__)
 INCIDENT_KEY = "supervisor_recovery_incident"
+
+
+class RecoveryHoldError(ValueError):
+    """A restart must explicitly authorize the exact decided recovery hold."""
+
+    def __init__(self, incident):
+        self.incident = incident
+        super().__init__(
+            f"Recovery hold {incident['id']} by {incident.get('decided_by', 'unknown')} "
+            f"must be released explicitly: {incident.get('decision_reason')}. "
+            "Use --override-hold --reason with operator/global-supervisor authority."
+        )
+
+
 COUNT_KEY = "supervisor_recovery_attempts"
 MAX_RECOVERIES = 2
 RECOVERY_HOLD_SECONDS = 900
@@ -825,20 +839,60 @@ class TaskRecoveryQueryMixin:
                 .values(archived_at=now)
             )
 
-    async def _supersede_restarted_task_recovery_on(self, conn, task_id, *, context):
+    async def restart_hold_override(self, task_id, override, reason, *, authority):
+        """Validate a restart's hold override; return ``(hold_override, error)``."""
+        if not isinstance(override, bool):
+            return None, 'override_hold must be a boolean'
+        if not override:
+            return None, None
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
+            return None, 'override_hold requires a reason of 1 to 4000 characters'
+        actor, refusal = await authority(self)
+        incident = None if refusal else await self.get_task_meta(task_id, INCIDENT_KEY)
+        if not isinstance(incident, dict) or incident.get('decision') != 'hold':
+            return None, refusal
+        return {'incident_id': incident['id'], 'expected_hold_at': incident.get('decided_at'),
+                'reason': reason.strip(), 'actor': actor,
+                'author_kind': 'user' if actor == 'human:local-operator' else 'supervisor'}, None
+
+    async def _guard_restart_recovery_hold_on(
+        self, conn, task_id, override, context="restart_task",
+    ):
+        """Refuse a restart that does not authorize the exact decided recovery hold."""
+        if context != "restart_task":
+            return
+        # Share the recovery decision's task-row lock. A hold arriving after
+        # the command's preflight cannot be silently released by the READY write.
+        await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+        incident = await self._recovery_incident_on(conn, task_id)
+        held = isinstance(incident, dict) and incident.get('id') and incident.get('decision') == 'hold'
+        if held and ((override or {}).get('incident_id'), (override or {}).get('expected_hold_at')
+                     ) != (incident['id'], incident.get('decided_at')):
+            raise RecoveryHoldError(incident)
+
+    async def guard_restart_recovery_hold(self, task_id, override):
+        """Preflight the hold before continuation cleanup or branch reservation."""
+        async with self.immediate() as conn:
+            await self._guard_restart_recovery_hold_on(conn, task_id, override)
+
+    async def _recovery_incident_on(self, conn, task_id):
+        return _decoded(await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY,
+        )))
+
+    async def _supersede_restarted_task_recovery_on(
+        self, conn, task_id, *, context, hold_override=None,
+    ):
         """Retire the old failure after an accepted execution control holds the task lock.
 
-        Ordinary status projection never releases a decided hold. Restart/reopen
-        and resume intentionally retire the old failure, including when a held
+        Ordinary status projection never releases a decided hold. Authorized
+        restart, reopen and resume retire the old failure, including when a held
         task was already projected to READY. An operator close (--done, --obsolete) retires
         it the same way. Preserve its diagnosis and budget instead of deleting
         the incident, and archive its notifications before claim waiters wake.
         Return whether a hold was released so READY-to-READY can announce it too.
         """
-        raw = await conn.scalar(select(task_metadata.c.value).where(
-            task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY,
-        ))
-        incident = _decoded(raw)
+        incident = await self._recovery_incident_on(conn, task_id)
         if (
             not isinstance(incident, dict)
             or not incident.get("id")
@@ -854,17 +908,31 @@ class TaskRecoveryQueryMixin:
             })
         now = time.time()
         reason = f"Previous recovery incident superseded by explicit {context}."
+        released = held and context == 'restart_task' and hold_override
+        if released:
+            reason += f" Hold override: {hold_override['reason']}"
         await self._upsert_meta(task_id, INCIDENT_KEY, {
             **incident,
             "decision": "superseded",
             "decision_reason": reason,
             "decided_at": now,
-            "decided_by": f"system:{context}",
+            "decided_by": hold_override['actor'] if released else f"system:{context}",
+            **({"decided_author_kind": hold_override['author_kind']} if released else {}),
             "decision_history": history,
             "retry_allowed": False,
             "retry_blocker": reason,
             "next_action": reason,
         }, conn=conn)
+        if released:
+            project_id = incident.get('project_id') or await conn.scalar(
+                select(tasks.c.project_id).where(tasks.c.id == task_id)
+            )
+            await conn.execute(insert(task_comments).values(
+                id="comment-" + uuid.uuid4().hex, task_id=task_id, project_id=project_id,
+                body=f"Recovery hold {incident['id']} overridden by restart: {hold_override['reason']}",
+                author_kind=hold_override['author_kind'], author_id=hold_override['actor'],
+                created_at=now,
+            ))
         await conn.execute(update(messages).where(messages.c.id.in_([
             "msg-" + incident["id"],
             f"msg-{incident['id']}-hold-expired-supervisor-{incident.get('project_id')}",

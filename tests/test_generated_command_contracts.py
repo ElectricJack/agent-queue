@@ -331,7 +331,7 @@ async def test_pool_status_global_supervisor_keeps_unfiltered_view(generated):
 
 
 @pytest.mark.parametrize("command", [
-    "pool_scale", "pool_rename", "pool_set_enabled", "pool_set_lifecycle",
+    "pool_scale", "pool_rename", "pool_delete", "pool_set_enabled", "pool_set_lifecycle",
 ])
 async def test_pool_status_read_does_not_grant_project_supervisors_pool_mutations(command):
     caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)

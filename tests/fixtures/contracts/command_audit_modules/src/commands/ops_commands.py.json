@@ -133,7 +133,7 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
     "schema_quality": "declared",
-    "source_digest": "sha256:b53bc62fa7a75070d9843624793bd0386ac7afe64154c41491a4b24729c8a24a",
+    "source_digest": "sha256:d705a3bb26d9c083fd86b841fde56282f4ccf53b1c0b551fafb5236b209b58cf",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -235,6 +235,36 @@
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_costs.py"
+    ]
+  },
+  "pool_delete": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/ops_commands.py:OpsCommandsMixin._cmd_pool_delete",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await delete_pool(self, args)"
+      }
+    ],
+    "review_notes": "The handler delegates to delete_pool, which returns explicit success=false for invalid IDs, depth and non-pool targets; successful retirement/deletion returns success=true with warnings for unconfirmed stops or file cleanup. Database failures propagate as command errors. Missing retired rows permit idempotent cleanup retries. No task completion is inferred from deletion.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2e3abe3ec9858bd92fc02e1f90d0792b69f437ec826669a820ae5cbab1e2f077",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_pool_admin.py::test_delete_pool_removes_configuration_and_respects_vault_depth",
+      "tests/test_pool_admin.py::test_delete_pool_warns_on_unconfirmed_stop_and_preserves_held_resources",
+      "tests/test_pool_admin.py::test_delete_pool_validates_global_id_before_side_effects"
     ]
   },
   "pool_rename": {

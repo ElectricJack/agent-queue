@@ -126,6 +126,10 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_seal_now": 300.0,
     "integration_refresh_epic": 300.0,
     "integration_retire_origin": 300.0,
+    # Repair adoption and root redrive fetch authenticated remote history and
+    # prove exact heads before either preview or apply can return.
+    "integration_fast_forward_pr": 300.0,
+    "integration_redrive_root": 300.0,
     # Recovery confirms the provider and verifies remote Git even in dry runs.
     "integration_release_owner": 300.0,
     "integration_restore_task_origin": 300.0,
