@@ -125,11 +125,12 @@ class WaitAckArgs(WaitV2ScopeArgs):
 class WaitDecideArgs(CommandArgs):
     project_id: str | None = None
     wait_id: str = Field(min_length=1)
-    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human"]
+    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue"]
     note: str = Field(min_length=1, max_length=4000)
     extend_seconds: float | None = Field(default=None, ge=60, le=86400, allow_inf_nan=False)
     to: str | None = Field(default=None, min_length=1)
     expected_generation: int | None = Field(default=None, ge=1, strict=True)
+    continuation_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def decision_arguments(self):
@@ -139,6 +140,11 @@ class WaitDecideArgs(CommandArgs):
             raise ValueError("extend_seconds is only valid for extend")
         if (self.decision == "reroute") != (self.to is not None):
             raise ValueError("to is required only for reroute")
+        if self.decision == "requeue":
+            if not self.continuation_id or self.expected_generation is None:
+                raise ValueError("requeue requires continuation_id and expected_generation")
+        elif self.continuation_id is not None:
+            raise ValueError("continuation_id is only valid for requeue")
         return self
 
 

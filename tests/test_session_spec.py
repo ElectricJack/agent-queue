@@ -252,16 +252,23 @@ class TestSkipPermissionsGating:
         assert self.FLAG in spec.command
         assert "--permission-mode" not in spec.command
 
-    def test_a_named_session_without_opt_in_is_withheld(self, builder):
+    @pytest.mark.parametrize("harness", [
+        CLAUDE,
+        Harness(id="codex", command="codex",
+                permission_flag="--dangerously-bypass-approvals-and-sandbox"),
+    ], ids=["claude", "codex"])
+    @pytest.mark.parametrize("source_type", [None, "link", "worktree"])
+    def test_named_session_permission_boundary(self, builder, harness, source_type):
         spec = builder.build_named_spec(
-            profile=_Profile(id="supervisor"),
-            harness=CLAUDE,
+            profile=_Profile(id="supervisor", harness=harness.id),
+            harness=harness,
             project_id="proj-1",
             work_dir="/vault/projects/proj-1",
             session_id="s1",
             instance_token="t1",
+            **({"workspace_source_type": source_type} if source_type else {}),
         )
-        assert self.FLAG not in spec.command
+        assert (harness.permission_flag in spec.command) == (source_type == "worktree")
 
     def test_the_policy_helper_is_the_single_definition(self):
         from src.models import RepoSourceType
@@ -1154,10 +1161,22 @@ class TestWorkerToolEnv:
         assert "three identical preparation refusals" in prompt
         assert "respect `retry_after`" in prompt
         assert "report the blocker ONCE" in prompt
-        assert "ONE durable message wait" in prompt
+        assert "Wait registration is disabled" in prompt
+        assert "ONE durable message wait" not in prompt
         assert "drain-ack" in prompt
         assert "Do not poll claims" in prompt
         assert "daemon_unreachable / exit code 3, keep retrying" in prompt
+
+    @pytest.mark.parametrize("global_enabled, override", [(True, None), (False, True)])
+    def test_pool_prompt_uses_effective_wait_policy(self, builder, global_enabled, override):
+        from src.config_wait_policy import WaitPolicyConfig, WaitProjectOverrides
+
+        builder.config.wait_policy = WaitPolicyConfig(v2_enabled=global_enabled)
+        if override is not None:
+            builder.config.wait_policy.projects["proj-1"] = WaitProjectOverrides(v2_enabled=override)
+        prompt = self._pool(builder).prompt
+        assert "ONE durable message wait" in prompt
+        assert "Wait registration is disabled" not in prompt
 
     def test_a_named_session_does_not(self, builder):
         spec = builder.build_named_spec(

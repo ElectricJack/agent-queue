@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/commands/agent_commands.py::AgentCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/agent_commands.py::AgentCommandsMixin._cmd_edit_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::AgentCommandsMixin._cmd_list_workspace_kinds": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::AgentCommandsMixin._cmd_remove_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::import from src.workspace_disable import ENABLE_FIELDS, OPERATOR, disable_fields": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
