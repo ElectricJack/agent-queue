@@ -1,0 +1,170 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-conflicting-claims",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-conflicting-claims",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-conflicting-claims:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-conflicting-claims",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-claim-alpha@rev-0002:evidence",
+      "rec-claim-beta@rev-0003:evidence"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-conflicting-claims",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-conflicting-claims:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "conflicting-claims",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "9844e80bbc561e9382ec996c46602c58afa5dd73d0dd1c39c88bff1de0b91951",
+    "expected": "b490c122703c0da4b99132ebe609a1dba9593e871bf309d6f9692d7be5b24ea4",
+    "fixture_id": "6249766e81a40622258fd2e9eeeab79bd89f89428c1d8070ece18188e9a89bb8",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "f19c5230c23caaed25659a742b79f698db86d43fca5356fb4648f81a6d882cc5",
+    "records": "95d986259dd9b8ecbe79669363b5839bd95fb9d1e005be49daf87c3700f45834",
+    "scenario": "9bd94802b17940d07654b241cb1e72a173254fc17a1292aef25f9d83f7de8a88",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "8f6fcef4626caad1b008d865fc41add4883884fcb5170bce5952ce720e5ff694",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-conflicting-claims",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-claim-alpha",
+        "revision_id": "rev-0002"
+      },
+      {
+        "content_sha256": "8ab8b416769d7675fdeeedbf97146663f99708d9db635eaf71a988f04bc5b7ce",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-conflicting-claims",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-claim-beta",
+        "revision_id": "rev-0003"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-conflicting-claims",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-conflicting-claims:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-conflicting-claims",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-claim-alpha@rev-0002:evidence] synthetic-log-evidence; disputed; current\nAlpha observed the rail reject at step three.\n[rec-claim-beta@rev-0003:evidence] synthetic-log-evidence; disputed; current\nBeta observed the rail reject at step four.\n",
+    "rendered_sha256": "f769f2671a7aae0667261d7aeb975d4e900772a545f47a4ec06037d1a92877ae",
+    "selected": [
+      {
+        "authority": "disputed",
+        "content_sha256": "8f6fcef4626caad1b008d865fc41add4883884fcb5170bce5952ce720e5ff694",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Alpha observed the rail reject at step three.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-claim-alpha",
+        "revision_id": "rev-0002"
+      },
+      {
+        "authority": "disputed",
+        "content_sha256": "8ab8b416769d7675fdeeedbf97146663f99708d9db635eaf71a988f04bc5b7ce",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Beta observed the rail reject at step four.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-claim-beta",
+        "revision_id": "rev-0003"
+      }
+    ],
+    "usage": {
+      "bytes": 349,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 349
+    }
+  },
+  "records": [
+    {
+      "authority": "disputed",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Alpha observed the rail reject at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-claim-alpha",
+      "revision_id": "rev-0002"
+    },
+    {
+      "authority": "disputed",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Beta observed the rail reject at step four."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-claim-beta",
+      "revision_id": "rev-0003"
+    }
+  ],
+  "scenario": "Return evidence/trust distinctions, no silent merge or verified overwrite",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

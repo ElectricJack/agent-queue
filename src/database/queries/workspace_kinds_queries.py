@@ -37,6 +37,7 @@ _UPSERT_UPDATE_COLS = (
     "auto_attach",
     "mode",
     "worktree_setup",
+    "max_slots",
     "updated_at",
 )
 
@@ -68,6 +69,7 @@ class WorkspaceKindQueryMixin:
             "auto_attach": kind.auto_attach,
             "mode": kind.mode or KIND_MODE_WORKTREE,
             "worktree_setup": json.dumps(list(kind.worktree_setup or [])),
+            "max_slots": kind.max_slots,
             "created_at": kind.created_at or now,
             "updated_at": now,
         }
@@ -79,26 +81,28 @@ class WorkspaceKindQueryMixin:
             )
             await conn.execute(stmt)
 
-    async def get_workspace_kind(self, project_id: str, kind_id: str) -> WorkspaceKind | None:
+    async def get_workspace_kind(self, project_id: str, kind_id: str, *, conn=None) -> WorkspaceKind | None:
         """Fetch one kind by exact ``(project_id, id)`` — no fallback."""
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(workspace_kinds).where(
-                    (workspace_kinds.c.project_id == project_id) & (workspace_kinds.c.id == kind_id)
-                )
+        if conn is None:
+            async with self._engine.connect() as owned:
+                return await self.get_workspace_kind(project_id, kind_id, conn=owned)
+        result = await conn.execute(
+            select(workspace_kinds).where(
+                (workspace_kinds.c.project_id == project_id) & (workspace_kinds.c.id == kind_id)
             )
-            row = result.mappings().fetchone()
-            return self._row_to_workspace_kind(row) if row else None
+        )
+        row = result.mappings().fetchone()
+        return self._row_to_workspace_kind(row) if row else None
 
-    async def resolve_workspace_kind(self, project_id: str, kind_id: str) -> WorkspaceKind | None:
+    async def resolve_workspace_kind(self, project_id: str, kind_id: str, *, conn=None) -> WorkspaceKind | None:
         """Look up a kind for a project, falling back to the system row.
 
         Spec §3.5: project-scoped row shadows the system row with the same id.
         """
-        kind = await self.get_workspace_kind(project_id, kind_id)
+        kind = await self.get_workspace_kind(project_id, kind_id, conn=conn)
         if kind is not None:
             return kind
-        return await self.get_workspace_kind(SYSTEM_KIND_SCOPE, kind_id)
+        return await self.get_workspace_kind(SYSTEM_KIND_SCOPE, kind_id, conn=conn)
 
     async def list_workspace_kinds_for_project(self, project_id: str) -> list[WorkspaceKind]:
         """All kinds visible to a project: project rows + system rows whose
@@ -188,6 +192,7 @@ class WorkspaceKindQueryMixin:
             auto_attach=bool(row["auto_attach"]),
             mode=row["mode"] or KIND_MODE_WORKTREE,
             worktree_setup=cls._decode_worktree_setup(row["worktree_setup"]),
+            max_slots=row["max_slots"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

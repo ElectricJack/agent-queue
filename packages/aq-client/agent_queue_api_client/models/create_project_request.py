@@ -16,30 +16,57 @@ class CreateProjectRequest:
     """
     Attributes:
         name (str): Project name
+        create_repo (None | str | Unset): Create GitHub OWNER/NAME and onboard
+        private (bool | Unset): New remote is private Default: True.
+        root_id (None | str | Unset): Configured project root
+        relative_path (None | str | Unset): Destination below the root
+        request_id (None | str | Unset): Durable onboarding request key
         credit_weight (float | Unset): Scheduling weight (default 1.0) Default: 1.0.
         max_concurrent_agents (int | Unset): Max agents working on this project simultaneously Default: 2.
         repo_url (None | str | Unset): Git repository URL for this project (optional)
-        default_branch (str | Unset): Default branch name (default: main) Default: 'main'.
-        auto_create_channels (bool | None | Unset): If true, auto-create dedicated Discord channels for this project
-            after creation.  If false, skip channel creation.  When omitted, falls back to the global
-            per_project_channels.auto_create config setting.
-        default_profile_id (None | str | Unset): Agent profile used for tasks in this project that don't specify their
-            own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py
-            (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-
-            profiles` for the ids this install has.
+        default_branch (None | str | Unset): Default branch name (default: main)
     """
 
     name: str
+    create_repo: None | str | Unset = UNSET
+    private: bool | Unset = True
+    root_id: None | str | Unset = UNSET
+    relative_path: None | str | Unset = UNSET
+    request_id: None | str | Unset = UNSET
     credit_weight: float | Unset = 1.0
     max_concurrent_agents: int | Unset = 2
     repo_url: None | str | Unset = UNSET
-    default_branch: str | Unset = "main"
-    auto_create_channels: bool | None | Unset = UNSET
-    default_profile_id: None | str | Unset = UNSET
+    default_branch: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         name = self.name
+
+        create_repo: None | str | Unset
+        if isinstance(self.create_repo, Unset):
+            create_repo = UNSET
+        else:
+            create_repo = self.create_repo
+
+        private = self.private
+
+        root_id: None | str | Unset
+        if isinstance(self.root_id, Unset):
+            root_id = UNSET
+        else:
+            root_id = self.root_id
+
+        relative_path: None | str | Unset
+        if isinstance(self.relative_path, Unset):
+            relative_path = UNSET
+        else:
+            relative_path = self.relative_path
+
+        request_id: None | str | Unset
+        if isinstance(self.request_id, Unset):
+            request_id = UNSET
+        else:
+            request_id = self.request_id
 
         credit_weight = self.credit_weight
 
@@ -51,19 +78,11 @@ class CreateProjectRequest:
         else:
             repo_url = self.repo_url
 
-        default_branch = self.default_branch
-
-        auto_create_channels: bool | None | Unset
-        if isinstance(self.auto_create_channels, Unset):
-            auto_create_channels = UNSET
+        default_branch: None | str | Unset
+        if isinstance(self.default_branch, Unset):
+            default_branch = UNSET
         else:
-            auto_create_channels = self.auto_create_channels
-
-        default_profile_id: None | str | Unset
-        if isinstance(self.default_profile_id, Unset):
-            default_profile_id = UNSET
-        else:
-            default_profile_id = self.default_profile_id
+            default_branch = self.default_branch
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -72,6 +91,16 @@ class CreateProjectRequest:
                 "name": name,
             }
         )
+        if create_repo is not UNSET:
+            field_dict["create_repo"] = create_repo
+        if private is not UNSET:
+            field_dict["private"] = private
+        if root_id is not UNSET:
+            field_dict["root_id"] = root_id
+        if relative_path is not UNSET:
+            field_dict["relative_path"] = relative_path
+        if request_id is not UNSET:
+            field_dict["request_id"] = request_id
         if credit_weight is not UNSET:
             field_dict["credit_weight"] = credit_weight
         if max_concurrent_agents is not UNSET:
@@ -80,10 +109,6 @@ class CreateProjectRequest:
             field_dict["repo_url"] = repo_url
         if default_branch is not UNSET:
             field_dict["default_branch"] = default_branch
-        if auto_create_channels is not UNSET:
-            field_dict["auto_create_channels"] = auto_create_channels
-        if default_profile_id is not UNSET:
-            field_dict["default_profile_id"] = default_profile_id
 
         return field_dict
 
@@ -91,6 +116,44 @@ class CreateProjectRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         name = d.pop("name")
+
+        def _parse_create_repo(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        create_repo = _parse_create_repo(d.pop("create_repo", UNSET))
+
+        private = d.pop("private", UNSET)
+
+        def _parse_root_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        root_id = _parse_root_id(d.pop("root_id", UNSET))
+
+        def _parse_relative_path(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        relative_path = _parse_relative_path(d.pop("relative_path", UNSET))
+
+        def _parse_request_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        request_id = _parse_request_id(d.pop("request_id", UNSET))
 
         credit_weight = d.pop("credit_weight", UNSET)
 
@@ -105,34 +168,26 @@ class CreateProjectRequest:
 
         repo_url = _parse_repo_url(d.pop("repo_url", UNSET))
 
-        default_branch = d.pop("default_branch", UNSET)
-
-        def _parse_auto_create_channels(data: object) -> bool | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(bool | None | Unset, data)
-
-        auto_create_channels = _parse_auto_create_channels(d.pop("auto_create_channels", UNSET))
-
-        def _parse_default_profile_id(data: object) -> None | str | Unset:
+        def _parse_default_branch(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
+        default_branch = _parse_default_branch(d.pop("default_branch", UNSET))
 
         create_project_request = cls(
             name=name,
+            create_repo=create_repo,
+            private=private,
+            root_id=root_id,
+            relative_path=relative_path,
+            request_id=request_id,
             credit_weight=credit_weight,
             max_concurrent_agents=max_concurrent_agents,
             repo_url=repo_url,
             default_branch=default_branch,
-            auto_create_channels=auto_create_channels,
-            default_profile_id=default_profile_id,
         )
 
         create_project_request.additional_properties = d

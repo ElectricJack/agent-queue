@@ -4,9 +4,17 @@ tags: [design, workspaces, multi-repo, vault, locking]
 
 # Workspaces v2 — Multi-Kind, Multi-Instance Workspaces
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #9 simple interfaces)
-**Related:** [[agent-coordination]], [[profiles]], [[vault]], [[specs/orchestrator]], [[specs/database]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable, #9 simple interfaces)
+**Related:** [agent-coordination](agent-coordination.md), [profiles](profiles.md), [vault](vault.md), [specs/orchestrator](../orchestrator.md), [specs/database](../database.md)
 
 ---
 
@@ -330,6 +338,30 @@ The project vault is modeled as a kind with `auto_attach=true, lockable=false`. 
 2. On every task acquisition: implicitly attaches the project's `vault` workspace (via `effective_requirements()` auto-attach pass).
 3. Exposes the vault path to the runtime via the same attachment surface used for any other kind (§8).
 
+For a task whose deliverable is only in the vault, declare `--requires-kind vault`
+when creating it. The explicit requirement suppresses the default
+`project-repo` requirement; the vault's automatic attachment alone does not
+mark every task as vault-only. A pool worker still uses its reserved source
+slot as its working directory. In development delivery mode, a vault-only
+task can close as `shipped` without publishing that unchanged source branch
+only after the source checkout is clean and both its checked-out and assigned
+refs have no commits ahead of the remote default branch. Pass the vault
+artifact SHA with `aq task close --commit <vault-commit-sha>` so the completion
+record names the delivered artifact rather than the source slot's HEAD. Any
+source changes must follow the normal exact-push delivery rule.
+
+A no-code task in development delivery mode closes under the same proof
+without a vault artifact. A task is no-code when it closes `--work-outcome
+no-op`, its profile is `read_only`, or its profile declares
+`needs_workspace: false` (`spec-ingest`, `triage`), all decided in
+`GitOpsMixin._task_produces_no_code()`. Such a role writes database rows such
+as a committed task batch and holds no `git_push` grant, so its slot branch is
+never published. Once the slot is proven clean and ahead of nothing, the close
+records no artifact. `record_worker_completion` (`src/integration/provenance.py`)
+then requires the task's remote branch to be absent and its HEAD to be an
+ancestor of the target tip. A remote branch that exists must still equal HEAD
+exactly.
+
 To **move** a project's vault workspace, edit the project-scoped `vault` workspace row (or via a CLI/MCP command) — set `workspace_path` to the new location. Memory subsystem and prompt builder read the vault location from the attachment, not from a hard-coded path.
 
 The current hard-coded `~/.agent-queue/vault/projects/<pid>/` becomes the *default* for the synthesized vault workspace, not a fixed assumption baked into the code. Note the distinction made in §4: this only moves the vault *content* (notes, memory, knowledge bases), not the kind-definition directory `vault/projects/<pid>/workspace-kinds/`, which stays under the system vault root.
@@ -444,7 +476,7 @@ Editing kind definitions is done by editing the markdown files in the vault — 
 
 - **Tagged / affinity-based instance selection.** First-unlocked is sufficient. Tags can be added later as a separate column on `workspaces`.
 - **Cross-task lock coordination.** No "give me workspace X if task Y also gets workspace Z." Each task's acquisition is independent.
-- **DIRECTORY_ISOLATED implementation.** Still deferred (see [[agent-coordination]] §7).
+- **DIRECTORY_ISOLATED implementation.** Still deferred (see [agent-coordination](agent-coordination.md) §7).
 - **Profile-level kind capability gates.** Tasks declare needs directly. Profiles do not constrain which kinds a task can request.
 - **`enabled` flag on kinds.** Override management is by file presence (delete a project-scoped file to fall back to the system row). Adding an `enabled` flag is unnecessary surface for a problem the file system already solves.
 - **Auto-clone of missing kind instances.** If a kind is declared but no workspace instance exists, the task fails acquisition — the operator provisions an instance manually (§5.4 rejects this at create time only when the *kind* doesn't resolve, not the instance). Auto-cloning from `kind.repo_url` is tracked as future work.

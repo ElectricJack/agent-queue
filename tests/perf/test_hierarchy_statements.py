@@ -116,7 +116,8 @@ async def seed_scale(
 ) -> None:
     """Bulk-insert a §15.2-scale queue (raw inserts — this is fixture cost).
 
-    ``profile_id``, when given, is stamped on every READY task so claim-path
+    ``profile_id``, when given, is stamped on every READY task (as a
+    ``router`` route) so claim-path
     perf tests can exercise ``select_ready_for_profile`` at scale (the caller
     is responsible for the referenced ``agent_profiles`` row existing — this
     is a raw insert, so the FK is enforced but not satisfied for you).
@@ -160,8 +161,12 @@ async def seed_scale(
             "title": f"t{i}",
             "description": "d",
             "status": _status(i),
-            # Stamped on every READY task, as the docstring says.
+            # Stamped on every READY task, as the docstring says, as a router
+            # route (``ck_tasks_route_source_profile``).
             "profile_id": profile_id if _status(i) == TaskStatus.READY.value else None,
+            "route_source": (
+                "router" if profile_id and _status(i) == TaskStatus.READY.value else "unrouted"
+            ),
             "intelligence_class": (
                 intelligence_class if _status(i) == TaskStatus.READY.value else None
             ),
