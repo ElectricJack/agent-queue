@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, literal, or_, select
 
 from src.database.tables import (
     integration_batches,
@@ -16,6 +16,7 @@ from src.database.tables import (
     repos,
     sessions,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -35,6 +36,25 @@ def session_attached_clause():
     as its own cleanup blocker.
     """
     return or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped")
+
+
+def unresolved_claim_clause():
+    """Claim metadata whose exact named session is not durably stopped.
+
+    Claim records survive supported pause and close as provenance. A named
+    holder stopped in both observed and desired state cannot act on that
+    record, even when its last claim phase or task pointer remains. Branch
+    owners and workspaces must still be checked separately. Missing, malformed
+    or revivable holders fail closed; this predicate never deletes evidence.
+    """
+    holder = sessions.alias("claim_history_holder")
+    return ~select(holder.c.id).where(
+        task_metadata.c.value == literal('"').concat(holder.c.id).concat(literal('"')),
+        holder.c.state == "stopped",
+        holder.c.desired_state == "stopped",
+        holder.c.instance_token.is_not(None),
+        holder.c.instance_token != "",
+    ).correlate(task_metadata).exists()
 
 
 #: Operation states in which an operation still runs and owns its delegates.
