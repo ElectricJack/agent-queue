@@ -171,16 +171,19 @@ def format_task_table(
             type_icon = TASK_TYPE_ICONS.get(task.task_type, "")
 
         pri_text = Text(str(task.priority), style=priority_style(task.priority))
+        readiness = _as_mapping(getattr(task, "claim_readiness", None))
 
         row = [task.id]
         if show_project:
             row.append(task.project_id)
         row.extend(
             [
-                _status_text(task.status),
+                _status_text(readiness.get("label", task.status)),
                 pri_text,
                 type_icon,
-                _truncate(task.title, 50),
+                Text(_truncate(task.title, 50) + (
+                    "\n" + readiness["reason"] if readiness.get("reason") else ""
+                )),
                 task.assigned_agent_id or "—",
             ]
         )
@@ -276,6 +279,9 @@ def format_task_detail(
 
     # Header line
     lines.append(Text(f"{status_icon} {status}", style=status_style))
+    readiness = _as_mapping(getattr(task, "claim_readiness", None))
+    if readiness and not readiness.get("claimable"):
+        lines.append(Text(f"{readiness['label']}: {readiness.get('reason', '')}", style="yellow"))
     lines.append("")
 
     # Core fields

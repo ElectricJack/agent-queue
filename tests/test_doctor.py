@@ -44,6 +44,48 @@ def ctx(tmp_path):
     return DoctorContext(config=config, db=None, handler=None)
 
 
+@pytest.mark.parametrize("material", [None, "bad", "eA==", "valid"])
+async def test_private_value_key_diagnostic(ctx, monkeypatch, material):
+    import base64
+
+    variable = "AQ_DOCTOR_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": variable}
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        monkeypatch.setenv(variable, encoded)
+    check = default_registry().get("playbooks.private_value_key")
+
+    result = await check.run(ctx)
+
+    assert result.severity is (Severity.OK if material == "valid" else Severity.ERROR)
+    assert check.fix is None
+    if material != "valid":
+        assert "private_storage_key_unavailable" in result.detail
+        assert "Restore the original key" in result.detail
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+async def test_private_value_key_diagnostic_uses_live_service(ctx, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+
+    from src.playbooks.private_values import PrivateValueService
+
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": "AQ_DOCTOR_TEST_PRIVATE_KEY"}
+    monkeypatch.setenv("AQ_DOCTOR_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    ctx.db = SimpleNamespace(playbook_private_values=lambda: PrivateValueService(object()))
+    check = default_registry().get("playbooks.private_value_key")
+    assert (await check.run(ctx)).severity is Severity.ERROR
+    ctx.config.playbooks.enabled = False
+    assert (await check.run(ctx)).severity is Severity.INFO
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -100,6 +142,7 @@ class TestRegistry:
         from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
+        from src.doctor.wait_checks import wait_checks
 
         reg = default_registry()
         expected = (
@@ -132,6 +175,7 @@ class TestRegistry:
             | {c.id for c in routing_checks()}
             | {c.id for c in service_checks()}
             | {c.id for c in record_checks()}
+            | {c.id for c in wait_checks()}
         )
         assert set(reg.ids()) == expected
 

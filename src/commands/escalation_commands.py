@@ -203,6 +203,15 @@ class EscalationCommandsMixin:
         if await self.db.get_project(project_id) is None:
             return _error("not_found", "project not found")
         task_id = args.get("task_id")
+        if args["source_kind"] == "continuation":
+            # Infrastructure holds may follow an already satisfied wait. They
+            # belong to the suspension intent, rather than a pending deadline.
+            if conn is None or principal.kind is not PrincipalKind.SERVICE:
+                return _error("invalid_binding", "continuation incidents require the wait transaction")
+            from src.wait_runtime.hibernate import validate_hold_binding
+
+            if not await validate_hold_binding(conn, args):
+                return _error("invalid_binding", "continuation incident does not match its intent")
         if args["source_kind"] == "wait":
             # Only the timer/loop command can bind an operational wait incident.
             # A caller cannot manufacture a wait escalation through the generic API.
@@ -294,7 +303,7 @@ class EscalationCommandsMixin:
                 "escalation.created.v1",
                 created_payload,
             )
-        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait"}:
+        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait", "continuation"}:
             from src.asks.models import SourceIdentity
             ask = await self._publish_source_ask(SourceIdentity(
                 project_id, "free_text", incident["id"], {"id": incident["id"]},

@@ -25,6 +25,9 @@ async def lock_database_source(conn, cond):
                      & (t.task_dependencies.c.dep_type == p["dep_type"]))]
     elif cond.kind == "job":
         subjects = [(t.jobs, t.jobs.c.id == p["job_id"])]
+    elif cond.kind == "close_merge":
+        subjects = [(t.integration_close_attempts,
+                     t.integration_close_attempts.c.id == p["operation_id"])]
     elif cond.kind == "batch":
         subjects = [(t.integration_batches, t.integration_batches.c.id == p["batch_id"]),
                     (t.integration_batch_members,
@@ -32,6 +35,8 @@ async def lock_database_source(conn, cond):
     elif cond.kind == "playbook_condition":
         subjects = [(t.playbook_v2_runs, t.playbook_v2_runs.c.run_id == p["run_id"]),
                     (t.playbook_waits, t.playbook_waits.c.wait_id == p["wait_id"])]
+    elif cond.kind == "human" and p["subject"] == "legacy_escalation":
+        subjects = [(t.escalations, t.escalations.c.id == p['escalation_id'])]
     elif cond.kind == "human" and p["subject"] == "review":
         subjects = [(t.doc_reviews, t.doc_reviews.c.id == p["review_id"])]
     elif cond.kind == "human" and p["subject"] == "task_comment":
