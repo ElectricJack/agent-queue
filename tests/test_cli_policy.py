@@ -9,6 +9,15 @@ import pytest
 from click.testing import CliRunner
 
 
+def creation_args(command):
+    if command == "create":
+        return ["project", "create", "--name", "New"]
+    return [
+        "project", "onboard", "--root-id", "dev", "--relative-path", "new-project",
+        "--project-name", "New", "--project-id", "new-project",
+    ]
+
+
 def client_for(calls):
     client = AsyncMock()
     client.__aenter__ = AsyncMock(return_value=client)
@@ -17,6 +26,8 @@ def client_for(calls):
         calls.append((command, args.copy()))
         if command == "create_project":
             return {"success": True, "created": "new-project"}
+        if command == "onboard_project":
+            return {"success": True, "project_id": "new-project"}
         if command == "policy_diff":
             selection = args.get("selections", {}).get("template:project:spec.base", {})
             return {
@@ -160,7 +171,7 @@ def test_export_displays_source_warnings_before_acknowledged_write(tmp_path):
     assert calls[-1][1]["expected_checksum"] == "sha256:preview"
 
 
-@pytest.mark.parametrize("command", ["export", "apply", "create"])
+@pytest.mark.parametrize("command", ["export", "apply", "create", "onboard"])
 def test_interactive_json_mode_rejected_before_any_mutation(tmp_path, command):
     from src.cli.app import cli
 
@@ -170,9 +181,15 @@ def test_interactive_json_mode_rejected_before_any_mutation(tmp_path, command):
         "export": ["policy", "export", "--project", "p", "--out", str(path)],
         "apply": ["policy", "apply", str(path), "--project", "p"],
         "create": ["project", "create", "--name", "New", "--from-policy", str(path)],
+        "onboard": [*creation_args("onboard"), "--from-policy", str(path)],
     }[command]
     calls = []
-    with patch("src.cli.policy._get_client", return_value=client_for(calls)):
+    client = client_for(calls)
+    with (
+        patch("src.cli.policy._get_client", return_value=client),
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.projects._get_client", return_value=client),
+    ):
         result = CliRunner().invoke(cli, ["--json", *args])
     assert result.exit_code == 2 and not calls
     assert json.loads(result.output)["error"]["code"] == "usage_error"
@@ -200,62 +217,134 @@ def test_apply_yes_requires_explicit_system_scope(tmp_path):
     assert calls[-1][1]["selections"]["template:project:spec.base"]["scope"] == "skip"
 
 
-@pytest.mark.parametrize("profile", [None, "none", "default"])
-def test_project_create_profile_choice(profile):
+@pytest.mark.parametrize("command", ["create", "onboard"])
+@pytest.mark.parametrize("profile", [None, "none", "default", "exported"])
+def test_project_creation_profile_choice(tmp_path, command, profile):
     from src.cli.app import cli
 
     calls = []
     client = client_for(calls)
-    args = ["project", "create", "--name", "New"]
+    path = tmp_path / "example.aqpolicy"
+    path.touch()
+    args = creation_args(command)
     if profile:
-        args += ["--from-policy", profile]
+        args += ["--from-policy", str(path) if profile == "exported" else profile]
     with (
         patch("src.cli.policy._get_client", return_value=client),
         patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.projects._get_client", return_value=client),
+        patch("src.cli.policy.sys.stdin.isatty", return_value=False),
     ):
         result = CliRunner().invoke(cli, args, input="skip\ny\n")
     assert result.exit_code == 0, result.output
-    assert calls[0][0] == "create_project"
-    if profile == "default":
+    assert calls[0][0] == ("create_project" if command == "create" else "onboard_project")
+    assert "Policy profile" not in result.output
+    if profile in {"default", "exported"}:
         assert calls[-1][0] == "policy_apply"
-        assert calls[-1][1]["builtin"] == "default"
-        assert "path" not in calls[-1][1]
+        assert calls[-1][1]["project_id"] == "new-project"
+        if profile == "default":
+            assert calls[-1][1]["builtin"] == "default"
+            assert "path" not in calls[-1][1]
+        else:
+            assert calls[-1][1]["path"] == str(path.resolve())
+            assert "builtin" not in calls[-1][1]
     else:
         assert len(calls) == 1
 
 
-@pytest.mark.parametrize("choice", ["default", "none"])
-def test_terminal_creation_asks_for_profile_before_creating(choice):
+@pytest.mark.parametrize("command", ["create", "onboard"])
+@pytest.mark.parametrize("choice", ["default", "none", "exported"])
+def test_terminal_creation_asks_for_profile_before_creating(tmp_path, command, choice):
+    from src.cli.app import cli
+
+    calls = []
+    client = client_for(calls)
+    path = tmp_path / "example.aqpolicy"
+    path.touch()
+    answer = f"{choice}\n" + (f"{path}\n" if choice == "exported" else "") + "skip\ny\n"
+    with (
+        patch("src.cli.policy.sys") as terminal,
+        patch("src.cli.policy._get_client", return_value=client),
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.projects._get_client", return_value=client),
+    ):
+        terminal.stdin.isatty.return_value = True
+        result = CliRunner().invoke(
+            cli, creation_args(command), input=answer
+        )
+    assert result.exit_code == 0, result.output
+    assert "Policy profile" in result.output
+    created_text = "Created project" if command == "create" else "Onboarded"
+    assert result.output.index("Policy profile") < result.output.index(created_text)
+    assert (calls[-1][0] == "policy_apply") == (choice != "none")
+
+
+@pytest.mark.parametrize("command", ["create", "onboard"])
+@pytest.mark.parametrize("profile", [None, "none"])
+def test_json_creation_without_policy_never_prompts_or_calls_policy(command, profile):
     from src.cli.app import cli
 
     calls = []
     client = client_for(calls)
     with (
-        patch("src.cli.policy.sys") as terminal,
-        patch("src.cli.policy._get_client", return_value=client),
         patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.projects._get_client", return_value=client),
+        patch("src.cli.policy._get_client", return_value=client),
+        patch("src.cli.policy.sys.stdin.isatty", return_value=True),
     ):
-        terminal.stdin.isatty.return_value = True
-        result = CliRunner().invoke(
-            cli, ["project", "create", "--name", "New"], input=f"{choice}\nskip\ny\n"
-        )
+        args = creation_args(command) + (["--from-policy", profile] if profile else [])
+        result = CliRunner().invoke(cli, ["--json", *args])
     assert result.exit_code == 0, result.output
-    assert "Policy profile" in result.output
-    assert (calls[-1][0] == "policy_apply") == (choice == "default")
+    assert json.loads(result.output)["data"]["success"]
+    assert len(calls) == 1
 
 
-def test_onboard_default_opens_the_same_import_flow():
+@pytest.mark.parametrize("command", ["create", "onboard"])
+@pytest.mark.parametrize("profile", ["default", "exported"])
+def test_cancelled_import_retains_exactly_the_created_project(tmp_path, command, profile):
     from src.cli.app import cli
 
-    client = client_for([])
-    client.execute = AsyncMock(return_value={"success": True, "project_id": "new-project"})
+    calls = []
+    client = client_for(calls)
+    path = tmp_path / "example.aqpolicy"
+    path.touch()
+    source = str(path) if profile == "exported" else profile
     with (
+        patch("src.cli.app._get_client", return_value=client),
         patch("src.cli.projects._get_client", return_value=client),
-        patch("src.cli.policy.select_and_apply") as selection,
+        patch("src.cli.policy._get_client", return_value=client),
     ):
-        result = CliRunner().invoke(cli, [
-            "project", "onboard", "--root-id", "dev", "--relative-path", "new-project",
-            "--project-name", "New", "--project-id", "new-project", "--from-policy", "default",
-        ])
-    assert result.exit_code == 0, result.output
-    assert selection.call_args.args[1:] == ("default", "new-project")
+        result = CliRunner().invoke(
+            cli, [*creation_args(command), "--from-policy", source], input="skip\nn\n",
+        )
+    assert result.exit_code == 1, result.output
+    assert "new-project" in result.output and "Aborted" in result.output
+    assert [name for name, _ in calls].count(
+        "create_project" if command == "create" else "onboard_project"
+    ) == 1
+    assert all(name == "policy_diff" for name, _ in calls[1:])
+    assert all(args["project_id"] == "new-project" for _, args in calls[1:])
+
+
+@pytest.mark.parametrize("command", ["create", "onboard"])
+@pytest.mark.parametrize("source", ["missing", "json-default"])
+def test_invalid_creation_policy_is_rejected_before_creating(tmp_path, command, source):
+    from src.cli.app import cli
+
+    calls = []
+    client = client_for(calls)
+    args = [*creation_args(command), "--from-policy", str(tmp_path / "absent.aqpolicy")]
+    if source == "json-default":
+        args = ["--json", *creation_args(command), "--from-policy", "default"]
+    with (
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.projects._get_client", return_value=client),
+        patch("src.cli.policy._get_client", return_value=client),
+    ):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 2, result.output
+    assert calls == []
+    if source == "missing":
+        assert "does not exist" in result.output
+    else:
+        assert json.loads(result.output)["error"]["code"] == "usage_error"

@@ -46,12 +46,10 @@ def dsn():
 
 
 @pytest.fixture
-async def db(dsn):
-    database = Database(dsn)
-    await database.initialize()
+async def db(dsn, reuse_database):
+    database: Database = await reuse_database("review_doctor.db")
     await database.create_project(Project(id=PROJECT, name="p"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
