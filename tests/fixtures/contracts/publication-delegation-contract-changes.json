@@ -1,0 +1,149 @@
+{
+  "source_base": "f9a7591766d69481b309e8733be795e62ab0e59e",
+  "source_commit": "7831fe7251c9597bbb55084626fdd71ae3ed88f6",
+  "previous_cli_catalogue_sha256": "468e30721893c160e591ef116159339a6e8d4720e8de3b1266baac51701eced6",
+  "cli_catalogue_sha256": "212a969357a004021f8d4638cb1dbb1aaaab5dfada827b183ecb2a67dfed7ac5",
+  "added_property": {
+    "publication_delegation_id": {
+      "description": "Single-use integration-owner grant for this target branch",
+      "type": "string"
+    }
+  },
+  "transport_definitions": {
+    "git_push": {
+      "previous_sha256": "70738982d0ed3acb7deb115500e3b860aa832f2e257e85aa4cceeabe46c9a339",
+      "sha256": "8818ae51272db5c94dc5ae13cc85dbec87b54c3d65cec0f452e3dd2d8d04d6fc",
+      "previous_fingerprint": "sha256:b201691c7351e0ad950caceb11005b81c63824cde60d54bf401cf57d2b28706e",
+      "fingerprint": "sha256:82b3d60693476ee758d39d1d4bd5b7240544d8e1fab28a7c785efffb321957bd"
+    },
+    "push_branch": {
+      "previous_sha256": "9b588f1281a5b102890a0712e5d29ad03021a4b721b04481d939f2b3dff794d2",
+      "sha256": "9f11fecdc8618b9a058e31f0ed586b7d809155cda88e157edbacd07e6f0c1c36",
+      "previous_fingerprint": "sha256:a1d6d4b5f81df22d532411ccf1f514bb481857fd1e9faa4c31f445f3c0ffa268",
+      "fingerprint": "sha256:9ccb71c0642f4908674da5d826c4a75121db011ecfc88b8360e360885e739918"
+    }
+  },
+  "added_commands": {
+    "integration_delegate_publication": {
+      "transport_definition": {
+        "description": "Authenticated hierarchical integration operational control.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "claim_epoch": {
+              "minimum": 0,
+              "title": "Claim Epoch",
+              "type": "integer"
+            },
+            "expected_owner_fence": {
+              "minimum": 0,
+              "title": "Expected Owner Fence",
+              "type": "integer"
+            },
+            "expected_target_oid": {
+              "title": "Expected Target Oid",
+              "type": "string"
+            },
+            "id": {
+              "minLength": 1,
+              "title": "Id",
+              "type": "string"
+            },
+            "project_id": {
+              "minLength": 1,
+              "title": "Project Id",
+              "type": "string"
+            },
+            "reason": {
+              "minLength": 1,
+              "title": "Reason",
+              "type": "string"
+            },
+            "repository_id": {
+              "minLength": 1,
+              "title": "Repository Id",
+              "type": "string"
+            },
+            "session_id": {
+              "minLength": 1,
+              "title": "Session Id",
+              "type": "string"
+            },
+            "target_branch": {
+              "minLength": 1,
+              "title": "Target Branch",
+              "type": "string"
+            },
+            "task_id": {
+              "minLength": 1,
+              "title": "Task Id",
+              "type": "string"
+            },
+            "ttl_seconds": {
+              "default": 480,
+              "maximum": 480,
+              "minimum": 1,
+              "title": "Ttl Seconds",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "project_id",
+            "repository_id",
+            "task_id",
+            "session_id",
+            "claim_epoch",
+            "target_branch",
+            "expected_target_oid",
+            "expected_owner_fence",
+            "reason"
+          ],
+          "title": "IntegrationDelegatePublicationArgs",
+          "type": "object"
+        },
+        "name": "integration_delegate_publication"
+      },
+      "contract_fingerprint": "sha256:15f87aca0965bbc5ac959160ae50dd102d393afa73a49025e3aedf130986e2fd"
+    },
+    "integration_revoke_publication": {
+      "transport_definition": {
+        "description": "Authenticated hierarchical integration operational control.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "title": "Id",
+              "type": "string"
+            },
+            "project_id": {
+              "minLength": 1,
+              "title": "Project Id",
+              "type": "string"
+            },
+            "reason": {
+              "minLength": 1,
+              "title": "Reason",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "project_id",
+            "reason"
+          ],
+          "title": "IntegrationRevokePublicationArgs",
+          "type": "object"
+        },
+        "name": "integration_revoke_publication"
+      },
+      "contract_fingerprint": "sha256:5b9c771c4350042db25c0bdc816099d17a4b8a8bf935e22fdb2b6732415b9b0d"
+    }
+  },
+  "review_notes": [
+    "Delegated integration publication adds exactly two fallback CLI definitions, integration_delegate_publication and integration_revoke_publication, and one optional string property, publication_delegation_id, on git_push and its push_branch alias (transport definition and internal git plugin listing alike). Removing them recovers the withheld-source catalogue bytes; earlier recordings are unchanged.",
+    "Both new typed adapters are operator integration controls (OPERATOR_INTEGRATION_CONTROLS in src/api/scope.py). Issue refuses outside Git-first active mode and binds project, repository, task, session, claim epoch, target branch, expected target OID and expected owner fence with a reason and a TTL capped at 480 seconds; revoke requires a reason. An exact retry returns the existing audit without reviving authority.",
+    "Without publication_delegation_id git_push and push_branch keep every existing branch, scope and lease check. With it the push rechecks every binding before the network, publishes the pinned source only to the delegated target under the owner fence, and consumes the grant once."
+  ]
+}
