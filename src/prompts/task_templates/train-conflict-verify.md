@@ -1,0 +1,1 @@
+Before publishing, verify that every frozen source listed above is an ancestor of HEAD. Keep all merge parents; do not squash, rebase or cherry-pick the inputs. Run the required checks on the complete repaired candidate. The train still requires its exact candidate checks and publication gates before advancing the target.

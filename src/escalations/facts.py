@@ -49,7 +49,7 @@ PRIORITY_FOLLOWUP = 5
 PRIORITY_STATE = 5
 PRIORITY_DIGEST = 20
 
-#: States in which the incident still wants a human in the channel.
+#: Nonterminal incidents, including answered ones awaiting supervisor action.
 OPEN_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 #: States in which nothing may be re-opened; a late reply is answered, not acted on.
 TERMINAL_STATES = frozenset({"resolved", "cancelled", "stale"})
@@ -98,6 +98,10 @@ class EscalationFacts:
     @property
     def wants_human_delivery(self) -> bool:
         return self.source_kind != "supervisor_delivery"
+
+    @property
+    def needs_human_answer(self) -> bool:
+        return self.wants_human_delivery and self.state == "needs_human"
 
     @property
     def is_terminal(self) -> bool:
