@@ -790,7 +790,9 @@ class TestAbandonedPhaseRecovery:
         assert (await db.get_task(late)).is_blocked is True
         assert await frontier(db) == set()
 
-        deleted = await handler._cmd_delete_task({"task_id": first["phase"]["id"]})
+        deleted = await handler._cmd_delete_task(
+            {"task_id": first["phase"]["id"], "confirmed": True}
+        )
         assert deleted.get("success") is not False, deleted
         assert await db.get_task(first["phase"]["id"]) is None
 
@@ -825,7 +827,9 @@ class TestAbandonedPhaseRecovery:
         await cascade(orch)
         assert await frontier(db) == {early}
 
-        deleted = await handler._cmd_delete_task({"task_id": second["phase"]["id"]})
+        deleted = await handler._cmd_delete_task(
+            {"task_id": second["phase"]["id"], "confirmed": True}
+        )
         assert deleted.get("success") is not False, deleted
 
         await cascade(orch)

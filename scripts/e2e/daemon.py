@@ -126,6 +126,18 @@ async def run_fake_cycles(daemon, orch, shutdown_event, interval=None):
 def main() -> None:
     from src import main as daemon
 
+    if os.environ.get("AQ_E2E_FORBID_LLM") == "1":
+        from src.llm.client import LLMClient
+
+        async def forbidden(*args, **kwargs):
+            path = Path(os.environ["AQ_E2E_HOME"]) / "llm-forbidden.jsonl"
+            with path.open("a") as handle:
+                handle.write('"unexpected direct LLM attempt"\n')
+            raise RuntimeError("Direct LLM traffic is forbidden in this acceptance kit")
+
+        LLMClient.complete = forbidden
+        LLMClient.run_tools = forbidden
+
     if os.environ.get("AQ_E2E_SESSION_PROVIDER", "fake") == "fake":
         daemon._run_scheduler_cycles = functools.partial(
             run_fake_cycles, daemon._run_scheduler_cycles,

@@ -75,12 +75,22 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
-S2, S3, S5, S18, S20 and both S19 fixture claims retry `no_ready_work` within the convergence
-deadline: PostgreSQL `SKIP LOCKED` can skip a READY fixture while another
-transaction holds its row. Other claim outcomes and claims of an unexpected
-task fail immediately. S2 and S3 accept only the remaining S1 fixtures, including
-when separate pytest items run them in different subprocesses. A timeout reports
-the last claim and the fixture state.
+S19 pauses scheduling in its disposable project before filing the checklist
+graph, writes the operator override to the fixture pool, and releases that
+pause in `finally` before claiming the child. Graph filing can dispatch the
+router immediately; its routing gate alone cannot hold the child until the
+override. Production still refuses overrides of claimed or running tasks.
+
+S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
+(the `provb` worker, the probation canary and the pinned task) retry
+`no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
+skip a READY fixture while another transaction holds its row. Each claim waits
+one second so an unlock without a `task.ready` event cannot consume the retry
+budget in a few long polls. `claim_in_progress` for an expected fixture resumes
+the same preparation on the next call. Other claim outcomes and claims or
+preparations of an unexpected task fail immediately. S2 and S3 accept only the
+remaining S1 fixtures, including when separate pytest items run them in different
+subprocesses. A timeout reports the last claim and the fixture state.
 
 CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
@@ -94,6 +104,11 @@ selecting S2 or S3 alone prepares its missing predecessors. Other item boundarie
 remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.
+
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
 
 Each item has its own 540-second pytest limit. The scenario step has an
 eleven-minute deadline and a cache-miss dependency install has a separate
@@ -209,6 +224,52 @@ straight onto the row (`route_task` in `scripts/e2e/smoke.py`). S3, S16 and S19
 use the operator's audited `aq task route-override` instead. This mirrors a
 completed routing decision and makes pool claims exercise the live session's
 class and model constraints.
+
+### Deliberate policy installation and project setup
+
+The separate policy acceptance runner uses the real daemon, CLI/HTTP commands
+and PostgreSQL. Choose a unique home, port and database before running the kit:
+
+```bash
+export AQ_E2E_HOME=/tmp/aq-e2e-policy-my-run
+export AQ_E2E_PORT=8199
+export E2E_DB_NAME=agent_queue_e2e_policy_my_run
+export AQ_E2E_TMUX_SOCKET=aq-e2e-policy-my-run
+scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+scripts/e2e-policy.sh
+```
+
+Use an unused port and your own suffix. The policy runner owns four marked child
+homes under `$AQ_E2E_HOME/policy-cases/`, unique derived databases and dynamically
+chosen ports. It stops only its child daemons, including after failure. The parent
+smoke daemon and operator installation are independent. Child fixtures use fake
+sessions, disable real provider probes and reject direct LLM calls before traffic
+can leave the process. An attempted call records `llm-forbidden.jsonl` and fails
+acceptance. Notifications use the local database sink.
+
+`e2e-env.sh` deliberately installs initial playbooks **before** writing its fixture
+profiles/formulas. The runner records that builder inventory and pending receipt,
+then separately prepares absent, empty, existing nonempty and failed-first-import
+startup states. Ordinary restarts invoke only `e2e-daemon.sh`; they never rerun
+the builder. This distinction catches startup ordering failures that a kit with
+preloaded fixture profiles can conceal.
+
+The scenario checks the exact six-item source/bundle inventory and five initial
+activations, inactive morning reporting, deletion of a source/bundle/whole vault
+with a retained receipt, existing-vault preservation, missing/disabled/stale
+required rows, read-only doctor checks, explicit required and installed-bundle
+repairs, and consumed first-attempt failure recovery. Project create/onboard
+exercise default/exported/none, noninteractive omission, cancellation retention,
+preview acknowledgement, pending review, approval without activation, and
+unchanged existing project configuration.
+
+The complete command transcript, exit statuses, inventories, activation rows and
+tested HEAD are written to `$AQ_E2E_HOME/policy-acceptance.json` even on failure;
+`--output PATH` selects another evidence file. Child `daemon.log` files retain
+startup diagnostics. The [policy contract](../specs/design/policy-profiles.md) and
+[receipt/repair guidance](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility)
+explain the operator behavior these checks verify.
 
 ### What the pieces are
 
@@ -333,10 +394,10 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
 `aq prime` a task in project `other`. Before those assertions, the holder
-retries only `no_ready_work` within the convergence budget and must claim the
-exact fixture: even a routed `READY` row can be skipped while another transaction
-locks it. A timeout reports the last claim and fixture state; other claim
-failures stop immediately. *Regression it catches: a token being
+retries `no_ready_work` and observes fixture preparation within the convergence
+budget, then must claim the exact fixture: even a routed `READY` row can be skipped
+while another transaction locks it. A timeout reports the last claim and fixture
+state; other claim failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and
@@ -454,8 +515,10 @@ command-bearing system playbooks; it still starts no model process or
 supervisor session. The scenario gives a disposable pool worker one explicit
 assignment, closes it with a hard failure, then verifies the resulting
 `task.failed` event completed the reviewed `supervisor-failure-triage` run for
-that task and created exactly one durable notice for `supervisor-e2e`. It
-deletes the terminal fixture afterward. *Regression it catches: a reviewed
+that task and created a durable notice retaining project `e2e`. The recipient
+is `supervisor-global` by default, or `supervisor-e2e` when that project has
+opted in to a project supervisor. It deletes the terminal fixture afterward.
+*Regression it catches: a reviewed
 failure-triage bundle that is not activated, does not receive terminal worker
 events, calls the wrong command, or fails to persist its supervisor incident.*
 
@@ -506,9 +569,13 @@ launch, and a canary nobody works holds that provider's launches for
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
-uvicorn is listening and never touches the database. `GET /ready` runs the
-daemon's own health provider, so its `checks.database` entry is a real query
-through the engine the daemon is using.
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
 
 The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
@@ -751,14 +818,13 @@ it exists to prevent.
 
 ## Running the kit with the git-first protocol active
 
-The cutover smoke runs the same kit with `integration.git_first: active`, so the
-reduced train — not the subject runtime — is the delivery path the daemon
-builds. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment verbatim, so
-no script needs to know about the selector:
+The kit defaults to `integration.git_first: active`, so the reduced train is
+its delivery path. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment
+verbatim and replaces that default; callers must select `active` in their
+fragment when exercising delivery.
 
 ```bash
-printf 'integration:\n  git_first: active\n' > /tmp/aq-e2e-git-first.yaml
-AQ_E2E_EXTRA_CONFIG=/tmp/aq-e2e-git-first.yaml scripts/e2e-env.sh --reset
+scripts/e2e-env.sh --reset
 scripts/e2e-smoke.sh
 ```
 
@@ -784,7 +850,7 @@ and rejecting unknown-delivery blockers before publication. The fake daemon
 substitutes GitHub credentials for remotes inside its
 marked disposable home; candidate construction, fenced pushes and Git delivery
 remain real. With `shadow`, it checks completion provenance and explicitly reports
-delivery as untested. The CI `cli` shard selects `active` to run the full proof.
+delivery as untested. The default and CI `cli` shard select `active` to run the full proof.
 
 ## The App-mode train proof
 
