@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2228,
+ 'authorized_owned_delta': 2257,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1049,7 +1049,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82504,
- 'measured_owned_total': 157727,
+ 'measured_owned_total': 157756,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1141,6 +1141,24 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
       'repair_task_id': 'amber-journey-18',
       'task_id': 'fleet-zenith-14',
       'thread_id': 'amber-journey-18-epoch4-size'},
+ 'wait_admission_reobservation_composition': {'authorized_engine_delta': 0,
+     'authorized_owned_delta': 29,
+     'authorized_shared_owned_delta': 29,
+     'authorized_table_delta': 0,
+     'charged_files': {'src/waits/admission.py:AdmissionReader.observe_task': 29},
+     'decision_message_id': 'msg-093cb31dec41486ba5891e1b8bb20c7d',
+     'dev_source_revision': 'cc66aec8460d14d67473c1d67f876717fd65a5b6',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82504,
+     'previous_measured_owned_total': 157727,
+     'previous_measured_table_count': 45,
+     'reason': 'Exact supervisor-approved +29 shared owned lines for constraint-specific admission '
+               'reobservation, reducing redundant work inside graph-fenced transactions. Preserve '
+               'original baselines, historical grants and ownership classifications, with zero '
+               'remaining headroom and no new storage category.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'supervisor_decision_comment_id': 'comment-26bf155ce932484188a12ac8776616fd',
+     'task_id': 'sharp-delta-65'},
  'wait_scheduler_sync_rollback_composition': {'authorized_engine_delta': 0,
       'authorized_owned_delta': 6,
       'authorized_shared_owned_delta': 6,
