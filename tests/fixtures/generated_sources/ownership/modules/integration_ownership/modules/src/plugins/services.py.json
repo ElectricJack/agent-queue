@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/plugins/services.py::build_internal_services": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
