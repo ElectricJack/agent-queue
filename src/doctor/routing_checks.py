@@ -1,4 +1,4 @@
-"""``routing.bypassed``: is every task going through its project's router?
+"""Routing bypasses and unmatched lane selectors in active router policies.
 
 Mandatory task routing (spec 2026-09-28 §10) makes the router the only writer
 of a worker route and binds every project to one.  This check reports what
@@ -24,6 +24,7 @@ its router is not ready, and the activation named in the finding is the fix.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -33,6 +34,11 @@ from src.database.queries.hierarchy_queries import container_flag_exists
 from src.database.tables import gates, projects, task_gates, tasks
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import ProjectStatus, TaskStatus
+from src.playbooks.artifact_store import ArtifactStore
+from src.playbooks.definition import CommandStep, granted_aq_commands
+from src.playbooks.expressions import LiteralValue
+from src.playbooks.run_state import ArtifactVerificationFailed
+from src.routing.policy import PolicyError, is_opencode_family, parse_policy, selector_matches
 from src.routing.readiness import (
     BINDING_MISSING,
     BINDING_NOT_READY,
@@ -47,6 +53,7 @@ from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, OVERRIDE, UNROUTED
 
 OWNER = "mandatory-routing"
 CHECK_ID = "routing.bypassed"
+SELECTORS_CHECK_ID = "routing.unmatched_selectors"
 
 #: An unrouted queued task older than this is reported (spec §10).
 STALE_UNROUTED_SECONDS = 15 * 60
@@ -310,11 +317,119 @@ async def _fix_unbound(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_unmatched_selectors(ctx: DoctorContext) -> CheckResult:
+    """Report lane typos in active router artifacts without changing admission."""
+    registry = getattr(getattr(ctx.handler, "orchestrator", None), "harness_registry", None)
+    if ctx.db is None or registry is None:
+        return CheckResult(
+            id=SELECTORS_CHECK_ID, severity=Severity.INFO,
+            detail="database or harness registry unavailable — routing selectors unknown",
+        )
+    store = ArtifactStore(
+        ctx.config.compiled_root, max_artifact_bytes=ctx.config.playbooks.v2_max_artifact_bytes,
+    )
+    activations = await ctx.db.list_playbook_activations(enabled_only=True)
+    loaded = {}
+    unmatched = []
+    uncovered = []
+    unknown = []
+    checked = 0
+    for project in await ctx.db.list_projects():
+        bound = project.assignment_playbook_id
+        candidates = []
+        for row in activations:
+            if row["playbook_id"] != bound or row.get("health") != "ready":
+                continue
+            scope, identifier = row["scope"], row.get("scope_identifier") or ""
+            if not ((scope == "system" and not identifier)
+                    or (scope == "project" and identifier == project.id)):
+                continue
+            sha = row.get("active_artifact_sha256")
+            if not sha:
+                continue
+            if sha not in loaded:
+                try:
+                    loaded[sha] = await asyncio.to_thread(store.load, sha)
+                except (OSError, ValueError, ArtifactVerificationFailed):
+                    loaded[sha] = None
+            definition = loaded[sha]
+            if definition is None:
+                unknown.append({"project_id": project.id, "artifact_sha256": sha})
+                continue
+            if definition.id == bound and "task_route_apply" in granted_aq_commands(definition):
+                candidates.append((row, definition))
+        # A project router activation owns its route-needed rule in preference
+        # to the system copy, just as in playbook routing's scope selection.
+        project_candidates = [
+            item for item in candidates if item[0]["scope"] == "project"
+            and any(rule.trigger.event_type == "task.route_needed" for rule in item[1].rules)
+        ]
+        harnesses = registry.list_for_scope(project.id)
+        installed = {h.id for h in harnesses}
+        seen = set()
+        for row, definition in project_candidates or candidates:
+            for step_id, step in definition.steps.items():
+                if not isinstance(step, CommandStep) or step.command != "task_route_plan":
+                    continue
+                value = step.inputs.get("policy")
+                if not isinstance(value, LiteralValue):
+                    unknown.append({
+                        "project_id": project.id, "artifact_sha256": row["active_artifact_sha256"],
+                        "step_id": step_id,
+                        "reason": "policy is not a literal",
+                    })
+                    continue
+                try:
+                    policy, digest = parse_policy(value.value)
+                except PolicyError as exc:
+                    unknown.append({"project_id": project.id, "reason": str(exc)})
+                    continue
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                checked += 1
+                for harness in harnesses:
+                    if is_opencode_family(harness.id, harness.provider, harness.command) and not any(
+                        selector_matches(harness.id, selector)
+                        for selector in policy.narrow_harnesses()
+                    ):
+                        uncovered.append({
+                            "project_id": project.id, "router": bound,
+                            "artifact_sha256": row["active_artifact_sha256"],
+                            "policy_sha256": digest, "harness": harness.id,
+                        })
+                for selector in policy.unmatched_selectors(installed):
+                    unmatched.append({
+                        "project_id": project.id, "router": bound,
+                        "artifact_sha256": row["active_artifact_sha256"],
+                        "policy_sha256": digest, "selector": selector,
+                    })
+    detail = "; ".join(f"{row['project_id']}: {row['selector']}" for row in unmatched)
+    if uncovered:
+        detail += ("; " if detail else "") + "; ".join(
+            f"{row['project_id']}: OpenCode harness {row['harness']} has no narrow selector"
+            for row in uncovered
+        )
+    if unknown:
+        detail = (detail + "; " if detail else "") + f"{len(unknown)} policy observation(s) unavailable"
+    return CheckResult(
+        id=SELECTORS_CHECK_ID,
+        severity=Severity.WARN if unmatched or uncovered else Severity.INFO if unknown else Severity.OK,
+        detail=detail or f"{checked} active routing policy/policies; every lane selector matches",
+        data={"unmatched_selectors": unmatched, "uncovered_opencode_harnesses": uncovered,
+              "unknown_policies": unknown,
+              "checked_policy_count": checked},
+    )
+
+
 def routing_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
             id=CHECK_ID, run=_check_bypassed, fix=_fix_unbound, owner=OWNER, timeout_s=15.0,
-        )
+        ),
+        DoctorCheck(
+            id=SELECTORS_CHECK_ID, run=_check_unmatched_selectors, owner=OWNER, timeout_s=15.0,
+        ),
     ]
 
 
