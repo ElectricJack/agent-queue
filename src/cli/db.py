@@ -199,6 +199,9 @@ def db_restore(dump: Path, accept_data_loss: str | None, force: bool) -> None:
     upgrade the restored schema with `aq db upgrade` before restarting.
     """
     _require_operator()
+    from asyncpg import InvalidCatalogNameError
+    from sqlalchemy.exc import SQLAlchemyError
+
     from src.daemon_state import acquire_start_lock, find_daemon_pid, release_start_lock
 
     lock = str(Path(_CONFIG_PATH).parent / "daemon.lock")
@@ -258,6 +261,11 @@ def db_restore(dump: Path, accept_data_loss: str | None, force: bool) -> None:
 
     try:
         asyncio.run(_main())
+    except (SQLAlchemyError, InvalidCatalogNameError) as exc:
+        raise click.ClickException(
+            "restore_target_unavailable: cannot connect to or inspect the configured database; "
+            "ensure the target database exists and PostgreSQL is reachable"
+        ) from exc
     except (OSError, RuntimeError, TimeoutError) as exc:
         raise click.ClickException(str(exc)) from exc
     finally:

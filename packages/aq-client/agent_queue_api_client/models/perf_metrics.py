@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ..models.db_perf import DbPerf
     from ..models.host_perf import HostPerf
     from ..models.loop_perf import LoopPerf
+    from ..models.perf_metrics_operations import PerfMetricsOperations
     from ..models.perf_sampler_cost import PerfSamplerCost
     from ..models.relay_perf import RelayPerf
 
@@ -29,6 +30,7 @@ class PerfMetrics:
         loop (LoopPerf | Unset): Event-loop drift observed by the registry's LoopLagProbe.
         api (ApiPerf | Unset): Bounded route-template tables and totals from PerfRegistry.snapshot.
         db (DbPerf | Unset): Pool-wait and query observations from the engine's perf observers.
+        operations (PerfMetricsOperations | Unset):
         host (HostPerf | Unset): Slow-tier HostSampler snapshot, including its cost and staleness.
         relay (RelayPerf | Unset): Dashboard-server relay deltas; unavailable until the relay is polled.
         sampler (PerfSamplerCost | Unset): Instrumentation-only cost measured by MetricsSampler.
@@ -38,6 +40,7 @@ class PerfMetrics:
     loop: LoopPerf | Unset = UNSET
     api: ApiPerf | Unset = UNSET
     db: DbPerf | Unset = UNSET
+    operations: PerfMetricsOperations | Unset = UNSET
     host: HostPerf | Unset = UNSET
     relay: RelayPerf | Unset = UNSET
     sampler: PerfSamplerCost | Unset = UNSET
@@ -57,6 +60,10 @@ class PerfMetrics:
         db: dict[str, Any] | Unset = UNSET
         if not isinstance(self.db, Unset):
             db = self.db.to_dict()
+
+        operations: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.operations, Unset):
+            operations = self.operations.to_dict()
 
         host: dict[str, Any] | Unset = UNSET
         if not isinstance(self.host, Unset):
@@ -81,6 +88,8 @@ class PerfMetrics:
             field_dict["api"] = api
         if db is not UNSET:
             field_dict["db"] = db
+        if operations is not UNSET:
+            field_dict["operations"] = operations
         if host is not UNSET:
             field_dict["host"] = host
         if relay is not UNSET:
@@ -96,6 +105,7 @@ class PerfMetrics:
         from ..models.db_perf import DbPerf
         from ..models.host_perf import HostPerf
         from ..models.loop_perf import LoopPerf
+        from ..models.perf_metrics_operations import PerfMetricsOperations
         from ..models.perf_sampler_cost import PerfSamplerCost
         from ..models.relay_perf import RelayPerf
 
@@ -123,6 +133,13 @@ class PerfMetrics:
         else:
             db = DbPerf.from_dict(_db)
 
+        _operations = d.pop("operations", UNSET)
+        operations: PerfMetricsOperations | Unset
+        if isinstance(_operations, Unset):
+            operations = UNSET
+        else:
+            operations = PerfMetricsOperations.from_dict(_operations)
+
         _host = d.pop("host", UNSET)
         host: HostPerf | Unset
         if isinstance(_host, Unset):
@@ -149,6 +166,7 @@ class PerfMetrics:
             loop=loop,
             api=api,
             db=db,
+            operations=operations,
             host=host,
             relay=relay,
             sampler=sampler,
