@@ -497,6 +497,38 @@ async def _seed_busy_agent_on_task(db, *, agent_id, profile_id, task_id, task_st
     ))
 
 
+async def _seed_granted_resume(db, *, task_id):
+    """A reserved continuation for *task_id* holding a granted resume seat.
+
+    Only this retained grant protects the task's assigned agent from the
+    stale-BUSY sweep (``src.waits.occupancy.continuation_agent_ids``).
+    """
+    from sqlalchemy import insert
+
+    from src.database.tables import admission_reservations, continuations, wait_records
+
+    now = _time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(wait_records).values(
+            id=f"wait-{task_id}", project_id="p", owner_kind="task", owner_id=task_id,
+            origin="agent", condition_kind="task", condition={}, source_key=task_id,
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="test", verified_at=now, created_at=now, request_hash=task_id,
+            outcome="satisfied", sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id=f"resume-{task_id}", task_id=task_id, wait_id=f"wait-{task_id}",
+            suspension_generation=1, facts={}, branch=f"aq/{task_id}",
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="reserved",
+            created_at=now,
+        ))
+        await conn.execute(insert(admission_reservations).values(
+            id=f"seat-{task_id}", project_id="p", continuation_id=f"resume-{task_id}",
+            scope={}, effective_priority=100, provenance="resume", deadline_at=now + 300,
+            state="granted", created_at=now,
+        ))
+
+
 async def test_busy_agent_on_completed_task_is_reset_and_announced(db):
     await _seed_project_with_profile(
         db, project_id="p", profile_id="claude-opus", max_agents=1, workspace_count=0,
@@ -576,6 +608,7 @@ async def test_reserved_resume_agent_keeps_its_pin_before_the_session_starts(
     await db.update_task(
         "t-resume", assigned_agent_id="agent-1" if reserved_by_this_agent else "agent-2",
     )
+    await _seed_granted_resume(db, task_id="t-resume")
 
     bus = _Bus()
     await AgentReconciler(db, bus=bus).reconcile()

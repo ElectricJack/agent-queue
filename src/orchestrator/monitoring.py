@@ -462,7 +462,19 @@ class MonitoringMixin:
         await self.release_stale_container_claims()
         candidates = await self.db.settle_candidates()
         if candidates:
-            settled = await self._settle_seeds(set(candidates))
+            try:
+                settled = await self._settle_seeds(set(candidates))
+            except Exception:
+                # One container that cannot settle (e.g. SubtasksOpenError) must
+                # not abort the scheduler cycle for every project: retry each
+                # seed on its own and log only the ones that still fail.
+                logger.exception("Batched container settlement failed; settling one by one")
+                settled = []
+                for cid in sorted(candidates):
+                    try:
+                        settled.extend(await self._settle_seeds({cid}))
+                    except Exception:
+                        logger.exception("Container settlement failed for %s", cid)
             for cid in settled:
                 logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
         await self.reconcile_stale_containers()
