@@ -241,6 +241,12 @@ def kind() -> WorkspaceKind:
 # ──────────────────────────── §2.4 exclude block ─────────────────────────
 
 
+def _publish_unlanded(slot, branch: str = "aq/outgoing") -> None:
+    """Publish task work origin's default branch does not contain yet."""
+    _git(["commit", "--allow-empty", "-m", "unlanded task work"], slot.workspace_path)
+    _git(["push", "origin", branch], slot.workspace_path)
+
+
 @pytest.mark.parametrize(
     "operation", ["provision", "reset", "transfer", "restore", "idle_detach", "handoff"],
 )
@@ -250,7 +256,7 @@ async def test_slow_origin_fsck_does_not_refuse_epic_slot_preparation(
     outgoing = await mgr.create_slot(base_ws, kind, 0)
     incoming = await mgr.create_slot(base_ws, kind, 1)
     await mgr.reset_slot_for_task(outgoing, FakeTask(id="outgoing"))
-    _git(["push", "origin", "aq/outgoing"], outgoing.workspace_path)
+    _publish_unlanded(outgoing)
     destination = await mgr.create_slot(base_ws, kind, 2) if operation == "transfer" else None
     base = _git(["rev-parse", "HEAD"], base_ws.workspace_path)
     source = Path(_git(["remote", "get-url", "origin"], base_ws.workspace_path))
@@ -354,7 +360,7 @@ async def test_new_branch_holder_after_refresh_is_not_detached(
 async def test_failed_refresh_keeps_published_slot_attached(mgr, base_ws, kind, monkeypatch, operation):
     slot = await mgr.create_slot(base_ws, kind, 0)
     await mgr.reset_slot_for_task(slot, FakeTask(id="outgoing"))
-    _git(["push", "origin", "aq/outgoing"], slot.workspace_path)
+    _publish_unlanded(slot)
     monkeypatch.setattr(mgr.git, "afetch_origin", AsyncMock(side_effect=GitError("unavailable")))
 
     if operation == "restore":
@@ -375,7 +381,7 @@ async def test_failed_refresh_keeps_published_slot_attached(mgr, base_ws, kind, 
 async def test_detachment_rechecks_checkout_after_refresh(mgr, base_ws, kind, monkeypatch, operation):
     slot = await mgr.create_slot(base_ws, kind, 0)
     await mgr.reset_slot_for_task(slot, FakeTask(id="outgoing"))
-    _git(["push", "origin", "aq/outgoing"], slot.workspace_path)
+    _publish_unlanded(slot)
     original = mgr.git.afetch_origin
 
     async def dirty_after_refresh(*args, **kwargs):
@@ -392,6 +398,61 @@ async def test_detachment_rechecks_checkout_after_refresh(mgr, base_ws, kind, mo
         )
     assert _git(["branch", "--show-current"], slot.workspace_path) == "aq/outgoing"
     assert Path(slot.workspace_path, "README.md").read_text() == "new work during refresh\n"
+
+
+async def _landed_slot(mgr, base_ws, kind):
+    """A slot still on a task branch that landed and whose origin ref was pruned."""
+    slot = await mgr.create_slot(base_ws, kind, 0)
+    await mgr.reset_slot_for_task(slot, FakeTask(id="landed"))
+    _git(["commit", "--allow-empty", "-m", "landed work"], slot.workspace_path)
+    _git(["push", "origin", "HEAD:main"], slot.workspace_path)
+    return slot
+
+
+async def test_landed_idle_branch_detaches_without_an_origin_refresh(
+    mgr, base_ws, kind, monkeypatch,
+):
+    # 2026-10-27: an all-heads fetch for a landed branch queued ~160s behind a
+    # preparation; the landed tip needs no fetch to prove it safe to release.
+    slot = await _landed_slot(mgr, base_ws, kind)
+    fetch = AsyncMock(side_effect=AssertionError("landed release refreshed origin"))
+    monkeypatch.setattr(mgr.git, "afetch_origin", fetch)
+    assert await mgr.detach_idle_slot_branch(slot)
+    assert _git(["branch", "--show-current"], slot.workspace_path) == ""
+    fetch.assert_not_awaited()
+
+
+async def test_landed_idle_branch_with_new_edits_stays_attached(mgr, base_ws, kind, monkeypatch):
+    slot = await _landed_slot(mgr, base_ws, kind)
+    Path(slot.workspace_path, "README.md").write_text("edits after landing\n")
+    monkeypatch.setattr(mgr.git, "afetch_origin", AsyncMock(side_effect=AssertionError))
+    assert not await mgr.detach_idle_slot_branch(slot)
+    assert _git(["branch", "--show-current"], slot.workspace_path) == "aq/landed"
+
+
+async def test_slow_origin_refresh_defers_idle_branch_release(mgr, base_ws, kind, monkeypatch):
+    slot = await mgr.create_slot(base_ws, kind, 0)
+    await mgr.reset_slot_for_task(slot, FakeTask(id="outgoing"))
+    _publish_unlanded(slot)
+    monkeypatch.setattr("src.orchestrator.worktree_manager.IDLE_BRANCH_RELEASE_TIMEOUT", 0.2)
+
+    async def stalled_fetch(*_args, **_kwargs):
+        await asyncio.Event().wait()  # queued behind a preparation, forever
+
+    monkeypatch.setattr(mgr.git, "afetch_origin", stalled_fetch)
+    assert not await asyncio.wait_for(mgr.detach_idle_slot_branch(slot), 5)
+    assert _git(["branch", "--show-current"], slot.workspace_path) == "aq/outgoing"
+
+
+async def test_busy_repository_defers_idle_branch_release(mgr, base_ws, kind, monkeypatch):
+    slot = await _landed_slot(mgr, base_ws, kind)
+    lock = RepositoryLock()
+    mgr._git_mutex = lambda _path: lock
+    monkeypatch.setattr("src.orchestrator.worktree_manager.IDLE_BRANCH_RELEASE_TIMEOUT", 0.2)
+    async with lock:  # a slot preparation holding the repository
+        assert not await asyncio.wait_for(mgr.detach_idle_slot_branch(slot), 5)
+    assert _git(["branch", "--show-current"], slot.workspace_path) == "aq/landed"
+    assert await mgr.detach_idle_slot_branch(slot)
 
 
 async def test_resume_reprovision_keeps_checkout_and_skips_prune(base_ws, kind, mgr):

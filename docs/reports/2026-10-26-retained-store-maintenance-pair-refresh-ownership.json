@@ -1,0 +1,71 @@
+{
+  "after": {
+    "engine": 83891,
+    "maintenance_source_revision": "44f2697b0e81631954bf5c8ce0b18fb9a3c05781",
+    "owned": 159853,
+    "tables": 45
+  },
+  "before": {
+    "engine": 83747,
+    "owned": 159623,
+    "revision": "e7d3814e9774efb2103610a61cd6fc0e26fee8a7",
+    "tables": 45
+  },
+  "charged_files": {
+    "src/api/scope.py": {
+      "after": 449,
+      "before": 448,
+      "delta": 1
+    },
+    "src/cli/auto_commands.py": {
+      "after": 26,
+      "before": 25,
+      "delta": 1
+    },
+    "src/cli/integration.py": {
+      "after": 1490,
+      "before": 1480,
+      "delta": 10
+    },
+    "src/commands/contracts/integration.py": {
+      "after": 2513,
+      "before": 2485,
+      "delta": 28
+    },
+    "src/commands/integration_commands.py": {
+      "after": 3284,
+      "before": 3253,
+      "delta": 31
+    },
+    "src/git/repository_lock.py": {
+      "after": 11,
+      "before": 0,
+      "delta": 11
+    },
+    "src/integration/repository_maintenance.py": {
+      "after": 170,
+      "before": 0,
+      "delta": 170
+    },
+    "src/integration/repository_recovery.py": {
+      "after": 541,
+      "before": 567,
+      "delta": -26
+    },
+    "src/orchestrator/core.py": {
+      "after": 2924,
+      "before": 2920,
+      "delta": 4
+    }
+  },
+  "delta": {
+    "engine": 144,
+    "owned": 230,
+    "tables": 0
+  },
+  "method": "Fresh dev archive and merged source tree measured with unchanged ownership classifications. Preserve all historical grants and reports; compose the independent promotion CI +101 owned/+94 engine grant and the unchanged maintenance +230 owned/+144 engine grant. Zero headroom; no new storage category.",
+  "prior_grant_evidence": "docs/reports/2026-10-26-retained-store-maintenance-dev-refresh-ownership.json",
+  "referenced_decision": "size-cap-delegation-2026-10-23",
+  "supervisor_decision_message_id": "msg-52016cbae0e445e1baa70acb295b19ec",
+  "task_id": "clear-rapids-41"
+}
