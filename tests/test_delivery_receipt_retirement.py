@@ -13,6 +13,9 @@ import functools
 import re
 from pathlib import Path
 
+# The retirement assertions inspect the complete source tree as data.
+BAZEL_DATA = ("src/",)
+
 ROOT = Path(__file__).parents[1]
 TABLE = "task_delivery_receipts"
 WRITE_CALLS = {"insert", "update", "delete", "pg_insert"}
@@ -38,7 +41,6 @@ READERS = {
     "src/integration/cancelled_collection_recovery.py": "cutover: historical recovery",
     "src/integration/child_delivery.py": "watchdog: stale-child diagnosis",
     "src/integration/cutover.py": "cutover: inventory and retagging",
-    "src/integration/delivery_branches.py": "cleanup: retained child witness deletion fence",
     "src/integration/epic_delivery.py": "dashboard: shadow display",
     "src/integration/failed_verification_recovery.py": "cutover: historical recovery",
     "src/integration/legacy_backfill.py": "cutover: historical attestation",

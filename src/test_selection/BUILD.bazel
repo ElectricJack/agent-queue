@@ -5,6 +5,7 @@ package(default_visibility = ["//visibility:public"])
 filegroup(name = "generator_inputs", srcs = glob(["**"], exclude = ["**/__pycache__/**", "**/*.pyc", "**/BUILD.bazel", "**/node_modules/**"]))
 filegroup(name = "sources", srcs = [
         "__init__.py",
+        "bazel_manifest.py",
         "catalogue.py",
         "discovery.py",
         "load_closure.py",
@@ -21,6 +22,7 @@ filegroup(name = "sources", srcs = [
     ])
 exports_files([
         "__init__.py",
+        "bazel_manifest.py",
         "catalogue.py",
         "discovery.py",
         "load_closure.py",
@@ -41,6 +43,7 @@ py_library(
     name = "library",
     srcs = [
         "__init__.py",
+        "bazel_manifest.py",
         "catalogue.py",
         "discovery.py",
         "load_closure.py",

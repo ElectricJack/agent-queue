@@ -197,6 +197,11 @@ _STEP = _object(
         "source": _BRANCH,
         "target": _BRANCH,
         "type": _choice("request", "continuous", default="request"),
+        "ci": _choice("reuse_source", "rerun", default="reuse_source"),
+        "ci_workflow": {
+            "type": "string", "pattern": r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.ya?ml$",
+            "default": "tests.yml",
+        },
         "gate": {**_GATE, "default": {}},
         "versioning": {**_VERSIONING, "default": {}},
         "notes": {**_NOTES, "default": {}},
@@ -492,7 +497,7 @@ class FlowSchema:
 
 # A step with an open promotion keeps these; ``after`` and the gate's
 # ``request_ttl`` may change at any time (§3.11).
-_PROTECTED = ("source", "target", "type", "gate", "versioning", "notes")
+_PROTECTED = ("source", "target", "type", "ci", "ci_workflow", "gate", "versioning", "notes")
 
 
 def _filled(step: Any) -> dict[str, Any] | None:
@@ -612,17 +617,22 @@ async def read_stored_promotion_flow(db: Any, project_id: str) -> Any:
 def promotion_workflow_triggers(flow: list[dict] | None, *, default_branch: str) -> dict:
     """Copyable workflow event configuration derived from the same chain as protection."""
     branches = [default_branch, *flow_targets(flow)]
-    return {
+    workflows = {
         ".github/workflows/tests.yml": {
             "pull_request": {
-                "branches": branches,
+                "branches": [default_branch],
                 "types": ["opened", "synchronize", "reopened", "ready_for_review"],
             },
             "push": {"branches": ["aq/parent/**", "aq/integration/**",
-                                   "aq/batches/**", "aq/promote/**", "aq/backmerge/**"]},
+                                   "aq/batches/**", "aq/backmerge/**"]},
         },
         ".github/workflows/main-attestation.yml": {"push": {"branches": branches}},
     }
+    for step in flow or []:
+        if step.get("ci") == "rerun":
+            path = ".github/workflows/" + step.get("ci_workflow", "tests.yml")
+            workflows.setdefault(path, {})["workflow_dispatch"] = {}
+    return workflows
 
 
 async def read_promotion_protection(
@@ -779,6 +789,12 @@ async def validate_promotion_remote(
             for event, settings in events.items():
                 configured = triggers.get(event) if isinstance(triggers, dict) else None
                 present = event in triggers if isinstance(triggers, (dict, list)) else triggers == event
+                if event == "workflow_dispatch":
+                    if not present:
+                        warnings.append({"code": "workflow_trigger_missing", "pointer": "",
+                                         "layer": 4, "message": f"{path} lacks {event}.",
+                                         "workflow": path, "event": event})
+                    continue
                 for branch in settings["branches"]:
                     # Use a concrete nested ref to require ** rather than *.
                     sample = branch.replace("**", "step/request")
@@ -1310,6 +1326,50 @@ def frozen_required_checks(meta: dict):
         raise PromotionIntentInvalid("promotion frozen check set is invalid") from exc
 
 
+def promotion_observer_options(meta: dict) -> dict:
+    """Frozen policy selects the evidence scope, never the current project policy."""
+    step = meta["step"]
+    if step.get("ci") == "rerun":
+        return {
+            "expected_event": "workflow_dispatch",
+            "expected_branch": promotion_ref(step, meta).removeprefix("refs/heads/"),
+            "expected_workflow": ".github/workflows/" + step["ci_workflow"],
+        }
+    # Old intents had push checks; only explicit reuse gets source's cancellation rule.
+    return {"expected_event": "push", "ignore_cancelled_batches": step.get("ci") == "reuse_source"}
+
+
+async def request_promotion_ci(admission, batch, meta, client, trust):
+    """Reserve one dispatch before I/O; ambiguous attempts require operator recovery.
+
+    The private ref and workflow scope let a restarted lane observe a dispatched
+    run without needing GitHub's empty dispatch response to identify it.
+    """
+    if meta["step"].get("ci") != "rerun":
+        return
+    repo = await admission.gitops.repository(batch)
+    ref = promotion_ref(meta["step"], meta)
+    if await admission.gitops.remote(repo, ref) != meta["source_sha"]:
+        raise PromotionIntentInvalid("promotion dispatch ref differs from frozen source")
+    from src.integration.batches import BatchStore
+
+    members = await BatchStore(admission.db).members(batch.id)
+    if not await admission.eligible(batch, members):
+        raise PromotionIntentInvalid("promotion dispatch intent is no longer eligible")
+    workflow = meta["step"]["ci_workflow"]
+    record = json.dumps({"ref": ref, "sha": meta["source_sha"], "workflow": workflow,
+                         "requested_at": time.time()}, sort_keys=True)
+    async with admission.db.immediate() as conn:
+        reserved = await conn.execute(insert(task_metadata).values(
+            task_id=members[0].task_id, key="promotion_ci_dispatch", value=record,
+        ).on_conflict_do_nothing(index_elements=["task_id", "key"]))
+    if reserved.rowcount:
+        await client.request_json(
+            "POST", f"/repos/{trust.full_name}/actions/workflows/{quote(workflow, safe='')}/dispatches",
+            json_body={"ref": ref.removeprefix("refs/heads/")}, expected_statuses={204},
+        )
+
+
 async def cache_promotion_review(conn, repository_id, member, tree, reason, evidence):
     """Cache an observed PR verdict for readers; admission always re-observes GitHub.
 
@@ -1409,7 +1469,7 @@ async def publish_step_attestation(admission, batch, members, trust, client) -> 
     step = meta["step"]
     required = frozen_required_checks(meta)
     selected = trust.model_copy(update={"required_checks": required})
-    observer = AuthenticatedGitHubObserver(client, expected_event="push")
+    observer = AuthenticatedGitHubObserver(client, **promotion_observer_options(meta))
     observed = await observer.observe(selected, meta["source_sha"])
     if not isinstance(observed, TrustedCIObservation) or not isinstance(observed.payload, AttestationPayload):
         return "not_green"
@@ -1858,3 +1918,4 @@ async def check_source_green(client, trust, required, source):
         raise PromotionSourceRefusal("promotion_source_unavailable", str(exc)) from exc
     if isinstance(observed, FailedCIObservation):
         raise PromotionSourceRefusal("promotion_source_red", "Required source checks are not green.")
+    return observed
