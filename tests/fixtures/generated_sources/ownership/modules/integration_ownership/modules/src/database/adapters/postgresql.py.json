@@ -1,0 +1,92 @@
+{
+  "shared": {
+    "src/database/adapters/postgresql.py::PostgreSQLDatabaseAdapter.<header>": {
+      "baseline_span": [
+        96,
+        165
+      ],
+      "landing_span": [
+        93,
+        161
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_control_queries import IntegrationControlQueriesMixin": {
+      "baseline_span": [
+        47,
+        47
+      ],
+      "landing_span": [
+        44,
+        44
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_delivery_queries import IntegrationDeliveryQueriesMixin": {
+      "baseline_span": [
+        48,
+        48
+      ],
+      "landing_span": [
+        45,
+        45
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_reconciliation_queries import IntegrationReconciliationQueriesMixin": {
+      "baseline_span": [
+        49,
+        51
+      ],
+      "landing_span": [
+        46,
+        48
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin": {
+      "baseline_span": [
+        52,
+        52
+      ],
+      "landing_span": [
+        49,
+        49
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin": {
+      "baseline_span": [
+        53,
+        53
+      ],
+      "landing_span": [
+        50,
+        50
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_subject_queries import IntegrationSubjectQueriesMixin": {
+      "baseline_span": [
+        54,
+        54
+      ],
+      "landing_span": [
+        51,
+        51
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/adapters/postgresql.py::import from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin": {
+      "baseline_span": [
+        55,
+        55
+      ],
+      "landing_span": [
+        52,
+        52
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
