@@ -1,0 +1,19 @@
+{
+  "batch_fixer_orphaned_launch_measurement": {
+    "authorized_engine_delta": 28,
+    "authorized_owned_delta": 28,
+    "decision_message_id": "msg-e2dd5a423516458eb564e745a12ab30e",
+    "measured_engine_lines": 85496,
+    "measured_owned_total": 161081,
+    "measured_source_revision": "344a85b9d8388521975af9b830e4d8b17817562e",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_engine_lines": 85468,
+    "previous_owned_total": 161053,
+    "previous_source_revision": "dd95038cca3fef9aae70eb0092079fe24d52a062",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1884",
+    "reason": "Recover orphaned launching fixer reservations after a per-attempt grace period; fence late registration and completion by session, instance and launch timestamp. Exact self-approved measurement under the project supervisor delegation.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "quick-pinnacle-97"
+  }
+}
