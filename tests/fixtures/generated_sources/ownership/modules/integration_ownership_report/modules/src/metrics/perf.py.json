@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/metrics/perf.py::timed_operation": {
+      "fingerprint": "0e620d82e8ab372109397fcbdf7152f99b708f45c631374d71043cc9e3ce8d8b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

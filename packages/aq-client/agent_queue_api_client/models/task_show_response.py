@@ -7,21 +7,26 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
+from ..models.task_show_response_status import TaskShowResponseStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.claim_readiness import ClaimReadiness
     from ..models.claimed_by import ClaimedBy
     from ..models.epic_delivery_status import EpicDeliveryStatus
+    from ..models.held_batch_summary import HeldBatchSummary
     from ..models.provider_hold_detail import ProviderHoldDetail
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
     from ..models.task_reroute import TaskReroute
+    from ..models.task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
     from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
     from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
     from ..models.task_show_response_context_item import TaskShowResponseContextItem
     from ..models.task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+    from ..models.task_show_response_delivery_condition_type_0 import TaskShowResponseDeliveryConditionType0
     from ..models.task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
+    from ..models.task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
     from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
     from ..models.task_show_response_provenance_item import TaskShowResponseProvenanceItem
     from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -46,7 +51,7 @@ class TaskShowResponse:
             descendant_state_counts (None | TaskShowResponseDescendantStateCountsType0 | Unset):
             claim_readiness (ClaimReadiness | None | Unset):
             description (str | Unset):  Default: ''.
-            status (str | Unset):  Default: ''.
+            status (TaskShowResponseStatus | Unset):  Default: TaskShowResponseStatus.VALUE_0.
             priority (int | Unset):  Default: 0.
             assigned_agent (None | str | Unset):
             retry_count (int | Unset):  Default: 0.
@@ -77,6 +82,8 @@ class TaskShowResponse:
             rerouted_from (None | str | Unset):
             reroute (None | TaskReroute | Unset):
             provider_hold (None | ProviderHoldDetail | Unset):
+            held_batch (HeldBatchSummary | None | Unset):
+            delivery_condition (None | TaskShowResponseDeliveryConditionType0 | Unset):
             route_source (None | str | Unset):
             class_hint (None | str | Unset):
             prefer_target (None | str | Unset):
@@ -87,6 +94,8 @@ class TaskShowResponse:
             labels (list[str] | Unset):
             provenance (list[TaskShowResponseProvenanceItem] | Unset):
             claimed_by (ClaimedBy | None | Unset):
+            batch_member (None | TaskShowResponseBatchMemberType0 | Unset):
+            fidelity (None | TaskShowResponseFidelityType0 | Unset):
     """
 
     id: str
@@ -98,7 +107,7 @@ class TaskShowResponse:
     descendant_state_counts: None | TaskShowResponseDescendantStateCountsType0 | Unset = UNSET
     claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskShowResponseStatus | Unset = TaskShowResponseStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -129,6 +138,8 @@ class TaskShowResponse:
     rerouted_from: None | str | Unset = UNSET
     reroute: None | TaskReroute | Unset = UNSET
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
+    held_batch: HeldBatchSummary | None | Unset = UNSET
+    delivery_condition: None | TaskShowResponseDeliveryConditionType0 | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
     prefer_target: None | str | Unset = UNSET
@@ -139,20 +150,26 @@ class TaskShowResponse:
     labels: list[str] | Unset = UNSET
     provenance: list[TaskShowResponseProvenanceItem] | Unset = UNSET
     claimed_by: ClaimedBy | None | Unset = UNSET
+    batch_member: None | TaskShowResponseBatchMemberType0 | Unset = UNSET
+    fidelity: None | TaskShowResponseFidelityType0 | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.claim_readiness import ClaimReadiness
         from ..models.claimed_by import ClaimedBy
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_reroute import TaskReroute
+        from ..models.task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
         from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
         from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
+        from ..models.task_show_response_delivery_condition_type_0 import TaskShowResponseDeliveryConditionType0
         from ..models.task_show_response_descendant_state_counts_type_0 import (
             TaskShowResponseDescendantStateCountsType0,
         )
+        from ..models.task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
         from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
         from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
 
@@ -202,7 +219,9 @@ class TaskShowResponse:
 
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -360,6 +379,22 @@ class TaskShowResponse:
         else:
             provider_hold = self.provider_hold
 
+        held_batch: dict[str, Any] | None | Unset
+        if isinstance(self.held_batch, Unset):
+            held_batch = UNSET
+        elif isinstance(self.held_batch, HeldBatchSummary):
+            held_batch = self.held_batch.to_dict()
+        else:
+            held_batch = self.held_batch
+
+        delivery_condition: dict[str, Any] | None | Unset
+        if isinstance(self.delivery_condition, Unset):
+            delivery_condition = UNSET
+        elif isinstance(self.delivery_condition, TaskShowResponseDeliveryConditionType0):
+            delivery_condition = self.delivery_condition.to_dict()
+        else:
+            delivery_condition = self.delivery_condition
+
         route_source: None | str | Unset
         if isinstance(self.route_source, Unset):
             route_source = UNSET
@@ -425,6 +460,22 @@ class TaskShowResponse:
             claimed_by = self.claimed_by.to_dict()
         else:
             claimed_by = self.claimed_by
+
+        batch_member: dict[str, Any] | None | Unset
+        if isinstance(self.batch_member, Unset):
+            batch_member = UNSET
+        elif isinstance(self.batch_member, TaskShowResponseBatchMemberType0):
+            batch_member = self.batch_member.to_dict()
+        else:
+            batch_member = self.batch_member
+
+        fidelity: dict[str, Any] | None | Unset
+        if isinstance(self.fidelity, Unset):
+            fidelity = UNSET
+        elif isinstance(self.fidelity, TaskShowResponseFidelityType0):
+            fidelity = self.fidelity.to_dict()
+        else:
+            fidelity = self.fidelity
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -509,6 +560,10 @@ class TaskShowResponse:
             field_dict["reroute"] = reroute
         if provider_hold is not UNSET:
             field_dict["provider_hold"] = provider_hold
+        if held_batch is not UNSET:
+            field_dict["held_batch"] = held_batch
+        if delivery_condition is not UNSET:
+            field_dict["delivery_condition"] = delivery_condition
         if route_source is not UNSET:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
@@ -529,6 +584,10 @@ class TaskShowResponse:
             field_dict["provenance"] = provenance
         if claimed_by is not UNSET:
             field_dict["claimed_by"] = claimed_by
+        if batch_member is not UNSET:
+            field_dict["batch_member"] = batch_member
+        if fidelity is not UNSET:
+            field_dict["fidelity"] = fidelity
 
         return field_dict
 
@@ -537,17 +596,21 @@ class TaskShowResponse:
         from ..models.claim_readiness import ClaimReadiness
         from ..models.claimed_by import ClaimedBy
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
         from ..models.task_reroute import TaskReroute
+        from ..models.task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
         from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
         from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
         from ..models.task_show_response_context_item import TaskShowResponseContextItem
         from ..models.task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+        from ..models.task_show_response_delivery_condition_type_0 import TaskShowResponseDeliveryConditionType0
         from ..models.task_show_response_descendant_state_counts_type_0 import (
             TaskShowResponseDescendantStateCountsType0,
         )
+        from ..models.task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
         from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
         from ..models.task_show_response_provenance_item import TaskShowResponseProvenanceItem
         from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -638,7 +701,12 @@ class TaskShowResponse:
 
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskShowResponseStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskShowResponseStatus(_status)
 
         priority = d.pop("priority", UNSET)
 
@@ -880,6 +948,40 @@ class TaskShowResponse:
 
         provider_hold = _parse_provider_hold(d.pop("provider_hold", UNSET))
 
+        def _parse_held_batch(data: object) -> HeldBatchSummary | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                held_batch_type_0 = HeldBatchSummary.from_dict(data)
+
+                return held_batch_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(HeldBatchSummary | None | Unset, data)
+
+        held_batch = _parse_held_batch(d.pop("held_batch", UNSET))
+
+        def _parse_delivery_condition(data: object) -> None | TaskShowResponseDeliveryConditionType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_condition_type_0 = TaskShowResponseDeliveryConditionType0.from_dict(data)
+
+                return delivery_condition_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseDeliveryConditionType0 | Unset, data)
+
+        delivery_condition = _parse_delivery_condition(d.pop("delivery_condition", UNSET))
+
         def _parse_route_source(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -987,6 +1089,40 @@ class TaskShowResponse:
 
         claimed_by = _parse_claimed_by(d.pop("claimed_by", UNSET))
 
+        def _parse_batch_member(data: object) -> None | TaskShowResponseBatchMemberType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                batch_member_type_0 = TaskShowResponseBatchMemberType0.from_dict(data)
+
+                return batch_member_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseBatchMemberType0 | Unset, data)
+
+        batch_member = _parse_batch_member(d.pop("batch_member", UNSET))
+
+        def _parse_fidelity(data: object) -> None | TaskShowResponseFidelityType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                fidelity_type_0 = TaskShowResponseFidelityType0.from_dict(data)
+
+                return fidelity_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseFidelityType0 | Unset, data)
+
+        fidelity = _parse_fidelity(d.pop("fidelity", UNSET))
+
         task_show_response = cls(
             id=id,
             project_id=project_id,
@@ -1028,6 +1164,8 @@ class TaskShowResponse:
             rerouted_from=rerouted_from,
             reroute=reroute,
             provider_hold=provider_hold,
+            held_batch=held_batch,
+            delivery_condition=delivery_condition,
             route_source=route_source,
             class_hint=class_hint,
             prefer_target=prefer_target,
@@ -1038,6 +1176,8 @@ class TaskShowResponse:
             labels=labels,
             provenance=provenance,
             claimed_by=claimed_by,
+            batch_member=batch_member,
+            fidelity=fidelity,
         )
 
         task_show_response.additional_properties = d

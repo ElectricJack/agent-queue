@@ -7,16 +7,19 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.task_detail_display_state_type_0 import TaskDetailDisplayStateType0
+from ..models.task_detail_status import TaskDetailStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.claim_readiness import ClaimReadiness
     from ..models.epic_delivery_status import EpicDeliveryStatus
+    from ..models.held_batch_summary import HeldBatchSummary
     from ..models.provider_hold_detail import ProviderHoldDetail
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_detail_child_state_counts_type_0 import TaskDetailChildStateCountsType0
     from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
     from ..models.task_detail_deliverables_item import TaskDetailDeliverablesItem
+    from ..models.task_detail_delivery_condition_type_0 import TaskDetailDeliveryConditionType0
     from ..models.task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStateCountsType0
     from ..models.task_detail_parent_type_0 import TaskDetailParentType0
     from ..models.task_detail_route_type_0 import TaskDetailRouteType0
@@ -40,7 +43,7 @@ class TaskDetail:
         descendant_state_counts (None | TaskDetailDescendantStateCountsType0 | Unset):
         claim_readiness (ClaimReadiness | None | Unset):
         description (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (TaskDetailStatus | Unset):  Default: TaskDetailStatus.VALUE_0.
         priority (int | Unset):  Default: 0.
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
@@ -71,6 +74,8 @@ class TaskDetail:
         rerouted_from (None | str | Unset):
         reroute (None | TaskReroute | Unset):
         provider_hold (None | ProviderHoldDetail | Unset):
+        held_batch (HeldBatchSummary | None | Unset):
+        delivery_condition (None | TaskDetailDeliveryConditionType0 | Unset):
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
         prefer_target (None | str | Unset):
@@ -88,7 +93,7 @@ class TaskDetail:
     descendant_state_counts: None | TaskDetailDescendantStateCountsType0 | Unset = UNSET
     claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskDetailStatus | Unset = TaskDetailStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -119,6 +124,8 @@ class TaskDetail:
     rerouted_from: None | str | Unset = UNSET
     reroute: None | TaskReroute | Unset = UNSET
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
+    held_batch: HeldBatchSummary | None | Unset = UNSET
+    delivery_condition: None | TaskDetailDeliveryConditionType0 | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
     prefer_target: None | str | Unset = UNSET
@@ -130,10 +137,12 @@ class TaskDetail:
     def to_dict(self) -> dict[str, Any]:
         from ..models.claim_readiness import ClaimReadiness
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_detail_child_state_counts_type_0 import TaskDetailChildStateCountsType0
         from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
+        from ..models.task_detail_delivery_condition_type_0 import TaskDetailDeliveryConditionType0
         from ..models.task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStateCountsType0
         from ..models.task_detail_parent_type_0 import TaskDetailParentType0
         from ..models.task_detail_route_type_0 import TaskDetailRouteType0
@@ -185,7 +194,9 @@ class TaskDetail:
 
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -343,6 +354,22 @@ class TaskDetail:
         else:
             provider_hold = self.provider_hold
 
+        held_batch: dict[str, Any] | None | Unset
+        if isinstance(self.held_batch, Unset):
+            held_batch = UNSET
+        elif isinstance(self.held_batch, HeldBatchSummary):
+            held_batch = self.held_batch.to_dict()
+        else:
+            held_batch = self.held_batch
+
+        delivery_condition: dict[str, Any] | None | Unset
+        if isinstance(self.delivery_condition, Unset):
+            delivery_condition = UNSET
+        elif isinstance(self.delivery_condition, TaskDetailDeliveryConditionType0):
+            delivery_condition = self.delivery_condition.to_dict()
+        else:
+            delivery_condition = self.delivery_condition
+
         route_source: None | str | Unset
         if isinstance(self.route_source, Unset):
             route_source = UNSET
@@ -466,6 +493,10 @@ class TaskDetail:
             field_dict["reroute"] = reroute
         if provider_hold is not UNSET:
             field_dict["provider_hold"] = provider_hold
+        if held_batch is not UNSET:
+            field_dict["held_batch"] = held_batch
+        if delivery_condition is not UNSET:
+            field_dict["delivery_condition"] = delivery_condition
         if route_source is not UNSET:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
@@ -485,11 +516,13 @@ class TaskDetail:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.claim_readiness import ClaimReadiness
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_detail_child_state_counts_type_0 import TaskDetailChildStateCountsType0
         from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
         from ..models.task_detail_deliverables_item import TaskDetailDeliverablesItem
+        from ..models.task_detail_delivery_condition_type_0 import TaskDetailDeliveryConditionType0
         from ..models.task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStateCountsType0
         from ..models.task_detail_parent_type_0 import TaskDetailParentType0
         from ..models.task_detail_route_type_0 import TaskDetailRouteType0
@@ -582,7 +615,12 @@ class TaskDetail:
 
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskDetailStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskDetailStatus(_status)
 
         priority = d.pop("priority", UNSET)
 
@@ -824,6 +862,40 @@ class TaskDetail:
 
         provider_hold = _parse_provider_hold(d.pop("provider_hold", UNSET))
 
+        def _parse_held_batch(data: object) -> HeldBatchSummary | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                held_batch_type_0 = HeldBatchSummary.from_dict(data)
+
+                return held_batch_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(HeldBatchSummary | None | Unset, data)
+
+        held_batch = _parse_held_batch(d.pop("held_batch", UNSET))
+
+        def _parse_delivery_condition(data: object) -> None | TaskDetailDeliveryConditionType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_condition_type_0 = TaskDetailDeliveryConditionType0.from_dict(data)
+
+                return delivery_condition_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskDetailDeliveryConditionType0 | Unset, data)
+
+        delivery_condition = _parse_delivery_condition(d.pop("delivery_condition", UNSET))
+
         def _parse_route_source(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -935,6 +1007,8 @@ class TaskDetail:
             rerouted_from=rerouted_from,
             reroute=reroute,
             provider_hold=provider_hold,
+            held_batch=held_batch,
+            delivery_condition=delivery_condition,
             route_source=route_source,
             class_hint=class_hint,
             prefer_target=prefer_target,
