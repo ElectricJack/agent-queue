@@ -18,17 +18,13 @@ from src.commands.ops_commands import OpsCommandsMixin, _parse_since
 from src.benchmark.report import build_report
 from src.benchmark.opencode import observations_from_export
 from src.config import AppConfig, ModelPricing, PricingConfig
-from src.database import Database
 from src.models import Agent, AgentState, Project
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("costs.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("costs.db")
     yield database
-    await database.close()
 
 
 async def _seed(db, *, projects=("p-1",), agents=(("a-1", "claude-sonnet"),)):
