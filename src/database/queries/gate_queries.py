@@ -8,15 +8,18 @@ readers never observe a gate change without its projection.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
 from typing import Iterable
 
-from sqlalchemy import and_, insert, select, update
+from sqlalchemy import and_, delete, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import gates, task_gates, tasks
+from src.database.tables import gates, task_dependencies, task_gates, task_metadata, tasks
+from src.models import DepType
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,7 @@ def _row_to_gate(row) -> dict:
         "gate_type": row["gate_type"],
         "title": row["title"],
         "question": row["question"],
+        "human_request": row["human_request"],
         "await_id": row["await_id"],
         "timeout_at": row["timeout_at"],
         "status": row["status"],
@@ -63,6 +67,7 @@ class GateQueriesMixin:
         waiter_task_ids: Iterable[str] = (),
         conn=None,
         unrouted_only: bool = False,
+        human_request: dict | None = None,
     ) -> tuple[str | None, bool]:
         """Insert a gate + its ``task_gates`` rows and recompute waiters.
 
@@ -82,24 +87,11 @@ class GateQueriesMixin:
         (and commits) its own transaction as before.
         """
         if unrouted_only and gate_type == "routing":
-            # Serialize with task_route's guarded UPDATE and with competing
-            # gate creation. Rechecking the profile under this lock prevents
-            # a late pipeline callback from gating an already routed task.
             async def attach(connection):
-                requested = sorted(set(waiter_task_ids))
-                rows = (await connection.execute(
-                    select(tasks.c.id, tasks.c.profile_id)
-                    .where(tasks.c.id.in_(requested))
-                    .order_by(tasks.c.id).with_for_update()
-                )).fetchall()
-                routed = {row.id for row in rows if (row.profile_id or "").strip()}
-                waiters = [tid for tid in requested if tid not in routed]
-                if requested and not waiters:
-                    return None, False, set()
-                return await self._create_gate_on(
-                    connection, project_id, gate_type, title,
+                return await self._create_unrouted_routing_gate_on(
+                    connection, project_id, title,
                     question=question, await_id=await_id, timeout_at=timeout_at,
-                    waiter_task_ids=waiters, caller_owns_conn=True,
+                    waiter_task_ids=waiter_task_ids,
                 )
             if conn is not None:
                 gate_id, was_created, _flipped = await attach(conn)
@@ -120,6 +112,7 @@ class GateQueriesMixin:
                 timeout_at=timeout_at,
                 waiter_task_ids=waiter_task_ids,
                 caller_owns_conn=True,
+                human_request=human_request,
             )
             return gate_id, was_created
 
@@ -134,9 +127,50 @@ class GateQueriesMixin:
                 timeout_at=timeout_at,
                 waiter_task_ids=waiter_task_ids,
                 caller_owns_conn=False,
+                human_request=human_request,
             )
         await self.log_blocked_flips(flipped)
         return gate_id, was_created
+
+    async def _create_unrouted_routing_gate_on(
+        self,
+        conn,
+        project_id: str,
+        title: str,
+        *,
+        question: str,
+        await_id: str | None,
+        timeout_at: float | None,
+        waiter_task_ids: Iterable[str],
+    ) -> tuple[str | None, bool, set[str]]:
+        """Attach a ``routing`` gate to the waiters that still need a profile.
+
+        A routed waiter is left out: ``task.route_needed`` never fires for it,
+        so nothing would ever resolve the gate and it would hold the task — and
+        a container's every child — until someone routed it by hand
+        (clear-orbit).  Returns ``(None, False, set())`` when every waiter is
+        routed, else what :meth:`_create_gate_on` returns.
+
+        The waiter rows are locked first, which serializes this with the
+        guarded UPDATE of a route write (``task_route_apply``,
+        ``task_route_override``) and with competing gate creation, so a late
+        caller cannot gate a task routed a moment earlier.
+        """
+        requested = sorted(set(waiter_task_ids))
+        rows = (await conn.execute(
+            select(tasks.c.id, tasks.c.profile_id)
+            .where(tasks.c.id.in_(requested))
+            .order_by(tasks.c.id).with_for_update()
+        )).fetchall()
+        routed = {row.id for row in rows if (row.profile_id or "").strip()}
+        waiters = [tid for tid in requested if tid not in routed]
+        if requested and not waiters:
+            return None, False, set()
+        return await self._create_gate_on(
+            conn, project_id, "routing", title,
+            question=question, await_id=await_id, timeout_at=timeout_at,
+            waiter_task_ids=waiters, caller_owns_conn=True,
+        )
 
     async def _create_gate_on(
         self,
@@ -150,6 +184,7 @@ class GateQueriesMixin:
         timeout_at: float | None,
         waiter_task_ids: Iterable[str],
         caller_owns_conn: bool,
+        human_request: dict | None = None,
     ) -> tuple[str, bool, set[str]]:
         """Do the actual insert + dedup + recompute on *conn*.
 
@@ -196,6 +231,7 @@ class GateQueriesMixin:
                     gate_type=gate_type,
                     title=title,
                     question=question,
+                    human_request=human_request,
                     await_id=await_id,
                     timeout_at=timeout_at,
                     status="open",
@@ -261,6 +297,147 @@ class GateQueriesMixin:
                 orig=None,
             )
         return row[0], False
+
+    async def attach_gate_waiters(self, gate_id: str, task_ids: Iterable[str], *, conn) -> set[str]:
+        """Make *task_ids* wait on the existing gate *gate_id*, on the caller's transaction.
+
+        Idempotent: a task already waiting is left alone.  Recomputes the
+        waiters' ``is_blocked`` projection in the same transaction and
+        returns the ids that flipped; the caller runs
+        :meth:`log_blocked_flips` on them after its commit.
+        """
+        waiters = {str(t) for t in task_ids}
+        if not waiters:
+            return set()
+        # An explicit attachment owns the link even if completion inserted it
+        # earlier. Source admission must never remove that human decision.
+        await self._forget_generated_pr_links(conn, waiters, gate_id=gate_id)
+        for tid in sorted(waiters):
+            await conn.execute(
+                pg_insert(task_gates).values(task_id=tid, gate_id=gate_id).on_conflict_do_nothing()
+            )
+        return await self.recompute_blocked(waiters, conn=conn)
+
+    #: Dependent statuses a prerequisite's ``pr-merged`` gate still holds:
+    #: work that has not started.  A running or finished dependent is left
+    #: alone -- gating it now could not stop work already under way.
+    _PR_GATE_WAITER_STATUSES = ("DEFINED", "READY", "BLOCKED", "PAUSED")
+
+    async def gate_dependents_on_pr_on(self, conn, task_id: str, pr_url: str) -> str | None:
+        """Hold *task_id*'s unstarted ``blocks`` dependents on its PR merging.
+
+        A ``pull_request`` completion leaves the work on an open PR, so the
+        ``blocks`` edge (satisfied by ``COMPLETED``) would release dependents
+        that then find none of it on the default branch.  The open
+        ``pr-merged`` gate for *pr_url* -- reused when one exists, since open
+        gates are unique per ``(project_id, gate_type, await_id)`` -- gains
+        every unstarted dependent as a waiter. Shared source admission may
+        retire generated links after proving delivery or an exact stack;
+        explicit waiter links remain under the gate sweep or operator.
+
+        Runs on the caller's transaction and does **not** recompute: the
+        caller's recompute of *task_id* reaches its direct dependents, so they
+        never flip to unblocked in between.  Returns the gate id, or ``None``
+        when there is nothing to hold.
+        """
+        await self._upsert_meta(task_id, "pr_dependency_source", True, conn=conn)
+        project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        dependent = tasks.alias()
+        waiters = (
+            await conn.execute(
+                select(task_dependencies.c.task_id)
+                .join(dependent, dependent.c.id == task_dependencies.c.task_id)
+                .where(
+                    task_dependencies.c.depends_on_task_id == task_id,
+                    task_dependencies.c.dep_type == DepType.BLOCKS.value,
+                    dependent.c.status.in_(self._PR_GATE_WAITER_STATUSES),
+                )
+                .order_by(task_dependencies.c.task_id)
+            )
+        ).scalars().all()
+        if project_id is None or not waiters:
+            return None
+        open_gate = select(gates.c.id).where(
+            gates.c.project_id == project_id,
+            gates.c.gate_type == "pr-merged",
+            gates.c.await_id == pr_url,
+            gates.c.status == "open",
+        )
+        gate_id = await conn.scalar(open_gate)
+        if gate_id is None:
+            # ON CONFLICT keeps a concurrent creator's open gate from aborting
+            # the caller's transaction (``uq_gates_open_dedup``).
+            gate_id = await conn.scalar(
+                pg_insert(gates)
+                .values(
+                    id="gate-" + uuid.uuid4().hex[:12],
+                    project_id=project_id,
+                    gate_type="pr-merged",
+                    title=f"PR merge: {task_id}",
+                    question=f"{task_id} completed unmerged; its dependents wait for {pr_url}",
+                    await_id=pr_url,
+                    status="open",
+                    created_at=time.time(),
+                )
+                .on_conflict_do_nothing()
+                .returning(gates.c.id)
+            ) or await conn.scalar(open_gate)
+        for tid in waiters:
+            inserted = await conn.scalar(
+                pg_insert(task_gates)
+                .values(task_id=tid, gate_id=gate_id)
+                .on_conflict_do_nothing()
+                .returning(task_gates.c.task_id)
+            )
+            if inserted:
+                await self._upsert_meta(
+                    tid, "pr_dependency_gate:" + gate_id, {"gate_id": gate_id}, conn=conn
+                )
+        return gate_id
+
+    async def _forget_generated_pr_links(self, conn, task_ids, *, gate_id=None, detach=False):
+        rows = (
+            (
+                await conn.execute(
+                    select(task_metadata).where(
+                        task_metadata.c.task_id.in_(task_ids),
+                        task_metadata.c.key.startswith("pr_dependency_gate:", autoescape=True),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        touched = set()
+        for row in rows:
+            marker = json.loads(row["value"])
+            generated = marker["gate_id"]
+            if gate_id is not None and generated != gate_id:
+                continue
+            if detach:
+                await conn.execute(
+                    delete(task_gates).where(
+                        task_gates.c.task_id == row["task_id"],
+                        task_gates.c.gate_id == generated,
+                    )
+                )
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == row["task_id"],
+                    task_metadata.c.key == row["key"],
+                )
+            )
+            touched.add(row["task_id"])
+        return touched
+
+    async def release_pr_dependency_gates(self, conn, task_ids):
+        """Retire only completion-owned links after current-source admission.
+
+        Caller holds and revalidates source/candidate inputs. Shared gates and
+        explicit waiters retain their status and associations.
+        """
+        touched = await self._forget_generated_pr_links(conn, task_ids, detach=True)
+        return await self.recompute_blocked(touched, conn=conn) if touched else set()
 
     async def resolve_gate(
         self,
@@ -338,29 +515,44 @@ class GateQueriesMixin:
         project_id: str | None = None,
         status: str | None = None,
         gate_type: str | None = None,
+        await_id: str | None = None,
+        task_id: str | None = None,
+        *, conn=None, lock=False,
     ) -> list[dict]:
         """List gates with optional filters, newest first."""
         stmt = select(gates)
         conditions = []
+        if task_id is not None:
+            stmt = stmt.join(task_gates, task_gates.c.gate_id == gates.c.id)
+            conditions.append(task_gates.c.task_id == task_id)
         if project_id is not None:
             conditions.append(gates.c.project_id == project_id)
         if status is not None:
             conditions.append(gates.c.status == status)
         if gate_type is not None:
             conditions.append(gates.c.gate_type == gate_type)
+        if await_id is not None:
+            conditions.append(gates.c.await_id == await_id)
         if conditions:
             stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(gates.c.created_at.desc())
-        async with self._engine.begin() as conn:
-            rows = (await conn.execute(stmt)).mappings().fetchall()
+        if lock:
+            stmt = stmt.with_for_update()
+        if conn is not None:
+            return [_row_to_gate(r) for r in (await conn.execute(stmt)).mappings()]
+        async with self._engine.begin() as owned:
+            rows = (await owned.execute(stmt)).mappings().fetchall()
         return [_row_to_gate(r) for r in rows]
 
-    async def get_gate(self, gate_id: str) -> dict | None:
-        """Return the gate row as a dict, or ``None``."""
-        async with self._engine.begin() as conn:
-            row = (
-                await conn.execute(select(gates).where(gates.c.id == gate_id))
-            ).mappings().fetchone()
+    async def get_gate(self, gate_id: str, *, conn=None, lock=False) -> dict | None:
+        """Read on the domain transaction when supplied; lock before approval checks."""
+        stmt = select(gates).where(gates.c.id == gate_id)
+        if lock:
+            stmt = stmt.with_for_update()
+        if conn is None:
+            async with self._engine.begin() as owned:
+                return await self.get_gate(gate_id, conn=owned, lock=lock)
+        row = (await conn.execute(stmt)).mappings().first()
         return _row_to_gate(row) if row else None
 
     async def get_gates_for_task(self, task_id: str) -> list[dict]:

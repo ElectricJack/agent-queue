@@ -15,14 +15,14 @@ from src.agents.configuration import (
     apply_agent_overrides,
     resolve_launch_settings,
 )
-from src.models import AgentState, SessionRecord, TaskStatus
+from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
 from src.sessions.provider import Cap, SessionExecutableNotFound, SessionHandle
 
 logger = logging.getLogger(__name__)
 _ACTIVE_TASK = {
     TaskStatus.ASSIGNED,
     TaskStatus.IN_PROGRESS,
-    TaskStatus.WAITING_INPUT,
+    TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
 }
 
 
@@ -47,7 +47,7 @@ def _interactive_provider(orchestrator, name):
     return provider
 
 
-async def _existing_terminal(orchestrator, agent):
+async def _existing_terminal(orchestrator, agent, project_id: str | None):
     sessions = await orchestrator.db.list_sessions(agent_id=agent.id, live_only=True)
     if agent.current_task_id:
         for row in await orchestrator.db.list_sessions(live_only=True):
@@ -74,6 +74,10 @@ async def _existing_terminal(orchestrator, agent):
             raise TerminalStartError("Agent has a live session with a different task assignment")
     elif agent.current_task_id:
         raise TerminalStartError("Agent has a live terminal and a different task assignment")
+    elif row.lifecycle == "named" and row.project_id != project_id:
+        raise TerminalStartError(
+            "Agent already has a terminal for a different project; stop the running terminal first"
+        )
     provider = _interactive_provider(orchestrator, row.provider)
     try:
         running = await provider.is_running(
@@ -86,7 +90,9 @@ async def _existing_terminal(orchestrator, agent):
     return row
 
 
-async def start_agent_terminal(orchestrator, agent_id: str, *, config=None) -> SessionRecord:
+async def start_agent_terminal(
+    orchestrator, agent_id: str, *, config=None, project_id: str | None = None
+) -> SessionRecord:
     """Start/resume on request, or return this agent's existing live session.
 
     The database reservation also fences push/pool assignment. The local lock
@@ -98,19 +104,31 @@ async def start_agent_terminal(orchestrator, agent_id: str, *, config=None) -> S
     lock = locks.setdefault(agent_id, asyncio.Lock())
     async with lock:
         try:
-            return await _start_locked(orchestrator, agent_id, config or orchestrator.config)
+            return await _start_locked(
+                orchestrator, agent_id, config or orchestrator.config, project_id
+            )
         except SessionExecutableNotFound as exc:
             raise TerminalStartError(str(exc)) from exc
 
 
-async def _start_locked(orchestrator, agent_id, config):
+async def _start_locked(orchestrator, agent_id, config, project_id: str | None):
     db = orchestrator.db
     agent = await db.get_agent(agent_id)
     if agent is None or agent.deleted_at is not None:
         raise TerminalStartError("Agent not found")
     if not agent.enabled:
         raise TerminalStartError("Agent is disabled; enable it before starting a terminal")
-    existing = await _existing_terminal(orchestrator, agent)
+    if agent.id == SUPERVISOR_AGENT_ID and agent.role == "supervisor":
+        # A project selection from an older client must not narrow global scope
+        # or make an existing global terminal look like a conflicting session.
+        project_id = None
+    if project_id is not None:
+        project = await db.get_project(project_id)
+        if project is None:
+            raise TerminalStartError(f"Project '{project_id}' not found")
+        if project.status != ProjectStatus.ACTIVE:
+            raise TerminalStartError(f"Project '{project_id}' is not active")
+    existing = await _existing_terminal(orchestrator, agent, project_id)
     if existing is not None:
         return existing
     if not getattr(config.sessions, "enabled", False):
@@ -139,7 +157,7 @@ async def _start_locked(orchestrator, agent_id, config):
             raise TerminalStartError(
                 "Supervisor could not start; check its profile and session logs"
             )
-        row = await _existing_terminal(orchestrator, await db.get_agent(agent.id))
+        row = await _existing_terminal(orchestrator, await db.get_agent(agent.id), None)
         if row is None:
             raise TerminalStartError("Supervisor did not publish a live session")
         return row
@@ -149,7 +167,7 @@ async def _start_locked(orchestrator, agent_id, config):
     if profile is None:
         raise TerminalStartError("Agent needs a valid profile before starting")
     profile = apply_agent_overrides(profile, agent)
-    harness = orchestrator.harness_registry.get(profile.harness or "claude", project_id=None)
+    harness = orchestrator.harness_registry.get(profile.harness or "claude", project_id=project_id)
     if harness is None:
         raise TerminalStartError("Agent harness is not registered")
     if not await db.reserve_idle_agent(agent.id):
@@ -175,7 +193,7 @@ async def _start_locked(orchestrator, agent_id, config):
                 s
                 for s in history
                 if s.name == name
-                and s.project_id is None
+                and s.project_id == project_id
                 and s.task_id is None
                 and s.harness == harness.id
                 and s.profile_id == profile.id
@@ -196,7 +214,7 @@ async def _start_locked(orchestrator, agent_id, config):
             session_id=session_id,
             session_instance_token=instance_token,
             task_id=None,
-            project_id=None,
+            project_id=project_id,
             elevated=False,
         )
         if not api_token:
@@ -205,7 +223,7 @@ async def _start_locked(orchestrator, agent_id, config):
         spec = builder.build_named_spec(
             profile=profile,
             harness=harness,
-            project_id=None,
+            project_id=project_id,
             work_dir=str(work_dir),
             session_id=session_id,
             instance_token=instance_token,
@@ -217,6 +235,13 @@ async def _start_locked(orchestrator, agent_id, config):
                 "You are an interactive agent terminal. Wait for the user's instructions here. "
                 "You have no assigned project or task. Do not claim tasks, create tasks, "
                 "or poll the message inbox automatically."
+                if project_id is None
+                else (
+                    "You are an interactive agent terminal attached to project "
+                    f"'{project_id}'. Wait for the user's instructions here. You may create tasks "
+                    "and task graphs, send messages, use memory, and submit reviews in this project. "
+                    "Do not claim tasks or poll the message inbox automatically."
+                )
             ),
         )
         env = dict(spec.env)
@@ -237,11 +262,10 @@ async def _start_locked(orchestrator, agent_id, config):
             raise TerminalStartError("Agent settings or ownership changed during startup")
         launch_attempted = True
         launched_at = time.time()
-        await provider.start(spec)
         row = SessionRecord(
             id=session_id,
             agent_id=agent.id,
-            project_id=None,
+            project_id=project_id,
             task_id=None,
             profile_id=profile.id,
             harness=harness.id,
@@ -258,14 +282,20 @@ async def _start_locked(orchestrator, agent_id, config):
             hooks_provisioned=spec.hooks_provisioned,
             **resolve_launch_settings(profile, harness, builder),
         )
-        await db.create_session(row, release_agent_reservation=True)
+        from src.sessions.launch import launch_session
+
+        await launch_session(
+            db, provider, spec, row, release_agent_reservation=True,
+            bus=getattr(orchestrator, "bus", None),
+        )
         return row
     except BaseException as exc:
-        stopped = not launch_attempted
-        if launch_attempted:
+        own = await db.get_session(session_id) if launch_attempted else None
+        stopped = own is None or own.state == "stopped"
+        if not stopped:
             try:
                 await provider.stop(handle)
-                stopped = not await provider.is_running(handle)
+                stopped = await provider.confirm_stopped(handle)
             except Exception:
                 logger.exception("Could not confirm terminal cleanup for agent %s", agent.id)
         try:

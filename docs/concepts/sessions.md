@@ -139,8 +139,8 @@ Nine of those are the identity markers every session carries
 isolation, pool launches and resource caps.
 
 The terminals themselves belong to the tmux server, so they are visible without
-the daemon at all. On a box configured with `sessions.provider: tmux` and the
-default socket name:
+the daemon at all. On a box configured with `sessions.provider: tmux` — which
+is what `aq install` writes — and the default socket name:
 
 ```bash
 tmux -L aq list-sessions
@@ -235,14 +235,17 @@ Two rows in that table are the ones that surprise people:
 stateDiagram-v2
   [*] --> starting: spec built, provider starts it
   starting --> running: ready, startup dialogs answered
-  starting --> quarantined: rate-limit or login dialog matched
+  starting --> stopped: startup failure (startup_exit)
   running --> draining: aq task close + aq session drain-ack
   running --> sleeping: named session past its idle timeout
   running --> quarantined: restart budget spent
   draining --> stopped
-  sleeping --> starting: aq session wake, or a message arrives
+  sleeping --> [*]: wake creates a new session row
   stopped --> [*]
 ```
+
+A sleeping row records a stopped process and remains for history or cleanup;
+a wake creates a successor row with a new process identity.
 
 `stalled` is **not** in that diagram on purpose: it is derived from the lease
 (`sessions.lease_ttl_seconds`, 480 s by default) against `last_activity`, and
@@ -255,14 +258,20 @@ Once per orchestrator cycle (~5 s), [`SessionReconciler.tick`](../../src/session
 runs a fixed sequence, each step isolated so one failure does not skip the rest:
 
 1. **Observe** — refresh who is alive, and from whom activity was seen.
-2. **Drain-ack** — honour agents that said "I am finished".
-3. **Prepare timeout** — release pool claims stuck mid-preparation.
-4. **Exits** — a dead process with an open task becomes a typed verdict.
-5. **Abandoned claim loop** — recycle a worker that stopped claiming.
-6. **Orphans** — reconcile row-versus-task disagreement, in both directions.
-7. **Stall ladder** — nudge, then restart, then quarantine.
-8. **Named convergence** — start what is wanted, sleep what is idle.
-9. **Backstop** — `agents.stuck_timeout_seconds` as the last net.
+2. **Flock audit** — check registered sessions against processes (at most every 30 s).
+3. **Claim refusals** — reconcile repeated preparation refusals.
+4. **Drain-ack** — honour agents that said "I am finished".
+5. **Prepare timeout** — release pool claims stuck mid-preparation.
+6. **Exits** — a dead process with an open task becomes a typed verdict.
+7. **Abandoned claim loop** — recycle a worker that stopped claiming.
+8. **Orphans** — reconcile row-versus-task disagreement, in both directions.
+9. **Disabled project supervisors** — sleep supervisors whose project opted out.
+10. **Idle stop intent** — stop a session that has nothing left to do after
+   `sessions.idle_stop_grace_seconds` (60 s), so a harness that never exits
+   on its own still gives its pool slot and worktree back.
+11. **Stall ladder** — nudge, then restart, then quarantine.
+12. **Named convergence** — start what is wanted, sleep what is idle.
+13. **Backstop** — `agents.stuck_timeout_seconds` as the last net.
 
 The single rule that governs all of it: **unknown is not dead.** If a provider
 cannot enumerate its sessions it raises
@@ -277,25 +286,46 @@ probe is the expensive mistake this design exists to avoid.
 > might still hold, for instance — calls
 > [`confirm_stopped`](../../src/sessions/provider.py), a fresh, cache-bypassing
 > probe that answers `False` when it cannot tell. The `subprocess` provider
-> does not implement it at all, so on that provider the honest answer is always
-> "cannot confirm".
+> checks its tracked child and then scans processes for the exact instance token.
+> It cannot re-adopt a running child after a daemon restart, but can still
+> confirm that token is absent.
+
+### A finished session that will not leave
+
+The worker protocol asks an agent to leave when its task is closed or its claim
+budget is spent, and the harness is supposed to exit; the exits step then
+classifies the death like any other. Some harnesses do not: an OpenCode
+worker's turn ends and its pane stays, so the session keeps its pool slot, its agent and its worktree
+until somebody runs `aq session kill`. On 2026-10-03 two verifiers sat in
+exactly that state for 18 and 26 minutes.
+
+The step's **shape** is the safety proof and never consults a clock: a session
+inside a claim, holding an open task, or blocked on an agent question is left
+alone, and so is one the daemon is still writing under a task's control lock.
+Its **clock** cannot be `sessions.last_activity`, because tmux's
+`window_activity` advances on *any* output and an always-painting TUI keeps it
+fresh — which is also why the abandoned-claim-loop step never saw those
+workers, since they counted as idle *supply*. So the grace runs from the first tick the finished shape was
+observed, keyed by instance token; `aq doctor --check
+sessions.stop_intent_pending` reports anything that outlives several of them.
 
 ### Exit verdicts
 
 When a process is gone and its task is still open,
 [`classify_exit`](../../src/sessions/exit_classifier.py) turns that into one of
-four values, checked in this order:
+five values, checked in this order:
 
 | Verdict | Trigger | What happens |
 |---|---|---|
-| `drained` | the task is already closed | normal teardown |
-| `rate_limit` | rate-limit wording in the final screen | task paused with a cooldown; the session is not restarted straight back into the limit |
+| `drained` | a pool session wants to stop, or the task is closed or absent | normal teardown |
+| `context_thrash` | the final screen shows repeated autocompaction | guarded recovery with the native resume key discarded; a second failure from the same cause blocks the task with `needs_attention` |
+| `rate_limit` | rate-limit wording in the final screen | provider evidence: the work is checkpointed and pushed, and the task is paused briefly or re-routed by provider failover (D13) — a detected retry time or 15-minute fallback outside enforce mode; the session is not restarted straight back into the limit |
 | `rapid_crash` | died inside `sessions.restart_window_seconds` of starting (600 s default) | restart with backoff — a launch or config problem, not work |
-| `productive_death` | ran a while, then exited with the task open | never silently re-queued; flagged for attention |
+| `productive_death` | ran a while, then exited with the task open | checkpoint and incident/attention handling; recovery policy may requeue it with its resume key |
 
-Rate-limit detection reads *pane text*, which is a hint rather than a
-structured channel. It is used only to choose between "pause with a cooldown"
-and "treat as a crash" — both safe answers.
+Rate-limit detection reads a usage-limit screen or final pane text. Outside
+enforced provider failover, the cooldown uses the detected retry time, falling
+back to 900 seconds. A process exit never substitutes for `aq task close`.
 
 ### The stall ladder
 
@@ -316,6 +346,19 @@ kill ([`_step_stall_ladder`](../../src/sessions/reconciler.py)):
 Providers with no input channel skip the nudge rungs entirely rather than
 spending three cycles talking to nobody. A session parked on a human question
 is exempt from the ladder for as long as the question is open.
+
+**A CLI parked on its usage-limit screen leaves the ladder at once.** Claude
+Code and Codex do not exit when they hit a usage limit mid-task; they print the
+limit line and sit at their prompt, where no nudge can help. Before each rung
+the ladder peeks the pane, and when its last lines hold one of the CLIs' own
+blocking limit messages (`You've hit your session limit · resets …`,
+`You’ve hit your usage limit. … try again at …`) it stops the process and
+applies the exit classifier's `rate_limit` verdict — provider evidence, then
+provider failover's checkpoint and re-route — without spending a restart
+([`src/sessions/usage_limit_screen.py`](../../src/sessions/usage_limit_screen.py)).
+The match is deliberately strict: the CLI's own `⎿`/`■` gutter at the left
+margin, then the exact wording, so output that merely quotes it does not
+count. `provider_failover.mode: enforce` only.
 
 **Agents can stop the ladder from climbing.** Anything that will be quiet for
 more than a few minutes — a long build, a full test run — should call
@@ -344,9 +387,9 @@ Adoption is off if `sessions.adopt_on_start` is `false`; it ships `true`.
 > **Warning.** Adoption is only as good as the provider's ability to enumerate.
 > `SubprocessProvider.list_running` only knows sessions *this daemon process*
 > started, so after a restart it sees nothing — no session is mis-reaped, but
-> none is re-adopted either. This is one of the reasons this install sets
-> `sessions.provider: tmux` in `~/.agent-queue/config.yaml` rather than leaving
-> the shipped `subprocess` default.
+> none is re-adopted either. This is one of the reasons `aq install` writes
+> `sessions.provider: tmux` into `~/.agent-queue/config.yaml` rather than
+> leaving the code's portable `subprocess` default in place.
 
 ## Idle sessions and drains
 
@@ -365,13 +408,34 @@ Not every session is working on a task, and the three kinds idle differently.
   and that has its own bounded check
   ([`_step_abandoned_pool_claim_loop`](../../src/sessions/reconciler.py)),
   which recycles the session behind a database compare-and-set so a late claim
-  can never lose a race with its own teardown.
+  can never lose a race with its own teardown. The same check catches a worker
+  that never reached its loop because its CLI is parked on the usage-limit
+  screen; before recycling it reads the pane, and a limit screen is recorded as
+  a rate-limit exit against the provider (`end_reason = usage_limit_screen`).
 
 Draining a pool session is cooperative. `aq task close --claim-next` returns
 `drain_requested` or `session_exhausted` when the daemon wants the worker to
 stop; the worker exits, and the pool starts a fresh one if it still needs the
 capacity. By default (`swarm.fresh_context_per_task`) each task gets a new
 conversation on the same worker rather than accumulating context forever.
+
+## Verified waits and supervisor health
+
+A worker waiting on a durable condition registers it once and ends the turn.
+AQ verifies the source, retains the process for a short wait (`WAITING`) or
+checkpoints and stops it for hibernation (`HIBERNATED`). An outcome moves parked
+work to `RESUME_PENDING`; a fresh session receives prime and acknowledges its
+exact continuation generation. Ordinary messages are held until acknowledgement.
+These paths are enabled by default; policy deadlines notify the supervisor
+without waking the worker. See [agent waits](../guides/agent-waits.md) and
+[wake context and compaction](../guides/wake-context-compaction.md).
+
+Named supervisors also have transcript-based health checks. Failed or unanswered
+turns are retried with bounded backoff, then replaced with a fresh conversation
+while retaining durable requests. Idle supervisors rotate after 24 hours or at
+160000 measured input tokens by default. These are the `supervisor` settings,
+not the unused profile `max_session_age` field. Details and defaults are in the
+[system spec](../specs/systems/sessions-and-harnesses.md#25-the-session-reconciler).
 
 ## Pausing a task without losing its work
 
@@ -402,11 +466,11 @@ short version:
 
 | Symptom | First command | Page section |
 |---|---|---|
-| Task is `IN_PROGRESS`, nothing is happening | `aq task explain <id>` | [stalls](../guides/session-troubleshooting.md#a-session-that-has-gone-quiet) |
+| Task is `IN_PROGRESS`, nothing is happening | `aq task explain --task-id <id>` | [stalls](../guides/session-troubleshooting.md#a-session-that-has-gone-quiet) |
 | Agent stopped responding to nudges | `aq doctor --check sessions.stuck_composer` | [stuck composer](#a-nudge-that-was-typed-but-never-submitted) |
-| Task blocked with `session_not_live` | `aq task explain <id>` | [stale ownership](../guides/session-troubleshooting.md#stale-ownership-a-row-and-a-process-that-disagree) |
+| Task blocked with `session_not_live` | `aq task explain --task-id <id>` | [stale ownership](../guides/session-troubleshooting.md#stale-ownership-a-row-and-a-process-that-disagree) |
 | Claim refused with `stale_claim` | `cat .aq/claim.json` | [claims](../guides/session-troubleshooting.md#stale_claim-the-task-moved-on-without-you) |
-| Claim refused with `prepare_failed` / `slot_reset_failed` | `aq task explain <id>` | [slot reset](../guides/session-troubleshooting.md#slot_reset_failed-the-workspace-could-not-be-made-clean) |
+| Claim refused with `prepare_failed` / `slot_reset_failed` | `aq task explain --task-id <id>` | [slot reset](../guides/session-troubleshooting.md#slot_reset_failed-the-workspace-could-not-be-made-clean) |
 | Session quarantined right after starting | `aq session peek <id>` | [startup](../guides/session-troubleshooting.md#a-session-that-quarantines-at-startup) |
 
 ### A nudge that was typed but never submitted

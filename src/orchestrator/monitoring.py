@@ -2,31 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
-from src.discord.notifications import (
-    format_failed_blocked_report,
-    format_failed_blocked_report_embed,
-)
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
     BudgetWarningEvent,
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
-from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
+from src.notifications.render import format_failed_blocked_report
+from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
-
-# Edge kinds the pre-work-graph readiness scan has no rule for.  A task
-# carrying one is deferred to the ``is_blocked`` projection rather than
-# guessed at (see ``_legacy_promotion_decisions``).
-_LEGACY_UNKNOWN_DEP_TYPES = frozenset({DepType.WAITS_FOR.value, DepType.CONDITIONAL_BLOCKS.value})
-
 
 class MonitoringMixin:
     """Monitoring and housekeeping methods mixed into Orchestrator."""
@@ -219,19 +211,10 @@ class MonitoringMixin:
     async def _check_defined_tasks(self) -> None:
         """Promote DEFINED/BLOCKED tasks to READY when the graph allows it.
 
-        Two independent deciders run every cycle (work-graph implementation
-        spec §6.2):
-
-        * **legacy** — the historical per-task dependency scan, including the
-          ``is_plan_subtask`` special case;
-        * **projection** — one indexed read of ``tasks.is_blocked``, the
-          persisted blocked-state projection.
-
-        Which one *acts* is the ``work_graph.blocked_state_authoritative``
-        flag; the other still runs and any disagreement is logged.  That is
-        shadow mode (§9): the projection earns authority only after an
-        observation window with zero divergence, and rollback is a config
-        flip because the legacy scan stays in the tree.
+        ``tasks.is_blocked`` is the sole readiness authority.  Dependency and
+        gate writes recompute that persisted projection in their transaction,
+        so this cascade does not reimplement edge semantics or carry a second
+        compatibility decision path.
 
         Conditional-edge disposal runs first so a contingency task that can
         never fire is closed rather than considered for promotion.
@@ -251,9 +234,14 @@ class MonitoringMixin:
         # One statement instead of one per BLOCKED task.  Every in-tree
         # writer stores a non-empty code, and task_edit normalises an empty
         # string to a delete, so "key present" is exactly "needs attention".
+        # ``stale_open`` is the one advisory code: it reports a long wait, it
+        # does not decide one, so it must not freeze the wait it reports.
         attention = await self.db.task_ids_with_meta(
             [task.id for task in blocked], "needs_attention"
         )
+        if attention:
+            codes = await self.db.get_task_meta_bulk(sorted(attention), "needs_attention")
+            attention = {tid for tid in attention if codes.get(tid) != STALE_OPEN_ATTENTION}
         blocked = [task for task in blocked if task.id not in attention]
         # A terminal close (hard failure, retry budget spent, pipeline stop,
         # timeout, operator stop) is BLOCKED by decision, not by the graph.
@@ -268,27 +256,23 @@ class MonitoringMixin:
         )
         blocked = [task for task in blocked if task.id not in terminal]
 
-        legacy, deferred = await self._legacy_promotion_decisions(defined, blocked)
-        projected = await self._projected_promotion_decisions(defined, blocked)
-
-        authoritative = self.config.work_graph.blocked_state_authoritative
-        self._log_promotion_divergence(legacy, projected, deferred, authoritative)
-
-        if authoritative:
-            decisions = projected
-        else:
-            # The legacy scan predates typed edges and cannot judge a task
-            # that carries one; for those it defers to the projection.  Its
-            # verdict still rules every classic `blocks`-only graph, which is
-            # what the shadow window is actually evidence about.
-            decisions = dict(legacy)
-            for task_id in deferred:
-                if task_id in projected:
-                    decisions[task_id] = projected[task_id]
+        decisions = await self._projected_promotion_decisions(defined, blocked)
+        observed = {task.id: task for task in [*defined, *blocked]}
 
         for task_id in sorted(decisions):
+            # A change set can commit new blockers after this pass's read.
+            # Recheck the projection in the status write, under PostgreSQL's
+            # task-table/row locks, rather than promoting a stale snapshot.
+            from sqlalchemy import and_
+            from src.database.tables import tasks
+
             flipped = await self.db.transition_task(
-                task_id, TaskStatus.READY, context=decisions[task_id]
+                task_id, TaskStatus.READY, context=decisions[task_id],
+                extra_where=and_(
+                    tasks.c.status == observed[task_id].status.value,
+                    tasks.c.updated_at == observed[task_id].updated_at,
+                    tasks.c.is_blocked == 0,
+                ),
             )
             # WG-4: bus emit for the flipped set so ``task.blocked`` /
             # ``task.unblocked`` triggers actually fire.  ``log_blocked_flips``
@@ -353,92 +337,6 @@ class MonitoringMixin:
             await self._settle_seeds({task_id})
         return flagged
 
-    async def _legacy_promotion_decisions(
-        self,
-        defined: list[Task],
-        blocked: list[Task],
-    ) -> tuple[dict[str, str], set[str]]:
-        """The pre-projection readiness scan, as a pure decision function.
-
-        Returns ``({task_id: transition_context}, deferred_ids)``.  Preserved
-        verbatim (bar the compute/apply split) so it can act as the
-        shadow-mode oracle:
-
-        - DEFINED with no dependencies → READY;
-        - DEFINED/BLOCKED whose every blocking dependency is COMPLETED → READY;
-        - plan subtasks with an IN_PROGRESS parent count the parent
-          dependency as satisfied (the special case the ``parent-child``
-          edge type generalises away).
-
-        The scan only ever knew two shapes: ``blocks`` edges, and the
-        plan-subtask parent edge.  A task carrying an edge kind it predates
-        (``waits-for``, ``conditional-blocks``, or ``parent-child`` outside a
-        plan subtask) is **deferred** — reported in the second return value
-        and left to the projection.  Deferring rather than guessing matters:
-        ``are_dependencies_met`` would read a ``conditional-blocks`` edge to a
-        COMPLETED dependency as *satisfied* and run a contingency task whose
-        condition never fired.
-
-        Deciding before applying is safe: every promotion here targets READY,
-        and READY never satisfies another task's dependency.
-        """
-        decisions: dict[str, str] = {}
-        deferred: set[str] = set()
-        candidates = [*defined, *blocked]
-        if not candidates:
-            return decisions, deferred
-
-        # One statement for every candidate's edges, one for every status the
-        # rules below read (dependency targets and plan parents).  The loop
-        # used to issue two to four statements per task — 9 s per cycle at
-        # 4,600 DEFINED tasks.
-        edges_by_task = await self.db.get_typed_dependencies_for_tasks([t.id for t in candidates])
-        status_ids: set[str] = set()
-        for task in candidates:
-            status_ids.update(dep for dep, _ in edges_by_task[task.id])
-            if task.is_plan_subtask and task.parent_task_id:
-                status_ids.add(task.parent_task_id)
-        statuses = await self.db.get_task_statuses(sorted(status_ids))
-        completed = TaskStatus.COMPLETED.value
-
-        for task in candidates:
-            typed_edges = edges_by_task[task.id]
-            is_plan_child = bool(task.is_plan_subtask and task.parent_task_id)
-            if any(
-                dep_type in _LEGACY_UNKNOWN_DEP_TYPES
-                or (
-                    dep_type == DepType.PARENT_CHILD.value
-                    and not (is_plan_child and target == task.parent_task_id)
-                )
-                for target, dep_type in typed_edges
-            ):
-                deferred.add(task.id)
-                continue
-
-            # Blocking edges only — the same set ``get_dependencies`` and
-            # ``are_dependencies_met`` default to.
-            blocking = {dep for dep, typ in typed_edges if typ in BLOCKING_DEP_TYPES}
-
-            # Plan subtask special handling: the parent plan transitions to
-            # IN_PROGRESS (not COMPLETED) when approved, so the plain
-            # all-COMPLETED rule would block forever.  Treat the IN_PROGRESS
-            # parent dep as satisfied and judge only the other deps.
-            if is_plan_child and statuses.get(task.parent_task_id) == TaskStatus.IN_PROGRESS.value:
-                non_parent = blocking - {task.parent_task_id}
-                if all(statuses.get(dep) == completed for dep in non_parent):
-                    decisions[task.id] = "deps_met_plan_parent_active"
-                continue
-
-            if not blocking:
-                if task.status == TaskStatus.DEFINED:
-                    # No dependencies — promote DEFINED to READY.  (BLOCKED
-                    # tasks with no deps stay blocked — they were blocked for
-                    # other reasons like verification failure.)
-                    decisions[task.id] = "deps_met_no_deps"
-            elif all(statuses.get(dep) == completed for dep in blocking):
-                decisions[task.id] = "deps_met"
-        return decisions, deferred
-
     async def _projected_promotion_decisions(
         self,
         defined: list[Task],
@@ -463,57 +361,6 @@ class MonitoringMixin:
                     decisions[task_id] = "deps_met"
         return decisions
 
-    def _log_promotion_divergence(
-        self,
-        legacy: dict[str, str],
-        projected: dict[str, str],
-        deferred: set[str],
-        authoritative: bool,
-    ) -> None:
-        """Log where the two deciders disagree.
-
-        The observation gate on flipping ``blocked_state_authoritative``: a
-        window of clean cycles is the evidence that the projection matches
-        the scan it replaces.  Only the *sets* are compared — the transition
-        context strings are cosmetic.
-
-        Tasks the legacy scan deferred on (typed edges it predates) are
-        excluded from the comparison: there is no second opinion to compare
-        against, so counting them would drown the signal the observation
-        window is looking for.  Their **count** is still reported, at INFO —
-        without it "zero divergence for a week" cannot be told apart from
-        "the oracle judged nothing all week".
-
-        Logging is edge-triggered.  This runs every 5 s, and a divergence
-        persists until someone acts on it: one stuck plan parent re-logged at
-        WARNING 17 000 times a day buries the very signal the window exists to
-        collect.  A line is emitted only when the reported state changes, so
-        each distinct divergence appears once, and its clearing appears once.
-        """
-        only_legacy = tuple(sorted(set(legacy) - set(projected) - deferred))
-        only_projected = tuple(sorted(set(projected) - set(legacy) - deferred))
-
-        state = (only_legacy, only_projected, len(deferred))
-        if state == getattr(self, "_last_divergence_state", None):
-            return
-        self._last_divergence_state = state
-
-        logger.info(
-            "blocked-state shadow: %d deferred to the projection, "
-            "%d legacy-only, %d projection-only",
-            len(deferred),
-            len(only_legacy),
-            len(only_projected),
-        )
-        if not only_legacy and not only_projected:
-            return
-        logger.warning(
-            "blocked-state divergence (%s authoritative): legacy-only=%s projection-only=%s",
-            "projection" if authoritative else "legacy scan",
-            list(only_legacy) or "-",
-            list(only_projected) or "-",
-        )
-
     async def _close_dead_conditional_tasks(self) -> None:
         """Dispose of contingency tasks whose condition can never fire.
 
@@ -524,10 +371,9 @@ class MonitoringMixin:
         no-op instead (work-graph design §3.1).
 
         Gated on ``work_graph.conditional_autoclose`` (default on).  It is
-        deliberately independent of ``blocked_state_authoritative``: the
-        "dead conditional edge" test is a direct graph fact, not a read of
-        the projection, and ``conditional-blocks`` edges only exist where
-        someone explicitly created one.
+        deliberately independent of the projection: the "dead conditional
+        edge" test is a direct graph fact, and ``conditional-blocks`` edges
+        only exist where someone explicitly created one.
         """
         if not self.config.work_graph.conditional_autoclose:
             return
@@ -613,24 +459,115 @@ class MonitoringMixin:
         if now - self._last_container_sweep < interval:
             return
         self._last_container_sweep = now
+        await self.release_stale_container_claims()
         candidates = await self.db.settle_candidates()
-        if not candidates:
-            return
-        settled = await self._settle_seeds(set(candidates))
-        for cid in settled:
-            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        if candidates:
+            settled = await self._settle_seeds(set(candidates))
+            for cid in settled:
+                logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        await self.reconcile_stale_containers()
 
-    async def _settle_seeds(self, seeds: set[str]) -> list[str]:
+    async def release_stale_container_claims(self) -> list[str]:
+        """Take back a stopped pool worker's claim on a container it cannot close.
+
+        A container is never leased and ``release_container_claim`` only takes
+        a claim back from a holder that is still running, so a container whose
+        worker has since stopped keeps a claim nobody may act on.  The
+        reconciler behind that claim (``stale_container_claim_clauses``) proves
+        each one before releasing it, and it is the shipped path for strands
+        that predate the event that would have prevented them: the release
+        leaves the parent PAUSED with no agent, which §7 settlement and the
+        parent-episode readiness projection both consume.  Returns the released
+        task ids.
+        """
+        released: list[str] = []
+        try:
+            candidates = await self.db.stale_container_claim_candidates()
+        except Exception:
+            logger.exception("Could not list container claims held by stopped sessions")
+            return released
+        for task_id in candidates:
+            try:
+                out = await self.db.release_stale_container_claim(task_id)
+            except Exception:
+                logger.exception("Could not release the stale container claim on %s", task_id)
+                continue
+            if not out.released:
+                continue
+            released.append(task_id)
+            logger.warning(
+                "Released the claim on container %s: its pool worker stopped while it was "
+                "still IN_PROGRESS, and a container is never leased (sharp-ridge-57)",
+                task_id,
+            )
+        return released
+
+    @property
+    def delivery_observer(self):
+        """Git delivery truth for settlement and the readers outside the publisher."""
+        from src.integration.delivery_observer import DeliveryObserver
+
+        observer = getattr(self, "_delivery_observer", None)
+        if observer is None or observer.db is not self.db or observer.git is not self.git:
+            observer = DeliveryObserver(self.db, git=self.git, data_dir=self.config.data_dir)
+            self._delivery_observer = observer
+        return observer
+
+    async def reconcile_stale_containers(self) -> list[str]:
+        """Complete BLOCKED/PAUSED containers whose children are all delivered.
+
+        The stale-status leg of settlement (``stale_container_clauses``).  A
+        child's completion settles its stranded container on the event path
+        only when no child needs delivery proof; a delivery that lands later
+        has no event, so the backstop sweep runs this every interval, and
+        :meth:`initialize` runs it once on start, because restarts and updates
+        are what strand these containers.
+
+        Git proves delivery here, outside any transaction, and settlement
+        rechecks each child's identity and the target under its own locks.
+        A settled container can make its own stale parent a candidate, so the
+        pass repeats (bounded by the structural depth) while it makes
+        progress.  Returns the settled ids.
+        """
+        from src.database.queries.hierarchy_queries import MAX_STRUCTURAL_DEPTH
+
+        settled: list[str] = []
+        for _level in range(MAX_STRUCTURAL_DEPTH + 1):
+            candidates = await self.db.stale_container_candidates()
+            if not candidates:
+                break
+            required = await self.db.stale_container_delivery_children(candidates)
+            children = set().union(*required.values()) if required else set()
+            delivery = await self.delivery_observer.observe(children) if children else None
+            if delivery is not None and not await delivery.fresh():
+                # The target kept moving: settle only what needs no proof.
+                delivery = None
+            now_settled = [
+                cid for cid in await self._settle_seeds(set(candidates), delivery=delivery)
+                if cid not in settled
+            ]
+            for cid in now_settled:
+                logger.info(
+                    "Completed stale container %s: every child is COMPLETED and delivered", cid
+                )
+            settled.extend(now_settled)
+            if not now_settled:
+                break
+        return settled
+
+    async def _settle_seeds(self, seeds: set[str], *, delivery=None) -> list[str]:
         """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.
 
         The same commit-then-notify shape as ``transition_task``: blocked-state
         flips are logged, settled containers reach the settlement listener, and
         waiters the settlement released are announced to the ready listener.
+        *delivery* is the git view the stale leg verifies inside the
+        transaction.
         """
         if not seeds:
             return []
         async with self.db._engine.begin() as conn:
-            result = await self.db.settle_containers(set(seeds), conn=conn)
+            result = await self.db.settle_containers(set(seeds), conn=conn, delivery=delivery)
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
@@ -763,7 +700,6 @@ class MonitoringMixin:
 
         for project_id, (proj_failed, proj_blocked) in projects.items():
             msg = format_failed_blocked_report(proj_failed, proj_blocked)
-            format_failed_blocked_report_embed(proj_failed, proj_blocked)
             await self._emit_text_notify(msg, project_id=project_id)
 
     async def _auto_archive_tasks(self) -> None:
@@ -798,6 +734,28 @@ class MonitoringMixin:
             logger.error("Auto-archive error: %s", e)
             return
 
+        # ``archive_old_terminal_tasks`` skips a root it cannot archive rather
+        # than aborting the sweep, so a persistent backlog is invisible in the
+        # "archived N" line.  Name it once per pass; ``aq doctor --check
+        # tasks.archive_blocked`` and ``aq task archive-settings`` show it on
+        # demand.
+        try:
+            blocked = await self.db.list_archive_blocked_roots(
+                statuses=archive_cfg.statuses,
+                older_than_seconds=older_than_seconds,
+                limit=10,
+            )
+        except Exception as e:  # noqa: BLE001 — reporting must not break the sweep
+            logger.debug("Auto-archive blocked-root report failed: %s", e)
+            blocked = None
+        if blocked and blocked.total:
+            logger.warning(
+                "Auto-archive skipped %d eligible root(s): %s%s",
+                blocked.total,
+                ", ".join(f"{b['task_id']} ({b['reason']})" for b in blocked.roots),
+                "..." if blocked.total > len(blocked.roots) else "",
+            )
+
         if archived_ids:
             logger.info(
                 "Auto-archived %d terminal task(s) older than %.1fh: %s%s",
@@ -814,6 +772,40 @@ class MonitoringMixin:
                     )
                 except Exception:
                     pass
+
+    async def _recover_interrupted_playbook_runs(self) -> None:
+        """Schedule a bounded page of runs interrupted by a prior process."""
+        if not self.config.playbooks.enabled or self.playbook_manager is None:
+            return
+        try:
+            scheduled = await self.playbook_manager.recover_interrupted_runs()
+            if scheduled:
+                logger.info("Scheduled V2 restart recovery for runs: %s", scheduled)
+        except Exception:
+            logger.exception("V2 restart recovery scan failed; next cycle will retry")
+
+    async def _reconcile_playbook_child_tasks(self) -> None:
+        """Resume playbook runs suspended on a child task that has settled.
+
+        The producer of ``ChildTaskCompleted``.  Delegates to
+        :meth:`CommandHandler.reconcile_playbook_child_tasks`, which asks the
+        database for the active ``agent_task`` waits whose task is terminal
+        (or gone) and hands each to the engine.  One indexed read per tick
+        that returns nothing unless a child actually settled.
+
+        No-op while the playbook subsystem is paused, for the reason
+        :meth:`_check_paused_playbook_timeouts` gives: a paused run neither
+        resumes nor times out.
+        """
+        if not self.config.playbooks.enabled:
+            return
+        if self._command_handler is None:
+            return
+        try:
+            for r in await self._command_handler.reconcile_playbook_child_tasks():
+                logger.info("Playbook run %s resumed on its child task", r["run_id"])
+        except Exception as e:  # noqa: BLE001 - a sweep failure never aborts a cycle
+            logger.warning("Playbook child-task reconciliation failed: %s", e)
 
     async def _check_paused_playbook_timeouts(self) -> None:
         """Sweep paused playbook runs for expired timeouts (roadmap 5.4.4).
@@ -834,18 +826,16 @@ class MonitoringMixin:
         """
         if not self.config.playbooks.enabled:
             return
-        if not hasattr(self, "command_handler") or self.command_handler is None:
+        if self._command_handler is None:
             return
         try:
-            results = await self.command_handler.check_paused_playbook_timeouts()
+            results = await self._command_handler.check_paused_playbook_timeouts()
             for r in results:
-                logger.info(
-                    "Playbook run %s timed out: status=%s, timeout=%ds, on_timeout=%s",
-                    r["run_id"],
-                    r["status"],
-                    r["timeout_seconds"],
-                    r.get("on_timeout"),
-                )
+                # The V2 sweep reports the run and what happened to it, nothing
+                # else: the V1 ``timeout_seconds`` / ``on_timeout`` keys went
+                # with the V1 runner, and indexing them raised ``KeyError``
+                # into the handler below for every run that did expire.
+                logger.info("Playbook run %s wait expired: status=%s", r["run_id"], r["status"])
         except Exception as e:
             logger.warning("Paused playbook timeout sweep failed: %s", e)
 
@@ -883,7 +873,7 @@ class MonitoringMixin:
             sweeper = ArtifactRetentionSweeper(
                 self.db, playbooks, self.config.compiled_root
             )
-            await sweeper.sweep(now)
+            await sweeper.sweep(now, collect_runs=False)
         except Exception as e:
             logger.warning("Playbook V2 retention sweep failed: %s", e)
 
@@ -898,6 +888,23 @@ class MonitoringMixin:
             return
         self._last_operational_event_retention_sweep = now
         try:
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            async def collect():
+                try:
+                    with principal_context(ExecutionPrincipal.service("operational-retention")):
+                        result = await self._command_handler.execute("operational_retention", {})
+                    if not result.get("success"):
+                        logger.warning("Operational retention refused: %s", result)
+                except Exception:
+                    logger.exception("Operational retention sweep failed")
+
+            task = getattr(self, "_operational_retention_dispatch", None)
+            if task is None or task.done():
+                self._operational_retention_dispatch = asyncio.create_task(collect())
+        except Exception:
+            logger.exception("Operational retention sweep failed")
+        try:
             days = int(self.config.events.onboarding_request_retention_days)
             removed = await self.db.purge_finished_onboarding_requests(
                 now - days * 86_400.0
@@ -906,6 +913,33 @@ class MonitoringMixin:
                 logger.info("Onboarding request retention: removed %d terminal request(s)", removed)
         except Exception as e:
             logger.warning("Onboarding request retention sweep failed: %s", e)
+
+    async def _sweep_test_selection_retention(self) -> None:
+        """Delete selection records past ``test_selection.retention_days``.
+
+        Selections are immutable history: a failed sweep only leaves rows
+        that the next cycle deletes, so a warning is the whole of the error
+        handling.  Observations cascade on delete (FK ``ondelete=CASCADE``).
+        """
+        if not getattr(self.config.test_selection, "enabled", False):
+            return
+        now = time.time()
+        if now - self._last_test_selection_retention_sweep < 3600:
+            return
+        self._last_test_selection_retention_sweep = now
+        try:
+            days = int(self.config.test_selection.retention_days)
+            removed = await self.db.delete_test_selections_older_than(
+                older_than=now - days * 86_400.0
+            )
+            if removed:
+                logger.info(
+                    "Test selection retention: removed %d selection(s) older than %d day(s)",
+                    removed,
+                    days,
+                )
+        except Exception as e:
+            logger.warning("Test selection retention sweep failed: %s", e)
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.

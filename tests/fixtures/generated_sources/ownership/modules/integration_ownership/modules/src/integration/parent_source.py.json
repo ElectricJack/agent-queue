@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/parent_source.py::ParentSourceReverification.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 279,
+      "owner": "ParentSourceReverification.run",
+      "owner_fingerprint": "35012f84d53466d014d07f0e17d31d52a62d70fbb1479e719bb446acac85531c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
