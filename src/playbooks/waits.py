@@ -47,6 +47,7 @@ class WaitSpec:
     run_id: str
     step_id: str
     iteration: int = -1
+    iteration_path: str = ""
     kind: str = "event"
     event_type: str = ""
     match: Mapping[str, Any] = field(default_factory=dict)
@@ -79,6 +80,7 @@ class WaitSpec:
             "run_id": self.run_id,
             "step_id": self.step_id,
             "iteration": self.iteration,
+            "iteration_path": self.iteration_path,
             "kind": self.kind,
             "event_type": self.event_type,
             "match": dict(self.match),
@@ -93,6 +95,7 @@ class WaitSpec:
             run_id=data["run_id"],
             step_id=data["step_id"],
             iteration=int(data.get("iteration", -1)),
+            iteration_path=data.get("iteration_path", ""),
             kind=data.get("kind", "event"),
             event_type=data.get("event_type", ""),
             match=dict(data.get("match") or {}),
@@ -113,9 +116,37 @@ class WaitClaim:
     snapshot_version: int
     claimed_event_id: str | None
     claimed_at: float
+    iteration_path: str = ""
     expired: bool = False
     event_type: str = ""
     event_fields: Mapping[str, Any] = field(default_factory=dict)
+
+
+#: ``tasks.status`` values after which a child will not run again, and the
+#: lowercase status a ``ChildTaskCompleted`` carries for each.  ``BLOCKED`` is
+#: terminal here as it is everywhere else: nothing leaves it without an
+#: operator, and a run that kept waiting would wait for that operator too.
+CHILD_TERMINAL_STATUSES: Mapping[str, str] = {
+    "COMPLETED": "completed",
+    "FAILED": "failed",
+    "BLOCKED": "blocked",
+}
+
+#: What a child that no longer exists reconciles to.  A deleted task did not
+#: complete and did not fail; ``cancelled`` is the declared edge for "the work
+#: was withdrawn".
+CHILD_MISSING_STATUS = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class SettledChildWait:
+    """An active ``agent_task`` wait whose awaited task has settled."""
+
+    wait_id: str
+    run_id: str
+    step_id: str
+    task_id: str
+    status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +239,8 @@ class WaitRepository(Protocol):
     ) -> list[WaitClaim]: ...
 
     async def expire_due(self, now: float, *, limit: int = 100) -> list[WaitClaim]: ...
+
+    async def settled_child_waits(self, *, limit: int = 100) -> list[SettledChildWait]: ...
 
     async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int: ...
 

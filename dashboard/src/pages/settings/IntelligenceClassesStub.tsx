@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { CpuChipIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
+import { CpuChipIcon, PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useIntelligenceClasses, type IntelligenceClassRow } from "../../api/hooks";
 import { describeProviderMapping, groupIntelligenceClasses } from "../../components/intelligence-classes/mapping";
 import IntelligenceClassEditor from "./IntelligenceClassEditor";
+import IntelligenceClassDeleteDialog from "./IntelligenceClassDeleteDialog";
 
 export default function IntelligenceClassesStub() {
   const { data, isLoading, error } = useIntelligenceClasses();
   const [editing, setEditing] = useState<IntelligenceClassRow | null>(null);
+  const [deleting, setDeleting] = useState<IntelligenceClassRow | null>(null);
   const classes = data?.classes ?? [];
 
   return (
@@ -24,7 +26,7 @@ export default function IntelligenceClassesStub() {
       {!isLoading && classes.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-3 rounded border border-dashed border-gray-700 bg-gray-900/40 p-10 text-center">
           <CpuChipIcon className="h-8 w-8 text-gray-600" />
-          <p className="text-gray-400">No intelligence classes found. Restart the daemon to seed the defaults.</p>
+          <p className="text-gray-400">No intelligence classes found.</p>
         </div>
       )}
 
@@ -39,11 +41,16 @@ export default function IntelligenceClassesStub() {
                     <p className="font-medium text-gray-100">{cls.name}</p>
                     <code className="font-mono text-xs text-gray-500">{cls.id}</code>
                   </div>
-                  <button type="button" aria-label={"Edit " + (cls.name || cls.id)}
+                  <div className="flex shrink-0 gap-1"><button type="button" aria-label={"Edit " + (cls.name || cls.id)}
                     onClick={(event) => { event.currentTarget.focus({ preventScroll: true }); setEditing(cls); }}
                     className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-indigo-300 hover:bg-gray-800">
                     <PencilSquareIcon className="h-4 w-4" />Edit
                   </button>
+                  <button type="button" aria-label={"Delete " + (cls.name || cls.id)}
+                    onClick={(event) => { event.currentTarget.focus({ preventScroll: true }); setDeleting(cls); }}
+                    className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-red-300 hover:bg-gray-800">
+                    <TrashIcon className="h-4 w-4" />Delete
+                  </button></div>
                 </div>
                 {cls.description && <p className="mb-2 text-xs text-gray-400">{cls.description}</p>}
                 <ul className="space-y-0.5 break-words text-xs text-gray-500">
@@ -57,6 +64,7 @@ export default function IntelligenceClassesStub() {
         </section>
       ))}
       {editing && <IntelligenceClassEditor key={editing.id} row={editing} onClose={() => setEditing(null)} />}
+      {deleting && <IntelligenceClassDeleteDialog key={deleting.id} row={deleting} onClose={() => setDeleting(null)} />}
     </div>
   );
 }
