@@ -225,7 +225,14 @@ async def test_a_worker_re_routes_a_task_it_filed(api):
     )
 
 
-async def test_triage_lists_only_its_project_tasks(api):
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_triage_lists_only_its_project_tasks(api, lifecycle, monkeypatch):
+    if lifecycle == "pool":
+        await api.db.update_session("s-triager", lifecycle="pool")
+        api.tokens["triager"] = await api.store.mint(
+            session_id="s-triager", task_id=None, project_id="p",
+        )
+    monkeypatch.setattr(deps, "_token_store", SessionTokenStore(api.db))
     result = api.result(await api.post("list_tasks"))
     ids = {task["id"] for task in result["tasks"]}
     assert "target" in ids
@@ -346,6 +353,8 @@ async def test_stale_or_unassigned_session_cannot_keep_triage_privileges(api, ch
     response = await api.post("task_show", {"task_id": "target"})
     assert response.status_code == 403, response.text
     response = await api.post("gate_show", {"gate_id": api.gate})
+    assert response.status_code == 403, response.text
+    response = await api.post("list_tasks")
     assert response.status_code == 403, response.text
 
 
