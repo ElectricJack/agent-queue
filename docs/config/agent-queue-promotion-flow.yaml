@@ -1,0 +1,40 @@
+# Agent-queue only. Reviewed policy activations are scoped to this project.
+promotion_flow:
+  - id: staging
+    source: dev
+    target: staging
+    type: continuous
+    gate:
+      checks: inherit
+      attestation: Agent Queue Promotion Attestation (staging)
+      approval: none
+    versioning:
+      kind: none
+    notes:
+      kind: none
+    after:
+      backmerge: true
+      github_release: false
+      deploy_hook: null
+  - id: release
+    source: staging
+    target: main
+    type: request
+    gate:
+      checks: inherit
+      attestation: Agent Queue Promotion Attestation (release)
+      approval: operator
+      request_ttl: 7d
+    versioning:
+      kind: semver_tag
+      source: pyproject
+      tag_format: v{version}
+    notes:
+      kind: file_template
+      path: src/releases/notes/{version}.md
+      # Main before the operator takeover; the first release has no prior tag.
+      bootstrap_sha: 259c0f56ecf9a9d9e3c0a18d31df9b67264eea3f
+    after:
+      backmerge: true
+      github_release: false
+      deploy_hook: null

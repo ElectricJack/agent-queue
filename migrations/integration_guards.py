@@ -218,6 +218,9 @@ FUNCTIONS = (
                 IF OLD.push_evidence IS NOT NULL AND
                   NEW.push_evidence::text IS DISTINCT FROM OLD.push_evidence::text
                 THEN RAISE EXCEPTION 'candidate resolution push evidence is immutable'; END IF;
+                IF OLD.rejection_evidence IS NOT NULL AND
+                  NEW.rejection_evidence::text IS DISTINCT FROM OLD.rejection_evidence::text
+                THEN RAISE EXCEPTION 'candidate resolution rejection evidence is immutable'; END IF;
                 IF (CASE NEW.state WHEN 'reserved' THEN 0 WHEN 'pushed' THEN 1 ELSE 2 END)
                   NOT IN ((CASE OLD.state WHEN 'reserved' THEN 0 WHEN 'pushed' THEN 1 ELSE 2 END),
                   (CASE OLD.state WHEN 'reserved' THEN 0 WHEN 'pushed' THEN 1 ELSE 2 END) + 1)
@@ -626,11 +629,5 @@ TRIGGERS = (
         "trg_integration_history_waiver_consumptions_immutable",
         "integration_history_waiver_consumptions",
         """CREATE TRIGGER trg_integration_history_waiver_consumptions_immutable BEFORE UPDATE OR DELETE ON integration_history_waiver_consumptions FOR EACH ROW EXECUTE FUNCTION integration_control_history_immutable()""",
-    ),
-    # a11a5e1e4f04
-    (
-        "trg_integration_legacy_gate_applicability_immutable",
-        "integration_legacy_gate_applicability",
-        """CREATE TRIGGER trg_integration_legacy_gate_applicability_immutable BEFORE UPDATE OR DELETE ON integration_legacy_gate_applicability FOR EACH ROW EXECUTE FUNCTION integration_control_history_immutable()""",
     ),
 )

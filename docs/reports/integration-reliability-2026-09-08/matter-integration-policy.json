@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "parent": {
+    "required_checks": {
+      "version": "checks-v1",
+      "names": [
+        "Native Windows build and tests"
+      ],
+      "producer_id": "github-actions"
+    },
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "deep-high",
+      "debug_profile_id": "deep-high-codex"
+    },
+    "route": {
+      "playbook_id": "hierarchical-delivery",
+      "scope": "system",
+      "scope_identifier": "",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": "hierarchical-delivery",
+        "artifact_sha256": "sha256:579b8a1a92b66d885acba6417483e5426f2bab6691c55bd8810ee3bd087a4d82",
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:67ab605057f2910bdf735c193f0bc4954af8c02629b7a4c37f3b827c98743d3f",
+        "source_digest": "sha256:adfdc677da623f46f75d3f1acb3b0485430a4f0462ad2ef45d4aa42e8dee6ddc",
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": null,
+        "version": 1
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "primary_profile_id": "standard-high-codex",
+    "verifier_intelligence_class": "standard-high",
+    "verifier_profile_id": "standard-high-codex"
+  },
+  "root": {
+    "required_checks": {
+      "version": "checks-v1",
+      "names": [
+        "Native Windows build and tests"
+      ],
+      "producer_id": "github-actions"
+    },
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "deep-high",
+      "debug_profile_id": "deep-high-codex"
+    },
+    "route": {
+      "playbook_id": "root-integration-train",
+      "scope": "system",
+      "scope_identifier": "",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": "root-integration-train",
+        "artifact_sha256": "sha256:a93c3c32e05bdff64f25279531b6eaf04aba01e8bbd48a8125230a1ca32fa160",
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:7b6380af1d3d88ba850d53910ba311774cfe2b802e8eb3fafe2a624bd4b74b9e",
+        "source_digest": "sha256:ec7ccbab0f601d847c59d118f4fac426f5c33951a007f731a5b2935f4eed9c1b",
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": null,
+        "version": 1
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "primary_profile_id": "standard-high-codex",
+    "verifier_intelligence_class": "standard-high",
+    "verifier_profile_id": "standard-high-codex"
+  },
+  "branchless_parent": "verifier",
+  "on_failed_child": "block",
+  "on_main_moved": "rebuild",
+  "cleanup": {
+    "max_attempts": 5,
+    "retry_base_seconds": 30.0,
+    "retry_max_seconds": 3600.0,
+    "successful_source_refs": "delete",
+    "failed_work_retention_seconds": 604800
+  }
+}

@@ -3,55 +3,204 @@
 from __future__ import annotations
 
 import inspect
+import json
+import logging
 import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import fields
 from typing import Any
 
-from sqlalchemy import and_, insert, select, update
+from sqlalchemy import and_, insert, or_, select, update
 
-from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.hierarchy_queries import HierarchyError, TransitionResult
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_branch_owners,
     integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
     sessions,
     task_branch_origins,
-    task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
+    task_session_attempts,
     tasks,
     workspaces,
 )
 from src.git.manager import is_valid_git_oid
+from src.integration.epic_branch import reserve_branch_name
 from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
+from src.integration.row_query import select_row
 from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id, fresh_root_id
 
+logger = logging.getLogger(__name__)
+
 _OID = re.compile(r"^[0-9a-f]{40}$")
+#: The ``Task`` fields a child filing may supply (``_build_child``): what the
+#: work is, never how it is routed (mandatory-routing spec §5.3).
+_CHILD_FIELDS = frozenset({
+    "title",
+    "description",
+    "priority",
+    "task_type",
+    "class_hint",
+    "deliverables",
+    "attachments",
+    "skip_verification",
+    "verification_type",
+    "max_retries",
+    "integration_mode",
+    "workspace_mode",
+    "preferred_workspace_id",
+    "affinity_agent_id",
+    "affinity_reason",
+    "workflow_id",
+    "dedup_key",
+})
 _ACTIVE_BATCH_STATES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
+    "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
     "cleanup_pending",
 )
 DefaultHeadResolver = Callable[[RepoConfig, str], Awaitable[str] | str]
 BranchMaterializer = Callable[[RepoConfig, str, str], Awaitable[str] | str]
 CheckpointVerifier = Callable[[dict, RepoConfig, str], Awaitable[str] | str]
 AncestryVerifier = Callable[[RepoConfig, str, str], Awaitable[bool] | bool]
+BranchHeadResolver = Callable[[RepoConfig, str], Awaitable[str | None] | str | None]
+BranchBaseResolver = Callable[[RepoConfig, str, str], Awaitable[str] | str]
 
 
-async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: str) -> str:
+async def record_worker_publication(db, task_id: str, branch: str, head_sha: str) -> None:
+    """Keep the working checkpoint current after an authorized successful push.
+
+    Delegates and active parent episodes have their own checkpoint authority.
+    Repeated publication of the same tip does not create another generation.
+    The filing origin remains immutable, including across leased rewrites.
+    """
+    if not is_valid_git_oid(head_sha):
+        raise ValueError("published checkpoint requires an exact commit")
+    async with db.immediate() as conn:
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == task_id,
+        ).with_for_update())).mappings().one_or_none()
+        if task is None or task["branch_name"] != branch:
+            return
+        checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task_id,
+        ).with_for_update())).mappings().one_or_none()
+        if (checkpoint is None or checkpoint["episode_id"] is not None
+                or checkpoint["repository_id"] != task["repo_id"]
+                or checkpoint["branch"] != branch or checkpoint["checkpoint_sha"] == head_sha):
+            return
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task_id,
+            task_integration_checkpoints.c.version == checkpoint["version"],
+        ).values(
+            checkpoint_sha=head_sha,
+            generation=checkpoint["generation"] + 1,
+            version=checkpoint["version"] + 1,
+            verified_sha=None, verified_generation=None, current_verification_id=None,
+            updated_at=time.time(),
+        ))
+
+
+def _missing_origin_tasks(repository_id):
+    """Open work and undelivered completions lacking their live delivery identity.
+
+    Legacy artifact-bearing completions are conservatively included: receipts
+    cannot prove Git delivery. Retired origins remain intentional cleanup history.
+    """
+    from src.database.tables import (
+        integration_repair_stages, task_completion_records, task_context,
+    )
+
+    # Delegates write/check an existing subject branch. Their durable binding
+    # survives the live fence, so terminal delegates never acquire task origins.
+    repair = select(integration_repair_stages.c.repair_task_id).where(
+        integration_repair_stages.c.repair_task_id == tasks.c.id,
+    ).exists()
+    verifier = select(integration_repair_operations.c.id).where(
+        integration_repair_operations.c.verifier_task_id == tasks.c.id,
+    ).exists()
+    ordinary_repair = select(task_context.c.id).join(
+        integration_batches, integration_batches.c.id == tasks.c.created_by_id,
+    ).where(
+        tasks.c.created_by_kind == "system", tasks.c.dedup_key.startswith("repair:"),
+        task_context.c.task_id == tasks.c.id, task_context.c.label == "Repair input",
+    ).exists()
+
+    recorded_commits = select(task_completion_records.c.id).where(
+        task_completion_records.c.task_id == tasks.c.id,
+        task_completion_records.c.commits != "[]",
+    ).exists()
+    live = select(task_branch_origins.c.id).where(
+        task_branch_origins.c.task_id == tasks.c.id,
+        task_branch_origins.c.repository_id == repository_id,
+        task_branch_origins.c.retired_at.is_(None),
+    ).exists()
+    # Retired completion origins are retained cleanup history, not a legacy
+    # task stranded by cutover. Never resurrect their intentionally deleted refs.
+    historical = select(task_branch_origins.c.id).where(
+        task_branch_origins.c.task_id == tasks.c.id,
+        task_branch_origins.c.repository_id == repository_id,
+    ).exists()
+    return select(tasks.c.id).where(
+        or_(tasks.c.status != "COMPLETED", and_(
+            ~historical, or_(tasks.c.branch_name.is_not(None), tasks.c.pr_url.is_not(None),
+                             recorded_commits),
+        )),
+        ~live,
+        ~repair, ~verifier, ~ordinary_repair,
+    )
+
+
+async def missing_origin_tasks_on(conn, project_id: str, repository_id: str) -> list[str]:
+    """Open work and legacy completions missing their live delivery identity."""
+    return list((await conn.execute(_missing_origin_tasks(repository_id).where(
+        tasks.c.project_id == project_id,
+    ).order_by(tasks.c.id))).scalars())
+
+
+def ready_root_origin_tasks():
+    """Detached roots reconciliation may give a missing live origin.
+
+    Shared by the bounded scanner and its project-locked eligibility recheck.
+    Delegates use their existing subject branch, never a task origin.
+    """
+    from src.database.queries.integration_state_queries import session_attached_clause
+    from src.database.tables import projects
+    from src.integration.train_policy import train_disabled_for_project
+
+    return (_missing_origin_tasks(projects.c.integration_repository_id)
+        .add_columns(tasks.c.project_id, tasks.c.created_at)
+        .join(projects, projects.c.id == tasks.c.project_id)
+        .where(
+            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            projects.c.integration_repository_id.is_not(None),
+            ~train_disabled_for_project(),
+            tasks.c.parent_task_id.is_(None), tasks.c.status == "READY",
+            tasks.c.assigned_agent_id.is_(None),
+            or_(tasks.c.repo_id.is_(None),
+                tasks.c.repo_id == projects.c.integration_repository_id),
+            tasks.c.created_by_kind.is_distinct_from("integration_repair"),
+            tasks.c.created_by_kind.is_distinct_from("integration_writer"),
+            ~select(sessions.c.id).where(
+                sessions.c.task_id == tasks.c.id, session_attached_clause(),
+            ).exists(),
+            ~select(workspaces.c.id).where(
+                workspaces.c.locked_by_task_id == tasks.c.id,
+            ).exists(),
+        ))
+
+
+async def materialize_exact_branch(
+    git, checkout: str, branch: str, base_sha: str, *, repository_url: str
+) -> str:
     """Create *branch* at *base_sha*, refusing any unexpected existing tip."""
     from src.git.manager import GitError, RemoteRefState
 
@@ -72,11 +221,15 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
         ["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=checkout, lock_held=True
     )
     if present.returncode != 0:
-        fetched = await git.arun_git_result(
-            ["fetch", "--no-tags", "origin", base_sha], cwd=checkout, lock_held=True
+        await git.afetch_origin(
+            checkout, repository_url=repository_url, lock_held=True,
+            all_heads=True,
         )
-        if fetched.returncode != 0:
-            raise GitError(fetched.stderr or "could not fetch pinned materialization base")
+        present = await git.arun_git_result(
+            ["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=checkout, lock_held=True
+        )
+        if present.returncode != 0:
+            raise GitError("could not fetch pinned materialization base")
     try:
         await git.apush_validated_ref(checkout, base_sha, branch)
     except GitError:
@@ -92,16 +245,72 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
     return base_sha
 
 
-async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) -> str:
-    """Return an owned writer workspace's clean, exactly-pushed current HEAD."""
+#: Which of :func:`resolve_workspace_checkpoint`'s preconditions failed, and
+#: whether the agent holding the workspace can do anything about it.  The
+#: refusal used to collapse all four into one sentence naming the workspace,
+#: which read as a lock problem even when the only missing thing was the
+#: task's ``branch_name``.  ``fixable`` distinguishes "fix your git state and
+#: close again" from "this is daemon state; escalate".
+WORKSPACE_PRECONDITIONS = {
+    "no_integration_workspace": (
+        "task holds no integration workspace",
+        "operator",
+    ),
+    "workspace_not_owned": (
+        "the integration workspace is locked by another task",
+        "operator",
+    ),
+    "repo_mismatch": (
+        "task is not bound to the delivery repository",
+        "operator",
+    ),
+    "branch_not_recorded": (
+        "task has no branch_name recorded",
+        "worker",
+    ),
+}
+
+
+def _workspace_precondition(precondition: str, detail: str, **context) -> HierarchyError:
+    """Build the refusal for one named ``resolve_workspace_checkpoint`` gate."""
+    _summary, fixable = WORKSPACE_PRECONDITIONS[precondition]
+    return HierarchyError(
+        "dirty",
+        detail,
+        {"precondition": precondition, "fixable_by": fixable, **context},
+    )
+
+
+async def resolve_workspace_checkpoint(
+    db, git, task: dict, repo: RepoConfig, *, unchanged_base: str | None = None,
+    contained_in: str | None = None,
+) -> str:
+    """Return an owned writer workspace's clean, exactly-pushed current HEAD.
+
+    A no-change completion may instead supply its recorded exact origin base:
+    equality proves no task commits need publishing, without borrowing a ref.
+    A proven no-code one may supply its target tip as *contained_in*: a HEAD in
+    it owes no push while its task ref is unpublished (a published ref must equal HEAD).
+    """
     workspace = await db.get_workspace_for_task(task["id"])
-    if (
-        workspace is None
-        or workspace.locked_by_task_id != task["id"]
-        or task["repo_id"] != repo.id
-        or not task["branch_name"]
-    ):
-        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+    if workspace is None:
+        raise _workspace_precondition("no_integration_workspace",
+            f"task {task['id']} holds no integration workspace", task_id=task["id"])
+    if workspace.locked_by_task_id != task["id"]:
+        raise _workspace_precondition("workspace_not_owned",
+            f"integration workspace {workspace.workspace_path} is locked by "
+            f"{workspace.locked_by_task_id or 'nobody'}, not {task['id']}", task_id=task["id"],
+            workspace_id=workspace.id, locked_by_task_id=workspace.locked_by_task_id)
+    if task["repo_id"] != repo.id:
+        raise _workspace_precondition("repo_mismatch",
+            f"task {task['id']} is bound to repository {task['repo_id'] or 'none'}, "
+            f"but delivery targets {repo.id}", task_id=task["id"],
+            task_repo_id=task["repo_id"], delivery_repo_id=repo.id)
+    if not task["branch_name"]:
+        raise _workspace_precondition("branch_not_recorded",
+            f"task {task['id']} has no branch_name recorded — record the branch "
+            f"this workspace is on with `aq task set {task['id']} --branch <branch>`",
+            task_id=task["id"], remedy=f"aq task set {task['id']} --branch <branch>")
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
     if branch != task["branch_name"].removeprefix("refs/heads/"):
@@ -112,12 +321,19 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
     actual_head = (await git._arun(["rev-parse", "HEAD"], cwd=checkout)).lower()
     if not is_valid_git_oid(actual_head):
         raise HierarchyError("dirty", "workspace HEAD is not an exact Git OID")
+    if unchanged_base is not None:
+        if not is_valid_git_oid(unchanged_base) or actual_head != unchanged_base:
+            raise HierarchyError("dirty", "no-change workspace HEAD differs from its recorded base")
+        return actual_head
     from src.git.manager import RemoteRefState
 
     remote = await git.als_remote_ref(checkout, task["branch_name"].removeprefix("refs/heads/"))
-    if remote.state is not RemoteRefState.PRESENT or remote.oid != actual_head:
-        raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
-    return actual_head
+    if (remote.state is RemoteRefState.PRESENT and remote.oid == actual_head) or (
+        contained_in and remote.state is RemoteRefState.ABSENT and is_valid_git_oid(contained_in)
+        and await git.ais_ancestor(checkout, actual_head, contained_in, strict=True) is True
+    ):
+        return actual_head
+    raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
 
 
 async def resolve_repair_commit_proof(
@@ -147,7 +363,18 @@ async def resolve_repair_commit_proof(
             or any(not is_valid_git_oid(value) for value in commits)
         ):
             raise HierarchyError("dirty", "repair commit lineage is incomplete or invalid")
-    return {"base_sha": base_sha, "head_sha": head_sha, "commits": commits}
+    parents_output = await git._arun(
+        ["show", "-s", "--format=%P", head_sha], cwd=checkout
+    )
+    head_parents = [value.strip().lower() for value in parents_output.split() if value.strip()]
+    if any(not is_valid_git_oid(value) for value in head_parents):
+        raise HierarchyError("dirty", "repair HEAD parent lineage is invalid")
+    return {
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "commits": commits,
+        "head_parents": head_parents,
+    }
 
 
 async def resolve_workspace_repair_proof(
@@ -157,7 +384,8 @@ async def resolve_workspace_repair_proof(
     head_sha = await resolve_workspace_checkpoint(db, git, task, repo)
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
-        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+        raise _workspace_precondition("no_integration_workspace",
+            f"task {task['id']} holds no integration workspace", task_id=task["id"])
     return await resolve_repair_commit_proof(
         git, workspace.workspace_path, base_sha=base_sha, head_sha=head_sha
     )
@@ -187,20 +415,127 @@ class HierarchyIntegration:
         db,
         *,
         default_head_resolver: DefaultHeadResolver | None = None,
+        filing_head_resolver: DefaultHeadResolver | None = None,
         branch_materializer: BranchMaterializer | None = None,
         checkpoint_verifier: CheckpointVerifier | None = None,
         ancestry_verifier: AncestryVerifier | None = None,
+        branch_head_resolver: BranchHeadResolver | None = None,
+        branch_base_resolver: BranchBaseResolver | None = None,
         ownership: BranchOwnership | None = None,
+        git_manager=None,
+        subject_policy_loader=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
+        self.subject_policy_loader = subject_policy_loader
         self.default_head_resolver = default_head_resolver
+        self.filing_head_resolver = filing_head_resolver
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
         self.ancestry_verifier = ancestry_verifier
+        self.branch_head_resolver = branch_head_resolver
+        self.branch_base_resolver = branch_base_resolver
         self.ownership = ownership or BranchOwnership(db)
-        self.parent_completion = ParentCompletion(db, clock=clock)
+        self.parent_completion = ParentEpisodeRecords(db, git_manager=git_manager, clock=clock)
         self.clock = clock
+
+    async def backfill_origins_on(self, conn, project_id: str, repo: RepoConfig) -> list[str]:
+        """Adopt published refs or reserve absent refs under the caller's project lock.
+
+        This only reads Git. No ref is created or moved inside policy activation.
+        Existing origins and checkpoints retain their identities on every retry.
+        """
+        pending = await missing_origin_tasks_on(conn, project_id, repo.id)
+        return await self._backfill_origins_on(conn, project_id, repo, pending)
+
+    async def reserve_ready_root_origin_on(self, conn, task_id: str) -> dict:
+        """Repair one missing root origin without changing its filing identity.
+
+        Both reconciliation and system filers use this under the same lock as
+        claims and train activation, so a stale scan cannot reserve for a writer
+        or for a project whose train has since been disabled.
+        """
+        project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        if project_id is None:
+            return {"outcome": "not_eligible", "task_id": task_id}
+        await self.db.lock_hierarchy_project(conn, project_id)
+        eligible = await conn.scalar(ready_root_origin_tasks().where(tasks.c.id == task_id))
+        if eligible is None:
+            return {"outcome": "not_eligible", "task_id": task_id}
+        _project, repo = await self._root_route(conn, project_id)
+        await self._backfill_origins_on(conn, project_id, repo, [task_id])
+        return {"outcome": "backfilled", "task_id": task_id}
+
+    async def _backfill_origins_on(self, conn, project_id, repo, pending) -> list[str]:
+        if pending and self.branch_head_resolver is None:
+            raise HierarchyError("invalid", "branch head resolver is unavailable for origin backfill")
+        written = []
+        visiting = set()
+
+        async def ensure(task_id):
+            row = await self._task_row(conn, task_id)
+            if row["project_id"] != project_id or row["repo_id"] not in (None, repo.id):
+                raise HierarchyError("invalid", "origin ancestor belongs to another repository")
+            existing = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == task_id,
+                task_branch_origins.c.repository_id == repo.id,
+                task_branch_origins.c.retired_at.is_(None),
+            ))).mappings().one_or_none()
+            if existing is not None:
+                return row["branch_name"], await self._locked_checkpoint(conn, task_id)
+            retired = await conn.scalar(select(task_branch_origins.c.id).where(
+                task_branch_origins.c.task_id == task_id,
+                task_branch_origins.c.repository_id == repo.id,
+                task_branch_origins.c.retired_at.is_not(None),
+            ).limit(1))
+            if row["status"] == "COMPLETED" and retired is not None:
+                raise HierarchyError("invalid", "retired ancestor origin cannot be recreated")
+            if task_id in visiting:
+                raise HierarchyError("invalid", "cycle in origin ancestor chain")
+            visiting.add(task_id)
+            if row["parent_task_id"]:
+                parent_ref, parent_checkpoint = await ensure(row["parent_task_id"])
+                parent_head = parent_checkpoint["checkpoint_sha"]
+            else:
+                parent_ref = repo.default_branch
+                parent_head = await self._resolve_head(repo, parent_ref)
+            branch = row["branch_name"] or f"aq/{task_id}"
+            if branch.removeprefix("refs/heads/") == repo.default_branch:
+                raise HierarchyError("invalid", "task branch cannot be the default branch")
+            head = self.branch_head_resolver(repo, branch)
+            head = await head if inspect.isawaitable(head) else head
+            base = parent_head
+            if head is not None:
+                if not is_valid_git_oid(head) or self.branch_base_resolver is None:
+                    raise HierarchyError("invalid", "adopted origin requires an exact tip and fork base")
+                base = self.branch_base_resolver(repo, head, parent_head)
+                base = await base if inspect.isawaitable(base) else base
+            if not is_valid_git_oid(base):
+                raise HierarchyError("invalid", "origin fork base is not an exact Git OID")
+            checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == task_id,
+            ))).mappings().one_or_none()
+            if checkpoint is not None and (checkpoint["repository_id"] != repo.id
+                                          or checkpoint["branch"] != branch):
+                raise HierarchyError("invalid", "existing checkpoint has another branch identity")
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                repo_id=repo.id, branch_name=branch, updated_at=self.clock()))
+            await self._reserve_origin(
+                conn, task_id=task_id, repository_id=repo.id,
+                parent_task_id=row["parent_task_id"], parent_ref=parent_ref,
+                base_sha=base, generation=0, materialized=head is not None,
+            )
+            if checkpoint is None:
+                await self._insert_checkpoint(conn, task_id=task_id, repository_id=repo.id,
+                                              branch=branch, checkpoint_sha=head or base)
+                checkpoint = {"checkpoint_sha": head or base}
+            written.append(task_id)
+            visiting.remove(task_id)
+            return branch, checkpoint
+
+        for task_id in pending:
+            await ensure(task_id)
+        return written
 
     async def file_children(
         self, parent_id: str, children: list[dict], expected_generation: int
@@ -283,16 +618,12 @@ class HierarchyIntegration:
     ) -> dict:
         if not _OID.fullmatch(head_sha):
             return {"outcome": "stale_head", "task_id": task_id}
-        if self.checkpoint_verifier is None:
-            return {"outcome": "stale_head", "task_id": task_id}
         async with self.db._engine.connect() as conn:
             task = await self._task_row(conn, task_id)
-            _project, repo = await self._enabled_route(conn, task)
-        actual = self.checkpoint_verifier(task, repo, head_sha)
-        if inspect.isawaitable(actual):
-            actual = await actual
-        if actual != head_sha:
-            return {"outcome": "stale_head", "task_id": task_id}
+            await self._enabled_route(conn, task)
+        # Hosted CI can finish after the parent releases its writer workspace.
+        # ParentEpisodeRecords checks the locked generation, receipt-derived head,
+        # and durable evidence against the frozen operation policy.
         return await self.parent_completion.verify_parent(
             task_id, generation, head_sha, evidence_ids
         )
@@ -349,6 +680,147 @@ class HierarchyIntegration:
             "head_sha": head_sha,
         }
 
+    async def checkpoint_container_completion(
+        self, task_id: str, head_sha: str, generation: int, *,
+        expect_claim_epoch: int | None,
+    ) -> dict:
+        """Advance a held container's checkpoint to its final published head.
+
+        Under ``integration.git_first: active`` no parent episode collects a
+        writer that gained children: the train's epic lane admits the closed
+        container from its completion and checkpoint, which must agree
+        exactly.  Every live child must already be completed with its recorded
+        source contained in ``head_sha``; anything stale, unowned, unpublished
+        or uncertain refuses before any write.
+        """
+        if not _OID.fullmatch(head_sha):
+            raise HierarchyError("dirty", "head_sha must be a lowercase 40-character Git OID")
+        if self.checkpoint_verifier is None or self.ancestry_verifier is None:
+            raise HierarchyError("dirty", "container completion verifiers are unavailable")
+        async with self.db._engine.connect() as read_conn:
+            task = await self._task_row(read_conn, task_id)
+            _project, repo = await self._enabled_route(read_conn, task)
+            observed = await self._child_provenance_on(read_conn, task_id)
+            owner = _container_owner(task_id, (await read_conn.execute(
+                select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == repo.id,
+                    integration_branch_owners.c.ref == (task["branch_name"] or ""),
+                )
+            )).mappings().first())
+        verified = self.checkpoint_verifier(task, repo, head_sha)
+        if inspect.isawaitable(verified):
+            verified = await verified
+        if verified != head_sha:
+            raise HierarchyError("dirty", "container checkpoint verifier returned another head")
+        for child_id, (_completion_id, source) in observed.items():
+            if source is None:
+                continue
+            contained = self.ancestry_verifier(repo, source, head_sha)
+            if inspect.isawaitable(contained):
+                contained = await contained
+            if contained is not True:
+                raise HierarchyError(
+                    "stale_head", f"container head does not contain child {child_id} source"
+                )
+        async with self.db.immediate() as conn:
+            task = await self._task_row(conn, task_id)
+            project, repo = await self._enabled_route(conn, task)
+            # Ownership before the project lock, as every fenced mutation does.  The row
+            # must be the one observed before the remote was verified: a train delivery
+            # into the branch in between moves its fence, and the verified head with it.
+            locked = _container_owner(task_id, await self.ownership._locked_row(
+                conn, BranchKey(repository_id=repo.id, branch=task["branch_name"] or ""),
+            ))
+            if locked != owner:
+                raise HierarchyError("stale", "container branch owner changed before checkpoint")
+            await self.db.lock_hierarchy_project(conn, project["id"])
+            if (
+                task["status"] != TaskStatus.IN_PROGRESS.value
+                or expect_claim_epoch is not None
+                and int(task["claim_epoch"] or 0) != expect_claim_epoch
+            ):
+                raise HierarchyError("stale", "container claim changed before checkpoint")
+            checkpoint = await self._locked_checkpoint(conn, task_id)
+            if (
+                checkpoint["repository_id"] != repo.id
+                or checkpoint["branch"] != task["branch_name"]
+            ):
+                raise HierarchyError(
+                    "delivery_target_fixed", "container checkpoint branch identity changed"
+                )
+            if int(checkpoint["generation"]) != generation:
+                raise HierarchyError(
+                    "stale", f"expected generation {generation}, found {checkpoint['generation']}"
+                )
+            if checkpoint.get("episode_id") is not None:
+                raise HierarchyError("invariant_error", "container has a parent episode")
+            if await self._child_provenance_on(conn, task_id) != observed:
+                raise HierarchyError("stale", "container children changed before checkpoint")
+            result = await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .where(task_integration_checkpoints.c.version == checkpoint["version"])
+                .values(
+                    checkpoint_sha=head_sha,
+                    state="working",
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=self.clock(),
+                )
+            )
+            if result.rowcount != 1:
+                raise HierarchyError("stale", "container checkpoint changed concurrently")
+        return {
+            "outcome": "checkpointed",
+            "task_id": task_id,
+            "generation": generation,
+            "head_sha": head_sha,
+        }
+
+    async def _child_provenance_on(self, conn, task_id: str) -> dict:
+        """Each live child's latest pass completion id and recorded source.
+
+        A child that is not completed, or completed without a passing
+        completion record, is unresolved: the container cannot vouch for it.
+        """
+        from src.database.tables import task_completion_records
+
+        children = (await conn.execute(
+            select(tasks.c.id, tasks.c.status).where(tasks.c.parent_task_id == task_id)
+        )).all()
+        unresolved = sorted(child for child, status in children
+                            if status != TaskStatus.COMPLETED.value)
+        if unresolved:
+            raise HierarchyError(
+                "invariant_error", f"container has unresolved children: {', '.join(unresolved)}"
+            )
+        ids = [child for child, _status in children]
+        rows = (await conn.execute(
+            select(task_completion_records.c.task_id, task_completion_records.c.id,
+                   task_completion_records.c.outcome, task_completion_records.c.commits)
+            .where(task_completion_records.c.task_id.in_(ids))
+            .distinct(task_completion_records.c.task_id)
+            .order_by(task_completion_records.c.task_id,
+                      task_completion_records.c.completed_at.desc(),
+                      task_completion_records.c.id.desc())
+        )).mappings().all() if ids else []
+        latest = {row["task_id"]: row for row in rows}
+        observed = {}
+        for child in sorted(ids):
+            row = latest.get(child)
+            try:
+                commits = json.loads(row["commits"]) if row is not None else None
+            except (TypeError, ValueError):
+                commits = None
+            if (
+                row is None or row["outcome"] != "pass" or not isinstance(commits, list)
+                or not all(isinstance(oid, str) and _OID.fullmatch(oid) for oid in commits)
+            ):
+                raise HierarchyError(
+                    "invariant_error", f"child {child} has no exact passing completion provenance"
+                )
+            observed[child] = (row["id"], commits[-1] if commits else None)
+        return observed
+
     async def file_prepared_child_on(
         self,
         conn,
@@ -385,9 +857,12 @@ class HierarchyIntegration:
         task.project_id = project["id"]
         task.parent_task_id = None
         task.repo_id = repo.id
-        task.branch_name = f"aq/{task_id}"
+        task.branch_name = None
         task.status = TaskStatus.DEFINED
         await self.db.create_task(task, conn=conn)
+        task.branch_name = await reserve_branch_name(
+            conn, task_id=task_id, title=task.title, is_epic=False
+        )
         await self.db.set_parent(
             task_id, parent_id, conn=conn, integration_authorized=True
         )
@@ -427,8 +902,17 @@ class HierarchyIntegration:
         conn,
         parent_id: str,
         child_tasks: list[Task],
+        *,
+        routing_policy=None,
+        defer_projection=False,
     ) -> list[dict]:
-        """Insert sibling tasks with one parent-generation advance."""
+        """Insert sibling tasks with one parent-generation advance.
+
+        Graph and proposal materialisation use this bulk path rather than
+        ``file_prepared_child_on``.  Keep routing admission here as well: a
+        profile-less child must receive the same durable routing gate whether
+        it was filed individually or as part of a graph/batch.
+        """
         if not child_tasks:
             return []
         parent = await self._task_row(conn, parent_id)
@@ -448,12 +932,21 @@ class HierarchyIntegration:
             task.project_id = project["id"]
             task.parent_task_id = None
             task.repo_id = repo.id
-            task.branch_name = f"aq/{task_id}"
+            task.branch_name = None
             task.status = TaskStatus.DEFINED
             await self.db.create_task(task, conn=conn)
-            await self.db.set_parent(
-                task_id, parent_id, conn=conn, integration_authorized=True
+            task.branch_name = await reserve_branch_name(
+                conn, task_id=task_id, title=task.title, is_epic=False
             )
+            await self.db.set_parent(
+                task_id, parent_id, conn=conn, integration_authorized=True,
+                defer_projection=defer_projection,
+            )
+            # ``set_parent`` writes the row.  Preserve that placement on the
+            # in-memory task too, because the routing policy evaluates the
+            # same task.created fields as ordinary command-layer creation.
+            task.parent_task_id = parent_id
+            gate_id = await self._maybe_create_routing_gate(conn, task, routing_policy)
             origin = await self._reserve_origin(
                 conn,
                 task_id=task_id,
@@ -470,7 +963,7 @@ class HierarchyIntegration:
                 branch=origin["branch"],
                 checkpoint_sha=origin["base_sha"],
             )
-            created.append({"task_id": task_id, "origin": origin})
+            created.append({"task_id": task_id, "origin": origin, "gate_id": gate_id})
         return created
 
     async def file_root_on(
@@ -482,29 +975,18 @@ class HierarchyIntegration:
         edges: list[tuple[str, str, str | None]] | None = None,
         labels: list[str] | None = None,
         routing_policy=None,
+        target_ref: str | None = None,
     ) -> dict:
         """Insert an enabled-project root and reserve its isolated origin."""
-        from src.database.tables import projects
-
-        project = (
-            await conn.execute(select(projects).where(projects.c.id == task.project_id))
-        ).mappings().one_or_none()
-        if project is None or project["hierarchical_integration_mode"] not in {
-            "hierarchy",
-            "train",
-        }:
-            raise HierarchyError("invalid", "hierarchical integration is not enabled")
-        repository_id = project["integration_repository_id"]
-        repo = await self._repo_on(conn, repository_id) if repository_id else None
-        if repo is None or repo.project_id != task.project_id:
-            raise HierarchyError("invalid", "designated repository is not in the project")
+        _project, repo = await self._root_route(conn, task.project_id,
+                                              promotion_target=target_ref)
         await self.db.lock_hierarchy_project(conn, task.project_id)
         task.id = await fresh_root_id(conn)
         task.parent_task_id = None
         task.repo_id = repo.id
-        # This root has no branch yet. Let origin bootstrap resolve the
-        # repository's default branch; adoption of existing roots still
-        # resolves their recorded branch in _ensure_origin_chain.
+        # A freshly filed root has no remote task branch yet.  Resolve its
+        # immutable origin from the repository default branch, then record
+        # the canonical branch identity for materialization.
         task.branch_name = None
         await self.db.create_task(task, conn=conn)
         await self._write_task_extras(
@@ -515,18 +997,30 @@ class HierarchyIntegration:
             labels=labels,
         )
         gate_id = await self._maybe_create_routing_gate(conn, task, routing_policy)
-        await self._ensure_origin_chain(conn, task.id, repo)
-        task.branch_name = f"aq/{task.id}"
+        task.branch_name = await reserve_branch_name(
+            conn, task_id=task.id, title=task.title, is_epic=True
+        )
+        await self._ensure_origin_chain(
+            conn, task.id, repo, root_branch=target_ref or repo.default_branch,
+            root_parent_ref=target_ref,
+        )
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
     async def bootstrap_container_collection(self, task_id: str) -> dict:
-        """Checkpoint a never-run container at its confirmed, untouched origin."""
+        """Checkpoint an affirmatively untouched container at its pinned origin.
+
+        A released graph container legitimately has a nonzero ``claim_epoch``:
+        the release itself traverses READY -> IN_PROGRESS without assigning a
+        worker.  Epoch alone therefore cannot distinguish it from a prior
+        writer.  This path instead requires positive evidence that the *current
+        task incarnation* has never acquired a session or workspace.
+        """
         from src.integration.models import Fence
 
         async with self.db._engine.connect() as conn:
             task = await self._task_row(conn, task_id)
             project, repo = await self._enabled_route(conn, task)
-        target = BranchKey(repository_id=repo.id, branch=f"aq/{task_id}")
+        target = BranchKey(repository_id=repo.id, branch=task["branch_name"])
         owner = await self.ownership.get_owner(target)
         if owner is None or owner["owner_id"] != task_id or owner["owner_role"] != "worker":
             return {"outcome": "waiting", "task_id": task_id}
@@ -551,16 +1045,39 @@ class HierarchyIntegration:
             workspace = (await conn.execute(select(workspaces.c.id).where(
                 workspaces.c.locked_by_task_id == task_id
             ).limit(1))).scalar_one_or_none()
-            if (origin is None or not origin["materialized"] or not origin["reserved"]
-                or children is None or live is not None or workspace is not None
-                or task["assigned_agent_id"] is not None
-                or task["claim_epoch"] != 0 or task["branch_name"] != target.branch
-                or task["status"] not in {"IN_PROGRESS", "PAUSED"}
-                or (task["status"] == "PAUSED" and checkpoint["episode_id"] is None)):
-                return {"outcome": "waiting", "task_id": task_id}
+            attempt = (await conn.execute(select(task_session_attempts.c.id).where(
+                task_session_attempts.c.task_id == task_id,
+                task_session_attempts.c.started_at >= task["created_at"],
+            ).limit(1))).scalar_one_or_none()
+            manually_paused = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause",
+            ).limit(1))).scalar_one_or_none()
+
+            reason = None
+            if origin is None or not origin["materialized"] or not origin["reserved"]:
+                reason = "origin_pending"
+            elif children is None:
+                reason = "not_a_container"
+            elif live is not None or task["assigned_agent_id"] is not None:
+                reason = "live_claim"
+            elif workspace is not None:
+                reason = "workspace_attached"
+            elif attempt is not None:
+                reason = "current_incarnation_attempt"
+            elif manually_paused is not None:
+                reason = "manual_pause"
+            elif task["branch_name"] != target.branch:
+                reason = "branch_identity"
+            elif task["status"] not in {"IN_PROGRESS", "PAUSED"}:
+                reason = "container_not_released"
+            elif task["status"] == "PAUSED" and checkpoint["episode_id"] is None:
+                reason = "unexplained_pause"
+            if reason is not None:
+                return {"outcome": "waiting", "task_id": task_id, "reason": reason}
             head = await self._resolve_head(repo, target.branch)
             if head != origin["base_sha"] or checkpoint["checkpoint_sha"] != head:
-                return {"outcome": "waiting", "task_id": task_id}
+                return {"outcome": "waiting", "task_id": task_id, "reason": "origin_changed"}
             operation = await self.parent_completion.reserve_episode_on(
                 conn, parent=task, project=project, checkpoint=checkpoint,
                 pre_collection_sha=head,
@@ -574,6 +1091,11 @@ class HierarchyIntegration:
                 transition = await self.db._apply_transition(
                     conn, task_id, TaskStatus.PAUSED, context="integration_parent_suspended",
                     assigned_agent_id=None, _manual_pause_control=True,
+                )
+            if self.subject_policy_loader is not None:
+                from src.integration.parent_subjects import ensure_parent_subject_on
+                await ensure_parent_subject_on(
+                    self.db, conn, task_id, self.subject_policy_loader, clock=self.clock,
                 )
         if transition is not None:
             await self.db.log_blocked_flips(transition.flipped)
@@ -591,6 +1113,7 @@ class HierarchyIntegration:
         *,
         _suspend: bool = False,
         expect_claim_epoch: int | None = None,
+        accepted_close: dict | None = None,
     ) -> dict:
         if not _OID.fullmatch(head_sha):
             raise HierarchyError("dirty", "head_sha must be a lowercase 40-character Git OID")
@@ -711,6 +1234,11 @@ class HierarchyIntegration:
                     updated_at=self.clock(),
                 )
             )
+            if self.subject_policy_loader is not None:
+                from src.integration.parent_subjects import ensure_parent_subject_on
+                await ensure_parent_subject_on(
+                    self.db, conn, task_id, self.subject_policy_loader, clock=self.clock,
+                )
             transition = None
             if _suspend:
                 transition = await self.db._apply_transition(
@@ -721,6 +1249,7 @@ class HierarchyIntegration:
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
                     _manual_pause_control=True,
+                    accepted_close=accepted_close,
                 )
         if transition is not None:
             await self.db.log_blocked_flips(transition.flipped)
@@ -740,14 +1269,20 @@ class HierarchyIntegration:
         generation: int,
         *,
         expect_claim_epoch: int,
+        accepted_close: dict | None = None,
     ) -> dict:
-        """Atomically reserve the collection episode and pause its producer."""
+        """Atomically reserve the collection episode and pause its producer.
+
+        ``accepted_close`` is the producer's ``task close`` identity, recorded
+        with the PAUSED transition (``_apply_transition``).
+        """
         return await self.checkpoint_parent(
             task_id,
             head_sha,
             generation,
             _suspend=True,
             expect_claim_epoch=expect_claim_epoch,
+            accepted_close=accepted_close,
         )
 
     async def materialize_origin(self, origin_id: str) -> dict:
@@ -770,7 +1305,8 @@ class HierarchyIntegration:
             repo = await self._repo_on(read_conn, row["repository_id"])
         if repo is None:
             raise HierarchyError("invalid", "origin repository does not exist")
-        branch = f"aq/{task['id']}"
+        branch = task["branch_name"]
+        await self._reacquire_expired_reservation(origin_id, repo.id, branch)
         ownership = await self.ownership.get_owner(
             BranchKey(repository_id=repo.id, branch=branch)
         )
@@ -785,13 +1321,11 @@ class HierarchyIntegration:
         )
         transition = None
         async with self.ownership.mutation_exclusion(fence) as conn:
-            current = (
-                await conn.execute(
-                    select(task_branch_origins)
-                    .where(task_branch_origins.c.id == origin_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            current = await select_row(
+                conn, task_branch_origins,
+                task_branch_origins.c.id == origin_id,
+                lock=True,
+            )
             if current is None or current["retired_at"] is not None:
                 raise HierarchyError("invalid", "pending origin changed")
             task = await self._task_row(conn, current["task_id"])
@@ -829,84 +1363,253 @@ class HierarchyIntegration:
             "base_sha": current["base_sha"],
         }
 
+    async def _reacquire_expired_reservation(
+        self, origin_id: str, repository_id: str, branch: str
+    ) -> None:
+        """Re-lease a detached task's own expired reservation before its cut.
+
+        Backfill leases a pre-existing managed owner row to its task for the
+        finite ref-lease TTL; a drain backlog can outlive it, after which every
+        retry fails ``ref lease expired``.  Only the same holder is re-leased,
+        only with no writer anywhere, only for this exact live origin in the
+        designated repository; ``acquire_on``'s fence bump fences out every
+        older grant.  Anything else is left for the ordinary checks to refuse.
+        """
+        from src.database.queries.integration_state_queries import session_attached_clause
+        from src.database.tables import events, projects
+        from src.integration.lock import BranchLock, managed
+
+        lock = BranchLock(self.db, clock=self.ownership._clock)
+        async with self.db.immediate() as conn:
+            project_id = (await conn.execute(
+                select(tasks.c.project_id)
+                .select_from(tasks.join(task_branch_origins,
+                                        task_branch_origins.c.task_id == tasks.c.id))
+                .where(task_branch_origins.c.id == origin_id)
+            )).scalar_one_or_none()
+            if project_id is None:
+                return
+            await self.db.lock_hierarchy_project(conn, project_id)
+            origin = (await conn.execute(
+                select(task_branch_origins)
+                .where(task_branch_origins.c.id == origin_id).with_for_update()
+            )).mappings().one()
+            task = await self._task_row(conn, origin["task_id"])
+            project = (await conn.execute(
+                select(projects).where(projects.c.id == project_id)
+            )).mappings().one()
+            if (
+                origin["retired_at"] is not None
+                or not origin["reserved"]
+                or origin["materialized"]
+                or origin["repository_id"] != repository_id
+                or origin["branch_name"] != branch
+                or task["branch_name"] != branch
+                or task["project_id"] != project_id
+                or project["integration_repository_id"] != repository_id
+                or project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
+            ):
+                return
+            target = BranchKey(repository_id=repository_id, branch=branch)
+            row = await lock.lock_on(conn, target)
+            if (
+                not managed(row)
+                or row["ref"] != branch
+                or row["holder"] != task["id"]
+                or row["owner_id"] != task["id"]
+                or row["owner_role"] != "worker"
+                or row["handoff_state"] != "reserved"
+                or row["session_id"] is not None
+                or row["workspace_id"] is not None
+                or row["expires_at"] is None
+                or row["expires_at"] > lock.clock()
+            ):
+                return
+            live_session = (await conn.execute(
+                select(sessions.c.id)
+                .where(sessions.c.task_id == task["id"], session_attached_clause()).limit(1)
+            )).scalar_one_or_none()
+            held_workspace = (await conn.execute(
+                select(workspaces.c.id)
+                .where(workspaces.c.locked_by_task_id == task["id"]).limit(1)
+            )).scalar_one_or_none()
+            if task["assigned_agent_id"] or live_session or held_workspace:
+                raise HierarchyError(
+                    "invalid", "expired origin reservation still has a writer or workspace"
+                )
+            fence = await lock.acquire_on(conn, target, task["id"], role="worker")
+            await conn.execute(insert(events).values(
+                event_type="integration.origin_lease_reacquired",
+                project_id=project_id,
+                task_id=task["id"],
+                timestamp=self.clock(),
+                payload=json.dumps({
+                    "origin_id": origin_id,
+                    "repository_id": repository_id,
+                    "branch": branch,
+                    "base_sha": origin["base_sha"],
+                    "creation_generation": origin["creation_generation"],
+                    "previous_fence": row["fence"],
+                    "previous_expires_at": row["expires_at"],
+                    "fence": fence.token,
+                }),
+            ))
+        logger.info(
+            "Re-leased expired reservation aq/%s for origin %s (fence %s -> %s)",
+            task["id"], origin_id, row["fence"], fence.token,
+        )
+
     async def mutate_hierarchy(
         self, task_id: str, mutation: str, arguments: dict
     ) -> dict:
+        # The integration contract always fences both parent generations: a
+        # missing expectation compares as ``None`` and refuses as stale.
+        expected = {
+            key: arguments.get(key)
+            for key in ("expected_old_generation", "expected_new_generation")
+        }
+        delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
+        async with self.db.immediate() as conn:
+            result, transition = await self.mutate_hierarchy_on(
+                conn, task_id, mutation, {**arguments, **expected}, delivery=delivery,
+            )
+        await self.db.log_blocked_flips(transition.flipped)
+        await self.db._notify_settled(transition.settled)
+        await self.db._notify_ready(transition.ready)
+        return result
+
+    async def mutate_hierarchy_on(
+        self, conn, task_id: str, mutation: str, arguments: dict, *, delivery=None,
+        reject_live_parent: bool = False,
+    ) -> tuple[dict, TransitionResult]:
+        """Apply one hierarchy mutation in the caller's transaction.
+
+        ``arguments`` carries ``parent_id`` (``None`` = root) and the
+        ``expected_old_generation`` / ``expected_new_generation`` fences;
+        a fence key that is absent is not checked (``reparent_task`` reads
+        the generations under the same locks), one that is present must match.
+        """
         if mutation != "reparent":
             raise HierarchyError("invalid", f"unsupported hierarchy mutation: {mutation}")
-        new_parent_id = arguments.get("parent_id")
-        if not new_parent_id:
+        if "parent_id" not in arguments:
             raise HierarchyError("invalid", "reparent requires parent_id")
-        async with self.db.immediate() as conn:
-            child = await self._task_row(conn, task_id)
-            project, repo = await self._enabled_route(conn, child)
-            await self.db.lock_hierarchy_project(conn, project["id"])
-            child = await self._task_row(conn, task_id)
-            old_parent_id = child["parent_task_id"]
-            if not old_parent_id or old_parent_id == new_parent_id:
-                raise HierarchyError("invalid", "reparent requires a different existing parent")
+        return await self.reparent_on(
+            conn, task_id, arguments["parent_id"], delivery=delivery,
+            expected_generations=arguments, reject_live_parent=reject_live_parent,
+        )
+
+    async def reparent_on(
+        self, conn, task_id: str, new_parent_id: str | None, *, delivery=None,
+        expected_generations: dict | None = None, reject_live_parent: bool = False,
+    ) -> tuple[dict, TransitionResult]:
+        """Retarget an unused leaf and its origin in the caller's transaction."""
+        child = await self._task_row(conn, task_id)
+        project, repo = await self._enabled_route(conn, child)
+        await self.db.lock_hierarchy_project(conn, project["id"])
+        child = await self._task_row(conn, task_id)
+        old_parent_id = child["parent_task_id"]
+        if not old_parent_id or old_parent_id == new_parent_id:
+            raise HierarchyError("invalid", "reparent requires a different existing parent")
+        for parent_id in (old_parent_id, new_parent_id):
+            if parent_id is None:
+                continue
+            ancestors = self.db._ancestor_cte(parent_id)
+            closed = await conn.scalar(select(tasks.c.id).join(
+                ancestors, ancestors.c.id == tasks.c.id,
+            ).where(tasks.c.status == TaskStatus.COMPLETED.value).limit(1))
+            if closed is not None:
+                raise HierarchyError("container_closed", closed)
+            batch = await self._active_batch_owner(conn, select(ancestors.c.id))
+            if batch is not None:
+                raise _needs_quiescence(
+                    "reparent would change a sealed subtree", batch, _CONTINUE_BATCH,
+                )
+        origin = await self._assert_reparentable(conn, task_id, repo, delivery=delivery)
+        old_checkpoint = await self._locked_checkpoint(conn, old_parent_id)
+        new_checkpoint = None
+        if new_parent_id is not None:
             new_parent = await self._task_row(conn, new_parent_id)
             if new_parent["project_id"] != project["id"]:
                 raise HierarchyError("invalid", "new parent belongs to another project")
-            await self._assert_reparentable(conn, task_id, repo.id)
             await self._ensure_origin_chain(conn, new_parent_id, repo)
-            old_checkpoint = await self._locked_checkpoint(conn, old_parent_id)
             new_checkpoint = await self._locked_checkpoint(conn, new_parent_id)
-            expected_old = arguments.get("expected_old_generation")
-            expected_new = arguments.get("expected_new_generation")
-            if expected_old is None or int(old_checkpoint["generation"]) != int(expected_old):
+        expected_old = int(old_checkpoint["generation"])
+        expected_new = int(new_checkpoint["generation"]) if new_checkpoint else None
+        if expected_generations is not None:
+            if ("expected_old_generation" in expected_generations
+                    and expected_generations["expected_old_generation"] != expected_old):
                 raise HierarchyError("stale_parent", "old parent generation changed")
-            if expected_new is None or int(new_checkpoint["generation"]) != int(expected_new):
+            if (new_checkpoint is not None
+                    and "expected_new_generation" in expected_generations
+                    and expected_generations["expected_new_generation"] != expected_new):
                 raise HierarchyError("stale_parent", "new parent generation changed")
-            now = self.clock()
-            origin = await self._locked_origin(conn, task_id, repo.id)
-            await conn.execute(
-                update(task_branch_origins)
-                .where(task_branch_origins.c.id == origin["id"])
-                .where(task_branch_origins.c.materialized.is_(False))
-                .values(retired_at=now)
-            )
-            old_generation = int(expected_old) + 1
-            new_generation = int(expected_new) + 1
-            for parent_id, expected, generation in (
-                (old_parent_id, expected_old, old_generation),
-                (new_parent_id, expected_new, new_generation),
-            ):
-                await conn.execute(
-                    update(task_integration_checkpoints)
-                    .where(task_integration_checkpoints.c.task_id == parent_id)
-                    .where(task_integration_checkpoints.c.generation == expected)
-                    .values(
-                        generation=generation,
-                        verified_sha=None,
-                        verified_generation=None,
-                        version=task_integration_checkpoints.c.version + 1,
-                        updated_at=now,
-                    )
-                )
-            await self.db.set_parent(
-                task_id, new_parent_id, conn=conn, integration_authorized=True
-            )
-            await self._reserve_origin(
-                conn,
-                task_id=task_id,
-                repository_id=repo.id,
-                parent_task_id=new_parent_id,
-                parent_ref=new_checkpoint["branch"],
-                base_sha=new_checkpoint["checkpoint_sha"],
-                generation=new_generation,
-            )
+        base_sha = (new_checkpoint["checkpoint_sha"] if new_checkpoint else
+                    await self._resolve_head(repo, repo.default_branch))
+        if origin["materialized"]:
+            if new_checkpoint is not None and base_sha != origin["base_sha"]:
+                raise HierarchyError("delivery_target_fixed", "new parent checkpoint differs")
+            base_sha = origin["base_sha"]
+        now = self.clock()
+        await conn.execute(
+            update(task_branch_origins).where(task_branch_origins.c.id == origin["id"])
+            .values(retired_at=now)
+        )
+        old_generation = expected_old + 1
+        new_generation = expected_new + 1 if expected_new is not None else None
+        for parent_id, expected, generation in (
+            (old_parent_id, expected_old, old_generation),
+            (new_parent_id, expected_new, new_generation),
+        ):
+            if parent_id is None:
+                continue
             await conn.execute(
                 update(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == task_id)
+                .where(task_integration_checkpoints.c.task_id == parent_id)
+                .where(task_integration_checkpoints.c.generation == expected)
                 .values(
-                    checkpoint_sha=new_checkpoint["checkpoint_sha"],
+                    generation=generation,
                     verified_sha=None,
                     verified_generation=None,
                     version=task_integration_checkpoints.c.version + 1,
                     updated_at=now,
                 )
             )
+        transition = await self.db.set_parent(
+            task_id, new_parent_id, conn=conn, integration_authorized=True,
+            reject_live_parent=reject_live_parent, check_ancestor_dependencies=True,
+        )
+        parent_ref = new_checkpoint["branch"] if new_checkpoint else repo.default_branch
+        await self._reserve_origin(
+            conn, task_id=task_id, repository_id=repo.id, parent_task_id=new_parent_id,
+            parent_ref=parent_ref, base_sha=base_sha, generation=new_generation or 0,
+            materialized=origin["materialized"],
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == task_id)
+            .values(
+                checkpoint_sha=base_sha, verified_sha=None, verified_generation=None,
+                version=task_integration_checkpoints.c.version + 1, updated_at=now,
+            )
+        )
+        from src.database.tables import events
+
+        await conn.execute(insert(events).values(
+            event_type="integration.task_relocated",
+            project_id=project["id"],
+            task_id=task_id,
+            timestamp=now,
+            payload=json.dumps({
+                "old_parent_id": old_parent_id,
+                "new_parent_id": new_parent_id,
+                "old_parent_generation": old_generation,
+                "new_parent_generation": new_generation,
+                "retired_origin_id": origin["id"],
+                "parent_ref": parent_ref,
+                "base_sha": base_sha,
+                "materialized": bool(origin["materialized"]),
+            }),
+        ))
         return {
             "outcome": "updated",
             "task_id": task_id,
@@ -914,7 +1617,55 @@ class HierarchyIntegration:
             "new_parent_id": new_parent_id,
             "old_parent_generation": old_generation,
             "new_parent_generation": new_generation,
-        }
+        }, transition
+
+    async def _root_route(self, conn, project_id: str, *, promotion_target=None) -> tuple[dict, RepoConfig]:
+        """The (project, repo) a new root in *project_id* files through."""
+        project = (
+            await conn.execute(
+                select(self._projects_table()).where(self._projects_table().c.id == project_id)
+            )
+        ).mappings().one_or_none()
+        modes = {"hierarchy", "train"} | ({"development"} if promotion_target else set())
+        if project is None or project["hierarchical_integration_mode"] not in modes:
+            raise HierarchyError("invalid", "hierarchical integration is not enabled")
+        project = dict(project)
+        repository_id = project["integration_repository_id"]
+        repo = await self._repo_on(conn, repository_id) if repository_id else None
+        if repo is None or repo.project_id != project_id:
+            raise HierarchyError("invalid", "designated repository is not in the project")
+        if promotion_target:
+            from src.integration.promotion_steps import FlowSchema
+
+            flow = FlowSchema.validate(project["promotion_flow"], default_branch=repo.default_branch)
+            if flow.layer < 3 or promotion_target not in {
+                "refs/heads/" + step["target"] for step in flow.flow or []
+            }:
+                raise HierarchyError("invalid", "root target is not on the promotion chain")
+        return project, repo
+
+    async def graph_route(
+        self, conn, project_id: str, parent_id: str | None = None
+    ) -> tuple[dict, RepoConfig] | None:
+        """The route a task graph in *project_id* files through, or ``None``.
+
+        ``None`` means the project is not hierarchical and the graph creator
+        may take its legacy path.  An enabled project answers the same
+        ``(project, repo)`` that :meth:`file_root_on` (new container) or
+        :meth:`file_prepared_children_on` (existing *parent_id*) will use,
+        raising the same :class:`HierarchyError` they would — so a dry run
+        refuses exactly what the real run refuses, before anything is written.
+        """
+        mode = await conn.scalar(
+            select(self._projects_table().c.hierarchical_integration_mode).where(
+                self._projects_table().c.id == project_id
+            )
+        )
+        if mode not in {"hierarchy", "train"}:
+            return None
+        if parent_id is not None:
+            return await self._enabled_route(conn, await self._task_row(conn, parent_id))
+        return await self._root_route(conn, project_id)
 
     async def _enabled_route(self, conn, task: dict) -> tuple[dict, RepoConfig]:
         project = (
@@ -951,32 +1702,37 @@ class HierarchyIntegration:
         return dict(row)
 
     async def _locked_checkpoint(self, conn, task_id: str) -> dict:
-        row = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        row = await select_row(
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == task_id,
+            lock=True,
+        )
         if row is None:
             raise HierarchyError("invalid", f"task has no integration checkpoint: {task_id}")
         return dict(row)
 
     async def _locked_origin(self, conn, task_id: str, repository_id: str) -> dict:
-        row = (
-            await conn.execute(
-                select(task_branch_origins)
-                .where(task_branch_origins.c.task_id == task_id)
-                .where(task_branch_origins.c.repository_id == repository_id)
-                .where(task_branch_origins.c.retired_at.is_(None))
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        row = await select_row(
+            conn, task_branch_origins,
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None),
+            lock=True,
+        )
         if row is None:
             raise HierarchyError("invalid", "task has no live branch origin")
         return dict(row)
 
-    async def _ensure_origin_chain(self, conn, task_id: str, repo: RepoConfig) -> None:
+    async def _ensure_origin_chain(
+        self,
+        conn,
+        task_id: str,
+        repo: RepoConfig,
+        *,
+        origin_generation: int = 0,
+        root_branch: str | None = None,
+        root_parent_ref: str | None = None,
+    ) -> None:
         chain: list[dict] = []
         current = await self._task_row(conn, task_id)
         while current is not None:
@@ -986,20 +1742,20 @@ class HierarchyIntegration:
         chain.reverse()
         parent_checkpoint: dict | None = None
         for row in chain:
-            existing = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == row["id"]
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn, task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == row['id'],
+            )
             if existing is not None:
                 parent_checkpoint = dict(existing)
                 continue
-            branch = f"aq/{row['id']}"
+            branch = row["branch_name"] or f"aq/{row['id']}"
             if parent_checkpoint is None:
-                base_sha = await self._resolve_head(repo, row["branch_name"] or repo.default_branch)
-                parent_ref = repo.default_branch
+                base_sha = await self._resolve_head(
+                    repo, root_branch or row["branch_name"] or repo.default_branch,
+                    filing=root_branch is not None,
+                )
+                parent_ref = root_parent_ref or repo.default_branch
             else:
                 base_sha = parent_checkpoint["checkpoint_sha"]
                 parent_ref = parent_checkpoint["branch"]
@@ -1015,7 +1771,7 @@ class HierarchyIntegration:
                 parent_task_id=row["parent_task_id"],
                 parent_ref=parent_ref,
                 base_sha=base_sha,
-                generation=0,
+                generation=origin_generation,
             )
             await self._insert_checkpoint(
                 conn,
@@ -1032,10 +1788,11 @@ class HierarchyIntegration:
                 "checkpoint_sha": base_sha,
             }
 
-    async def _resolve_head(self, repo: RepoConfig, branch: str) -> str:
-        if self.default_head_resolver is None:
+    async def _resolve_head(self, repo: RepoConfig, branch: str, *, filing: bool = False) -> str:
+        resolver = (self.filing_head_resolver if filing else None) or self.default_head_resolver
+        if resolver is None:
             raise HierarchyError("invalid", "repository head resolver is unavailable")
-        value = self.default_head_resolver(repo, branch)
+        value = resolver(repo, branch)
         if inspect.isawaitable(value):
             value = await value
         if not isinstance(value, str) or not _OID.fullmatch(value):
@@ -1052,25 +1809,31 @@ class HierarchyIntegration:
         parent_ref: str,
         base_sha: str,
         generation: int,
+        materialized: bool = False,
     ) -> dict:
         if not _OID.fullmatch(base_sha):
             raise HierarchyError("invalid", "branch origin base is not an exact Git OID")
-        branch = f"aq/{task_id}"
-        if parent_task_id is not None and parent_ref == "main":
-            raise HierarchyError("invalid", "child delivery cannot target the default branch")
+        task = await self._task_row(conn, task_id)
+        branch = task["branch_name"]
+        if parent_task_id is not None:
+            repo = await self._repo_on(conn, repository_id)
+            if repo is None or parent_ref.removeprefix("refs/heads/") == repo.default_branch:
+                raise HierarchyError("invalid", "child delivery cannot target the default branch")
         origin_id = str(uuid.uuid4())
         now = self.clock()
         values = {
             "id": origin_id,
             "task_id": task_id,
             "repository_id": repository_id,
+            "branch_name": branch,
             "parent_task_id": parent_task_id,
             "parent_repository_id": repository_id if parent_task_id else None,
             "parent_ref": parent_ref,
             "base_sha": base_sha,
             "creation_generation": generation,
             "reserved": True,
-            "materialized": False,
+            "materialized": materialized,
+            "materialized_at": now if materialized else None,
             "created_at": now,
         }
         await conn.execute(insert(task_branch_origins).values(**values))
@@ -1080,12 +1843,14 @@ class HierarchyIntegration:
             "worker",
             conn=conn,
         )
+        if materialized:
+            return values | {"branch": branch}
         event_id = f"materialize-{origin_id}"
         await enqueue_integration_event(
             conn,
             event_id=event_id,
             dedup_key=f"integration.branch_materialization:{origin_id}",
-            project_id=(await self._task_row(conn, task_id))["project_id"],
+            project_id=task["project_id"],
             event_type="integration.branch_materialization_pending",
             payload={
                 "operation_id": origin_id,
@@ -1166,7 +1931,7 @@ class HierarchyIntegration:
     async def _maybe_create_routing_gate(self, conn, task: Task, routing_policy) -> str | None:
         if routing_policy is None or not routing_policy(task):
             return None
-        gate_id = await self.db.create_gate(
+        gate_id, _created = await self.db.create_gate(
             task.project_id,
             "routing",
             "Route task",
@@ -1179,21 +1944,20 @@ class HierarchyIntegration:
 
     @staticmethod
     def _build_child(parent: dict, repository_id: str, task_id: str, values: dict) -> Task:
-        allowed = {field.name for field in fields(Task)} - {
-            "id",
-            "project_id",
-            "repo_id",
-            "parent_task_id",
-            "branch_name",
-            "status",
-        }
-        unknown = set(values) - allowed - {"reason"}
+        # A child filing names its work, never its route (mandatory-routing
+        # spec §5.3): ``profile_id``, ``route_source``, ``route`` and
+        # ``provider_intent`` are refused like any other field outside the
+        # whitelist, and an ``intelligence_class`` is the child's class hint.
+        # The project's router writes the route.
+        unknown = set(values) - _CHILD_FIELDS - {"reason", "intelligence_class"}
         if unknown:
             raise HierarchyError("invalid", "unknown child fields: " + ", ".join(sorted(unknown)))
         title = str(values.get("title") or "").strip()
         if not title:
             raise HierarchyError("invalid", "child title is required")
-        supplied = {key: value for key, value in values.items() if key in allowed}
+        supplied = {key: value for key, value in values.items() if key in _CHILD_FIELDS}
+        if values.get("intelligence_class") and not supplied.get("class_hint"):
+            supplied["class_hint"] = values["intelligence_class"]
         supplied["title"] = title
         supplied.setdefault("description", title)
         return Task(
@@ -1206,51 +1970,142 @@ class HierarchyIntegration:
             **supplied,
         )
 
-    async def _assert_reparentable(self, conn, task_id: str, repository_id: str) -> None:
-        origin = await self._locked_origin(conn, task_id, repository_id)
-        if origin["materialized"]:
-            raise HierarchyError("delivery_target_fixed", "branch origin is already materialized")
-        task = await self._task_row(conn, task_id)
-        if task["status"] not in {TaskStatus.DEFINED.value, TaskStatus.READY.value}:
-            raise HierarchyError("delivery_target_fixed", "task already started")
-        busy = (
-            await conn.execute(
-                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+    async def _assert_reparentable(
+        self, conn, task_id: str, repo: RepoConfig, *, delivery=None,
+    ) -> dict:
+        """Refuse moving a leaf whose work is live, owned or carries code.
+
+        Live or owned work answers ``needs_quiescence`` with the owner and the
+        safe continuation (design §7): a reparent never rewrites a running,
+        materialized, completed or landed source.
+        """
+        # Claims lock the task before attaching its branch owner. Serialize
+        # that path before checking either ownership or liveness.
+        task = dict((await conn.execute(select(tasks).where(
+            tasks.c.id == task_id,
+        ).with_for_update())).mappings().one())
+        origin = await self._locked_origin(conn, task_id, repo.id)
+        if len(await self.db.subtree_ids(task_id, conn=conn)) != 1:
+            raise HierarchyError(
+                "delivery_target_fixed", "reparent moves one leaf; move a container's children",
             )
-        ).first()
-        live = (
-            await conn.execute(
-                select(sessions.c.id)
-                .where(sessions.c.task_id == task_id)
-                .where(sessions.c.state.in_(("starting", "running", "draining")))
-                .limit(1)
+        if task["status"] == "COMPLETED":
+            raise _needs_quiescence(
+                "task has completed work",
+                {"kind": "delivery", "task_id": task_id, "status": task["status"]},
+                _CONTINUE_CODE,
             )
-        ).first()
-        delivered = (
-            await conn.execute(
-                select(task_delivery_receipts.c.id)
-                .where(task_delivery_receipts.c.source_task_id == task_id)
-                .limit(1)
+        if task["assigned_agent_id"] is not None or task["status"] not in {
+            "DEFINED", "READY", "PAUSED", "BLOCKED", "FAILED",
+        }:
+            raise _needs_quiescence(
+                "task has a holder",
+                {"kind": "claim", "task_id": task_id, "status": task["status"],
+                 "agent_id": task["assigned_agent_id"]},
+                _CONTINUE_CLAIM,
             )
-        ).first()
-        sealed = (
-            await conn.execute(
-                select(integration_batch_members.c.task_id)
-                .select_from(
-                    integration_batch_members.join(
-                        integration_batches,
-                        integration_batches.c.id == integration_batch_members.c.batch_id,
-                    )
-                )
-                .where(integration_batch_members.c.task_id == task_id)
-                .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
-                .limit(1)
+        owner = await self.ownership._locked_row(
+            conn, BranchKey(repository_id=repo.id, branch=task["branch_name"]),
+        )
+        if owner is not None and (
+            owner["owner_id"] != task_id or owner["handoff_state"] not in {"reserved", "released"}
+            or owner["workspace_id"] is not None or owner["session_id"] is not None
+        ):
+            raise _needs_quiescence(
+                "branch has an attached owner",
+                {"kind": "branch_owner", "branch": task["branch_name"],
+                 "owner_id": owner["owner_id"], "handoff_state": owner["handoff_state"],
+                 "workspace_id": owner["workspace_id"], "session_id": owner["session_id"]},
+                _CONTINUE_CLAIM,
             )
-        ).first()
-        if busy or live or delivered:
-            raise HierarchyError("delivery_target_fixed", "task has started or delivered work")
-        if sealed:
-            raise HierarchyError("sealed", "task belongs to an active sealed batch")
+        _delivery_query = (
+            select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+        )
+        busy = (await conn.execute(_delivery_query)).scalar()
+        _delivery_query = (
+            select(sessions.c.id)
+            .where(sessions.c.task_id == task_id)
+            .where(sessions.c.state.in_(("starting", "running", "draining")))
+            .limit(1)
+        )
+        live = (await conn.execute(_delivery_query)).scalar()
+        batch = await self._active_batch_owner(conn, [task_id])
+        if batch is not None:
+            raise _needs_quiescence("task is in an active integration batch", batch, _CONTINUE_BATCH)
+        try:
+            await self.db.guard_integration_mutation(
+                task_id, "reparent", conn=conn, delivery=delivery,
+            )
+        except HierarchyError as exc:
+            if exc.code != "delivery_target_fixed":
+                raise
+            raise _needs_quiescence(
+                "task has landed work", {"kind": "delivery", "task_id": task_id}, _CONTINUE_LANDED,
+            ) from exc
+        if busy or live:
+            raise _needs_quiescence(
+                "task has started work",
+                {"kind": "session" if live else "workspace", "task_id": task_id,
+                 "session_id": live, "workspace_id": busy},
+                _CONTINUE_CLAIM,
+            )
+        if origin["materialized"] and (
+            await self._resolve_head(repo, task["branch_name"]) != origin["base_sha"]
+        ):
+            raise _needs_quiescence(
+                "branch contains commits",
+                {"kind": "branch", "task_id": task_id, "branch": task["branch_name"],
+                 "base_sha": origin["base_sha"]},
+                _CONTINUE_CODE,
+            )
+        return origin
+
+    async def _active_batch_owner(self, conn, member_ids) -> dict | None:
+        """The active integration batch holding any of *member_ids*, as an owner."""
+        row = (await conn.execute(
+            select(
+                integration_batches.c.id, integration_batches.c.lifecycle,
+                integration_batch_members.c.task_id,
+            ).join(
+                integration_batch_members,
+                integration_batches.c.id == integration_batch_members.c.batch_id,
+            ).where(
+                integration_batch_members.c.task_id.in_(member_ids),
+                integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES),
+            ).order_by(integration_batches.c.id).limit(1)
+        )).first()
+        if row is None:
+            return None
+        return {"kind": "integration_batch", "batch_id": row.id, "lifecycle": row.lifecycle,
+                "member_task_id": row.task_id}
+
+
+#: Safe continuations for ``needs_quiescence`` (design §7, editing after release).
+_CONTINUE_CLAIM = (
+    "Request a normal drain or pause of the holder and wait for its claim, workspace and "
+    "session to release (or for the task to close), then retry the move. Do not interrupt "
+    "unrelated siblings; the claim, workspace and source stay untouched until quiescence."
+)
+_CONTINUE_BATCH = (
+    "Wait for the integration batch to finish, or ask the integration owner for an "
+    "integration-owned exclusion of this member, then retry the move."
+)
+_CONTINUE_CODE = (
+    "Keep the code deliverable on its existing path so the integration owner keeps its "
+    "source, ancestry, checks and delivery; file the remaining operational work as a "
+    "separate root task with retained provenance and acceptance."
+)
+_CONTINUE_LANDED = (
+    "Delivery proof stays attached to the original source and ref; a move cannot retract "
+    "it. File any remaining work as a separate explicit leaf."
+)
+
+
+def _needs_quiescence(detail: str, owner: dict, safe_continuation: str) -> HierarchyError:
+    return HierarchyError(
+        "needs_quiescence", detail,
+        context={"owner": owner, "safe_continuation": safe_continuation},
+    )
 
 
 __all__ = [
@@ -1259,3 +2114,22 @@ __all__ = [
     "materialize_exact_branch",
     "verify_workspace_checkpoint",
 ]
+
+
+def _container_owner(task_id: str, row) -> tuple:
+    """The container's branch-owner identity, or a ``stale`` refusal.
+
+    The held writer's own reservation, or a released row (the train's fence
+    after it collected children into the branch) leave the claim as the only
+    writer; a missing row, another live owner or a pending handoff do not.
+    """
+    if row is None:
+        raise HierarchyError("stale", "container delivery branch has no owner record")
+    held = (
+        row["owner_id"] == task_id
+        and row["owner_role"] in {"worker", "verifier"}
+        and row["handoff_state"] in {"reserved", "attached"}
+    )
+    if not held and row["handoff_state"] != "released":
+        raise HierarchyError("stale", "container no longer owns its delivery branch")
+    return (row["id"], row["owner_id"], row["fence_token"], row["handoff_state"], row["updated_at"])

@@ -36,6 +36,7 @@ from src.playbooks.definition import (
     source_digest,
 )
 from src.playbooks.profiles import shipped_profile_fingerprints, shipped_profile_lookup
+from src.playbooks.required import shipped_reviewed_playbook_ids
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
@@ -47,20 +48,32 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 
-#: Frontmatter id -> the shipped Markdown it was compiled from.
+#: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
+#: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
+    "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
+    "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
+    "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
-    "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
-    "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
-    "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "blocked-task-escalation": "src/prompts/reviewed_playbooks/blocked-task-escalation/source.md",
+    "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
+    "morning-report": "src/prompts/default_playbooks/morning-report.md",
+    "supervisor-digest": "src/prompts/reviewed_playbooks/supervisor-digest/source.md",
+    "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
+    "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
+    "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
+    "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
+HISTORICAL_TRAIN_IDS = (
+    "agent-queue-parent-integration", "agent-queue-root-train", "parent-integration", "root-train",
+)
 
 #: §3.4, locked.
 REQUIRED_REVIEW_KEYS = frozenset(
@@ -75,16 +88,30 @@ REQUIRED_REVIEW_KEYS = frozenset(
 REQUIRED_REVIEW_SECTIONS = ()
 
 
-#: The rule ids `tests/test_default_pipeline.py` pins.
+#: The three intake rules the shipped default pipeline keeps; the per-task and
+#: per-branch review rules were retired in cf0002b9c.
 PIPELINE_RULE_IDS = frozenset(
     {
-        "per-task-review",
-        "per-branch-final-review",
         "spec-ingest-on-approve",
         "proposal-ready-gate",
         "commit-on-gate-resolve",
+        "fidelity-review-on-held",
+        "release-on-receipt",
     }
 )
+
+#: The pre-retirement five-rule recording, kept only as a review-rule corpus
+#: for engine tests and the doctor's review-key pin.  Not a shipped artifact.
+RETIRED_REVIEW_PIPELINE = FIXTURE_ROOT / "default-pipeline-retired-reviews.artifact.json"
+
+#: The operator-importable copy of the reviewed bundle.
+INTEGRATION_ONLY_BUNDLE = REPO_ROOT / "docs" / "playbooks" / "integration-only" / "default-pipeline"
+
+#: The reviewed bundles the daemon itself ships and seeds into a fresh vault
+#: (`src/playbooks/required.py`).  Nothing in that tree is compiled at runtime,
+#: so a shipped bundle only stays honest by being the recording this suite
+#: validates.
+DAEMON_REVIEWED_BUNDLES = REPO_ROOT / "src" / "prompts" / "reviewed_playbooks"
 
 #: `src/playbooks/routing.py` suppresses these retired rules; they must never
 #: reappear in a reviewed artifact.
@@ -101,7 +128,11 @@ def playbook_id_for(source: Path) -> str:
 
 
 def _fixture(playbook_id: str) -> Path:
-    return FIXTURE_ROOT / playbook_id
+    root = (
+        FIXTURE_ROOT.parent / "historical-v2"
+        if playbook_id in HISTORICAL_TRAIN_IDS else FIXTURE_ROOT
+    )
+    return root / playbook_id
 
 
 def _read_review(playbook_id: str) -> tuple[dict[str, Any], str]:
@@ -148,7 +179,8 @@ def _inputs(step: Any) -> dict[str, Any]:
 
 def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     """Profile ids the artifact names — as an `llm` step's profile or as a literal
-    `profile_id` argument to a command step.
+    `profile_id` argument to a command step, or a server-owned role task
+    (spec ingestion, fidelity review).
 
     Re-derived from the JSON dump rather than from
     :func:`referenced_profile_ids`, so the production helper the compiler and
@@ -157,6 +189,10 @@ def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     """
     found: set[str] = set()
     for step in definition.steps.values():
+        if getattr(step, "command", None) == "ensure_spec_ingest":
+            found.add("spec-ingest")
+        if getattr(step, "command", None) == "ensure_fidelity_review":
+            found.add("fidelity-reviewer")
         profile_id = getattr(step, "profile_id", None)
         if isinstance(profile_id, str):
             found.add(profile_id)
@@ -314,13 +350,14 @@ def test_compiled_against_fingerprints_every_referenced_profile(playbook_id: str
         )
 
 
-def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> None:
+def test_the_pipeline_depends_on_its_profile_only_by_delegation() -> None:
     """The shape that made the empty map easy to miss, pinned.
 
-    `default-pipeline` has no `llm` or `agent_task` step at all: every one of
-    its three profile dependencies is an `ensure_task` argument.  A future
-    refactor that dropped the delegated half of the snapshot would pass every
-    other assertion in this file, so name the shape here.
+    `default-pipeline` has no `llm` or `agent_task` step at all: its profile
+    dependencies are the `ensure_spec_ingest` and `ensure_fidelity_review`
+    roles. A future refactor that
+    dropped the delegated half of the snapshot would pass every other
+    assertion in this file, so name the shape here.
     """
     definition = _artifact("default-pipeline")
     own = {
@@ -329,11 +366,7 @@ def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> Non
         if getattr(step, "profile_id", None)
     }
     assert own == set(), "default-pipeline gained an AI step; re-review this fixture"
-    assert set(definition.compiled_against.profiles) == {
-        "reviewer",
-        "final-reviewer",
-        "spec-ingest",
-    }
+    assert set(definition.compiled_against.profiles) == {"spec-ingest", "fidelity-reviewer"}
 
 
 def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
@@ -343,11 +376,9 @@ def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
     assert all(value.startswith("sha256:") for value in fingerprints.values())
 
 
-def test_pipeline_references_the_three_review_profiles() -> None:
+def test_pipeline_references_only_its_role_profiles() -> None:
     assert _referenced_profile_ids(_artifact("default-pipeline")) == {
-        "reviewer",
-        "final-reviewer",
-        "spec-ingest",
+        "spec-ingest", "fidelity-reviewer",
     }
 
 
@@ -357,70 +388,391 @@ def test_pipeline_rule_set_unchanged() -> None:
     assert not rule_ids & SUPERSEDED_RULE_IDS
 
 
-def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None:
-    """Spec 2026-09-06 §5: read options, decide only when not explicit, write the route."""
+def test_pipeline_commit_rule_dispatches_only_for_an_approved_human_gate() -> None:
+    """Audit F1: a null filter let every gate resolution attempt a commit."""
+    definition = _artifact("default-pipeline")
+    (rule,) = [r for r in definition.rules if r.id == "commit-on-gate-resolve"]
+    assert rule.trigger.event_type == "gate.resolved"
+    assert rule.trigger.filter == {"gate_type": "human", "resolution": ["approve", "approved"]}
+    guard = rule.guard.model_dump(mode="json")
+    assert guard == {
+        "type": "exists", "value": {"type": "event_ref", "path": "await_id"}, "mode": "truthy",
+    }
+
+    from src.commands.proposal_commands import APPROVAL_RESOLUTIONS
+
+    assert set(rule.trigger.filter["resolution"]) == APPROVAL_RESOLUTIONS, (
+        "the rule filter and the command boundary must accept the same approvals"
+    )
+    commit = definition.steps[rule.entry_step]
+    assert commit.command == "task_batch_commit"
+    assert _inputs(commit) == {
+        "proposal_id": {"type": "event_ref", "path": "await_id"},
+        "gate_id": {"type": "event_ref", "path": "gate_id"},
+        "project_id": {"type": "event_ref", "path": "project_id"},
+    }
+
+
+def test_pipeline_refusals_never_reach_a_completed_terminal() -> None:
+    """Audit F1: `rejected`/`runtime_error` used to share the success terminal.
+
+    `task_batch_release` reports every refusal as `error`; its decision step
+    completes only a `needs_scope` refusal (the batch waits on its scope ask)
+    and fails every other one (nimble-lantern-37.2).
+    """
+    from src.playbooks.definition import CommandStep, DecisionStep, TerminalStep
+
+    definition = _artifact("default-pipeline")
+    successes = {
+        "ensure_spec_ingest": {"created", "reused"},
+        "gate_create": {"created", "reused", "skipped"},
+        "task_batch_commit": {"committed", "already_committed"},
+        "ensure_fidelity_review": {"created", "reused"},
+        "task_batch_release": {"released", "already_released"},
+    }
+    commands = [s for s in definition.steps.values() if isinstance(s, CommandStep)]
+    assert {s.command for s in commands} == set(successes)
+    release = next(s for s in commands if s.command == "task_batch_release")
+    refused = definition.steps[release.transitions["error"]]
+    assert isinstance(refused, DecisionStep)
+    assert definition.steps[refused.default].outcome == "failed"
+    [needs_scope] = refused.cases
+    assert needs_scope.when.model_dump(mode="json") == {
+        "type": "comparison", "op": "eq",
+        "left": {"type": "binding_ref", "binding": "release", "path": "error_code"},
+        "right": {"type": "literal", "value": "needs_scope"},
+    }
+    assert definition.steps[needs_scope.goto].outcome == "completed"
+    assert set(release.transitions) == {"released", "already_released", "error", "runtime_error"}
+    for step in commands:
+        if step is release:
+            continue
+        for outcome, target in step.transitions.items():
+            terminal = definition.steps[target]
+            assert isinstance(terminal, TerminalStep), (step.command, outcome)
+            expected = "completed" if outcome in successes[step.command] else "failed"
+            assert terminal.outcome == expected, (step.command, outcome, terminal.outcome)
+        assert {"rejected", "runtime_error"} <= set(step.transitions)
+    commit = next(s for s in commands if s.command == "task_batch_commit")
+    assert definition.steps[commit.transitions["not_approved"]].outcome == "failed"
+
+
+PARENT_BUNDLE_IDS = ("parent-integration", "agent-queue-parent-integration")
+
+
+def _record_repair_outcomes() -> dict[str, str]:
+    from src.commands.contracts.builtin import register_builtin_contracts
+    from src.commands.contracts.registry import ContractRegistry
+
+    registry = ContractRegistry()
+    register_builtin_contracts(registry)
+    execution = registry.get("integration_record_repair").contract.execution
+    return {outcome.name: outcome.classification for outcome in execution.outcomes}
+
+
+@pytest.mark.parametrize("playbook_id", PARENT_BUNDLE_IDS)
+def test_record_repair_result_maps_every_declared_outcome(playbook_id: str) -> None:
+    """A red this rule cannot route must fail the run, never complete it.
+
+    A parent's first trusted red arrives before any repair stage exists, and
+    while `integration_record_repair` answered that with `continue`/`stale` the
+    rule reached its success terminal: the failure was filed as handled and the
+    held aggregate verifier waited on a head that could never verify. Mapping
+    every declared outcome keeps a newly added one from inheriting `done`.
+    """
+    from src.playbooks.definition import TerminalStep
+
+    declared = _record_repair_outcomes()
+    assert declared.get("started") == "success", (
+        "opening the stage is the handled path and must be its own outcome, "
+        "because transitions key on the outcome and never on the result action"
+    )
+
+    definition = _artifact(playbook_id)
+    step = definition.steps["record-repair-result--record"]
+    assert step.command == "integration_record_repair"
+    assert set(step.transitions) == set(declared) | {"runtime_error"}
+    for outcome, target in step.transitions.items():
+        terminal = definition.steps[target]
+        assert isinstance(terminal, TerminalStep), (outcome, target)
+        expected = "completed" if declared.get(outcome) == "success" else "failed"
+        assert terminal.outcome == expected, (playbook_id, outcome, terminal.outcome)
+
+
+@pytest.mark.parametrize("playbook_id", PARENT_BUNDLE_IDS)
+def test_record_repair_result_refuses_an_unmapped_outcome(playbook_id: str) -> None:
+    """Dropping an outcome is a refusal at validation, not a silent success."""
+    raw = json.loads(_fixture(playbook_id).joinpath("artifact.json").read_text("utf-8"))
+    del raw["steps"]["record-repair-result--record"]["transitions"]["started"]
+
+    diagnostics = validate_definition(
+        PlaybookDefinition.model_validate(raw), contracts=RegistryContractLookup()
+    )
+
+    unmapped = [d for d in diagnostics if d.code == "unmapped_business_outcome"]
+    assert any("started" in d.message for d in unmapped), [d.message for d in diagnostics]
+
+
+def test_spec_ingest_is_ensured_with_immutable_approval_identity() -> None:
+    """Only the domain command may derive the role from an approved receipt."""
+    definition = _artifact("default-pipeline")
+    ensure = definition.steps["spec-ingest-on-approve--spec_ingest_gate"]
+    assert ensure.command == "ensure_spec_ingest"
+    assert _inputs(ensure) == {
+        name: {"type": "event_ref", "path": name}
+        for name in ("project_id", "decision_id", "packet_sha256")
+    }
+
+
+def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
+    """The operator-importable copy may not drift from the reviewed recording."""
+    for name in ("artifact.json", "artifact.sha256", "source.md", "manifest.md"):
+        assert (INTEGRATION_ONLY_BUNDLE / name).read_bytes() == (
+            _fixture("default-pipeline") / name
+        ).read_bytes(), f"docs/playbooks/integration-only/default-pipeline/{name} drifted"
+
+
+@pytest.mark.parametrize("playbook_id", shipped_reviewed_playbook_ids())
+def test_daemon_shipped_bundle_is_the_reviewed_fixture(playbook_id: str) -> None:
+    """A shipped bundle is seeded verbatim, so it may not drift from the recording.
+
+    Every directory under `src/prompts/reviewed_playbooks/` is covered, not
+    just the two required ids: seeding now refreshes a stale vault copy, so a
+    drifted bundle is no longer inert on an existing install — it is what the
+    next import reads.
+
+    `ensure_reviewed_playbook_bundles` copies these bytes into a new vault and
+    the reconciler activates them; nothing recompiles them from the shipped
+    Markdown.  Without this assertion a policy edit to
+    `src/prompts/default_playbooks/` reaches the fixture — which
+    `test_source_matches_live_shipped_file` guards — and stops there, leaving
+    every fresh install activating the superseded prose.  That is how the
+    routing bundle came to ship two policy revisions behind its own source.
+    """
+    shipped = DAEMON_REVIEWED_BUNDLES / playbook_id
+    for name in (
+        "artifact.json",
+        "artifact.sha256",
+        "source.md",
+        "manifest.md",
+        "diagnostics.json",
+    ):
+        assert (shipped / name).read_bytes() == (_fixture(playbook_id) / name).read_bytes(), (
+            f"src/prompts/reviewed_playbooks/{playbook_id}/{name} drifted from the "
+            "reviewed fixture; re-copy the bundle after rebuilding it"
+        )
+
+
+def _routing_policy_block(source: str) -> str:
+    """The fenced ``yaml`` block under ``## Routing policy``, read independently.
+
+    A regex over the raw Markdown rather than the rebuild script's helper, so
+    the assertion below compares the compiled literal with a second reading of
+    the source, not with the code that produced it.
+    """
+    match = re.search(
+        r"^## Routing policy\n(?:(?!^## ).)*?^```yaml\n(.*?)^```$",
+        source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match, "the routing source has no ```yaml block under '## Routing policy'"
+    return match.group(1)
+
+
+#: The ``## Routing policy`` digest of the shipped default router: the
+#: risk-aware revision approved as rev-azure-flare revision 1, with no
+#: priority gate on any lane, as decided in review rev-wise-impact, plus the
+#: ``operator`` kind that routes setup work only to scoped operator rungs
+#: (docs/guides/operator-workers.md), and standard-first bugfix escalation
+#: (docs/specs/design/routing-live-context.md).
+SHIPPED_ROUTING_POLICY_SHA256 = (
+    "sha256:82e852857e630dfb459b4ddac5f9244ffafb70c2656dbfedd9447c0a8db17412"
+)
+
+ROUTING_BUNDLES = (
+    FIXTURE_ROOT / "default-assignment-routing",
+    DAEMON_REVIEWED_BUNDLES / "default-assignment-routing",
+    REPO_ROOT / "docs/playbooks/shared-fleet/default-assignment-routing",
+)
+
+
+@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped", "shared-fleet"))
+def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None:
+    """Mandatory routing §6.3: the reviewed prose and the executed policy cannot drift.
+
+    Every ``task_route_plan`` step carries the ``## Routing policy`` block's
+    text, verbatim, as its ``policy`` literal, and the artifact passes V2
+    validation against the live registries.
+    """
+    from src.playbooks.definition import CommandStep
+    from src.routing.policy import parse_policy
+
+    definition = load_definition_json((bundle / "artifact.json").read_text(encoding="utf-8"))
+    block = _routing_policy_block((bundle / "source.md").read_text(encoding="utf-8"))
+    live = _routing_policy_block(
+        (REPO_ROOT / SHIPPED_SOURCES["default-assignment-routing"]).read_text(encoding="utf-8")
+    )
+    assert block == live
+    plans = {
+        step_id: step
+        for step_id, step in definition.steps.items()
+        if isinstance(step, CommandStep) and step.command == "task_route_plan"
+    }
+    assert set(plans) == {
+        "route-task--plan_first", "route-task--plan_classified", "route-task--plan_unclassified",
+    }
+    for step_id, step in plans.items():
+        policy = _inputs(step)["policy"]
+        assert policy == {"type": "literal", "value": block}, step_id
+    # The block is the standard-first bugfix policy (agile-delta-86), pinned
+    # so a policy edit remains an explicit change.
+    policy, digest = parse_policy(block)
+    assert digest == SHIPPED_ROUTING_POLICY_SHA256
+    assert set(policy.risk) == {"medium", "high", "very_high"}
+
+    diagnostics = validate_definition(
+        definition,
+        inventory=None,
+        contracts=RegistryContractLookup(),
+        profiles=shipped_profile_lookup(),
+        events=RegisteredEventLookup(),
+    )
+    blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
+    assert not blocking, [(d.code, d.rule_id, d.step_id, d.message) for d in blocking]
+
+
+def test_assignment_router_plans_classifies_and_applies() -> None:
+    """Mandatory routing §6.7: plan, classify only when asked, apply the plan."""
     definition = _artifact("default-assignment-routing")
     assert definition.purpose == "routine"
     (rule,) = definition.rules
     assert rule.id == "route-task"
     assert rule.trigger.event_type == "task.route_needed"
-    assert rule.entry_step == "route-task--read_options"
+    assert rule.entry_step == "route-task--plan_first"
+    assert rule.guard.model_dump(mode="json") == {
+        "type": "bool",
+        "op": "and",
+        "operands": [
+            {
+                "type": "comparison",
+                "op": "in",
+                "left": {"type": "event_ref", "path": "task.status"},
+                "right": {"type": "literal", "value": ["DEFINED", "READY", "BLOCKED"]},
+            },
+            {
+                "type": "comparison",
+                "op": "in",
+                "left": {"type": "event_ref", "path": "task.route_source"},
+                "right": {"type": "literal", "value": ["unrouted", "legacy"]},
+            },
+            {
+                "type": "comparison",
+                "op": "eq",
+                "left": {"type": "event_ref", "path": "router"},
+                "right": {"type": "literal", "value": "default-assignment-routing"},
+            },
+        ],
+    }
+    # The manifest grants the two router commands and nothing else.
+    assert set(definition.compiled_against.commands) == {"task_route_plan", "task_route_apply"}
+    review, _ = _read_review("default-assignment-routing")
+    assert review["capabilities_granted"]["aq_commands"] == ["task_route_apply", "task_route_plan"]
 
-    read = definition.steps["route-task--read_options"]
-    assert read.command == "task_route_options"
-    assert _inputs(read) == {"task_id": {"type": "event_ref", "path": "task_id"}}
-    assert read.save_result_as == "routing"
-    assert read.transitions == {
+    task_id = {"type": "event_ref", "path": "task_id"}
+    first = definition.steps["route-task--plan_first"]
+    assert _inputs(first)["task_id"] == task_id
+    assert set(_inputs(first)) == {"task_id", "policy"}
+    assert first.save_result_as == "plan_a"
+    assert first.transitions == {
+        "planned": "route-task--apply_a",
+        "needs_classification": "route-task--classify",
+        # Every candidate is on an unlaunchable provider: wait, don't fail.
+        "held": "route-task--done",
         "already_routed": "route-task--done",
-        "explicit": "route-task--apply_explicit",
-        "undecided": "route-task--choose",
-        "no_options": "route-task--failed",
+        "no_candidates": "route-task--failed",
         "rejected": "route-task--failed",
         "runtime_error": "route-task--failed",
     }
 
-    choose = definition.steps["route-task--choose"]
-    assert choose.type == "llm"
-    assert choose.profile_id == "playbook-compiler"
-    assert set(_inputs(choose)) == {"title", "description", "priority", "task_type", "options"}
-    assert all(v["type"] == "binding_ref" and v["binding"] == "routing" for v in _inputs(choose).values())
-    assert choose.save_result_as == "decision"
-    assert choose.output_schema["required"] == [
-        "intelligence_class", "provider", "profile_id", "reason",
+    classify = definition.steps["route-task--classify"]
+    assert classify.type == "llm"
+    assert classify.profile_id == "playbook-compiler"
+    # §6.5: the classifier never sees a profile, a provider, a load or the
+    # task's priority.
+    assert set(_inputs(classify)) == {
+        "title", "description", "task_type", "class_hint",
+        "questions", "allowed_kinds", "allowed_classes",
+    }
+    assert all(
+        v == {"type": "binding_ref", "binding": "plan_a", "path": k}
+        for k, v in _inputs(classify).items()
+    )
+    assert classify.save_result_as == "classification"
+    assert classify.output_schema["required"] == [
+        "task_type", "intelligence_class", "narrow", "test_verified",
+        "independent_verifier", "reason", "risk", "risk_reason",
     ]
-    assert choose.output_schema["additionalProperties"] is False
-    assert choose.transitions == {
-        "completed": "route-task--apply_decision",
-        "runtime_error": "route-task--failed",
+    properties = classify.output_schema["properties"]
+    assert properties["risk"] == {
+        "type": "string", "enum": ["low", "medium", "high", "very_high"],
     }
+    assert properties["risk_reason"]["maxLength"] == 400
+    assert classify.output_schema["additionalProperties"] is False
+    assert not classify.tool_use.enabled
+    assert classify.transitions == {
+        "completed": "route-task--plan_classified",
+        # A failed classification still routes, on the policy defaults.
+        "runtime_error": "route-task--plan_unclassified",
+    }
+    prompt = classify.prompt.value
+    assert prompt.startswith("## Classifying a task")
+    # It classifies; no rung is named for it to pick.
+    assert re.search(r"-(claude|codex|opencode|gemini)\b", prompt) is None
+    assert "profile_id" not in prompt
 
-    explicit = definition.steps["route-task--apply_explicit"]
-    assert explicit.command == "task_route"
-    assert _inputs(explicit)["profile_id"] == {
-        "type": "binding_ref", "binding": "routing", "path": "explicit_profile_id",
+    classified = definition.steps["route-task--plan_classified"]
+    assert _inputs(classified)["classification"] == {
+        "type": "binding_ref", "binding": "classification",
     }
-    assert _inputs(explicit)["intelligence_class"] == {
-        "type": "binding_ref", "binding": "routing", "path": "intelligence_class",
+    assert classified.save_result_as == "plan_b"
+    unclassified = definition.steps["route-task--plan_unclassified"]
+    assert _inputs(unclassified)["classification"] == {
+        "type": "literal", "value": {"failed": True},
     }
-    decided = definition.steps["route-task--apply_decision"]
-    assert decided.command == "task_route"
-    assert {k: v["binding"] for k, v in _inputs(decided).items() if v["type"] == "binding_ref"} == {
-        "profile_id": "decision", "intelligence_class": "decision", "reason": "decision",
-    }
-    for step in (explicit, decided):
+    assert unclassified.save_result_as == "plan_c"
+    for step, apply_step in ((classified, "apply_b"), (unclassified, "apply_c")):
+        assert step.transitions == {
+            "planned": f"route-task--{apply_step}",
+            "held": "route-task--done",
+            # Another run routed the task while this one classified it.
+            "already_routed": "route-task--done",
+            "needs_classification": "route-task--failed",
+            "no_candidates": "route-task--failed",
+            "rejected": "route-task--failed",
+            "runtime_error": "route-task--failed",
+        }
+
+    for apply_step, binding in (("apply_a", "plan_a"), ("apply_b", "plan_b"), ("apply_c", "plan_c")):
+        step = definition.steps[f"route-task--{apply_step}"]
+        assert step.command == "task_route_apply"
+        assert _inputs(step) == {
+            "task_id": task_id, "plan": {"type": "binding_ref", "binding": binding},
+        }
         assert step.transitions == {
             "routed": "route-task--done",
+            "stale": "route-task--done",
             "rejected": "route-task--failed",
             "runtime_error": "route-task--failed",
         }
     assert definition.steps["route-task--done"].outcome == "completed"
     assert definition.steps["route-task--failed"].outcome == "failed"
 
-def test_review_dedup_key_matches_doctor() -> None:
-    """The prose rewrite must not silently disarm `integration.unreviewed_prs`."""
-    from src.doctor.integration_checks import _review_dedup_key
 
-    definition = _artifact("default-pipeline")
+def test_review_dedup_key_matches_shared_key() -> None:
+    """The doctor's review key still matches the retired review recording."""
+    from src.review_keys import review_task_dedup_key
+
+    definition = load_definition_json(RETIRED_REVIEW_PIPELINE.read_text(encoding="utf-8"))
     step = definition.steps["per-task-review--create-review"]
     template = _inputs(step)["dedup_key"]
     assert template["type"] == "template", template
@@ -428,29 +780,35 @@ def test_review_dedup_key_matches_doctor() -> None:
         part["value"] if part["type"] == "literal" else "TASK-1"
         for part in template["parts"]
     )
-    assert rendered == _review_dedup_key("TASK-1")
+    assert rendered == review_task_dedup_key("TASK-1")
 
 
-def test_artifact_validates_against_the_live_registries() -> None:
-    """The recorded artifact still resolves every command, event and field.
+@pytest.mark.parametrize("playbook_id", shipped_reviewed_playbook_ids())
+def test_artifact_validates_against_the_live_registries(playbook_id: str) -> None:
+    """Every daemon-shipped artifact resolves commands, events and profile grants.
 
     The shipped profile lookup is passed rather than `None` so the profile
     half of `stale_contract` is exercised too: with `None` the validator has
     no registry to compare `compiled_against.profiles` against and stays
     silent, which is precisely how an empty map went unnoticed.
     """
-    for playbook_id in APPROVED_IDS:
-        diagnostics = validate_definition(
-            _artifact(playbook_id),
-            inventory=None,
-            contracts=RegistryContractLookup(),
-            profiles=shipped_profile_lookup(),
-            events=RegisteredEventLookup(),
-        )
-        blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
-        assert not blocking, [
-            (d.code, d.rule_id, d.step_id, d.message) for d in blocking
-        ]
+    definition = load_definition_json(
+        (DAEMON_REVIEWED_BUNDLES / playbook_id / "artifact.json").read_text(encoding="utf-8")
+    )
+    diagnostics = validate_definition(
+        definition,
+        inventory=None,
+        contracts=RegistryContractLookup(),
+        profiles=shipped_profile_lookup(),
+        events=RegisteredEventLookup(),
+    )
+    blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
+    assert not blocking, (
+        f"{playbook_id}: shipped artifact cannot be imported: "
+        f"{[(d.code, d.rule_id, d.step_id, d.message) for d in blocking]}. "
+        "When changing profile grants or command contracts, rebuild affected bundles "
+        f"in the same commit: python scripts/rebuild-reviewed-playbook-artifacts.py {playbook_id}"
+    )
 
 
 def test_custom_manifest_policy_is_not_a_core_activation_gate(tmp_path: Path) -> None:
@@ -521,7 +879,7 @@ def test_capabilities_granted_unused_by_src() -> None:
     path; every other hit under ``src/`` still fails.
     """
     result = subprocess.run(
-        ["grep", "-rn", "capabilities_granted", "src/"],
+        ["grep", "-rn", "--include=*.py", "capabilities_granted", "src/"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -540,3 +898,19 @@ def test_capabilities_granted_unused_by_src() -> None:
         "capabilities_granted is read by production code; a reviewed fixture would "
         "become an authority claim:\n" + "\n".join(offenders)
     )
+
+
+@pytest.mark.parametrize("playbook_id", HISTORICAL_TRAIN_IDS)
+def test_retired_train_policy_is_archived_and_cannot_validate_for_install(playbook_id):
+    """Retain the reviewed bytes without offering a policy for deleted engines."""
+    archived = REPO_ROOT / "docs/history/legacy-train-policies" / playbook_id
+    assert playbook_id not in shipped_reviewed_playbook_ids()
+    for name in ("source.md", "artifact.json", "artifact.sha256", "manifest.md", "diagnostics.json"):
+        assert (archived / name).read_bytes() == (_fixture(playbook_id) / name).read_bytes()
+    raw = (archived / "artifact.json").read_bytes()
+    assert canonical_bytes(_artifact(playbook_id)) == raw
+    assert (archived / "artifact.sha256").read_text().strip() == (
+        "sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+    diagnostics = validate_definition(_artifact(playbook_id), contracts=RegistryContractLookup())
+    assert any(d.code == "unknown_command" and d.severity == "error" for d in diagnostics)

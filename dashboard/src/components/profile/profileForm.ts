@@ -8,6 +8,7 @@ export interface ProfileFormState {
   default_class: string;
   permission_mode: string;
   codex_full_auto: boolean;
+  codex_service_tier: string;
   claude_dangerously_skip_permissions: boolean;
   system_prompt_suffix: string;
   allowed_tools: string[];
@@ -27,6 +28,7 @@ export function profileToForm(p: ProfileDetail | null | undefined): ProfileFormS
     permission_mode:
       rawPerm === "(default)" || legacyClaudeBypass ? "" : rawPerm,
     codex_full_auto: p?.codex_full_auto ?? false,
+    codex_service_tier: p?.codex_service_tier ?? "",
     claude_dangerously_skip_permissions:
       (p?.claude_dangerously_skip_permissions ?? false) || legacyClaudeBypass,
     system_prompt_suffix: p?.system_prompt_suffix ?? "",
@@ -58,6 +60,7 @@ function commonEditFields(form: ProfileFormState) {
     default_class: form.default_class || "",
     permission_mode: form.permission_mode || null,
     codex_full_auto: form.codex_full_auto,
+    codex_service_tier: form.codex_service_tier || null,
     claude_dangerously_skip_permissions:
       form.claude_dangerously_skip_permissions,
     system_prompt_suffix: form.system_prompt_suffix || null,

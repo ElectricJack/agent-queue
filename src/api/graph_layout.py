@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import math
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -47,6 +48,7 @@ from src.api.models.graph_layout import (
     LocateRequest,
     LocateResponse,
     NodeResponse,
+    RunningTargetResponse,
     StubOverflow,
     TidyRequest,
     TidyResponse,
@@ -54,9 +56,13 @@ from src.api.models.graph_layout import (
     TilesResponse,
 )
 from src.api.scope import check_request_scope
+from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.task_graph.activity import load_activity
+from src.task_graph.ingestion import merge_ingestion
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
+    active_expansion,
     ancestors_of,
     cap_stubs,
     depth_first_order,
@@ -66,6 +72,7 @@ from src.task_graph.layout.view import (
     remap_edges,
     resolve_visible,
 )
+from src.task_graph.readiness import load_readiness
 
 RECT_CAP = 64.0
 EXPANDED_CAP = 2000
@@ -134,10 +141,68 @@ def _persisted_box(row) -> Box:
     return Box(row.abs_x, row.abs_y, row.w, row.h)
 
 
-def _node(row, task, kind, context_only=False, box=None) -> LayoutNode:
+def _phase_fields(meta) -> tuple[int | None, str | None]:
+    """Best-effort ``(order, label)`` from a ``phase`` metadata value.
+
+    A malformed value (not a dict, or an ``order`` that is not an int — a
+    hand-edited vault or a stale writer) is treated as "not a phase" rather
+    than raising: it must never break a tiles/list/node response.
+    """
+    if not isinstance(meta, dict):
+        return None, None
+    order = meta.get("order")
+    if not isinstance(order, int) or isinstance(order, bool):
+        return None, None
+    label = meta.get("label")
+    return order, label if isinstance(label, str) else None
+
+
+def _failed_phase_holds(holds: dict[str, dict]) -> dict[str, dict]:
+    """Return API-shaped hold data only for phases stopped by failed work.
+
+    The query helper also describes ordinary active, empty, manually-paused,
+    and dependency-blocked phase states so ``task explain`` can distinguish
+    them.  A layout card needs the compact, actionable failed-work treatment
+    only; emitting an otherwise-empty ``phase_hold`` object for every phase
+    would make that distinction impossible for clients.
+    """
+    return {
+        task_id: {key: value for key, value in hold.items() if key != "reason_code"}
+        for task_id, hold in holds.items()
+        if hold.get("reason_code") == "phase_failed_work"
+    }
+
+
+def _with_activity(deliveries: dict, activity: dict) -> dict[str, tuple]:
+    """Pair each node's delivery projection with its rolled-up activity.
+
+    Activity comes from its own read, so it survives a delivery read failure.
+    """
+    return {
+        task_id: (deliveries.get(task_id), activity.get(task_id, {}))
+        for task_id in deliveries.keys() | activity.keys()
+    }
+
+
+def _node(
+    row,
+    task,
+    kind,
+    context_only=False,
+    box=None,
+    subtask_counts=None,
+    phase_meta=None,
+    phase_holds=None,
+    deliveries=None,
+    review_waits=None,
+) -> LayoutNode:
     box = box or _persisted_box(row)
+    total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
+    phase_order, phase_label = _phase_fields((phase_meta or {}).get(task["id"]))
+    delivery, activity = (deliveries or {}).get(task["id"], (None, {}))
     return LayoutNode(
         **task,
+        **activity,
         x=box.x,
         y=box.y,
         w=box.w,
@@ -152,6 +217,13 @@ def _node(row, task, kind, context_only=False, box=None) -> LayoutNode:
         agg_running=row.agg_running,
         agg_blocked=row.agg_blocked,
         agg_active=row.agg_active,
+        subtasks_total=total,
+        subtasks_settled=settled,
+        phase_order=phase_order,
+        phase_label=phase_label,
+        phase_hold=(phase_holds or {}).get(task["id"]),
+        delivery=delivery,
+        review_waits=(review_waits or {}).get(task["id"], []),
     )
 
 
@@ -160,6 +232,33 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
     # Per-router, so a test's throwaway app never reads another test's
     # geometry back out of a process-wide cache.
     geometry_cache: OrderedDict[tuple, _Geometry] = OrderedDict()
+
+    async def _deliveries(project_id: str, rows_with_tasks: list) -> dict[str, tuple]:
+        """The epic delivery projection and activity for rows with children.
+
+        One batched read for the whole response (plus collection readiness
+        for the few epics whose children are all done); a read failure
+        leaves ``delivery`` unset rather than failing the layout response.
+        """
+        ids = [row.task_id for row, _ in rows_with_tasks if (row.agg_children or 0) > 0]
+        # Each endpoint already joined the current task row. Reuse it rather
+        # than paying another task SELECT on every viewport request.
+        readiness = await load_readiness(db, [
+            {**task, "project_id": project_id} for _, task in rows_with_tasks
+        ])
+        await merge_ingestion(db, [task for _, task in rows_with_tasks], readiness)
+        if not ids:
+            return _with_activity({}, readiness)
+        from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
+
+        projection = EpicDeliveryProjection(
+            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None)),
+            cached_only=True,
+        )
+        activity = await load_activity(db, ids)
+        for tid, fields in readiness.items():
+            activity.setdefault(tid, {}).update(fields)
+        return _with_activity(await projection.for_tasks(ids), activity)
 
     async def _project_or_404(project_id: str):
         if await db.get_project(project_id) is None:
@@ -184,15 +283,74 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         """
         return (v or "").strip().upper()
 
-    async def _variant_for_expanded(
-        project_id: str, variant: str, expanded: list[str]
+    async def _variant_for_scope(
+        project_id: str, variant: str, root: str | None, expanded: list[str]
     ) -> str:
-        """Use the full layout when an expanded container is an active-view stub."""
+        """Use the full layout when a scope the viewer opened is not in this one.
 
-        if variant == "all" or not expanded:
+        ``root`` (the container the viewer has ENTERED) is treated like an
+        expanded container: entering a live one is the root view one level
+        down and keeps showing unfinished work only, while entering a
+        finished one — an active-view stub, or a row the active variant
+        dropped altogether — has to fall back to the full layout or there
+        would be nothing to draw.
+        """
+        ids = [*([root] if root is not None else []), *expanded]
+        if variant == "all" or not ids:
             return variant
-        rows = await db.load_layout_rows(project_id, variant, expanded)
+        rows = await db.load_layout_rows(project_id, variant, ids)
+        if root is not None and root not in rows:
+            return "all"
         return "all" if any(row.kind == "stub" for row in rows.values()) else variant
+
+    async def _all_scope_has_displayed_card(
+        project_id: str, root: str | None, expanded: list[str]
+    ) -> bool:
+        """Whether the unfiltered full scope has a card a phone list displays.
+
+        The list omits an entered scope's root card, so the root alone is not
+        evidence of work to display. This deliberately reads just the root and
+        opened container scopes, matching the normal list query rather than
+        loading a project-wide layout.
+        """
+        all_rows = await db.load_rows_for_containers(
+            project_id, "all", [root if root is not None else None, *expanded]
+        )
+        if root is not None:
+            all_rows.update(await db.load_rows_with_tasks(project_id, "all", [root]))
+        rows = {task_id: row_task[0] for task_id, row_task in all_rows.items()}
+        visible = resolve_visible(
+            rows, expanded=set(expanded), max_depth=None, root=root, forced_expanded=set()
+        )
+        return any(task_id != root for task_id in visible.visible)
+
+    async def _running_target(project_ids: list[str]) -> RunningTargetResponse | None:
+        """Project (or dashboard) running-work target without creating a layout.
+
+        A target remains useful while a layout is rebuilding: the client keeps
+        it pending until the ordinary tiles request publishes, rather than
+        making this read enqueue a second backfill just to decorate the
+        response with coordinates.
+        """
+        observed_at = time.time()
+        target = await db.get_running_task_target(project_ids, now=observed_at)
+        if target is None:
+            return None
+        meta = await db.get_layout_meta(target["project_id"], "all")
+        ancestors: list[str] = []
+        if meta is not None:
+            rows = await db.load_layout_rows(target["project_id"], "all", [target["task_id"]])
+            row = rows.get(target["task_id"])
+            if row is not None:
+                ancestors = ancestors_of(row.path)
+        return RunningTargetResponse(
+            task_id=target["task_id"],
+            project_id=target["project_id"],
+            parent_task_id=target["parent_task_id"],
+            ancestors=ancestors,
+            observed_at=observed_at,
+            layout_version=meta["layout_version"] if meta is not None else None,
+        )
 
     @router.get(
         "/api/projects/{project_id}/graph/extent",
@@ -221,6 +379,22 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             node_count=meta["node_count"],
             job=job,
         )
+
+    @router.get(
+        "/api/projects/{project_id}/graph/running-target",
+        response_model=RunningTargetResponse | None,
+    )
+    async def get_project_running_target(project_id: str):
+        await _project_or_404(project_id)
+        return await _running_target([project_id])
+
+    @router.get("/api/graph/running-target", response_model=RunningTargetResponse | None)
+    async def get_running_target():
+        # Graph reads are deliberately unscoped, like the existing tiles and
+        # list routes.  The dashboard already has permission to render the
+        # same project set; this endpoint merely ranks that visible work.
+        projects = await db.list_projects()
+        return await _running_target([project.id for project in projects])
 
     async def _geometry(project_id: str, variant: str, req, *, status: str) -> _Geometry:
         """Visible kinds and compacted boxes for one request.
@@ -371,10 +545,23 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"rect larger than {RECT_CAP} units")
         if len(req.expanded) > EXPANDED_CAP:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
-        if req.root is not None or status in FINISHED_STATUSES:
+        if status in FINISHED_STATUSES:
             variant = "all"
         else:
-            variant = await _variant_for_expanded(project_id, variant, req.expanded)
+            variant = await _variant_for_scope(project_id, variant, req.root, req.expanded)
+
+        # "Land on the active subgraph" (design A3): only the FIRST request
+        # of a viewer's session may ask for this -- an explicit `expanded`
+        # (even an empty one the client already persisted) always wins, so
+        # this branch only ever fires when `req.expanded` came in empty.
+        # One added statement, and only when it is actually used.
+        expanded_applied: list[str] | None = None
+        if req.auto_expand and not req.expanded:
+            active_rows = await db.load_active_container_rows(project_id, variant)
+            computed = active_expansion(active_rows.values(), cap=EXPANDED_CAP)
+            req = req.model_copy(update={"expanded": computed})
+            expanded_applied = computed
+
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return None
@@ -439,7 +626,18 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         )
         hidden_owner = owner_map(hidden_paths, collapsed_resolved)
         touching = set(visible) | set(hidden_owner)
-        raw_edges = await db.load_edges_touching(touching)
+        # The owner map goes down with the ids so the database can drop the
+        # edges that are invisible by construction -- both endpoints inside
+        # the same collapsed container -- instead of shipping them here for
+        # `remap_edges` to discard.  A collapsed container owns every edge in
+        # its subtree, so on a fully collapsed view those are essentially all
+        # of them: 9,970 rows read to draw 50 on the §9 reference project.
+        # Visible wins over hidden, exactly as `remap_edges.target` orders the
+        # two lookups: a collapsed container appears in `hidden_owner` under
+        # its own path and must still stand for itself.
+        owners = dict(hidden_owner)
+        owners.update({t: t for t in visible})
+        raw_edges = await db.load_edges_touching(touching, owners=owners)
         wire, _orphans = remap_edges(raw_edges, visible, hidden_owner)
         # Stub candidates are every wire endpoint that is not visible: plain
         # orphans, plus containers an edge was remapped onto that the rect or
@@ -461,11 +659,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             for s in stubs
         ]
 
-        # Workers and gates.
-        agents = [
-            {"id": a.id, "name": a.name, "current_task_id": a.current_task_id}
-            for a in await db.list_agents()
-        ]
+        # Workers and gates.  Docked from live session attempts, not
+        # ``agents.current_task_id``, which only clears on the next
+        # claim/release and dangles on a finished task in between.
+        agents = await db.list_live_task_workers(project_id)
         # `hidden_owner` is the PRE-cull map (it has to be, for edge
         # remapping), so it can dock a worker at a container the rect or the
         # filter culled away.  A worker may only dock at a node we actually
@@ -500,8 +697,34 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                     )
 
         with_tasks = await db.load_rows_with_tasks(project_id, variant, list(visible))
+        # One extra statement for the whole response, skipped entirely when
+        # nothing is visible -- never one lookup per node.
+        subtask_counts = await db.count_task_subtasks(list(with_tasks)) if with_tasks else {}
+        phase_meta = await db.get_task_meta_bulk(list(with_tasks), PHASE_KEY) if with_tasks else {}
+        phase_holds = _failed_phase_holds(
+            await db.get_phase_hold_details(
+                [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
+            )
+        )
+        deliveries = await _deliveries(
+            project_id, [with_tasks[t] for t in visible if t in with_tasks],
+        )
+        review_waits = (
+            await db.list_review_waits_for_tasks(list(with_tasks)) if with_tasks else {}
+        )
         nodes = [
-            _node(with_tasks[t][0], with_tasks[t][1], kind, t in context_only, boxes.get(t))
+            _node(
+                with_tasks[t][0],
+                with_tasks[t][1],
+                kind,
+                t in context_only,
+                boxes.get(t),
+                subtask_counts,
+                phase_meta,
+                phase_holds,
+                deliveries,
+                review_waits,
+            )
             for t, kind in visible.items()
             if t in with_tasks
         ]
@@ -515,6 +738,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             workers=workers,
             gates=gates_out,
             layout_version=meta["layout_version"],
+            variant_applied=variant,
+            expanded_applied=expanded_applied,
         )
 
     @router.post(
@@ -560,15 +785,30 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             if offset < 0:
                 raise HTTPException(status_code=400, detail="bad cursor")
         if status not in FINISHED_STATUSES:
-            variant = await _variant_for_expanded(project_id, variant, req.expanded)
+            variant = await _variant_for_scope(project_id, variant, req.root, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
-        # Only the rows that can possibly be visible: the roots plus the
-        # direct children of every open container.  Under `max_depth=None,
-        # root=None` that set IS the visible set, so a page costs
-        # |expanded| + |matches| rather than a whole project (design §5.3).
-        all_rows = await db.load_rows_for_containers(project_id, variant, [None, *req.expanded])
+        # Only the rows that can possibly be visible: the scope's roots plus
+        # the direct children of every open container.  Under `max_depth=None`
+        # that set IS the visible set, so a page costs |expanded| + |matches|
+        # rather than a whole project (design §5.3).  Under `root` the scope
+        # is the entered container instead of the project root, so paging
+        # never spends a page on rows from another scope.
+        all_rows = await db.load_rows_for_containers(
+            project_id, variant, [req.root if req.root is not None else None, *req.expanded]
+        )
+        if req.root is not None:
+            root_rows = await db.load_rows_with_tasks(project_id, variant, [req.root])
+            if req.root not in root_rows:
+                raise HTTPException(status_code=404, detail=f"No layout node '{req.root}'")
+            all_rows.update(root_rows)
+            # `resolve_visible` walks each row's ancestor chain and treats a
+            # missing link as not visible, so the root's own ancestors have
+            # to be present even though they are never returned.
+            root_anc = [a for a in ancestors_of(root_rows[req.root][0].path) if a not in all_rows]
+            if root_anc:
+                all_rows.update(await db.load_rows_with_tasks(project_id, variant, root_anc))
         matches: set[str] | None = None
         forced: set[str] = set()
         if req.q.strip() or status:
@@ -583,7 +823,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 all_rows.update(await db.load_rows_with_tasks(project_id, variant, missing))
         rows = {t: rt[0] for t, rt in all_rows.items()}
         vis = resolve_visible(
-            rows, expanded=set(req.expanded), max_depth=None, root=None, forced_expanded=forced
+            rows,
+            expanded=set(req.expanded),
+            max_depth=None,
+            root=req.root,
+            forced_expanded=forced,
         )
         # The same derived geometry the tiles endpoint serves, so the
         # coordinates this response carries are the ones the canvas draws.
@@ -592,7 +836,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # (the mobile list pages its cards rather than positioning them, so
         # only the unfiltered geometry is actually consumed).
         boxes = compact_layout(
-            rows, collapsed=set(vis.collapsed_paths), scopes_loaded={None, *req.expanded}
+            rows, collapsed=set(vis.collapsed_paths), scopes_loaded={req.root, *req.expanded}
         )
         ordered = [
             t
@@ -600,6 +844,16 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             if matches is None or t in matches or t in forced
         ]
         page = ordered[offset : offset + req.limit]
+        # One extra statement for the page, skipped entirely when it is empty.
+        subtask_counts = await db.count_task_subtasks(page) if page else {}
+        phase_meta = await db.get_task_meta_bulk(page, PHASE_KEY) if page else {}
+        phase_holds = _failed_phase_holds(
+            await db.get_phase_hold_details(
+                [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
+            )
+        )
+        deliveries = await _deliveries(project_id, [all_rows[t] for t in page])
+        review_waits = await db.list_review_waits_for_tasks(page) if page else {}
         nodes = [
             _node(
                 rows[t],
@@ -607,13 +861,37 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 vis.visible[t],
                 matches is not None and t not in matches,
                 boxes.get(t),
+                subtask_counts,
+                phase_meta,
+                phase_holds,
+                deliveries,
+                review_waits,
             )
             for t in page
         ]
         nxt = None
         if offset + req.limit < len(ordered):
             nxt = base64.urlsafe_b64encode(str(offset + req.limit).encode()).decode()
-        return ListResponse(nodes=nodes, next_cursor=nxt, layout_version=meta["layout_version"])
+        empty_reason = None
+        # The phone list does not render an entered container's own card. An
+        # empty first page therefore needs a server-side reason; zero active
+        # rows alone cannot distinguish a new project from finished work.
+        if offset == 0 and not any(task_id != req.root for task_id in ordered):
+            if matches is not None:
+                empty_reason = "no_matches"
+            elif variant == "active" and await _all_scope_has_displayed_card(
+                project_id, req.root, req.expanded
+            ):
+                empty_reason = "all_finished"
+            else:
+                empty_reason = "no_work"
+        return ListResponse(
+            nodes=nodes,
+            next_cursor=nxt,
+            layout_version=meta["layout_version"],
+            variant_applied=variant,
+            empty_reason=empty_reason,
+        )
 
     @router.get(
         "/api/projects/{project_id}/graph/node/{task_id}",
@@ -650,8 +928,24 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         ]
         # No viewport state here, so the stored kind is reported as-is: a
         # container is a container, never "collapsed".
+        subtask_counts = await db.count_task_subtasks([task_id])
+        phase_meta = await db.get_task_meta_bulk([task_id], PHASE_KEY)
+        phase_holds = _failed_phase_holds(
+            await db.get_phase_hold_details(
+                [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
+            )
+        )
         return NodeResponse(
-            node=_node(row, task, row.kind),
+            node=_node(
+                row,
+                task,
+                row.kind,
+                subtask_counts=subtask_counts,
+                phase_meta=phase_meta,
+                phase_holds=phase_holds,
+                deliveries=await _deliveries(project_id, [(row, task)]),
+                review_waits=await db.list_review_waits_for_tasks([task_id]),
+            ),
             ancestors=ancestors,
             layout_version=meta["layout_version"],
         )
@@ -676,6 +970,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
         if status in FINISHED_STATUSES:
             variant = "all"
+        else:
+            variant = await _variant_for_scope(project_id, variant, req.root, req.expanded)
         limit = max(1, min(req.limit, LOCATE_CAP))
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
@@ -686,11 +982,12 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         rows, truncated = await db.load_matching_rows_ordered(
             project_id, variant, q=q, status=status, limit=limit
         )
-        # Where the canvas will DRAW each hit, which after a collapse is not
+        # Where the canvas will DRAW each hit, which after a collapse -- or
+        # inside an entered container, whose scope is re-packed -- is not
         # where the engine persisted it. This is the same geometry the
-        # matching tiles request resolves, filter-forced expansion included,
-        # so jumping to a result lands on the card rather than on the hole it
-        # left behind.
+        # matching tiles request resolves, `root` and filter-forced expansion
+        # included, so jumping to a result lands on the card rather than on
+        # the hole it left behind.
         geo = await _geometry(
             project_id,
             variant,
@@ -698,6 +995,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 variant=variant,
                 rect=LayoutRect(x0=0.0, y0=0.0, x1=0.0, y1=0.0),
                 expanded=list(req.expanded),
+                root=req.root,
                 q=q,
                 status=status,
             ),
@@ -787,17 +1085,26 @@ def _build_default_router() -> APIRouter:
     from src.api import dependencies as deps
 
     router = APIRouter()
+    binding = None
+    bound_router = None
 
     def _inner() -> APIRouter:
+        nonlocal binding, bound_router
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         # The orchestrator keeps its handler private and lets the messaging
         # adapter swap it after startup, so read the live one the same way
         # ``deps.get_command_handler`` does.
-        return build_graph_layout_router(
-            db=orch.db, command_handler=getattr(orch, "_command_handler", None)
-        )
+        handler = getattr(orch, "_command_handler", None)
+        current = (orch, orch.db, handler)
+        if binding is None or any(a is not b for a, b in zip(binding, current)):
+            # Route construction is synchronous and owns the geometry cache.
+            # Rebuilding here on every read both blocks the event loop and
+            # throws away all layout_version-scoped geometry between pans.
+            bound_router = build_graph_layout_router(db=orch.db, command_handler=handler)
+            binding = current
+        return bound_router
 
     async def _call(path: str, method: str, **kwargs):
         for route in _inner().routes:
@@ -817,6 +1124,21 @@ def _build_default_router() -> APIRouter:
             project_id=project_id,
             variant=variant,
         )
+
+    @router.get(
+        "/api/projects/{project_id}/graph/running-target",
+        response_model=RunningTargetResponse | None,
+    )
+    async def get_project_running_target(project_id: str):
+        return await _call(
+            "/api/projects/{project_id}/graph/running-target",
+            "GET",
+            project_id=project_id,
+        )
+
+    @router.get("/api/graph/running-target", response_model=RunningTargetResponse | None)
+    async def get_running_target():
+        return await _call("/api/graph/running-target", "GET")
 
     @router.post(
         "/api/projects/{project_id}/graph/tiles",
