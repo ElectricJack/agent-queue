@@ -43,37 +43,45 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from src.agents.configuration import SUPERVISOR_AGENT_ID
+from src.config import ReportsConfig
+from src.delivery.dispatch import LEASE_SECONDS
+from src.delivery.message import FrozenMessage, MessageDelivery, operation_marker
 from src.digest.aggregate import build_digest
 from src.digest.facts import CATEGORIES, DigestWindow
 from src.digest.render import MAX_CHARS
-from src.digest.schedule import DigestSchedule, schedule_for
-from src.escalations.plan import MAX_ATTEMPTS, backoff_for
-from src.escalations.transport import (
-    EscalationTransport,
-    SendOutcome,
-    TransportAmbiguous,
-    TransportError,
-    TransportMissing,
-    TransportRetryable,
-    TransportUnavailable,
+from src.digest.schedule import DigestSchedule, provider_facts_enabled, schedule_for
+from src.digest.supervisor import (
+    SKIP_QUIET_HOURS,
+    SKIP_UNCHANGED,
+    STUCK_BLOCKED_MINUTES,
+    author_deadline,
+    bounded_facts,
+    decide_window,
+    facts_hash,
+    fallback_text,
+    quiet_at,
+    quiet_line,
 )
+from src.escalations.plan import MAX_ATTEMPTS
+from src.escalations.transport import EscalationTransport
+from src.remote_links import DashboardLinkSource
+from src.reports.hourly import author_skip_reason, build_hourly_brief, local_day_bounds
 
 logger = logging.getLogger(__name__)
-
-#: How long a claimed window stays leased before another process may take it.
-LEASE_SECONDS = 120.0
 
 #: Marker prefix embedded in every delivered digest so an ambiguous send can
 #: be reconciled against message history.  Distinct from the escalation
 #: prefix so neither can ever match the other's post.
 MARKER_PREFIX = "aq-dig"
 
-#: The marker is appended as its own line at send time, so the rendered body
-#: is built against a budget that leaves room for it and the finished message
-#: still honours §8's 1,200-character target.
-MARKER_RESERVE = 32
+#: The invisible marker is appended at send time. Its encoded length is fixed
+#: by the prefix and hash width, so reserve that full length in the body budget.
+MARKER_RESERVE = len(operation_marker("", prefix=MARKER_PREFIX))
 
 #: How many earlier sent windows are consulted for wording and fact keys that
 #: have already been reported.  §8 forbids reposting identical highlight text
@@ -81,10 +89,19 @@ MARKER_RESERVE = 32
 REPORTED_HISTORY = 20
 
 
+#: The hourly narrative author's request ids.  The digest author uses the
+#: ``report-digest-`` prefix, and the two policies answer to different rules.
+HOURLY_REQUEST_PREFIX = "report-hourly-"
+
+
+def is_hourly_author_request(request_id: object) -> bool:
+    """Whether *request_id* is the hourly narrative author's, not the digest's."""
+    return str(request_id or "").startswith(HOURLY_REQUEST_PREFIX)
+
+
 def marker_for(window_id: str) -> str:
     """Short, stable operation marker for one digest window."""
-    fold = hashlib.sha256(window_id.encode("utf-8")).hexdigest()[:16]
-    return f"{MARKER_PREFIX}:{fold}"
+    return operation_marker(window_id, prefix=MARKER_PREFIX)
 
 
 async def reported_so_far(
@@ -145,20 +162,37 @@ class DigestScheduleService:
         config: Any,
         lease_owner: str,
         base_url: str = "",
+        dashboard_notice: str = "",
+        links: DashboardLinkSource | None = None,
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         escalation_priority: Callable[[float], Awaitable[int]] | None = None,
         max_attempts: int = MAX_ATTEMPTS,
+        authoring_ready: Callable[[], bool] | None = None,
+        event_bus: Any | None = None,
+        include_outbound: bool = False,
+        conversation_adapter: Any | None = None,
+        pump_enabled: bool = True,
     ) -> None:
         self.db = db
         self.transport = transport
         self._config = config
         self._lease_owner = lease_owner
+        # ``links`` (the daemon's DashboardLinkResolver) wins; the fixed
+        # ``base_url`` / ``dashboard_notice`` pair serves callers without one.
         self._base_url = base_url
+        self._dashboard_notice = dashboard_notice
+        self._links = links
         self._clock = clock
         self._rate_guard = rate_guard
         self._escalation_priority = escalation_priority
         self._max_attempts = max_attempts
+        self._authoring_ready = authoring_ready
+        self._event_bus = event_bus
+        self._pump_enabled = pump_enabled
+        self._include_outbound = include_outbound
+        self._conversation_adapter = conversation_adapter
+        self._delivery = MessageDelivery(transport, clock=clock, max_attempts=max_attempts)
         # Anchor for a generation nothing has been persisted for yet, keyed by
         # ``(destination, generation)``.  A configuration change lands here as
         # a new key, which is how §9's "starts a new schedule generation at the
@@ -178,6 +212,10 @@ class DigestScheduleService:
     def _channel_id(self) -> str:
         return str(getattr(self._discord, "channel_id", "") or "")
 
+    @property
+    def _reports(self) -> ReportsConfig:
+        return getattr(self._config, "reports", ReportsConfig())
+
     def schedule(self) -> DigestSchedule:
         return schedule_for(self._discord)
 
@@ -186,15 +224,47 @@ class DigestScheduleService:
         """Evaluate whatever is due and push whatever is ready.  Never raises."""
         report = DigestTickReport()
         schedule = self.schedule()
+        if not self._reports.hourly.enabled or not (
+            self._authoring_ready and self._authoring_ready()
+        ):
+            try:
+                await self.db.cancel_hourly_reports(now=self._clock())
+            except Exception:
+                logger.warning("hourly report cancellation failed", exc_info=True)
+        else:
+            try:
+                await self.db.invalidate_hourly_visibility(
+                    destination=schedule.destination,
+                    full_fleet=(
+                        self._reports.hourly.full_fleet_visibility and not schedule.project_ids
+                    ),
+                    now=self._clock(),
+                )
+            except Exception:
+                logger.warning("hourly report visibility check failed", exc_info=True)
+        if not schedule.supervisor_authored:
+            # Phase P3 rollback is the flag: a held window has no author to
+            # post it, so it is released to the deterministic digest rather than
+            # sitting silent until a cadence that no longer exists.
+            try:
+                await self.db.cancel_digest_requests(now=self._clock())
+            except Exception:
+                logger.warning("digest author release failed", exc_info=True)
         if not schedule.enabled:
             report.skipped = "discord.digest.enabled is false"
+            if self._include_outbound and self._pump_enabled:
+                try:
+                    await self.pump(schedule, report, limit=limit)
+                except Exception:
+                    logger.warning("outbound delivery pump failed", exc_info=True)
             return report
         try:
             await self.evaluate(schedule, report)
         except Exception:
             logger.warning("digest window evaluation failed", exc_info=True)
         try:
-            await self.pump(schedule, report, limit=limit)
+            if self._pump_enabled:
+                await self.pump(schedule, report, limit=limit)
         except Exception:
             logger.warning("digest delivery pump failed", exc_info=True)
         return report
@@ -248,6 +318,11 @@ class DigestScheduleService:
 
         window_id = str(row["id"])
         report.window_id = window_id
+        if schedule.supervisor_authored:
+            # §4: the same window, held for its author.  The deterministic
+            # message is computed here either way because it is the fallback
+            # that posts when nobody authors in time.
+            return await self._evaluate_authored(schedule, window, window_id, report, now=now)
         result = await self._evaluate_window(schedule, window, now=now)
         payload = (
             {
@@ -261,6 +336,49 @@ class DigestScheduleService:
             if result.send
             else None
         )
+        report_candidate = None
+        if payload is not None:
+            skip_reason = author_skip_reason(
+                self._reports,
+                schedule,
+                window,
+                result,
+                now=now,
+                playbook_active=bool(self._authoring_ready and self._authoring_ready()),
+            )
+            deadline = window.until + self._reports.hourly.grace_minutes * 60
+            if skip_reason is None and now >= deadline:
+                skip_reason = "deadline_elapsed"
+            if skip_reason is not None:
+                if skip_reason != "feature_off":
+                    payload["author_skip_reason"] = skip_reason
+            else:
+                dashboard_url, dashboard_notice = self._base_url, self._dashboard_notice
+                if self._links is not None:
+                    link = await self._links.resolve()
+                    dashboard_url, dashboard_notice = link.url, link.unavailable_notice
+                brief, brief_hash = build_hourly_brief(
+                    result,
+                    window,
+                    destination=schedule.destination,
+                    dashboard_url=dashboard_url,
+                    dashboard_notice=dashboard_notice,
+                )
+                day_start, day_end = local_day_bounds(now, self._reports.timezone)
+                report_candidate = {
+                    "window_id": window_id,
+                    "destination": schedule.destination,
+                    "visibility": {"full_fleet": True, "project_ids": []},
+                    "brief": brief,
+                    "brief_hash": brief_hash,
+                    "fallback_text": result.text,
+                    "author_session_id": "supervisor-global",
+                    "deadline": deadline,
+                    "daily_cap": self._reports.hourly.max_requests_per_day,
+                    "day_start": day_start,
+                    "day_end": day_end,
+                    "now": now,
+                }
         completed = await self.db.complete_digest_evaluation(
             window_id,
             activity_cursor={
@@ -271,16 +389,215 @@ class DigestScheduleService:
             output_hash=result.output_hash if result.send else None,
             payload=payload,
             suppression_reason=None if result.send else (result.reason or "no_activity"),
+            report_candidate=report_candidate,
         )
         if completed is None:
             # Lost the race between reserve and complete; the winner's
             # decision stands.
             return report
+        if (
+            report_candidate is not None
+            and float(completed["due_at"]) == report_candidate["deadline"]
+            and self._event_bus is not None
+        ):
+            try:
+                await self._event_bus.emit(
+                    "digest.window_ready",
+                    {"window_id": window_id, "request_id": f"report-hourly-{window_id}"},
+                )
+            except Exception:
+                logger.warning(
+                    "digest.window_ready emit failed; request remains durable", exc_info=True
+                )
         report.evaluated += 1
         if window.catchup:
             report.catchup += 1
         if not result.send:
             report.suppressed += 1
+        return report
+
+    async def _previous_window_state(
+        self, schedule: DigestSchedule, window_id: str
+    ) -> dict[str, Any]:
+        """What the previous window of this generation decided.
+
+        §4.3's two rules are *stateful*: "unchanged since the last window" and
+        "three skips in a row" both need the previous window's own record, so
+        they are read from the durable cursor of the newest other window rather
+        than recomputed from a live query.  A restart therefore resumes the count
+        instead of restarting it, and a missed window does not reset it.
+        """
+        for previous in await self.db.list_digest_windows(
+            destination=schedule.destination,
+            config_generation=schedule.generation,
+            limit=8,
+        ):
+            if str(previous["id"]) == window_id:
+                continue
+            cursor = previous.get("activity_cursor") or {}
+            if isinstance(cursor, dict) and cursor.get("facts_hash"):
+                return cursor
+            return {}
+        return {}
+
+    async def _evaluate_authored(
+        self,
+        schedule: DigestSchedule,
+        window: DigestWindow,
+        window_id: str,
+        report: DigestTickReport,
+        *,
+        now: float,
+    ) -> DigestTickReport:
+        """§4's window: freeze the facts, decide, and hold it for its author.
+
+        Three outcomes, all durable before this returns:
+
+        * **held** -- one author request, the deterministic message kept as its
+          fallback, and ``due_at`` at the fallback deadline, so the window posts
+          exactly once whether the supervisor writes or not;
+        * **quiet line** -- §4.3's once-a-day "nothing needs you", posted by the
+          daemon with no author turn at all;
+        * **skipped** -- silence, recorded as durably as a sent window so the
+          next evaluation moves on instead of re-deciding it.
+        """
+        result = await self._evaluate_window(schedule, window, now=now)
+        dashboard_url, dashboard_notice = self._base_url, self._dashboard_notice
+        if self._links is not None:
+            link = await self._links.resolve()
+            dashboard_url, dashboard_notice = link.url, link.unavailable_notice
+        open_escalations = len(
+            await self.db.list_escalations(
+                project_ids=list(schedule.project_ids) if schedule.project_ids else None,
+                states=["needs_human"],
+                limit=500,
+            )
+        )
+        collected = await self.db.collect_digest_supervisor_facts(
+            window,
+            channel_id=schedule.destination.removeprefix("discord:"),
+            now=now,
+            project_ids=schedule.project_ids or None,
+            open_escalations=open_escalations,
+            active_tasks=result.active_count,
+            stalled_after=STUCK_BLOCKED_MINUTES,
+        )
+        deadline = author_deadline(window.until, schedule.author_fallback_seconds)
+        previous = await self._previous_window_state(schedule, window_id)
+        timezone = self._reports.timezone
+        brief = bounded_facts(
+            window=window,
+            landed=collected["landed"],
+            stuck=collected["stuck"],
+            waiting_on_delivery=collected.get("waiting_on_delivery", []),
+            asks=collected["asks"],
+            waiting_on_you=collected.get("waiting_on_you", []),
+            sessions_working=collected["sessions_working"],
+            sessions_total=collected["sessions_total"],
+            active_tasks=collected["active_tasks"],
+            open_escalations=collected["open_escalations"],
+            previous_facts_hash=previous.get("facts_hash"),
+            deadline=deadline,
+        )
+        this_hash = facts_hash(brief)
+        decision = decide_window(
+            facts=brief,
+            has_activity=result.send,
+            previous_facts_hash=previous.get("facts_hash"),
+            previous_quiet_line_day=previous.get("quiet_line_day"),
+            consecutive_skips=int(previous.get("consecutive_skips") or 0),
+            quiet_now=quiet_at(now, timezone, schedule.quiet_hours),
+            now=now,
+            timezone=timezone,
+            quiet_line_after=schedule.quiet_line_after_skips,
+        )
+        quiet_day = (
+            datetime.fromtimestamp(now, ZoneInfo(timezone)).date().isoformat()
+            if decision.quiet_line_due
+            else previous.get("quiet_line_day")
+        )
+        cursor = {
+            "evaluated_at": now,
+            "window_end": window.until,
+            "fact_count": len(result.reported_keys),
+            "facts_hash": this_hash,
+            "consecutive_skips": decision.consecutive_skips,
+            "quiet_line_day": quiet_day,
+            "decision": decision.action,
+        }
+        if decision.action in (SKIP_QUIET_HOURS, SKIP_UNCHANGED):
+            # Facts are still frozen -- quiet hours suppress the post, never the
+            # collection -- so the next window can compare against this one.
+            await self.db.complete_digest_evaluation(
+                window_id,
+                activity_cursor=cursor,
+                output_hash=None,
+                payload=None,
+                suppression_reason=decision.reason,
+            )
+            report.evaluated += 1
+            report.suppressed += 1
+            return report
+        text = (
+            quiet_line(
+                collected["sessions_working"],
+                base_url=dashboard_url,
+                notice=dashboard_notice,
+            )
+            if decision.quiet_line_due
+            else fallback_text(result.text, brief)
+        )
+        author_candidate = None
+        if not decision.quiet_line_due:
+            author_candidate = {
+                "window_id": window_id,
+                "destination": schedule.destination,
+                "visibility": {"full_fleet": True, "project_ids": list(schedule.project_ids)},
+                "brief": brief,
+                "brief_hash": this_hash,
+                "fallback_text": text,
+                "author_session_id": SUPERVISOR_AGENT_ID,
+                "deadline": deadline,
+                "now": now,
+            }
+        completed = await self.db.complete_digest_evaluation(
+            window_id,
+            activity_cursor=cursor,
+            # The window's output hash identifies what will be sent.  A held
+            # window keeps the deterministic message's hash until an author
+            # replaces it; a quiet line has no deterministic message, so its own
+            # text is the output.
+            output_hash=(
+                result.output_hash
+                if result.send
+                else hashlib.sha256(text.encode("utf-8")).hexdigest()
+            ),
+            payload={
+                "text": text,
+                "reported_keys": sorted(result.reported_keys),
+                "reported_highlights": sorted(result.reported_highlights),
+                "completed_count": result.completed_count,
+                "active_count": result.active_count,
+                "catchup": window.catchup,
+                "facts_hash": this_hash,
+                "quiet_line": decision.quiet_line_due,
+            },
+            suppression_reason=None,
+            author_candidate=author_candidate,
+        )
+        if completed is None:
+            return report
+        if author_candidate is not None and self._event_bus is not None:
+            try:
+                await self._event_bus.emit(
+                    "digest.window_ready",
+                    {"window_id": window_id, "request_id": f"report-digest-{window_id}"},
+                )
+            except Exception:
+                logger.warning(
+                    "digest.window_ready emit failed; request remains durable", exc_info=True
+                )
+        report.evaluated += 1
         return report
 
     async def _evaluate_window(self, schedule: DigestSchedule, window: DigestWindow, *, now: float):
@@ -291,7 +608,7 @@ class DigestScheduleService:
             generation=schedule.generation,
         )
         open_escalations = len(
-            await self.db.list_escalations(states=["needs_human", "reply_received"], limit=500)
+            await self.db.list_escalations(states=["needs_human"], limit=500)
         )
         inputs = await self.db.collect_digest_activity(
             window,
@@ -304,13 +621,19 @@ class DigestScheduleService:
             open_escalations=open_escalations,
             reported_keys=reported_keys,
             reported_highlights=reported_highlights,
+            provider_facts=provider_facts_enabled(self._config),
         )
         categories = frozenset(c for c in schedule.categories if c in CATEGORIES)
+        dashboard_url, dashboard_notice = self._base_url, self._dashboard_notice
+        if self._links is not None:
+            link = await self._links.resolve()
+            dashboard_url, dashboard_notice = link.url, link.unavailable_notice
         return build_digest(
             inputs,
             project_ids=frozenset(schedule.project_ids) if schedule.project_ids else None,
             categories=categories or None,
-            dashboard_url=self._base_url,
+            dashboard_url=dashboard_url,
+            dashboard_notice=dashboard_notice,
             max_chars=MAX_CHARS - MARKER_RESERVE,
         )
 
@@ -323,37 +646,15 @@ class DigestScheduleService:
         limit: int = 5,
     ) -> DigestTickReport:
         """Claim due windows that carry a payload and send each one once."""
-        schedule = schedule or self.schedule()
-        report = report or DigestTickReport()
-        now = self._clock()
+        from src.delivery.scheduler import DeliveryScheduler
 
-        if self._escalation_priority is not None:
-            try:
-                owed = await self._escalation_priority(now)
-            except Exception:
-                logger.debug("escalation priority probe failed", exc_info=True)
-                owed = 0
-            if owed:
-                report.deferred = f"{owed} escalation deliveries take priority"
-                return report
-        if self._rate_guard is not None and not self._rate_guard():
-            report.deferred = "held by the Discord invalid-request rate guard"
-            return report
-
-        claimed = await self.db.claim_digest_windows(
-            lease_owner=self._lease_owner,
-            now=now,
-            lease_seconds=LEASE_SECONDS,
-            limit=limit,
-        )
-        for row in claimed:
-            try:
-                await self._deliver_one(schedule, row, report)
-            except Exception:
-                logger.warning(
-                    "digest window %s raised; leaving it leased", row["id"], exc_info=True
-                )
-        return report
+        return await DeliveryScheduler(
+            self.db, self.transport, config=self._config, lease_owner=self._lease_owner,
+            digest=self, conversation_adapter=self._conversation_adapter, links=self._links,
+            clock=self._clock, rate_guard=self._rate_guard,
+            escalation_priority=self._escalation_priority, include_outbound=self._include_outbound,
+            max_attempts=self._max_attempts,
+        ).pump(schedule=schedule, report=report, limit=limit)
 
     async def _finish(
         self,
@@ -381,43 +682,11 @@ class DigestScheduleService:
         else:
             report.unknown += 1
 
-    async def _fail(
-        self,
-        row: Mapping[str, Any],
-        report: DigestTickReport,
-        *,
-        error: str,
-        retryable: bool,
-    ) -> None:
-        """Bounded backoff, then honest abandonment rather than a late repost."""
-        attempts = int(row["attempt_count"])
-        if retryable and attempts < self._max_attempts:
-            await self._finish(
-                row,
-                report,
-                status="retry",
-                next_attempt_at=self._clock() + backoff_for(attempts),
-                last_error=error,
-            )
-            return
-        await self._finish(row, report, status="unknown", last_error=error)
-
-    async def _reconcile_marker(self, marker: str, *, channel_id: str) -> SendOutcome | None:
-        try:
-            return await self.transport.find_marker(
-                channel_id=channel_id, thread_id=None, marker=marker
-            )
-        except TransportError:
-            return None
-        except Exception:
-            logger.debug("digest marker reconciliation failed", exc_info=True)
-            return None
-
     async def _deliver_one(
         self, schedule: DigestSchedule, row: Mapping[str, Any], report: DigestTickReport
     ) -> None:
-        channel_id = self._channel_id
-        if not channel_id:
+        channel_id = str(row["destination"]).removeprefix("discord:")
+        if not channel_id or channel_id == "unconfigured":
             await self._finish(
                 row,
                 report,
@@ -427,6 +696,20 @@ class DigestScheduleService:
             return
 
         payload = row.get("payload") or {}
+        # The hourly narrative author is only allowed on an unfiltered,
+        # full-fleet destination, because it hands a whole session the fleet's
+        # evidence.  The supervisor-authored digest (2026-10-03 §4) is scoped by
+        # the digest's own project selection instead, so its request is exempt --
+        # a narrowed digest is narrowed twice over, not twice unrestricted.
+        if is_hourly_author_request(payload.get("author_request_id")) and (
+            schedule.destination != row["destination"]
+            or schedule.project_ids
+            or not self._reports.hourly.full_fleet_visibility
+        ):
+            await self._finish(
+                row, report, status="unknown", last_error="authored report visibility changed"
+            )
+            return
         text = str(payload.get("text") or "")
         if not text:
             await self._finish(
@@ -454,53 +737,34 @@ class DigestScheduleService:
             )
             return
 
-        marker = marker_for(str(row["id"]))
-        if int(row["attempt_count"]) > 1:
-            found = await self._reconcile_marker(marker, channel_id=channel_id)
-            if found is not None:
-                await self._finish(row, report, status="sent", receipt_id=found.receipt_id)
-                return
-            if str(row.get("last_error") or "").startswith("ambiguous:"):
-                await self._finish(
-                    row,
-                    report,
-                    status="unknown",
-                    last_error=(
-                        "an earlier send was ambiguous and no matching message was found; "
-                        "delivery ownership is unknown and nothing was reposted"
-                    ),
-                )
-                return
-
-        try:
-            outcome = await self.transport.post_root(
-                channel_id=channel_id, content=f"{text}\n{marker}"
-            )
-        except TransportAmbiguous as exc:
-            found = await self._reconcile_marker(marker, channel_id=channel_id)
-            if found is not None:
-                await self._finish(row, report, status="sent", receipt_id=found.receipt_id)
-                return
-            await self._fail(row, report, error=f"ambiguous: {exc}", retryable=True)
-            return
-        except (TransportRetryable, TransportUnavailable) as exc:
-            await self._fail(row, report, error=str(exc), retryable=True)
-            return
-        except TransportMissing as exc:
-            await self._fail(row, report, error=str(exc), retryable=False)
-            return
-        except TransportError as exc:
-            await self._fail(row, report, error=str(exc), retryable=False)
-            return
-        await self._finish(row, report, status="sent", receipt_id=outcome.receipt_id)
+        result = await self._delivery.deliver(
+            FrozenMessage(
+                channel_id=channel_id,
+                text=text,
+                marker=marker_for(str(row["id"])),
+                attempt_count=int(row["attempt_count"]),
+                last_error=row.get("last_error"),
+                reclaimed=bool(row.get("reclaimed")),
+            ),
+        )
+        await self._finish(
+            row,
+            report,
+            status=result.status,
+            receipt_id=result.receipt_id,
+            next_attempt_at=result.next_attempt_at,
+            last_error=result.last_error,
+        )
 
 
 __all__ = [
+    "HOURLY_REQUEST_PREFIX",
     "LEASE_SECONDS",
     "MARKER_PREFIX",
     "MARKER_RESERVE",
     "DigestScheduleService",
     "DigestTickReport",
+    "is_hourly_author_request",
     "marker_for",
     "reported_so_far",
 ]

@@ -19,8 +19,10 @@ without schema setup or data migrations.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
+from urllib.parse import quote
 import pkgutil
 from typing import Any
 
@@ -89,13 +91,59 @@ _DEFAULT_TIMEOUT = 30.0
 # Per-command read timeouts (seconds) for commands that run an LLM or other
 # long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
 _COMMAND_TIMEOUTS: dict[str, float] = {
+    # These diagnostics measure the whole fleet, even when their output is
+    # filtered to one project/task. Each project's cached prerequisite view
+    # has its own 10s bound, so a busy fleet can outlast the default 30s read.
+    "pool_status": 120.0,
+    "explain_task": 120.0,
+    # Fleet-wide failover/spill snapshots, including observational dry runs.
+    "provider_reroute": 120.0,
+    "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
-    "task_close": 180.0,
-    "integration_development_sweep": 1800.0,
-    "integration_flush": 1800.0,
-    "integration_adopt": 180.0,
+    # Author close may regenerate a candidate (600s) before returning a wait.
+    "task_close": 900.0,
+    "integration_continue_close": 900.0,
+    "message_wait": 90.0,
+    # Binding, App token mint and two GitHub reads.
+    "integration_trust_manifest": 90.0,
+    # Binding, token mint, and a bounded set of reads (variables, workflow files).
+    "integration_app_verify": 180.0,
+    # A namespace-migration page validates, copies and leases each old head's deletion.
+    "integration_migrate_provenance_refs": 600.0,
+    # Doctor runs every check concurrently, each under its own timeout (the
+    # longest, git.stale_branches, integration.legacy_deliveries and
+    # integration.completed_undelivered, allow 300s);
+    # the read timeout must outlast them or a
+    # full `aq doctor` reports "no complete response" while checks still run.
+    "doctor": 330.0,
+    # Train controls observe the root target first: a git fetch plus a PR
+    # check read for every pending root, which on a busy install outlasts 30s
+    # (seal-now's preview, refresh-epic --apply, retire-origin all timed out
+    # live on 2026-10-06). The daemon finishes the command either way, so a
+    # short read timeout only hides the answer from the operator.
+    "integration_seal_now": 300.0,
+    "integration_refresh_epic": 300.0,
+    "integration_retire_origin": 300.0,
+    # Repair adoption and root redrive fetch authenticated remote history and
+    # prove exact heads before either preview or apply can return.
+    "integration_fast_forward_pr": 300.0,
+    "integration_redrive_root": 300.0,
+    # Recovery confirms the provider and verifies remote Git even in dry runs.
+    "integration_release_owner": 300.0,
+    "integration_restore_task_origin": 300.0,
+    "integration_pause_batch": 180.0,
+    "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
+    "integration_release_withheld_source": 180.0,
+    "integration_abort_batch": 180.0,
+    "integration_eject": 180.0,
+    # Completed-container recovery, preview included, proves the exact head under
+    # the retained repository's transaction lock: a full retained fetch (120s Git
+    # budget, then fsck), two authenticated ls-remote reads and ancestry checks
+    # before the preview or CAS answers. Read-only previews timed out live at 30s.
+    "integration_recover_completed_container": 300.0,
 }
 
 
@@ -290,7 +338,11 @@ class CLIClient:
         except httpx.RequestError as exc:
             # A read/write failure can occur after the daemon committed the
             # command. Do not turn it into the daemon-start-and-retry path.
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(
+                command,
+                failure_kind=type(exc).__name__,
+                read_timeout_seconds=timeout if isinstance(exc, httpx.ReadTimeout) else None,
+            ) from exc
 
         if resp.status_code in (401, 403):
             # aq-surface §4.1 exit code 4: auth/scope denial is not a command
@@ -300,11 +352,11 @@ class CLIClient:
         try:
             data = resp.json()
         except ValueError as exc:
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(command, failure_kind="invalid_json") from exc
         if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="invalid_envelope")
         if resp.status_code >= 400 and data.get("ok"):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="http_status_mismatch")
         if not data.get("ok"):
             raise CommandError(
                 command,
@@ -312,6 +364,27 @@ class CLIClient:
                 details=data.get("details"),
             )
         return data.get("result", {})
+
+    async def download_review_attachment(
+        self, review_id: str, revision: int, attachment_id: str,
+    ) -> bytes:
+        """Download revision-pinned evidence through the authenticated API."""
+        assert self._http is not None, "CLIClient not connected"
+        path = (
+            f"/api/reviews/{quote(review_id, safe='')}/revisions/{revision}"
+            f"/attachments/{quote(attachment_id, safe='')}"
+        )
+        try:
+            response = await self._http.get(path)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        except httpx.RequestError as exc:
+            raise CommandResponseError("review_attachment_download") from exc
+        if response.status_code in (401, 403):
+            raise ScopeDeniedError("review_attachment_download", _relay_error(response))
+        if response.status_code != 200:
+            raise CommandError("review_attachment_download", _relay_error(response))
+        return response.content
 
     async def send_message(self, args: dict[str, Any]) -> dict:
         """POST a general message through the explicit message API route."""
@@ -393,15 +466,45 @@ class CLIClient:
         return resp.json()
 
     # -- Streams (console-stream pane view) --------------------------------
+
+    async def job_output(self, job_id: str, *, after: int = 0):
+        """Yield retained-output SSE frames with logical byte cursors."""
+        try:
+            async with self._http.stream(
+                "GET", f"/api/jobs/{job_id}/output", params={"after": after}, timeout=None,
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                    if isinstance(detail, dict) and detail.get("error"):
+                        # 410 carries the immutable result; name the error only.
+                        raise CommandError("job_output", detail["error"])
+                    raise CommandError("job_output", _relay_error(response))
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        yield json.loads(line[6:])
+        except httpx.ConnectError as exc:
+            raise DaemonNotRunningError(str(exc)) from exc
+
     # Bespoke router, not /api/execute — mirrors send_session_message's
     # direct-httpx pattern above.
 
     async def start_stream(
         self, command: list[str], cwd: str, *,
         title: str | None = None, session_id: str, project_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         assert self._http is not None, "CLIClient not connected"
-        payload: dict = {"command": command, "cwd": cwd, "session_id": session_id}
+        import uuid
+
+        payload: dict = {
+            "command": command, "cwd": cwd, "session_id": session_id,
+            "idempotency_key": idempotency_key or "stream-" + uuid.uuid4().hex,
+        }
         if title:
             payload["title"] = title
         if project_id:
@@ -488,8 +591,18 @@ class PluginClient:
     async def connect(self) -> None:
         if is_postgres_url(self._db_url):
             from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+            from src.database.migration_guard import SchemaAheadPolicy
 
-            self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
+            db_config = _resolve_db_config() or {}
+            self._db = PostgreSQLDatabaseAdapter(
+                self._db_url,
+                pool_min=1,
+                pool_max=2,
+                schema_ahead_policy=SchemaAheadPolicy(
+                    db_config.get("schema_ahead_migrations", ""),
+                    db_config.get("schema_ahead_max_revisions"),
+                ),
+            )
         else:
             from src.database import Database
 

@@ -19,6 +19,7 @@ interchangeable.
 | **Transcript stream** | SSE, `GET /api/sessions/{id}/stream` | the harness's normalized conversation, replayed then tailed | one file tail per connection |
 | **Live pane** | SSE, `GET /api/sessions/{id}/pane` | a full `capture-pane` screen, redrawn on each frame | one poll loop per *watched session*, shared across viewers |
 | **Interactive terminal** | WebSocket, `/ws/terminal/{id}` | raw terminal bytes, and typing | one disposable attach client per connection |
+| **Input only** | WebSocket, `/ws/terminal/{id}/input` | typing only, no output; kept for dashboard builds from before phones attached | a few tmux commands per write, no client |
 
 Read-only inspection from the command line uses the first two:
 
@@ -47,7 +48,7 @@ nobody is watching.
 | `sessions.pane_stream_lines` | `60` | lines captured per frame |
 
 Each frame is a *whole screen*, not a delta, so the client replaces rather than
-appends ([`usePaneStream.ts`](../../dashboard/src/ws/usePaneStream.ts)):
+appends:
 
 ```text
 {source:"pane", type:"screen",  screen, seq, ts}
@@ -55,17 +56,22 @@ appends ([`usePaneStream.ts`](../../dashboard/src/ws/usePaneStream.ts)):
 {source:"pane", type:"error",   message, seq, ts}
 ```
 
-Colour comes from tmux's own `capture-pane -e` (SGR sequences only) and is
-rendered directly — tmux has already done the terminal emulation, so
-[`LivePaneConsole`](../../dashboard/src/components/LivePaneConsole.tsx) needs no
-emulator and keeps no scrollback.
+Colour comes from tmux's own `capture-pane -e` (SGR sequences only). This
+endpoint remains for external clients and older dashboard builds. Current
+dashboard terminal panes all use the interactive terminal below.
 
 ### The interactive terminal
 
 The dashboard's attachable terminal is an xterm.js view over a WebSocket
 ([`InteractiveTerminal.tsx`](../../dashboard/src/components/InteractiveTerminal.tsx),
 [`terminalSocket.ts`](../../dashboard/src/ws/terminalSocket.ts)) served by
-[`src/api/terminal_stream.py`](../../src/api/terminal_stream.py). The route
+[`src/api/terminal_stream.py`](../../src/api/terminal_stream.py). The browser
+opens it on its own origin; the dashboard server (or Vite, in development)
+opens the daemon's socket first, offering the browser's subprotocols and
+passing `Host`, `Origin`, cookies and the query string through unchanged, and
+only then accepts the browser with the subprotocol the daemon chose — so a
+daemon refusal reaches the browser as a refused handshake, exactly as it would
+without the relay ([`src/dashboard_server/proxy.py`](../../src/dashboard_server/proxy.py)). The route
 never launches an agent; it owns only a disposable `tmux attach` client, and
 closing the tab never stops the agent's pane
 ([`src/sessions/terminal_pty.py`](../../src/sessions/terminal_pty.py)).
@@ -75,7 +81,7 @@ It is gated hard, because it is the one surface that types into a live agent:
 | Gate | Rule |
 |---|---|
 | Provider | `tmux` only — the row's `provider` must be `tmux` and the session must be live |
-| Network | loopback clients only (`127.0.0.1`, `::1`) |
+| Network | loopback clients only (`127.0.0.1`, `::1`). Behind the dashboard server the daemon sees every connection from loopback, so the dashboard server refuses `/ws/terminal/*` from a non-loopback browser itself (`403 loopback_only`, [`src/dashboard_server/edge.py`](../../src/dashboard_server/edge.py)) |
 | Origin | same-origin loopback, or an origin listed in `api_auth.trusted_dashboard_origins`. A custom domain must be configured explicitly even behind a local proxy, because a matching attacker-controlled `Host`/`Origin` can be DNS-rebound onto loopback |
 | Credentials | `Authorization: Bearer` **or** an `aq-bearer.<token>` subprotocol, never both, and never in the URL — URL credentials leak into access logs |
 | Authorization | local scope, or a global-admin session token (elevated, no project, no task) |
@@ -92,6 +98,72 @@ deliberately excludes the task; a task session cannot follow a later claim.
 Nothing about the input path is recorded: no command dispatch, no replay, no
 input logging. Errors that cross the boundary are fixed, constant strings —
 never terminal bytes and never tmux's stderr.
+
+Dashboard viewers reconnect automatically after transport drops, with jittered
+backoff capped at 15 s and a `Reconnect now` action. Retries pause in hidden or
+offline tabs and resume on visibility, online or daemon stream recovery. Every
+reattach redraws the pane after resetting stale renderer state; input and old
+output acknowledgements never cross connections. Exit, user close and confirmed
+auth/identity refusals stop retries. A guarded, uncached `GET /ws/terminal/{id}`
+probe explains opaque handshake failures without attaching a PTY. Watch-only
+pane streams also recover from a CLOSED EventSource and retain the last screen.
+See the [reconnection contract](../specs/terminal-reconnection.md).
+
+### From a phone
+
+There is one terminal component in the dashboard:
+[`InteractiveTerminal.tsx`](../../dashboard/src/components/InteractiveTerminal.tsx).
+The host shell, agent and pool windows, task terminal links, session detail,
+focus session and session-peek pane all render it at every viewport. It owns
+xterm, the host shell's options and palette (`terminalSetup.ts`), fit, socket,
+input handling and touch scrolling. There is no phone-specific renderer or
+chrome. Type focuses xterm's textarea; Enter and Ctrl+C are in its details.
+
+Columns and rows fit the terminal area using the host shell's FitAddon and
+fixed 12 px font. Rotation and visualViewport keyboard changes refit it and
+send resize frames to the session's PTY. The keyboard's bottom boundary is
+measured from the terminal area's top, including page and pane headers.
+Below 768 px, an attach adds two options that wide attaches omit:
+
+* `restore_size=1`. Agent windows run with `window-size latest`, so an attach
+  sizes the agent's real window, and tmux keeps the last size once every client
+  has left. Before attaching, the client records the window's size and
+  `window-size` policy in the session option `@aq_restore_size`, followed by
+  the client pids of the phones attached under that record. A record that
+  names an attached phone is kept, so a second phone does not record the
+  first one's size. When the last client detaches, it resizes the window back,
+  restores the policy and unsets the option. A phone that leaves with only
+  desktop viewers still attached unsets it: they keep the window at their own
+  size.
+* `history=N` (0–10 000; the phone sends 2 000). After the generation checks,
+  up to N lines of the pane's history (`capture-pane -e -J`, at most 4 MiB) go
+  out ahead of the attach output, under the same output credit, framed so they
+  land in the viewer's scrollback. The client also appends
+  `xterm-256color:indn@` to the server's `terminal-overrides` (once), so tmux
+  scrolls with line feeds and each scrolled line reaches the viewer's
+  scrollback. `CSI n S`, which tmux would otherwise send, discards those lines.
+
+Any other value for either option is refused with `4400`. The compact viewer
+keeps tmux out of the alternate screen (which has no scrollback). A touch drag
+scrolls the terminal's buffer with momentum, and a tap focuses xterm's own
+textarea. Input and paste follow the host shell's attach path. Refused viewers
+see the connection error with input disabled. Ended sessions link to their
+transcripts. There is no watch/type mode or separate pane-stream fallback.
+Design: [shared terminal](../superpowers/specs/2026-10-08-mobile-terminal-design.md).
+The [evidence bundle](../reports/mobile-terminal-host-shell-parity-2026-10-09/README.md)
+includes Playwright comparisons and phone screenshots.
+
+`/ws/terminal/{id}/input` is still served, for dashboard builds from before
+phones attached. It is the same handler with `input_only`, behind every gate in
+the table above (the dashboard server's loopback-only rule covers the whole
+`/ws/terminal/` prefix). The handshake takes no size, the ready frame carries
+`mode: "input"`, there is no output and no `ack`, and a `resize` is refused
+(`4400`). Its client
+([`src/sessions/terminal_input.py`](../../src/sessions/terminal_input.py))
+creates no tmux client. Before every write it re-checks the instance-token
+fence and leaves copy mode. It types through `send-keys -H` and puts bracketed
+pastes through `paste-buffer -p`
+([earlier design](../superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md)).
 
 Starting a terminal for an agent that has no live session is a separate,
 explicit act, and requires global admin:
@@ -243,7 +315,7 @@ stateDiagram-v2
   the transaction, it is re-verified against the database before it is
   believed ([`claim_preparation_is_current`](../../src/database/queries/claim_queries.py)).
 * A session that never leaves `claiming` or `preparing` for
-  `swarm.prepare_timeout` is released by the reconciler, so a crash
+  `swarm.prepare_timeout` with no live preparation request is released by the reconciler, so a crash
   mid-preparation cannot hold a task forever.
 
 ### Claim result codes
@@ -274,14 +346,30 @@ the next reader can act on it:
 | `slot_reset_failure` | same — carries reason, attempt, workspace, session, timestamp, and whether the retry is automatic or manual | same |
 | `claim_prepare_backoff_until` / `_attempts` | any failed preparation | same |
 | `needs_attention: integration_prepare_failed` | the branch fence, not the filesystem, blocked preparation | same |
-| `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds |
+| `needs_attention: branch_fenced` | the task's branch is fenced by a writer the owner-recovery sweep releases | same |
+| `branch_fenced` | same — carries reason, branch, repository, workspace, session and timestamp | same |
+| `prepare_failure` | any permanent preparation failure, released, blocked or retained — carries reason, error type, stage, cause chain, session, instance token, claim epoch, workspace, disposition, attempt and timestamp | same |
+| `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds, or a foreign checkpoint is discarded with a `manual_pause_checkpoint_discarded` audit record (`aq task discard-pause-checkpoint`) |
+
+Every surface reports one description of a failure, built by
+[`describe_preparation_failure`](../../src/preparation_failure.py): the claim
+response's `reason`, the session's `claim_failure_reason`, the `reason`,
+`error_type` and `stage` of the `pool.prepare_failed` event, the metadata above
+and the daemon log line. It reads `<stage>: <Type>: <message>`, followed by up
+to three `caused by`/`during` links. A link with no text, such as
+`asyncio.timeout`'s `TimeoutError`, reads `<Type> (no message) at <file:line
+function>` and names only the frame it was raised at, never a guessed cause.
+Messages are secret-scrubbed and bounded, and the text is deterministic, so
+identical refusals still count as identical. A fenced branch section that
+outlives its 30 s bound raises `BranchLockTimeout`, which names the bound and
+the ref.
 
 All of them are cleared together by one delete
 ([`clear_claim_preparation_metadata`](../../src/database/queries/claim_queries.py)),
 because they all become stale at the same moment. The first two failures leave
 the task `READY` with an exponential backoff; the third moves it to `BLOCKED`
 with a manual retry. Recovery is in the
-[troubleshooting guide](../guides/session-troubleshooting.md#slot_reset_failed-the-workspace-could-not-be-made-clean).
+[troubleshooting guide](../guides/session-troubleshooting.md).
 
 > **Note.** These live in task metadata rather than task columns on purpose:
 > this is operational claim state, not lifecycle state, and it therefore needs
@@ -299,6 +387,11 @@ Every session's child environment is built explicitly rather than inherited
 4. the nine `AQ_*` identity markers;
 5. `extra_env` — for example `AQ_CLAIM_EPOCH` on a push launch, or the
    `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity a pool worker commits under.
+   Task and pool launches also get
+   [`WORKER_TOOL_ENV`](../../src/sessions/spec.py) here: `GRAFT_NO_SEED=1`,
+   `GRAFT_NO_REFRESH=1` and `DO_NOT_TRACK=1`, so graft never seeds or
+   refreshes its index inside a worker slot. A key the harness `env` map
+   names keeps the harness's value.
 
 Everything from layer 2 inward is *explicit* as far as the scrub is concerned:
 naming a key in a harness file is operator intent and outranks a denylist
@@ -395,10 +488,12 @@ Implementation: [`src/claim_file.py`](../../src/claim_file.py),
 [`src/panes/registry.py`](../../src/panes/registry.py),
 [`src/sessions/pane_broadcaster.py`](../../src/sessions/pane_broadcaster.py),
 [`src/sessions/terminal_pty.py`](../../src/sessions/terminal_pty.py),
+[`src/sessions/terminal_input.py`](../../src/sessions/terminal_input.py),
 [`src/sessions/state_cache.py`](../../src/sessions/state_cache.py),
 [`src/sessions/proctable.py`](../../src/sessions/proctable.py),
 [`src/sessions/env.py`](../../src/sessions/env.py).
 
 ```bash
 aq test tests/test_terminal_stream.py tests/test_terminal_pty.py tests/test_pane_broadcaster.py tests/test_env_scrub.py tests/test_claim_commands.py
+aq test --aq-all-markers tests/test_terminal_input.py tests/test_terminal_pty.py   # real tmux
 ```

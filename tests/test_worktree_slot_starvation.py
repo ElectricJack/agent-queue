@@ -174,6 +174,25 @@ class TestGrowthHandsOverTheSlot:
         finally:
             await o.shutdown()
 
+    async def test_disabled_slot_does_not_prevent_growth(self, tmp_path, base_repo):
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo, cap=3)
+            project = await o.db.get_project("p1")
+            first = await o._ensure_worktree_slots(project, "project-repo")
+            retired_id = first.created["project-repo"]
+            await o.db.update_workspace(retired_id, enabled=False)
+
+            growth = await o._ensure_worktree_slots(project, "project-repo")
+
+            new_slot = await o.db.get_workspace(growth.created["project-repo"])
+            assert new_slot.slot_index == 1
+            assert new_slot.enabled
+            assert not (await o.db.get_workspace(retired_id)).enabled
+            assert Path(slot_path(base_repo, 0)).exists()
+        finally:
+            await o.shutdown()
+
     async def test_growth_reports_the_row_it_created(self, tmp_path, base_repo):
         """``SlotGrowth.created`` names the new slot so it can be preferred."""
         o = await _orch(tmp_path)
