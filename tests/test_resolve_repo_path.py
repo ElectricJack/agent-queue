@@ -11,7 +11,6 @@ import time
 import pytest
 
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Workspace
 from src.plugins.services import WorkspaceServiceImpl
@@ -25,12 +24,10 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
+async def db(reuse_database):
     """Create a real test database."""
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture

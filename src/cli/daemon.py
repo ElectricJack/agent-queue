@@ -408,6 +408,71 @@ def _database_reachable() -> bool:
     return database_reachable(CONFIG_PATH)
 
 
+def _database_matches_compose(compose_file: str) -> bool:
+    """Only auto-start a service proven to publish the configured database.
+
+    Unresolved compose interpolation or unsupported port syntax is not proof:
+    leave those installations to the operator rather than start another server.
+    Load the effective config so environment/profile overlays cannot accidentally
+    authorize starting the development service for an external database.
+    """
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    import yaml
+
+    from src.config import ConfigValidationError, load_config
+
+    try:
+        url = urlsplit(load_config(CONFIG_PATH).database.url)
+        if not url.hostname:
+            return False
+        if set(parse_qs(url.query, keep_blank_values=True)) & {
+            "host", "port", "database", "dbname", "service",
+        }:
+            return False
+        with open(compose_file, encoding="utf-8") as handle:
+            compose = yaml.safe_load(handle)
+        service = compose["services"]["postgres"]
+        environment = service.get("environment", {})
+        if isinstance(environment, list):
+            environment = dict(item.split("=", 1) for item in environment if "=" in item)
+        database = environment.get("POSTGRES_DB")
+        if (not isinstance(database, str) or not database or "$" in database
+                or unquote(url.path.removeprefix("/")) != database):
+            return False
+        host = (url.hostname or "localhost").lower()
+        port = url.port or 5432
+        loopback = {"localhost", "127.0.0.1", "::1"}
+        for publication in service.get("ports", []):
+            if isinstance(publication, dict):
+                if publication.get("protocol", "tcp") != "tcp":
+                    continue
+                bound = str(publication.get("host_ip", "0.0.0.0")).strip("[]").lower()
+                published = str(publication.get("published", ""))
+                target = str(publication.get("target", ""))
+            else:
+                match = re.fullmatch(
+                    r"(?:(\[[^\]]+\]|[^:]+):)?(\d+):(\d+)(?:/tcp)?", str(publication)
+                )
+                if not match:
+                    continue
+                bound, published, target = match.groups()
+                bound = (bound or "0.0.0.0").strip("[]").lower()
+            if not published.isdecimal() or target != "5432" or int(published) != port:
+                continue
+            # Wildcard publications are reachable locally, not at an arbitrary
+            # remote host with the same port. Explicit addresses must match.
+            if bound in {"0.0.0.0", "::"}:
+                if host in loopback:
+                    return True
+            elif host == bound or (host == "localhost" and bound in loopback):
+                return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError,
+            ConfigValidationError, yaml.YAMLError):
+        return False
+    return False
+
+
 def _ensure_database() -> bool:
     """Make sure the configured database answers before the daemon is started.
 
@@ -415,15 +480,16 @@ def _ensure_database() -> bool:
 
     1. Something is already listening — the installed or operator-run server.
        Nothing else to do.
-    2. Nothing is listening and this is a source checkout with a compose file —
-       start the development container, as `aq start` always has.
-    3. Nothing is listening and there is no compose file — say so, and name the
+    2. Nothing is listening and the configured endpoint matches the compose
+       service's host, published port and database — start that container.
+    3. Nothing is listening and compose does not match — say so, and name the
        command that installs or repairs one. AQ is PostgreSQL-only, so a
        missing server is the whole problem, not a missing Docker.
     """
     if _database_reachable():
         return True
-    if _find_compose_file():
+    compose_file = _find_compose_file()
+    if compose_file and _database_matches_compose(compose_file):
         return _ensure_docker_postgres()
     endpoint = _configured_database_endpoint()
     where = f"{endpoint[0]}:{endpoint[1]}" if endpoint else "the configured address"
@@ -677,8 +743,8 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
             return True
 
         # The daemon cannot start without its database. Reach for Docker only
-        # when nothing is listening *and* this is a checkout that ships a
-        # compose file.
+        # when nothing is listening and the configured endpoint is proven to
+        # match this checkout's compose service.
         if _config_uses_postgres() and not _ensure_database():
             return False
 
