@@ -1214,6 +1214,9 @@ that keeps its frozen destinations and can be replayed. The reviewed event types
 playbook consumes are instead marked delivered with an audit reason, and only once the playbook
 runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
+Graceful runtime shutdown settles any in-flight pending-event claim before releasing
+its dispatch lease, including cancellation while the claim transaction is returning.
+A restarted consumer can then replay the retained event without waiting for lease expiry.
 
 ## 12. Events, gates, and operator controls
 
