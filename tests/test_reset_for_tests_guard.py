@@ -1,43 +1,11 @@
-"""``reset_for_tests()`` refuses to run against anything but a test target.
-
-Both adapters' ``reset_for_tests()`` truncate every table -- a caller with
-the wrong DSN/path (a slipped env var, a copy-pasted fixture) would destroy a
-real database. The guard check runs before any engine access, so these tests
-exercise it without a live Postgres server or a real SQLite file.
-"""
+"""PostgreSQL reset_for_tests requires an exact test DSN or an explicit override."""
 
 from __future__ import annotations
 
 import pytest
 
-from src.database import Database
 from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-#: Deliberately outside any temp directory -- a stand-in for "someone's real
-#: database file", never actually opened (the guard raises first).
-NOT_A_TEMP_PATH = "/etc/definitely-not-a-tempdir/agentqueue.db"
-
-
-class TestSQLiteResetGuard:
-    async def test_refuses_path_outside_tempdir(self, monkeypatch):
-        monkeypatch.delenv("AQ_ALLOW_DB_RESET", raising=False)
-        db = Database(NOT_A_TEMP_PATH)
-        with pytest.raises(RuntimeError, match="reset_for_tests refused"):
-            await db.reset_for_tests()
-
-    async def test_allows_path_under_tempdir(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("AQ_ALLOW_DB_RESET", raising=False)
-        db = Database(str(tmp_path / "ok.db"))
-        await db.initialize()
-        await db.reset_for_tests()  # must not raise
-        await db.close()
-
-    async def test_allow_db_reset_env_overrides_path_check(self, monkeypatch):
-        monkeypatch.setenv("AQ_ALLOW_DB_RESET", "1")
-        db = Database(NOT_A_TEMP_PATH)
-        # Guard passes; no engine was ever initialized, so this returns
-        # quietly rather than touching a real file.
-        await db.reset_for_tests()
+from tests.db_fixtures import lease_dsn
 
 
 class TestPostgresResetGuard:
@@ -59,3 +27,17 @@ class TestPostgresResetGuard:
         monkeypatch.setenv("AQ_ALLOW_DB_RESET", "1")
         db = PostgreSQLDatabaseAdapter("postgresql+asyncpg://user:pass@localhost/prod")
         await db.reset_for_tests()
+
+async def test_live_leased_database_reset_requires_matching_dsn(monkeypatch):
+    monkeypatch.delenv("AQ_ALLOW_DB_RESET", raising=False)
+    dsn = lease_dsn("reset_guard")
+    db = PostgreSQLDatabaseAdapter(dsn)
+    await db.initialize()
+    try:
+        monkeypatch.setenv("POSTGRES_TEST_DSN", dsn + "_different")
+        with pytest.raises(RuntimeError, match="reset_for_tests refused"):
+            await db.reset_for_tests()
+        monkeypatch.setenv("POSTGRES_TEST_DSN", dsn)
+        await db.reset_for_tests()
+    finally:
+        await db.close()

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -27,6 +26,7 @@ from src.doctor.db_checks import (
 )
 from src.doctor.models import DoctorContext, Severity
 from src.doctor.runner import apply_fix
+from tests.pg_dsn import create_scratch_database
 
 #: ``src.doctor`` re-exports a *function* named ``db_checks``, which shadows
 #: the submodule of the same name for a plain ``import`` — same convention as
@@ -46,20 +46,69 @@ ORPHAN = "0badc0ffee00"
 
 @pytest.fixture
 async def ctx(tmp_path):
-    """A doctor context over a real, fully migrated SQLite database."""
-    db_path = tmp_path / "aq.db"
-    db = Database(str(db_path))
+    """A doctor context over a real, fully migrated PostgreSQL database.
+
+    A scratch database of its own, not a pooled lease: these tests stamp
+    ``alembic_version`` at a bogus revision and run repairs against it.
+    """
+
+    dsn = await create_scratch_database("doctor_db")
+    db = Database(dsn)
     await db.initialize()
-    config = AppConfig(data_dir=str(tmp_path), database=DatabaseConfig(url=str(db_path)))
+    config = AppConfig(data_dir=str(tmp_path), database=DatabaseConfig(url=dsn))
     try:
         yield DoctorContext(config=config, db=db, handler=None)
     finally:
         await db.close()
 
 
-def _stamp(db_path, revision: str) -> None:
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute("UPDATE alembic_version SET version_num = ?", (revision,))
+def _pg(dsn: str) -> str:
+    return str(dsn).replace("postgresql+asyncpg://", "postgresql://")
+
+
+async def _stamp(dsn, revision: str) -> None:
+    import asyncpg
+
+    conn = await asyncpg.connect(_pg(dsn))
+    try:
+        await conn.execute("UPDATE alembic_version SET version_num = $1", revision)
+    finally:
+        await conn.close()
+
+
+def _stamp_sync(dsn, revision: str) -> None:
+    """``_stamp`` callable from a synchronous callback inside a running loop.
+
+    ``command.downgrade`` is monkeypatched with a plain function, so it cannot
+    await and cannot ``asyncio.run`` (the test's own loop is already running).
+    A short-lived thread gets its own loop.
+    """
+    import asyncio
+    import threading
+
+    error: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            asyncio.run(_stamp(dsn, revision))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            error.append(exc)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+
+
+async def _stamped_at(dsn) -> str:
+    import asyncpg
+
+    conn = await asyncpg.connect(_pg(dsn))
+    try:
+        return await conn.fetchval("SELECT version_num FROM alembic_version")
+    finally:
+        await conn.close()
 
 
 def _check():
@@ -117,7 +166,7 @@ class TestCheck:
         assert result.severity is Severity.INFO
 
     async def test_orphan_is_an_error_that_names_the_revision(self, ctx, tmp_path):
-        _stamp(tmp_path / "aq.db", ORPHAN)
+        await _stamp(ctx.config.database.url, ORPHAN)
         result = await _check().run(ctx)
         assert result.severity is Severity.ERROR
         assert result.fixable
@@ -126,7 +175,7 @@ class TestCheck:
         assert "refuse to start" in result.detail
 
     async def test_an_unfindable_orphan_points_at_the_stamp_opt_in(self, ctx, tmp_path):
-        _stamp(tmp_path / "aq.db", ORPHAN)
+        await _stamp(ctx.config.database.url, ORPHAN)
         result = await _check().run(ctx)
         # This revision exists on no ref, so the message must not promise a
         # downgrade it cannot perform.
@@ -139,7 +188,7 @@ class TestCheck:
             "find_revision_source",
             _fixed_source("refs/remotes/origin/aq/bold-dune-47", "migrations/versions/x.py"),
         )
-        _stamp(tmp_path / "aq.db", ORPHAN)
+        await _stamp(ctx.config.database.url, ORPHAN)
         result = await _check().run(ctx)
         assert "defined on refs/remotes/origin/aq/bold-dune-47" in result.detail
         assert "migrations/versions/x.py" in result.detail
@@ -199,15 +248,14 @@ class TestParentRevision:
 class TestFix:
     async def test_fix_refuses_to_stamp_past_an_unfindable_orphan(self, ctx, tmp_path):
         """Stamping leaves the orphan's DDL in place — it needs its own opt-in."""
-        _stamp(tmp_path / "aq.db", ORPHAN)
+        await _stamp(ctx.config.database.url, ORPHAN)
         result = await apply_fix(_check(), ctx)
         assert result.severity is Severity.ERROR
         assert "fix failed" in result.detail
         assert STAMP_ENV in result.detail
         assert "no revision file on any ref" in result.detail
         # And it changed nothing.
-        with sqlite3.connect(str(tmp_path / "aq.db")) as conn:
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == ORPHAN
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN
 
     @pytest.mark.migration
     async def test_a_traceable_orphan_is_undone_by_its_own_downgrade(
@@ -221,11 +269,16 @@ class TestFix:
         through it, and leaves the database at the parent this checkout
         knows, so the daemon can boot and upgrade normally.
         """
-        db_path = tmp_path / "aq.db"
+        dsn = ctx.config.database.url
         head = (await _check().run(ctx)).data["heads"][0]
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute("CREATE TABLE orphan_leftover (id INTEGER PRIMARY KEY)")
-        _stamp(db_path, ORPHAN)
+        import asyncpg
+
+        conn = await asyncpg.connect(_pg(dsn))
+        try:
+            await conn.execute("CREATE TABLE orphan_leftover (id INTEGER PRIMARY KEY)")
+        finally:
+            await conn.close()
+        await _stamp(ctx.config.database.url, ORPHAN)
 
         source = _synthetic_revision(ORPHAN, head)
         monkeypatch.setattr(
@@ -235,9 +288,17 @@ class TestFix:
 
         result = await apply_fix(_check(), ctx)
         assert result.severity is Severity.OK, result.detail
-        with sqlite3.connect(str(db_path)) as conn:
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == head
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        assert await _stamped_at(dsn) == head
+        conn = await asyncpg.connect(_pg(dsn))
+        try:
+            tables = {
+                r["tablename"]
+                for r in await conn.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                )
+            }
+        finally:
+            await conn.close()
         assert "orphan_leftover" not in tables, "the orphan's downgrade() must have run"
         assert not list((db_checks_module._VERSIONS_DIR).glob("_orphan_*.py")), (
             "the borrowed revision file must not be left behind"
@@ -258,9 +319,8 @@ class TestFix:
         """
         from alembic import command
 
-        db_path = tmp_path / "aq.db"
         head = (await _check().run(ctx)).data["heads"][0]
-        _stamp(db_path, ORPHAN)
+        await _stamp(ctx.config.database.url, ORPHAN)
         source = _synthetic_revision(ORPHAN, head)
         monkeypatch.setattr(
             db_checks_module, "find_revision_source", _fixed_source("refs/x", "migrations/v.py")
@@ -278,7 +338,8 @@ class TestFix:
             seen["versions_written"] = sorted(p.name for p in versions_dir.glob("_orphan_*.py"))
             seen["locations"] = cfg.get_main_option("version_locations")
             seen["target"] = target
-            _stamp(db_path, target)  # what the real downgrade() would leave behind
+            # what the real downgrade() would leave behind
+            _stamp_sync(ctx.config.database.url, target)
 
         monkeypatch.setattr(command, "downgrade", _observe)
         try:
@@ -300,7 +361,138 @@ class TestFix:
     @pytest.mark.migration
     async def test_the_stamp_opt_in_restores_a_bootable_database(self, ctx, tmp_path, monkeypatch):
         monkeypatch.setenv(STAMP_ENV, "1")
-        _stamp(tmp_path / "aq.db", ORPHAN)
+        await _stamp(ctx.config.database.url, ORPHAN)
         result = await apply_fix(_check(), ctx)
         assert result.severity is Severity.OK, result.detail
         assert result.fix_applied
+
+
+@pytest.mark.parametrize("mode", ["accepted", "too_far", "breaking", "missing"])
+async def test_retained_migrations_doctor_never_downgrades_or_stamps(
+    ctx, tmp_path, monkeypatch, mode
+):
+    import shutil
+    from sqlalchemy import text
+    from src.database.schema_key import alembic_head_revisions
+    from tests.test_additive_migrations import revision
+
+    retained = tmp_path / "retained"
+    shutil.copytree(db_checks_module._VERSIONS_DIR, retained)
+    body = "op.drop_table('tasks')" if mode == "breaking" else "pass"
+    (retained / "ahead.py").write_text(revision(ORPHAN, alembic_head_revisions()[0], body=body))
+    ctx.config.database.schema_ahead_migrations = str(
+        retained if mode != "missing" else tmp_path / "absent"
+    )
+    ctx.config.database.schema_ahead_max_revisions = 0 if mode == "too_far" else 1
+    await _stamp(ctx.config.database.url, ORPHAN)
+    monkeypatch.setenv(STAMP_ENV, "1")
+    for method in ("find_revision_source", "_downgrade_with_borrowed_file", "_stamp"):
+        monkeypatch.setattr(
+            db_checks_module, method, lambda *a: pytest.fail("must preserve retained schema")
+        )
+    checked = await _check().run(ctx)
+    fixed = await _check().fix(ctx)
+    expected = Severity.OK if mode == "accepted" else Severity.ERROR
+    assert checked.severity is expected and fixed.severity is expected
+    assert not checked.fixable and not fixed.fixable
+    assert await _stamped_at(ctx.config.database.url) == ORPHAN
+    async with ctx.db._engine.connect() as conn:
+        assert await conn.scalar(text("SELECT to_regclass('public.tasks')")) == "tasks"
+
+
+async def _offline_cli(ctx, monkeypatch, *args):
+    """Exercise the real CLI and check against only this test's scratch DB."""
+    import asyncio
+    import json
+
+    from click.testing import CliRunner
+
+    from src.cli.app import cli
+
+    monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: "cli")
+    monkeypatch.delenv("AQ_API_TOKEN", raising=False)
+    monkeypatch.setattr("src.cli.db._load_config", lambda: ctx.config)
+    monkeypatch.setattr(
+        "src.cli.doctor._get_client", lambda *a: pytest.fail("offline must not use the daemon")
+    )
+    monkeypatch.setattr(
+        Database, "initialize", lambda *a: pytest.fail("offline must never initialize the schema")
+    )
+    result = await asyncio.to_thread(
+        CliRunner().invoke, cli,
+        ["doctor", "--offline", "--check", CHECK_ID, "--json", *args],
+    )
+    return result, json.loads(result.stdout)["data"]
+
+
+class TestOfflineDoctor:
+    async def test_check_runs_without_a_daemon_on_an_orphan_database(self, ctx, monkeypatch):
+        await _stamp(ctx.config.database.url, ORPHAN)
+
+        async def missing(revision):
+            return None
+
+        monkeypatch.setattr(db_checks_module, "find_revision_source", missing)
+
+        result, data = await _offline_cli(ctx, monkeypatch)
+
+        assert result.exit_code == 2, result.output
+        assert data["checks"][0]["data"]["orphans"] == [ORPHAN]
+        assert data["checks"][0]["severity"] == "error"
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN
+
+    async def test_fix_keeps_the_stamp_fallback_opt_in(self, ctx, monkeypatch):
+        await _stamp(ctx.config.database.url, ORPHAN)
+        monkeypatch.delenv(STAMP_ENV, raising=False)
+
+        async def missing(revision):
+            return None
+
+        monkeypatch.setattr(db_checks_module, "find_revision_source", missing)
+        result, data = await _offline_cli(ctx, monkeypatch, "--fix")
+
+        assert result.exit_code == 2, result.output
+        assert STAMP_ENV in data["checks"][0]["detail"]
+        assert not data["checks"][0]["fix_applied"]
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN
+
+    @pytest.mark.migration
+    async def test_fix_runs_the_borrowed_revisions_downgrade_without_a_daemon(
+        self, ctx, monkeypatch,
+    ):
+        from sqlalchemy import text
+
+        dsn = ctx.config.database.url
+        head = (await _check().run(ctx)).data["heads"][0]
+        async with ctx.db._engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE orphan_leftover (id INTEGER PRIMARY KEY)"))
+        await _stamp(dsn, ORPHAN)
+        monkeypatch.setattr(
+            db_checks_module, "find_revision_source", _fixed_source("refs/x", "migrations/v.py")
+        )
+        monkeypatch.setattr(
+            db_checks_module, "_revision_file_text", _fixed_text(_synthetic_revision(ORPHAN, head))
+        )
+
+        result, data = await _offline_cli(ctx, monkeypatch, "--fix")
+
+        assert result.exit_code == 0, result.output
+        assert data["checks"][0]["fix_applied"]
+        assert await _stamped_at(dsn) == head
+        async with ctx.db._engine.connect() as conn:
+            assert await conn.scalar(text("SELECT to_regclass('public.orphan_leftover')")) is None
+
+    async def test_retained_migration_policy_blocks_offline_repair(self, ctx, monkeypatch):
+        await _stamp(ctx.config.database.url, ORPHAN)
+        ctx.config.database.schema_ahead_migrations = "/nonexistent/retained/migrations"
+        monkeypatch.setenv(STAMP_ENV, "1")
+        for method in ("find_revision_source", "_downgrade_with_borrowed_file", "_stamp"):
+            monkeypatch.setattr(
+                db_checks_module, method, lambda *a: pytest.fail("must preserve retained schema")
+            )
+
+        result, data = await _offline_cli(ctx, monkeypatch, "--fix")
+
+        assert result.exit_code == 2, result.output
+        assert data["checks"][0]["data"]["retained_migrations"]
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN

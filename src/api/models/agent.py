@@ -51,11 +51,18 @@ class AgentQuestionDetail(AgentWaitingQuestion):
     delivery_lease_until: float | None = None
     delivered_at: float | None = None
     reason: str | None = None
+    escalation_id: str | None = None
 
 
 class QuestionListResponse(BaseModel):
     questions: list[AgentQuestionDetail] = Field(default_factory=list)
     count: int = 0
+
+
+class SessionAuthHealth(BaseModel):
+    state: str = "unknown"
+    observed_at: float | None = None
+    status_code: int | None = None
 
 
 class AgentSummary(BaseModel):
@@ -90,8 +97,22 @@ class AgentSummary(BaseModel):
     #: graph and is counted there, not folded into a launch tally.
     subagents_spawned_total: int = 0
     settings: AgentSettings
+    #: Liveness: the agent's live session's ``last_activity`` (see
+    #: ``src.agents.liveness``).  ``None`` means no live session.
+    last_activity: float | None = None
+    #: ``last_activity`` inside the session lease TTL.  This is the one
+    #: answer to "is this agent alive"; an idle pool worker with a running
+    #: session is live even though it holds no task.
+    live: bool = False
+    #: Task-scoped heartbeat, written only while the agent holds a task.
+    #: Stale by design on an idle pool worker -- never read it as liveness.
     last_heartbeat: float | None = None
     session_tokens_used: int = 0
+    #: A selectable named execution without an editable durable agent row.
+    session_backed: bool = False
+    session_address: str | None = None
+    idle_seconds: float | None = None
+    auth_health: SessionAuthHealth | None = None
 
 
 class ProfileSummary(BaseModel):
@@ -101,6 +122,7 @@ class ProfileSummary(BaseModel):
     harness: str | None = None
     default_class: str = ""
     codex_full_auto: bool = False
+    codex_service_tier: str | None = None
     claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
@@ -112,6 +134,10 @@ class ProfileSummary(BaseModel):
     lifecycle: str = "task"
     min_active: int | None = None
     max_active: int | None = None
+    #: Per-project warm floor for a pool profile: how many workers stay
+    #: resident in *each* eligible project.  ``None`` reads as 0 -- no
+    #: reservation, which is the default now that sizing is fleet-wide.
+    min_per_project: int | None = None
 
 
 class SubagentRollup(BaseModel):
@@ -133,9 +159,32 @@ class ProfileSubagentRollup(SubagentRollup):
     profile_id: str = ""
 
 
+class FlockSession(BaseModel):
+    session_id: str
+    name: str
+    agent_id: str | None = None
+    role: str
+    project_id: str | None = None
+    scope: str
+    provider: str | None = None
+    harness: str
+    model: str | None = None
+    intelligence_class: str | None = None
+    profile_id: str
+    task_id: str | None = None
+    state: str
+    desired_state: str
+    started_at: float
+    last_activity: float | None = None
+    uptime_seconds: float
+    lifecycle: str
+
+
 class ListAgentsResponse(BaseModel):
     agents: list[AgentSummary] = []
     count: int = 0
+    sessions: list[FlockSession] = Field(default_factory=list)
+    session_count: int = 0
     project_id: str | None = None
     subagents: SubagentRollup | None = None
     subagents_by_profile: list[ProfileSubagentRollup] = []
@@ -187,6 +236,7 @@ class ProfileDetail(BaseModel):
     default_class: str = ""
     permission_mode: str = ""
     codex_full_auto: bool = False
+    codex_service_tier: str | None = None
     claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
@@ -286,13 +336,24 @@ class ProfileDriftResponse(BaseModel):
 
 class ProfileReseedResponse(BaseModel):
     profile_id: str
-    #: The vault path that was written.
+    #: The vault path that was written. Empty for a ``grants_only`` merge,
+    #: which doesn't report a path (see ``mode``/``added``/``changed``).
     path: str = ""
-    #: ``None`` when there was no existing file to back up.
+    #: ``None`` when there was no existing file to back up, or when a
+    #: ``grants_only`` merge was a no-op.
     backup_path: str | None = None
     created: bool = False
     #: True when this reseed also cleared a delete-time retirement tombstone.
+    #: Full reseed only — a ``grants_only`` merge never sets this.
     unretired: bool = False
+    #: ``"grants_only"`` when this was the additive merge repair rather than
+    #: a full overwrite; absent (``None``) for a full reseed.
+    mode: str | None = None
+    #: ``grants_only`` only: per capability namespace, the grant names that
+    #: were appended to the vault copy.
+    added: dict[str, list[str]] | None = None
+    #: ``grants_only`` only: False for a no-op (nothing was missing).
+    changed: bool | None = None
     warnings: list[str] | None = None
     sync_errors: list[str] | None = None
 

@@ -6,13 +6,21 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
-from src.database.queries.hierarchy_queries import materialized_origin_when_hierarchical
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import agents, events, sessions, task_results, tasks, workspaces
 from src.models import Agent, AgentState, TaskStatus
+from src.waits.sources import execute_task_status_mutation
 
 
 class AgentQueryMixin:
     """Query mixin for agent operations.  Expects ``self._engine``."""
+
+    async def normalize_agent_state_casing(self) -> None:
+        """Repair known enum casing left by an older integration handoff writer."""
+        async with self._engine.begin() as conn:
+            await conn.execute(update(agents).where(
+                agents.c.state.in_([state.value.lower() for state in AgentState]),
+            ).values(state=func.upper(agents.c.state)))
 
     async def create_agent(self, agent: Agent) -> None:
         """Insert an explicitly requested definition, even after manual deletion."""
@@ -42,27 +50,17 @@ class AgentQueryMixin:
         )
 
     async def _lock_agent_roster_on(self, conn) -> None:
-        """Serialize automatic growth with deletion; SQLite uses BEGIN IMMEDIATE."""
-        if conn.dialect.name == "postgresql":
-            # Namespace AQFL (agent flock), shared only by these two mutations.
-            await conn.execute(select(func.pg_advisory_xact_lock(0x4151464C, 0)))
+        """Serialize automatic growth with deletion using a PostgreSQL advisory lock."""
+        await conn.execute(select(func.pg_advisory_xact_lock(0x4151464C, 0)))
 
     async def create_automatic_agent(self, agent: Agent) -> bool:
-        """Bootstrap capacity only until the user manually sizes the roster.
+        """Create fresh capacity without resurrecting deleted worker identities.
 
-        Any worker tombstone records that decision across restarts and profile
-        changes. Existing definitions remain reusable; explicit Add Agent is
-        unaffected. Check and insertion share the deletion transaction fence.
+        Pool bounds and demand govern growth. A worker tombstone records only
+        that identity's deletion, not a persistent scaling policy.
         """
         async with self.immediate() as conn:
             await self._lock_agent_roster_on(conn)
-            deleted = await conn.scalar(
-                select(agents.c.id)
-                .where(agents.c.role == "worker", agents.c.deleted_at.is_not(None))
-                .limit(1)
-            )
-            if deleted is not None:
-                return False
             await self._insert_agent_on(conn, agent)
             return True
 
@@ -80,6 +78,7 @@ class AgentQueryMixin:
         state: AgentState | None = None,
         *,
         include_deleted: bool = False,
+        conn=None,
     ) -> list[Agent]:
         """List agents, optionally filtered by state."""
         stmt = select(agents)
@@ -87,8 +86,11 @@ class AgentQueryMixin:
             stmt = stmt.where(agents.c.deleted_at.is_(None))
         if state:
             stmt = stmt.where(agents.c.state == state.value)
-        async with self._engine.begin() as conn:
+        if conn is not None:
             result = await conn.execute(stmt)
+            return [self._row_to_agent(r) for r in result.mappings().fetchall()]
+        async with self._engine.begin() as owned:
+            result = await owned.execute(stmt)
             return [self._row_to_agent(r) for r in result.mappings().fetchall()]
 
     async def update_agent(self, agent_id: str, **kwargs) -> None:
@@ -106,6 +108,50 @@ class AgentQueryMixin:
                 .where(agents.c.id == agent_id, agents.c.deleted_at.is_(None))
                 .values(**values)
             )
+            if values.get("state") == AgentState.RETIRED.value:
+                await self._clear_stale_retired_pointer_on(conn, agent_id)
+
+    async def _clear_stale_retired_pointer_on(self, conn, agent_id: str) -> None:
+        """Drop a retired agent's task pointer unless it still owns that task.
+
+        Teardown retires a pool agent while its claim can be retained; pause,
+        orphan and closed-owner recovery find the agent through this pointer to
+        return it to IDLE, so an owned pointer stays. A pointer to finished or
+        reassigned work is history and must not outlive retirement.
+        """
+        pointer = agents.c.current_task_id
+        owned_task = (
+            select(tasks.c.id)
+            .where(
+                tasks.c.id == pointer,
+                tasks.c.assigned_agent_id == agent_id,
+                tasks.c.status.not_in((TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)),
+            )
+            .exists()
+        )
+        held_workspace = (
+            select(workspaces.c.id)
+            .where(
+                workspaces.c.locked_by_agent_id == agent_id,
+                workspaces.c.locked_by_task_id == pointer,
+            )
+            .exists()
+        )
+        bound_session = (
+            select(sessions.c.id)
+            .where(sessions.c.agent_id == agent_id, sessions.c.task_id == pointer)
+            .exists()
+        )
+        await conn.execute(
+            update(agents)
+            .where(
+                agents.c.id == agent_id,
+                agents.c.state == AgentState.RETIRED.value,
+                pointer.is_not(None),
+                ~owned_task, ~held_workspace, ~bound_session,
+            )
+            .values(current_task_id=None)
+        )
 
     async def soft_delete_agent(self, agent_id: str) -> bool:
         """Hide one idle, unowned worker while retaining all execution history.
@@ -121,7 +167,7 @@ class AgentQueryMixin:
                     (
                         TaskStatus.ASSIGNED.value,
                         TaskStatus.IN_PROGRESS.value,
-                        TaskStatus.WAITING_INPUT.value,
+                        TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
                     )
                 ),
             )
@@ -158,7 +204,7 @@ class AgentQueryMixin:
                     ~live_session,
                     ~held_workspace,
                 )
-                .values(enabled=False, deleted_at=time.time())
+                .values(enabled=False, deleted_at=time.time(), current_task_id=None)
             )
             return result.rowcount == 1
 
@@ -176,16 +222,27 @@ class AgentQueryMixin:
             return result.rowcount == 1
 
     async def _reserve_idle_agent_on(self, conn, agent_id: str) -> bool:
-        active_assignment = select(tasks.c.id).where(
-            tasks.c.assigned_agent_id == agent_id,
-            tasks.c.status.in_((
-                TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value,
-                TaskStatus.WAITING_INPUT.value,
-            )),
-        ).exists()
-        held_workspace = select(workspaces.c.id).where(
-            workspaces.c.locked_by_agent_id == agent_id,
-        ).exists()
+        active_assignment = (
+            select(tasks.c.id)
+            .where(
+                tasks.c.assigned_agent_id == agent_id,
+                tasks.c.status.in_(
+                    (
+                        TaskStatus.ASSIGNED.value,
+                        TaskStatus.IN_PROGRESS.value,
+                        TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
+                    )
+                ),
+            )
+            .exists()
+        )
+        held_workspace = (
+            select(workspaces.c.id)
+            .where(
+                workspaces.c.locked_by_agent_id == agent_id,
+            )
+            .exists()
+        )
         live = (
             select(sessions.c.id)
             .where(
@@ -220,17 +277,26 @@ class AgentQueryMixin:
         self, agent_id: str, *, expected_heartbeat: float | None
     ) -> bool:
         """Release this launch reservation only, never a successor or live owner."""
-        live = select(sessions.c.id).where(
-            sessions.c.agent_id == agent_id,
-            sessions.c.state.in_(("starting", "running", "draining")),
-        ).exists()
+        live = (
+            select(sessions.c.id)
+            .where(
+                sessions.c.agent_id == agent_id,
+                sessions.c.state.in_(("starting", "running", "draining")),
+            )
+            .exists()
+        )
         async with self.immediate() as conn:
             result = await conn.execute(
-                update(agents).where(
-                    agents.c.id == agent_id, agents.c.state == AgentState.BUSY.value,
-                    agents.c.current_task_id.is_(None), agents.c.deleted_at.is_(None),
-                    agents.c.last_heartbeat == expected_heartbeat, ~live,
-                ).values(state=AgentState.IDLE.value)
+                update(agents)
+                .where(
+                    agents.c.id == agent_id,
+                    agents.c.state == AgentState.BUSY.value,
+                    agents.c.current_task_id.is_(None),
+                    agents.c.deleted_at.is_(None),
+                    agents.c.last_heartbeat == expected_heartbeat,
+                    ~live,
+                )
+                .values(state=AgentState.IDLE.value)
             )
             return result.rowcount == 1
 
@@ -264,13 +330,13 @@ class AgentQueryMixin:
                     )
                     .exists()
                 )
-                result = await conn.execute(
-                    update(tasks)
+                result = await execute_task_status_mutation(conn, update(tasks)
                     .where(
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.READY.value,
                         tasks.c.is_blocked == 0,
-                        materialized_origin_when_hierarchical(),
+                        # Refusal reason ingest_held: the batch awaits review.
+                        not_ingest_held(),
                         ~live_task,
                         ~busy_owner,
                     )
@@ -341,7 +407,7 @@ class AgentQueryMixin:
             model=row.get("model"),
             intelligence_class=row.get("intelligence_class"),
             deleted_at=row.get("deleted_at"),
-            state=AgentState(row["state"]),
+            state=AgentState(row["state"].upper()),
             current_task_id=row["current_task_id"],
             pid=row["pid"],
             last_heartbeat=row["last_heartbeat"],
