@@ -10,7 +10,9 @@ from src.agents.sessions import session_role
 from src.models import AgentState, TaskStatus
 
 _ACTIVE_SESSIONS = set(LIVE_SESSION_STATES)
-_ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+_ACTIVE_TASKS = {
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+}
 
 
 def configured_settings(agent) -> dict:
@@ -32,7 +34,7 @@ async def list_agent_flock(
 
     db = orchestrator.db
     agents = await db.list_agents() if agents is None else agents
-    sessions = await db.list_sessions() if sessions is None else sessions
+    sessions = await db.list_flock_sessions() if sessions is None else sessions
     # Every use below (current session, current task, sub-agent fold) treats
     # a task outside _ACTIVE_TASKS exactly like a missing one, so only those
     # rows are read -- hydrating the whole table (10k rows) was ~90% of this
