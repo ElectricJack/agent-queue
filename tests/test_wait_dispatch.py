@@ -430,10 +430,13 @@ async def test_irrelevant_batch_rolls_back_on_expired_lease_and_replays(runtime_
     service = runtime(env, clock=lambda: now[0])
     prefix = service.listener._unobserved_prefix
 
-    async def expire(conn, position, watermark):
-        result = await prefix(conn, position, watermark)
+    async def expire(conn, rows):
+        from src.waits.graph import graph_locked
+
+        result = await prefix(conn, rows)
         assert len(result) == 3
-        now[0] += service.listener.lease_seconds + 1
+        if graph_locked(conn):
+            now[0] += service.listener.lease_seconds + 1
         return result
 
     monkeypatch.setattr(service.listener, "_unobserved_prefix", expire)
@@ -2088,3 +2091,194 @@ async def test_ci_failed_observation_keeps_latest_retry_and_drains_unrelated_sou
     assert reader.await_count == 2
     assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
         "outcome"] == "satisfied"
+
+
+@pytest.fixture
+async def large_listener_prefix(runtime_env):
+    env = runtime_env
+    await register(env)
+    base = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_records), [
+            {**base, "id": f"pending-{n}", "owner_id": f"observer-{n}",
+             "idempotency_key": None, "source_key": f"ci_check:unrelated:{n}"}
+            for n in range(2000)
+        ])
+    await env.db.wait_source_commit(source_key="ci_check:unused:0", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    source = (await records(env, wait_source_events))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_source_events), [
+            {key: value for key, value in {**source, "id": f"source-{n}", "source_key": f"ci_check:unused:{n}"}.items()
+             if key != "seq"}
+            for n in range(1, 1200)
+        ])
+    service = runtime(env)
+    assert await service.lease()
+    return service.listener, await env.db.wait_source_watermark()
+
+
+async def test_large_prefix_plans_unlocked_and_rechecks_bounded_subscriptions(
+    large_listener_prefix, monkeypatch, caplog,
+):
+    from sqlalchemy import event
+    from src.waits.graph import graph_locked
+    from src.waits import loops
+
+    listener, watermark = large_listener_prefix
+    prefix = listener._unobserved_prefix
+    phases = []
+    locked_statements = []
+
+    async def observe(conn, *args):
+        phases.append(graph_locked(conn))
+        if graph_locked(conn):
+            def statement(conn, cursor, sql, parameters, context, executemany):
+                locked_statements.append(sql)
+            event.listen(conn.sync_connection, "before_cursor_execute", statement)
+        return await prefix(conn, *args)
+
+    monkeypatch.setattr(listener, "_unobserved_prefix", observe)
+    monkeypatch.setattr(loops, "prepare_progress", AsyncMock(
+        side_effect=AssertionError("irrelevant prefix must not prepare owner progress")))
+    listener._dispatch = AsyncMock(side_effect=AssertionError("irrelevant prefix must not dispatch"))
+    result = await listener._drain_one(watermark, True, {}, {"attempted": set()})
+    assert len(result["processed"]) == listener.batch_size
+    assert (await records(SimpleNamespace(db=listener.db), wait_listener_cursors))[0][
+        "last_seq"] == result["processed"][-1] < watermark
+    assert phases == [False, True]
+    assert not any("EXISTS" in sql or "ORDER BY wait_source_events.seq" in sql
+                   for sql in locked_statements)
+    assert sum("SELECT wait_records.source_key" in sql for sql in locked_statements) == 1
+    assert "wait.graph_lock_slow" not in caplog.text
+
+
+@pytest.mark.perf
+async def test_large_prefix_graph_hold_below_one_second(
+    large_listener_prefix, perf_strict, monkeypatch,
+):
+    from src.waits import listener as listener_module
+
+    listener, watermark = large_listener_prefix
+    original_lock = listener_module.lock_graph
+    acquired = []
+    loop = asyncio.get_running_loop()
+
+    async def timed_lock(conn, **kwargs):
+        await original_lock(conn, **kwargs)
+        acquired.append(loop.time())
+
+    monkeypatch.setattr(listener_module, "lock_graph", timed_lock)
+    result = await listener._drain_one(watermark, True, {}, {"attempted": set()})
+    held = loop.time() - acquired[0]
+    print(f"large prefix: events=1200 pending_waits=2001 retired={len(result['processed'])} "
+          f"held_seconds={held:.6f}")
+    assert len(acquired) == 1
+    assert len(result["processed"]) == listener.batch_size
+    assert held < 1
+
+
+@pytest.mark.parametrize("subscribed_index", [0, 1])
+async def test_forward_prefix_rechecks_new_ci_subscriber_before_advancing(
+    runtime_env, monkeypatch, subscribed_index,
+):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    receipt = await register(env)
+    seqs = [await env.db.wait_source_commit(source_key=f"ci_check:unused:{n}", generation=0,
+                revision="1", outcome_ref="hint", payload={}) for n in range(3)]
+    listener = runtime(env).listener
+    assert await listener.service.lease()
+    original_lock = listener_module.lock_graph
+
+    async def subscribe_before_lock(conn, **kwargs):
+        async with env.db._engine.begin() as other:
+            await original_lock(other)
+            await other.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(source_key=f"ci_check:unused:{subscribed_index}", source_generation=0))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", subscribe_before_lock)
+    listener._dispatch = AsyncMock(side_effect=AssertionError("must prepare new subscriber unlocked"))
+    result = await listener._drain_one(seqs[-1], True, {}, {"attempted": set()})
+    if subscribed_index == 0:
+        assert result == {"needs_preparation": True}
+    else:
+        assert result["processed"] == [seqs[0]]
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (
+        0 if subscribed_index == 0 else seqs[0])
+    assert [row["seq"] for row in await records(env, wait_source_events)
+            if row["dispatched_at"] is not None] == seqs[:subscribed_index]
+
+
+async def test_forward_prefix_preserves_cursor_race(runtime_env, monkeypatch):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="ci_check:unused:0", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    listener = runtime(env).listener
+    assert await listener.service.lease()
+    original_lock = listener_module.lock_graph
+
+    async def advance_before_lock(conn, **kwargs):
+        async with env.db._engine.begin() as other:
+            await original_lock(other)
+            await other.execute(update(wait_listener_cursors).values(last_seq=seq))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", advance_before_lock)
+    assert await listener._drain_one(seq, True, {}, {"attempted": set()}) == {"raced": True}
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == seq
+    assert (await records(env, wait_source_events))[0]["dispatched_at"] is None
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError, asyncio.CancelledError])
+async def test_drain_hold_timing_includes_dispatch_and_transaction_end_on_failure(
+    runtime_env, monkeypatch, caplog, failure,
+):
+    from sqlalchemy import event
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="test:timing", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    listener = runtime(env).listener
+    assert await listener.service.lease()
+    elapsed = [0.0]
+    monkeypatch.setattr(listener_module, "time", SimpleNamespace(monotonic=lambda: elapsed[0]))
+    original_lock = listener_module.lock_graph
+
+    def transaction_end(conn):
+        elapsed[0] += 0.3
+
+    async def delayed_lock(conn, **kwargs):
+        await original_lock(conn, **kwargs)
+        elapsed[0] += 10  # Acquisition wait must not count as a hold.
+        event.listen(conn.sync_connection, "commit", transaction_end)
+        event.listen(conn.sync_connection, "rollback", transaction_end)
+
+    async def dispatch(conn, source, **kwargs):
+        elapsed[0] += 1.2
+        if failure:
+            raise failure()
+        return 0
+
+    monkeypatch.setattr(listener_module, "lock_graph", delayed_lock)
+    monkeypatch.setattr(listener, "_dispatch", dispatch)
+    if failure:
+        with pytest.raises(failure):
+            await listener._drain_one(seq, True, {}, {"attempted": set()})
+    else:
+        await listener._drain_one(seq, True, {}, {"attempted": set()})
+    diagnostic = next(record.getMessage() for record in caplog.records
+                      if "wait.source_lock_slow" in record.getMessage())
+    assert "held_seconds=1.500" in diagnostic
+    assert "dispatch_seconds=1.200" in diagnostic
+    assert "transaction_end_seconds=0.300" in diagnostic
+    assert all(f"{step}_seconds=0.000" in diagnostic for step in (
+        "lease", "prefix_retirement", "admission_recheck", "outcome_writes"))
+    assert ((await records(env, wait_source_events))[0]["dispatched_at"] is None) == bool(failure)
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (0 if failure else seq)
