@@ -268,6 +268,8 @@ def test_a_sample_with_a_perf_block_validates_and_a_bare_one_defaults():
     registry = PerfRegistry()
     registry.observe_route("GET /api/x", 12, 200)
     registry.observe_stream_handshake("WS /ws/events", 4, accepted=True)
+    operation = registry.operation_started("git.fetch")
+    registry.operation_finished(operation, 7, "completed")
     perf = {
         "enabled": True,
         **registry.snapshot(),
@@ -282,6 +284,9 @@ def test_a_sample_with_a_perf_block_validates_and_a_bare_one_defaults():
     sample = MetricsSample.model_validate({"ts": 1.0, "perf": perf})
     assert sample.perf.api.routes["GET /api/x"].latency.count == 1
     assert sample.perf.api.streams["WS /ws/events"].handshake.count == 1
+    assert sample.perf.operations["git.fetch"].latency.count == 1
+    assert sample.perf.operations["git.fetch"].outcomes["completed"] == 1
+    assert sample.perf.operations["git.fetch"].peak_in_flight == 1
     assert sample.perf.host.psi.reason == "psi_unavailable"
     assert sample.perf.host.test_slots.used is None
     assert MetricsSample.model_validate({"ts": 1.0}).perf == PerfMetrics()

@@ -70,6 +70,7 @@ from src.playbooks.validation import (  # noqa: E402
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 INPUT_ROOT = REPO_ROOT / "tests/fixtures/generated_sources/playbooks"
 SHIPPED = {
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
     "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
     "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
@@ -79,6 +80,7 @@ SHIPPED = {
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
@@ -308,6 +310,12 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id == "fast-smooth-train":
+        ref = _source_ref_for_heading(source, "## Rule: observe-policy")
+        return {"rules": [{"id": "observe-policy", "name": "observe-policy",
+            "trigger": {"event_type": "integration.readiness_changed"},
+            "entry_step": "completed", "source": ref}],
+            "steps": {"completed": _terminal("observe-policy", "completed", ref)}}
     if playbook_id in {"promotion-request", "promotion-continuous"}:
         return _promotion_policy_body(source)
     if playbook_id == "object-loop":
@@ -411,20 +419,25 @@ def _object_loop_body(source: PlaybookSource) -> dict[str, Any]:
         artifact = {"type": "context_ref", "path": "artifact_sha256"}
         command("read", "object_loop_inputs", {"project_id": lit("matter-engine-cpp"),
                                                "limit": lit(32)}, "starts", "inputs")
-        foreach("starts", bound("inputs", "starts"), "start", "start-check", "loops")
-        decision("start-check", [({"type": "bool", "op": "and", "operands": [
-            truth(item("proposal_approved", "start")),
-            compare(item("policy_artifact", "start"), "eq", artifact),
-        ]}, "start")], "starts")
+        foreach("starts", {
+            "type": "filter", "collection": bound("inputs", "starts"),
+            "item_binding": "start",
+            "predicate": {"type": "bool", "op": "and", "operands": [
+                truth(item("proposal_approved", "start")),
+                compare(item("policy_artifact", "start"), "eq", artifact),
+            ]},
+        }, "start", "start", "loops")
         command("start", "object_loop_start", {
             key: item("request." + key, "start") for key in ObjectLoopStartArgs.model_fields
         }, "start-reconcile", "started")
         command("start-reconcile", "object_loop_reconcile", {
             "project_id": lit("matter-engine-cpp"), "object_id": bound("started", "object_id"),
         }, "starts")
-        foreach("loops", bound("inputs", "loops"), "object", "policy", "done")
-        decision("policy", [(compare(item("policy_artifact"), "eq", artifact), "choose")],
-                 "loops")
+        foreach("loops", {
+            "type": "filter", "collection": bound("inputs", "loops"),
+            "item_binding": "object",
+            "predicate": compare(item("policy_artifact"), "eq", artifact),
+        }, "object", "choose", "done")
         decision("choose", [
             (compare(item("state.status"), "eq", lit("stopped")), "reconcile"),
             (compare(item("elapsed_seconds"), "gte", lit(86400)), "deadline"),
