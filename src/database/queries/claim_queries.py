@@ -2670,6 +2670,7 @@ class ClaimQueryMixin:
         backoff and its ``provider_pause`` record in this one transaction.
         """
         async def _run(c):
+            marker_failed = reason == "claim_file_missing"
             out = await self._release_claim_on(
                 c,
                 session_id,
@@ -2677,8 +2678,10 @@ class ClaimQueryMixin:
                 context=f"session_{reason}",
                 end_reason=reason,
                 now=time.time(),
-                result="released",
-                needs_attention=None,
+                result="prepare_failed" if marker_failed else "released",
+                needs_attention="claim_file_missing" if marker_failed else None,
+                prepare_backoff=marker_failed,
+                expected_task_status=TaskStatus.IN_PROGRESS if marker_failed else None,
                 resume_after=resume_after,
                 task_meta=task_meta,
             )
