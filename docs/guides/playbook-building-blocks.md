@@ -39,8 +39,8 @@ state_schema_version: 1
 required_capabilities: [playbook_state_list, playbook_state_notify, message_send]
 scripts:
   report:
-    runtime: python
-    argv: [bin/python, {type: literal, value: '--version'}]
+    runtime: host
+    argv: [python3, {type: literal, value: '--version'}]
     supporting_files: []
     limits: {wall_seconds: 60, stdout_bytes: 1048576, stderr_bytes: 1048576}
     output: text
@@ -95,11 +95,14 @@ See [state](playbook-state.md) for quotas and reset/replay-floor semantics.
 
 Scripts are ordinary host processes, with no cgroup/namespace/network isolation,
 launcher or prerequisite doctor gate. `resources.scripts.enabled` defaults true;
-job admission must also be enabled. Configure runtime manifests, immutable input
-storage, state/output storage and protected-value encryption keys. Configure
-`playbooks.private_value_active_key_id` and `playbooks.private_value_key_env` with
-environment variable references; never put key bytes in source or artifacts. The existing
-pins verify declared bytes, not undeclared host dependencies. Keep dynamic data in
+job admission (`resources.jobs.enabled`) must also be enabled. Input, state and
+runtime roots default under `~/.agent-queue/scripts/`, and an executable is an
+ordinary host binary found under the runtime root or `resources.scripts.search_path`.
+A runtime manifest is an opt-in that pins runtime digests. Configure protected-value
+encryption keys with `playbooks.private_value_active_key_id` and
+`playbooks.private_value_key_env` as environment variable references; never put key
+bytes in source or artifacts. Input pins verify declared source bytes; runtime pins,
+when configured, verify declared runtime bytes, never undeclared host dependencies. Keep dynamic data in
 argv/stdin/explicit environment values, never substituted into program text.
 Timeout/output caps and complete-output JSON parsing remain enforced.
 
@@ -108,7 +111,7 @@ automatic second execution. Dry-run/shadow launches no process and performs no
 state/message/job writes. Public receipts show identities and protected handles.
 Authorized `job_logs` reads bounded stdout/stderr ranges after checking run access;
 knowing a handle grants nothing. Missing keys refuse protected binding/readback,
-never plaintext fallback. See [script configuration](playbook-script-sandbox.md).
+never plaintext fallback. See [script configuration](playbook-script-runner.md).
 
 ## Deliberate rollout and rollback
 
