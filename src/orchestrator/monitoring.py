@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -872,7 +873,7 @@ class MonitoringMixin:
             sweeper = ArtifactRetentionSweeper(
                 self.db, playbooks, self.config.compiled_root
             )
-            await sweeper.sweep(now)
+            await sweeper.sweep(now, collect_runs=False)
         except Exception as e:
             logger.warning("Playbook V2 retention sweep failed: %s", e)
 
@@ -887,9 +888,22 @@ class MonitoringMixin:
             return
         self._last_operational_event_retention_sweep = now
         try:
-            await self.db.purge_wait_source_events(now=now)
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            async def collect():
+                try:
+                    with principal_context(ExecutionPrincipal.service("operational-retention")):
+                        result = await self._command_handler.execute("operational_retention", {})
+                    if not result.get("success"):
+                        logger.warning("Operational retention refused: %s", result)
+                except Exception:
+                    logger.exception("Operational retention sweep failed")
+
+            task = getattr(self, "_operational_retention_dispatch", None)
+            if task is None or task.done():
+                self._operational_retention_dispatch = asyncio.create_task(collect())
         except Exception:
-            logger.exception("Wait source event retention sweep failed")
+            logger.exception("Operational retention sweep failed")
         try:
             days = int(self.config.events.onboarding_request_retention_days)
             removed = await self.db.purge_finished_onboarding_requests(

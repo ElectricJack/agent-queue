@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/prime/overrides.py::apply_override": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/prime/overrides.py::load_override": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1830,81 +1830,21 @@ async def test_unreleasable_pool_writer_keeps_the_branch_fenced(
     assert owner["fence_token"] == 4
 
 
-async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
+async def test_default_container_close_releases_its_pool_owner_row(
     orchestrator_factory, tmp_path, monkeypatch
 ):
-    """The regression: ``if not pool:`` skipped the release on the close path.
+    """Container completion releases the writer before the pool releases its claim."""
+    from src.integration import provenance
 
-    A pool session claims an ordinary hierarchy task, the task files a child,
-    and the close suspends it as a managed parent.  ``_cmd_task_close`` then
-    calls ``db.release_claim``, which clears ``workspaces.locked_by_task_id``
-    and ``sessions.task_id`` — so if the owner row is still ``attached`` at
-    that point, nothing can ever confirm a handoff for that branch again.
-    """
-    from src.integration import hierarchy as hierarchy_module
-    from src.models import PhaseResult
-
-    orchestrator = await _pool_orchestrator(
-        orchestrator_factory, tmp_path, handoff_state="attached"
+    recorded = AsyncMock(return_value="a" * 40)
+    monkeypatch.setattr(provenance, "record_worker_completion", recorded)
+    orchestrator, result = await _git_first_container_close(
+        orchestrator_factory, tmp_path, monkeypatch,
+        AsyncMock(return_value={"outcome": "checkpointed"}),
     )
     db = orchestrator.db
-    await db.update_project(
-        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
-    )
-    await db.create_task(
-        Task(
-            id="child",
-            project_id="p",
-            repo_id="repo",
-            parent_task_id="task",
-            branch_name="aq/child",
-            title="Child",
-            description="",
-        )
-    )
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(task_integration_checkpoints).values(
-                task_id="task",
-                repository_id="repo",
-                branch="aq/parent",
-                generation=1,
-                checkpoint_sha="a" * 40,
-                state="working",
-                version=0,
-                updated_at=1.0,
-            )
-        )
-
-    events: list[str] = []
-    current_branch, run = _clean_git(events)
-    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
-    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
-    orchestrator.git._arun = AsyncMock(return_value="a" * 40)
-    orchestrator._get_default_branch = AsyncMock(return_value="main")
-    orchestrator._phase_verify = AsyncMock(return_value=PhaseResult.CONTINUE)
-    orchestrator._phase_verify_hierarchy_producer = AsyncMock(return_value=PhaseResult.CONTINUE)
-    orchestrator.release_session_task_resources = AsyncMock(
-        side_effect=AssertionError("a pool close must not run the full release")
-    )
-    suspended = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        hierarchy_module.HierarchyIntegration,
-        "checkpoint_and_suspend_parent",
-        suspended,
-    )
-
-    result = await orchestrator.complete_session_task(
-        await db.get_task("task"),
-        outcome="pass",
-        pool=True,
-        session_live=True,
-        session_id="session",
-        notes="filed a child",
-    )
-
-    assert result["status"] == TaskStatus.PAUSED.value
-    suspended.assert_awaited_once()
+    assert result["status"] == TaskStatus.COMPLETED.value, result
+    recorded.assert_awaited_once()
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -1912,22 +1852,19 @@ async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
     assert owner["owner_id"] == "task"
     assert owner["fence_token"] == 5
     assert owner["session_id"] is None and owner["workspace_id"] is None
-    # The claim release that follows in ``_cmd_task_close`` is still the pool
-    # path's job — the writer release must not have pre-empted it.
+    # The command still owns claim release; writer release preserves its evidence.
     assert (await db.get_workspace("slot")).locked_by_task_id == "task"
     assert (await db.get_session("session")).task_id == "task"
 
 
-
 async def _git_first_container_close(orchestrator_factory, tmp_path, monkeypatch, container):
-    """A held writer that gained a completed child closes under ``git_first: active``."""
+    """A held writer that gained a completed child closes with the default train."""
     from src.integration import hierarchy as hierarchy_module
     from src.models import PhaseResult
 
     orchestrator = await _pool_orchestrator(
         orchestrator_factory, tmp_path, handoff_state="attached"
     )
-    orchestrator.config.integration.git_first = "active"
     db = orchestrator.db
     await db.update_project(
         "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
@@ -1951,6 +1888,9 @@ async def _git_first_container_close(orchestrator_factory, tmp_path, monkeypatch
     orchestrator._get_default_branch = AsyncMock(return_value="main")
     orchestrator._phase_verify = AsyncMock(return_value=PhaseResult.CONTINUE)
     orchestrator._phase_verify_hierarchy_producer = AsyncMock(return_value=PhaseResult.CONTINUE)
+    orchestrator.release_session_task_resources = AsyncMock(
+        side_effect=AssertionError("a pool close must not run the full release")
+    )
     monkeypatch.setattr(
         hierarchy_module.HierarchyIntegration, "checkpoint_and_suspend_parent",
         AsyncMock(side_effect=AssertionError("git-first has no parent episode to suspend into")),
