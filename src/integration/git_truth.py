@@ -600,7 +600,7 @@ async def is_delivered(
         evidence = GitDeliveryEvidence(
             request, state, observed.target_oid, source, reason, source_base, error_detail,
         )
-        if proof_key is not None and state is not DeliveryState.UNKNOWN:
+        if proof_key is not None and not evidence.unloaded and error_detail is None:
             snapshot.truth._remember(snapshot.truth._proofs, proof_key, evidence)
         return evidence
 
@@ -631,6 +631,16 @@ async def is_delivered(
                                    repository_url=observed.repository_url)
         step = "completion_provenance"
         record = await snapshot.read_completion(identity)
+        if record is None and request.container_children and not request.has_recorded_source:
+            # A container closes with no artifact of its own: Git proves it
+            # delivered once every child is. Short of that, its missing
+            # provenance stays unknown for the recovery path, as before.
+            step = "container_children"
+            for child, base in request.container_children:
+                if not (await is_delivered(snapshot, child, source_base=base)).satisfied:
+                    break
+            else:
+                return answer(DeliveryState.CONTAINED, "children_contained")
         if record is None:
             return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
         step = "source_identity"

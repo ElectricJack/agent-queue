@@ -16,7 +16,15 @@ from src.database import Database
 from src.git.manager import GitManager
 from src.integration.development import DevelopmentPrimitives
 from src.integration.repository_git import RepositoryGit
-from src.models import Project, ProjectStatus, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+from src.models import (
+    Project,
+    ProjectStatus,
+    RepoConfig,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    Workspace,
+)
 from src.projects.relocation import ProjectRelocation, RelocationRefused, tree_manifest
 from src.projects.storage_binding import bound_path, read_binding, repository_path
 from tests.db_fixtures import lease_dsn
@@ -313,12 +321,13 @@ async def test_unrelated_project_paths_and_default_cache_unchanged(relocation):
 
 async def test_schema_column_is_jsonb_on_disposable_database(relocation):
     import importlib.util
+
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import text
 
     f = relocation
-    path = Path(__file__).parents[1] / "migrations/versions/a00000000116_project_storage_binding.py"
+    path = Path(__file__).parents[1] / "migrations/versions/a00000000118_project_storage_binding.py"
     spec = importlib.util.spec_from_file_location("relocation_revision", path)
     revision = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(revision)
@@ -341,7 +350,9 @@ async def test_schema_column_is_jsonb_on_disposable_database(relocation):
 
 async def test_command_uses_current_playbook_and_trusted_exact_head_evidence(relocation, monkeypatch):
     import time
+
     from sqlalchemy import insert
+
     from src.commands.project_relocation_commands import ProjectRelocationCommandsMixin
     from src.database.tables import integration_check_evidence
     from src.integration.models import RequiredCheckSet
@@ -479,6 +490,7 @@ async def test_registered_session_uses_published_cache_binding(relocation):
 
 async def test_ended_session_with_retained_preparation_refuses(relocation):
     from sqlalchemy import insert
+
     from src.database.tables import sessions
 
     f = relocation
@@ -494,7 +506,8 @@ async def test_ended_session_with_retained_preparation_refuses(relocation):
 
 async def test_finished_job_with_retained_pin_refuses(relocation):
     from sqlalchemy import insert
-    from src.database.tables import jobs, job_workspace_pins
+
+    from src.database.tables import job_workspace_pins, jobs
     from tests.test_jobs_queries import values
 
     f = relocation
