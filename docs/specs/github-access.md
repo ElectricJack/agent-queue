@@ -298,6 +298,23 @@ bounded, with excess endpoints aggregated under `other endpoints` and excess
 CLI operations under `gh other commands`. A non-API `gh` invocation may
 make several HTTP requests; its counter measures invocations only.
 
+Ordinary task PR creation reuses an exact existing request. If the sole matching
+request was closed without merging, reopen that same request after validating
+its repository, base, head branch and published head SHA. The worker command's
+existing held-task branch authorization still applies. Retaining the request
+preserves its closure discussion and history. Attempt the reopen once and
+reconcile its state before reporting success or retrying on a later invocation;
+an uncertain reopen never triggers a second write in the same invocation.
+Conflicting identities or multiple matching requests remain refusals.
+
+Delivery-proof PR cleanup must leave unfinished tasks' requests open, even when
+their current head is already content-equivalent to the default branch. Match
+tasks by PR URL and by canonical branch in the designated repository, including
+tasks that have not yet saved their PR URL. Completed or failed tasks with an
+attached session, assigned agent or locked workspace also retain their PR.
+Check this during preview and again under the project and task locks before any
+cleanup comment or close, so reopening a task invalidates an earlier preview.
+
 ## 7. Shared `gh` execution contract
 
 `GhRunner` owns the following behavior for both credential modes:
@@ -396,6 +413,22 @@ discovery, workspace/base fetch, exact PR-diff fetch, recovery/WIP publication,
 parent CI snapshots, promotion and branch deletion. Extend isolated acquisition
 to transfer objects into a credential-free local checkout. Preserve repository
 locks, exact-ref checks, object validation and existing transfer budgets.
+
+Credential-free preparation failures expose only daemon-selected reason fields:
+`lock_wait_timeout`, `git_timeout` (subcommand, elapsed seconds and available
+budget), `git_exit` (subcommand, return code and diagnostic kind), or
+`import_mismatch`. The same safe detail reaches exceptions, fixer blockers and
+integration-train messages, and a structured `git_preparation_failed` log event.
+Never include raw stderr, paths, ref names or credentials in these fields.
+
+Standalone exact-object acquisition has a finite 240-second aggregate budget:
+successful local acquisitions on a busy retained store have taken 115.4 seconds
+against the former 120-second limit. An explicit caller budget always wins,
+including remaining push authority; no phase resets that deadline. A complete,
+integrity-verified local commit is pinned directly with `update-ref`, without
+fetching its graph back from a temporary repository. Retained verification still
+reuses only an unchanged clean store within its existing cache lifetime.
+
 Additional private submodules or LFS services require their own explicit scope;
 do not forward the repository token to arbitrary secondary destinations.
 
@@ -405,6 +438,13 @@ repository, use the same validated delivery policy, and are available to the
 roles that need them. Extend the existing push contract if an explicit expected
 remote OID is needed for the documented squash/lease workflow. Do not grant
 workers integration-owner or main-publication authority as a side effect.
+
+Explicit named integration publication uses the server-owned, single-use
+[publication delegation](design/delegated-integration-publication.md). Its
+issue/revoke controls require operator or live owning supervisor authority;
+workers supply that exact grant to the existing push surface. The grant binds
+the live claim, session instance, designated repository, target OID and managed
+owner fence, and preserves the validated delivery gates.
 
 Update the shipped completion protocol, delivery prompts and relevant AQ Git
 skills to use those commands for network delivery. Keep local commit/history
