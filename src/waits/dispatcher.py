@@ -12,6 +12,7 @@ import time
 from dataclasses import replace
 
 from sqlalchemy import insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
@@ -187,14 +188,14 @@ class WakeDispatcher:
 
         # Visibility-only migration projections never held a worker seat.
         if row["sleep_decision"] is not None:
-            await conn.execute(insert(wait_measurements).values(
+            await conn.execute(pg_insert(wait_measurements).values(
                 id=f"outcome:{row['id']}", project_id=row["project_id"], wait_id=row["id"],
                 condition_kind=cond.kind, source_class=adapter.source_class(cond),
                 decision=row["sleep_decision"], waited_seconds=max(0, now - row["created_at"]),
                 hibernated=bool(continuation and continuation['stopped_at'] is not None),
                 evicted=row['decision_reason'] == 'evicted', recorded_at=now,
                 **await cost_values(conn, row, continuation),
-            ))
+            ).on_conflict_do_nothing(index_elements=[wait_measurements.c.id]))
         event_type = "wait.lifted" if outcome == "lifted_by_supervisor" else f"wait.{outcome}"
         payload = {"wait_id": row["id"], "project_id": row["project_id"],
                    "result_ref": result_ref, "source_seq": event.get("seq"), "decision": decision}

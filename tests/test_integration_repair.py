@@ -2450,7 +2450,9 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
     commands = ClaimCommandsMixin()
     commands.db = db
     commands._development_integration = lambda: None
-    commands.config = SimpleNamespace(integration=SimpleNamespace(default_mode="pull_request"))
+    from src.config import AppConfig
+
+    commands.config = AppConfig()
     commands.orchestrator = SimpleNamespace(
         _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
         _worktree_slots=lambda: SimpleNamespace(
