@@ -466,7 +466,9 @@ async def test_recursive_running_subtree_cleans_every_clone_remote_and_worktree(
                 assert await git.arev_parse(str(path), f"refs/heads/{branch}") is None
                 assert await git.arev_parse(str(path), f"refs/remotes/origin/{branch}") is None
         assert not slot.exists()
-        assert (await env.db.get_workspace("slot")).enabled is False
+        slot_row = await env.db.get_workspace("slot")
+        assert slot_row.enabled is False
+        assert slot_row.disabled_reason.startswith("worktree_removed: deleting task ")
         assert await git.arev_parse(str(base), "main") == sha
     else:
         assert slot.exists()

@@ -1,28 +1,12 @@
-"""Read-only display projection: epic implementation progress vs delivery.
+"""Read-only projection of epic implementation progress and delivery.
 
-An epic's ``N/N`` child count is implementation progress; it never says the
-work shipped. A stored ``PAUSED`` on a managed parent is usually the
-integration checkpoint's hold rather than a person's. This module answers
-"where is this epic's delivery, who has to act, and since when" for the
-dashboard, without persisting anything, changing a task's lifecycle or
-authorizing an action.
-
-It is deliberately not a state machine. Every fact comes from an existing
-read: collection readiness (:meth:`ParentEpisodeRecords.readiness_on`), claim
-eligibility (:func:`claim_frontier_predicates`), live operations, branch
-reservations, root delivery receipts, operator holds and — for what git says
-about the epic's *current* completion right now — the request-scoped
-:class:`~src.integration.delivery_observer.DeliveryObserver` every other
-delivery consumer already asks. :func:`classify_epic_delivery` is a pure
-function over those facts, so every state is testable from fixtures. Design:
-docs/superpowers/specs/2026-10-02-epic-delivery-status-design.md.
-
-The canonical git answer is gathered outside every transaction and its
-identity rechecked afterwards, exactly as
-:class:`~src.integration.delivery_observer.DeliveryView` requires, so this
-view never invents a receipt and never persists a git answer. What it reads
-here is what the archive guard, the settlement path and the publisher read:
-one question, one answer.
+Child counts describe implementation, while delivery evidence names the target,
+responsible actor and age. Managed-parent PAUSED usually denotes an integration
+hold. classify_epic_delivery is pure over existing readiness, claims, operations,
+reservations, holds, receipts (shadow only), and current Git completion evidence.
+Git observation runs outside transactions and identity is revalidated afterwards;
+the projection neither persists evidence nor changes lifecycle or authorizes work.
+Design: docs/superpowers/specs/2026-10-02-epic-delivery-status-design.md.
 """
 
 from __future__ import annotations
@@ -115,23 +99,17 @@ class WorkerFacts:
     needs_attention: str | None = None
     #: Frontier predicates that exclude this task while it is READY.
     exclusions: tuple[str, ...] = ()
+    #: Ingestion batch awaiting fidelity review; held members are not candidates.
+    held_batch_id: str | None = None
 
 
 @dataclass(frozen=True)
 class CanonicalDelivery:
-    """What git says about this epic's *current* completion, right now.
+    """Revalidated Git evidence for an epic's current completion.
 
-    Filled only from a request-scoped
-    :class:`~src.integration.delivery_observer.DeliveryObserver` answer whose
-    identity and target were rechecked after the fetch
-    (:meth:`~src.integration.delivery_observer.DeliveryView.verified_on`), so
-    it never describes a generation the epic no longer has. ``state`` is a
-    :class:`~src.integration.delivery_truth.DeliveryState` value as text:
-    ``contained``, ``no_change``, ``pending``, ``settled``, ``no_artifact`` or ``unknown``.
-
-    ``acceptance`` is wording, never the proof: git already established
-    containment, and it names a recorded operator adoption only when that
-    adoption explicitly accepted a source which is not an ancestor.
+    Completed epics alone receive this request-scoped fact. A pending proof answers
+    why nothing shipped; absent proof makes no claim. UNKNOWN is not non-delivery.
+    It supplements existing display facts without persisting a projection.
     """
 
     state: str
@@ -183,6 +161,7 @@ class EpicFacts:
     #: Git's own answer for this epic's current completion; ``None`` when no
     #: observer is registered or git had nothing to say about it.
     canonical: CanonicalDelivery | None = None
+    branch_name: str | None = None
 
 
 def lease_ttl_from(config: Any) -> float:
@@ -397,6 +376,15 @@ def classify_epic_delivery(
         unproven = _canonical_unproven(facts, result=result)
         if unproven is not None:
             return unproven
+        if (facts.mode == "development" and facts.status == "COMPLETED"
+                and facts.parent_task_id is None and facts.branch_name):
+            return result(
+                "unknown", "Delivery evidence unavailable",
+                reason="Implementation is complete; current delivery proof is unavailable "
+                "for this root branch",
+                remedy=f"aq integration redrive-root {facts.task_id}",
+                since=facts.updated_at, evidence="unavailable",
+            )
         reason = f"Integration mode {facts.mode} records no per-epic delivery"
         if hold == "backoff":
             reason = "Paused for a backoff; resumes automatically"
@@ -424,6 +412,17 @@ def classify_epic_delivery(
     checkpoint = facts.checkpoint
     if checkpoint is None:
         if facts.status == "COMPLETED":
+            unproven = _canonical_unproven(facts, result=result)
+            if unproven is not None:
+                return unproven
+            if facts.parent_task_id is None and facts.branch_name:
+                return result(
+                    "unknown", "Delivery evidence unavailable",
+                    reason="Implementation is complete; no aggregate checkpoint or current "
+                    "delivery proof accounts for this root branch",
+                    remedy=f"aq integration reverify-epic {facts.task_id}",
+                    since=facts.updated_at, evidence="unavailable",
+                )
             # Finished before the train tracked it (or in another mode): the
             # train never owed it a receipt, so its silence is not a blocker.
             return result(
@@ -440,6 +439,8 @@ def classify_epic_delivery(
 
     if facts.collection_cancelled and (operation is None):
         if facts.status == "COMPLETED":
+            if facts.parent_task_id is None:
+                return _completed_epic(facts, result=result)
             return result(
                 "not_tracked", "Completed outside the train",
                 reason="Its collection was cancelled and it completed outside the train; "
@@ -588,9 +589,12 @@ def _completed_epic(facts: EpicFacts, *, result) -> dict:
         )
     if not _train_verified(checkpoint):
         return result(
-            "not_tracked", "Completed outside the train",
-            reason="No train verification or receipt records this epic's delivery",
-            since=since, evidence="untracked",
+            "queued", "Waiting for aggregate verification",
+            reason="Implementation is complete; the integration train must verify the "
+            "collected root branch before delivery",
+            responsible=_ref("system", None, "Integration train"),
+            remedy=f"aq integration reverify-epic {facts.task_id}",
+            since=since,
         )
     return result(
         "queued", "Waiting for the next train",
@@ -618,7 +622,7 @@ _UNPROVEN_REASONS = {
     "missing_or_ambiguous_source": (
         "git could not locate an exact source for this completion"
     ),
-    "missing_target": "{target} does not exist, so nothing can be delivered to it",
+    "target_ref_missing": "{target} does not exist, so nothing can be delivered to it",
 }
 
 
@@ -846,7 +850,8 @@ def _queued_or_excluded(
     predicate = worker.exclusions[0]
     return result(
         "blocked", f"{noun} blocked - not claimable",
-        reason=f"{worker.id}: {FRONTIER_PREDICATE_DETAILS.get(predicate, predicate)}",
+        reason=f"{worker.id}: "
+        + FRONTIER_PREDICATE_DETAILS.get(predicate, predicate).format(batch_id=worker.held_batch_id),
         responsible=_ref("system", None, "Claim frontier"), since=since, extra=links,
     )
 
@@ -1107,25 +1112,12 @@ class EpicDeliveryProjection:
         return out
 
     async def _canonical_on(self, facts: dict[str, EpicFacts]) -> dict[str, EpicFacts]:
-        """Add git's answer for each completed epic, asked outside every transaction.
+        """Observe completed epics outside transactions, then revalidate identities.
 
-        The observer fetches its own isolated stores and opens its own
-        connections, so no publisher lock and no projection read is held
-        across it. Each identity it evaluated is then rechecked on a fresh
-        read (:meth:`DeliveryView.verified_on`); one that was reopened,
-        re-completed or re-targeted meanwhile is reported stale rather than
-        answered for the question it was not asked, and one git never
-        evaluated at all (no designated repository) makes no claim here.
-
-        A read-only surface may reuse a snapshot the observer fetched within
-        its read window (:data:`DeliveryObserver.READ_MAX_AGE`), so a card can
-        lag a just-landed delivery by that much; what it reports is always
-        pinned to the exact target OID its reason names.
-
-        The candidates are the COMPLETED epics of one read — the same bound
-        :class:`~src.integration.status.IntegrationStatusService` puts on its
-        own delivery read — so a graph response observes at most the epics it
-        is already drawing.
+        Isolated stores avoid publisher locks. Reopened, re-completed or retargeted
+        identities are stale; unobserved tasks make no claim. Read-only cards may lag
+        within READ_MAX_AGE, always pinned to the observed target OID. Candidates are
+        bounded by this response's completed epics, as in IntegrationStatusService.
         """
         observer = self.delivery
         if observer is None or not facts:
@@ -1232,7 +1224,7 @@ class EpicDeliveryProjection:
                 await conn.execute(
                     select(
                         tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.resume_after,
-                        tasks.c.parent_task_id, tasks.c.project_id,
+                        tasks.c.parent_task_id, tasks.c.project_id, tasks.c.branch_name,
                         parent.c.status.label("parent_status"),
                         projects.c.hierarchical_integration_mode.label("mode"),
                         projects.c.integration_repository_id,
@@ -1268,6 +1260,7 @@ class EpicDeliveryProjection:
                 updated_at=row["updated_at"],
                 resume_after=row["resume_after"],
                 project_id=row["project_id"],
+                branch_name=row["branch_name"],
                 parent_task_id=row["parent_task_id"],
                 parent_status=row["parent_status"],
                 mode=row["mode"] or "disabled",
@@ -1280,15 +1273,11 @@ class EpicDeliveryProjection:
         return out
 
     async def _tracked_facts_on(self, conn, ids, rows, children) -> dict[str, dict[str, Any]]:
+        _delivery_query = select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id.in_(ids)
+        )
         checkpoints = {
-            row["task_id"]: dict(row)
-            for row in (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id.in_(ids)
-                    )
-                )
-            ).mappings()
+            row["task_id"]: dict(row) for row in (await conn.execute(_delivery_query)).mappings()
         }
         parent_operations: dict[str, list[dict[str, Any]]] = {}
         for row in (
@@ -1499,17 +1488,11 @@ class EpicDeliveryProjection:
         return out
 
     async def _workers_on(self, conn, worker_ids: list[str]) -> dict[str, WorkerFacts]:
-        found = {
-            row["id"]: dict(row)
-            for row in (
-                await conn.execute(
-                    select(
-                        tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id,
-                        tasks.c.project_id,
-                    ).where(tasks.c.id.in_(worker_ids))
-                )
-            ).mappings()
-        }
+        _delivery_query = select(
+            tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id, tasks.c.project_id,
+            tasks.c.held_batch_id,
+        ).where(tasks.c.id.in_(worker_ids))
+        found = {row["id"]: dict(row) for row in (await conn.execute(_delivery_query)).mappings()}
         meta: dict[str, dict[str, Any]] = {}
         for task_id, key, value in (
             await conn.execute(
@@ -1568,6 +1551,7 @@ class EpicDeliveryProjection:
                 blocked_terminal=_text(meta.get(task_id, {}).get(TERMINAL_BLOCKED_META_KEY)),
                 needs_attention=_text(meta.get(task_id, {}).get("needs_attention")),
                 exclusions=exclusions.get(task_id, ()),
+                held_batch_id=row["held_batch_id"],
             )
         return out
 
