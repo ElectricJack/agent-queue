@@ -51,7 +51,7 @@ areas:
     description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
     match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py, tests/test_task_removal.py, tests/test_cli_task_remove.py]
   - id: task-dependencies
-    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection."
+    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release."
     match:
       - tests/test_task_deps_command.py
       - tests/test_dependency_queries.py
@@ -59,6 +59,8 @@ areas:
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
       - tests/test_cli_task_change_sets.py
+      - tests/test_ingest_batch_queries.py
+      - tests/test_fidelity_review.py
   - id: work-graph
     description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
     match:
@@ -85,6 +87,7 @@ areas:
     description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants."
     match:
       - tests/test_batch_digest.py
+      - tests/test_batch_checks.py
       - tests/test_task_graph.py
       - tests/test_create_task_graph_command.py
       - tests/test_hierarchy_graph_creator.py
@@ -226,6 +229,7 @@ areas:
     match:
       - tests/test_session_spec.py
       - tests/test_session_launch.py
+      - tests/test_codex_trust.py
       - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
@@ -321,6 +325,8 @@ areas:
       - tests/test_playbook_v2_definition.py
       - tests/test_playbook_v2_integration_policy.py
       - tests/test_playbook_v2_expressions.py
+      - tests/test_playbook_collections.py
+      - tests/test_playbook_features.py
       - tests/test_playbook_v2_validation.py
       - tests/test_playbook_v2_resolution.py
       - tests/test_playbook_explanation.py
@@ -347,8 +353,17 @@ areas:
     match:
       - tests/test_v2_*.py
       - tests/test_playbook_run_*.py
+      - tests/test_playbook_nested_loops.py
       - tests/test_playbook_wait_repository.py
       - tests/test_playbook_receipts.py
+      - tests/test_playbook_private_values.py
+      - tests/test_playbook_script_runner.py
+      - tests/test_playbook_script_recovery.py
+      - tests/test_playbook_script.py
+      - tests/test_playbook_state.py
+      - tests/test_playbook_state_notify.py
+      - tests/test_stuck_task_watch.py
+      - tests/test_stuck_task_watch_daemon.py
       - tests/test_playbook_pending_events_*.py
       - tests/test_playbook_services.py
       - tests/test_agent_task_executor.py
@@ -378,10 +393,14 @@ areas:
   - id: integration-trains
     description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup, plus the end-to-end regression scenarios for incidents that needed a hand fix."
     match:
+      - tests/test_integration_workspaces.py
+      - tests/test_integration_failure_groups.py
+      - tests/test_integration_fixers.py
       - tests/test_integration_size.py
       - tests/test_integration_state.py
       - tests/test_integration_service.py
       - tests/test_integration_stall_recovery.py
+      - tests/test_integration_delivery_watchdog.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
@@ -392,13 +411,19 @@ areas:
       - tests/test_integration_superseded_completion.py
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
+      - tests/test_integration_models.py
       - tests/test_integration_train.py
+      - tests/test_integration_train_policy.py
+      - tests/test_integration_dispatch_waits.py
+      - tests/test_epic_train_end_to_end.py
+      - tests/test_fast_smooth_integration_e2e.py
       - tests/test_integration_train_sources.py
       - tests/perf/test_train_selection.py
       - tests/test_integration_stacked_branches.py
       - tests/test_integration_container_completion.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
+      - tests/test_integration_containment_cutover.py
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py
@@ -415,8 +440,10 @@ areas:
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
       - tests/test_integration_train_regressions.py
+      - tests/test_integration_close_merge.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
+      - tests/test_integration_truth_reconciler.py
       - tests/test_integration_replay.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_observe.py
@@ -430,6 +457,7 @@ areas:
       - tests/test_integration_ci.py
       - tests/test_integration_ci_producers.py
       - tests/test_integration_checks.py
+      - tests/test_integration_check_reconciliation.py
       - tests/test_integration_cleanup.py
       - tests/test_branch_sweep.py
       - tests/test_attestation_check_run_id.py
@@ -480,12 +508,14 @@ areas:
       - tests/test_integration_root_authorization.py
       - tests/test_integration_legacy_*.py
       - tests/test_integration_pr_delivery.py
+      - tests/test_integration_pr_repair_publication.py
       - tests/test_parent_ci_publication.py
       - tests/test_repair_checkout_refs.py
       - tests/test_integration_child_delivery.py
   - id: integration-controls
     description: "Integration operator controls: rollout and operational controls, supervisor authority over them, the integration CLI, integration doctor alarms and the troubleshooting guide."
     match:
+      - tests/test_integration_manual_control.py
       - tests/test_integration_legacy_park_retirement.py
       - tests/test_integration_controls.py
       - tests/test_integration_operational_controls.py
@@ -557,6 +587,7 @@ areas:
   - id: workspaces
     description: "Workspaces v2: workspace kinds (parser, registry, queries), per-task kind requirements, multi-kind acquisition and attachments, workspace commands, names, sentinels, control-file excludes and base-checkout guards."
     match:
+      - tests/test_workspace.py
       - tests/test_workspace_*.py
       - tests/test_create_task_requires_kinds.py
       - tests/test_cli_task_create_requires_kinds.py
@@ -608,6 +639,8 @@ areas:
     match:
       - tests/test_command_dispatch.py
       - tests/test_command_surface.py
+      - tests/test_command_descriptors.py
+      - tests/test_generated_command_contracts.py
       - tests/test_command_scope_*.py
       - tests/test_command_invoked_event.py
       - tests/test_surface_commands.py
@@ -824,6 +857,8 @@ areas:
     match:
       - tests/test_project_onboarding_*.py
       - tests/test_project_repository_binding.py
+      - tests/test_project_relocation.py
+      - tests/test_repository_checkout_repair.py
       - tests/test_project_supervisors.py
       - tests/test_onboarding_queries.py
       - tests/test_project_roots_config.py
@@ -852,6 +887,7 @@ areas:
     match:
       - tests/test_dashboard_state.py
       - tests/test_dashboard_browser_storage.py
+      - tests/test_dashboard_secure_context.py
       - tests/test_api_graph.py
       - tests/test_pane_registry_parity.py
   - id: graph-layout
@@ -868,6 +904,8 @@ areas:
       - tests/test_doctor.py
       - tests/test_doctor_cli_timeout.py
       - tests/test_doctor_stall_checks.py
+      - tests/test_doctor_observations.py
+      - tests/test_observation_snapshots.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
       - tests/test_doctor_discord_config.py

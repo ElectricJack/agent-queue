@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 
 from src.database.tables import (
     continuations, integration_batch_members, integration_batches, integration_branch_owners,
-    integration_repair_stages, projects, sessions, tasks, token_ledger,
+    integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records,
 )
 from src.waits.conditions import Condition, NodeKey, Observation, Snapshot
 
@@ -87,9 +87,11 @@ class AdmissionReader:
         self.orchestrator = orchestrator
         self.clock = clock
 
-    async def observe_task(self, conn, task_id, *, continuation_id=None):
+    async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
         from src.database.queries.claim_queries import (
-            _pool_profiles_predicate, claim_frontier_predicates, route_claimable,
+            _pool_profiles_predicate,
+            claim_frontier_predicates,
+            route_claimable,
         )
         from src.database.queries.hierarchy_queries import ProjectIntegrationMode
         from src.routing.readiness import orchestrator_router_ready
@@ -98,15 +100,25 @@ class AdmissionReader:
         config = o.config
         config_revision = digest(asdict(config))
         task = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().first()
-        expected_status = "RESUME_PENDING" if continuation_id else "READY"
-        if not task or task["status"] != expected_status or task["assigned_agent_id"] is not None:
+        expected_statuses = ({"RESUME_PENDING"} if continuation_id else
+                             {"READY", "DEFINED", "PAUSED"} if migration_audit else {"READY"})
+        if not task or task["status"] not in expected_statuses or task["assigned_agent_id"] is not None:
             return None
-        if continuation_id and not await conn.scalar(select(continuations.c.id).where(
-            continuations.c.id == continuation_id, continuations.c.task_id == task_id,
-            continuations.c.resume_state == "queued", continuations.c.stopped_at.is_not(None),
-            continuations.c.hold_reason.is_(None),
-        )):
-            return None
+        if continuation_id:
+            intent = (await conn.execute(select(continuations).where(
+                continuations.c.id == continuation_id, continuations.c.task_id == task_id,
+                continuations.c.resume_state == 'queued', continuations.c.hold_reason.is_(None),
+            ))).mappings().first()
+            if not intent:
+                return None
+            if intent['stopped_at'] is None:
+                from src.wait_runtime.legacy_parking import legacy_parked
+
+                wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.id == intent['wait_id'],
+                ))).mappings().one()
+                if not await legacy_parked(conn, task, wait, intent):
+                    return None
         task = dict(task)
         project = (await conn.execute(select(projects).where(
             projects.c.id == task["project_id"],
@@ -117,6 +129,20 @@ class AdmissionReader:
         # separately re-observed below; an old cached verdict never clears a hold.
         project_model = await o.db.get_project(task["project_id"])
         mode = ProjectIntegrationMode.of(project_model)
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentPrimitives
+
+        service = getattr(o, "development_integration", None)
+        if service is None:
+            service = DevelopmentPrimitives(o.db, data_dir=config.data_dir,
+                                            git=getattr(o, "git", None))
+        admission = await observe_admission(
+            o.db, [task_id], service, cached_only=True,
+            default_mode=config.integration.default_mode,
+            hierarchy_conn=conn,
+            router_ready_projects={task["project_id"]} if ready else set(),
+        )
+        mode = admission.hierarchy_modes.get(task["project_id"], mode)
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:
@@ -193,15 +219,17 @@ class AdmissionReader:
             tasks.c.id == task_id, tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
         )))
         batch_reasons = []
-        if project["hierarchical_integration_mode"] == "development":
-            admission = await o._delivery_admission([task_id])
-            if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
-                batch_reasons.append("delivery_not_verified")
+        if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
+            batch_reasons.append("delivery_not_verified")
         batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
                        "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
         batch_reasons.extend(name for name in batch_names if checks.get(name) is False)
         policy_reasons = [name for name, ok in checks.items() if not ok and name not in batch_names
                           and name not in {"claim_prepare_backoff", "workspace_requirement"}]
+        if not continuation_id and task["status"] != "READY":
+            # Historical audit rows describe holds; they never admit paused or
+            # undefined work. The ordinary claim path still requires READY.
+            policy_reasons.append(f"status:{task['status']}")
         if not profile or not profile.enabled or project["status"] != "ACTIVE":
             policy_reasons.append("disabled_project_or_profile")
         constraints = {
@@ -240,7 +268,10 @@ class AdmissionReader:
         context = condition.context
         if context.get("owner_kind") != "scheduler" or context.get("session_id") is not None:
             return None
-        observed = await self.observe_task(conn, context.get("owner_id"))
+        # Resource snapshots describe constraints, never grant admission. This
+        # path can re-observe migration projections of held tasks; direct
+        # admission callers retain the default READY-only observation.
+        observed = await self.observe_task(conn, context.get("owner_id"), migration_audit=True)
         blocker = condition.parameters["blocker"]
         if (not observed or observed.task["project_id"] != context.get("project_id")
                 or observed.task["claim_epoch"] != context.get("claim_epoch")

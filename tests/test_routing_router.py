@@ -130,6 +130,7 @@ def _as_playbook(playbook_id: str = ROUTER_ID, commands=("task_route_plan", "tas
     ctx = SimpleNamespace(
         run_id="run-1", dispatch_id="dispatch-1", artifact_ref=_ref(playbook_id),
         artifact=artifact, rule_id="route-task", step_id="apply_a", attempt=1,
+        iteration_path="", services=SimpleNamespace(private_values=None),
     )
     with _invocation_context(ctx) as invocation:
         yield invocation
@@ -1014,6 +1015,47 @@ async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(hand
     assert [r["provider"] for r in routes].count("claude") == 1
 
 
+async def test_headroom_mode_refreshes_usage_at_apply_and_explains_the_factor(handler, orch):
+    from src.providers import ProviderUsageSnapshot
+
+    await _workspace(orch)
+    await _create(orch.db, "routine", task_type=TaskType.FEATURE, class_hint="standard-high")
+    # Routine policy with equal harness weights and no hosted preference.
+    policy, _digest = routine_policy()
+    policy_data = json.loads(policy.canonical_json())
+    for rule in policy_data["kinds"].values():
+        rule.pop("prefer_harnesses", None)
+    policy_data["balance"]["usage_mode"] = "headroom"
+
+    async def usage(claude, codex):
+        now = time.time()
+        await orch.db.record_provider_usage([
+            ProviderUsageSnapshot(provider=key, window="weekly", used_percent=used,
+                                  observed_at=now, resets_at=now + 3600, source="probe")
+            for key, used in (("claude", claude), ("codex", codex))
+        ])
+
+    await usage(70, 20)
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "routine", "policy": json.dumps(policy_data),
+        "classification": ROUTINE_MEDIUM,
+    })
+    assert plan["provider"] == "codex"
+    await usage(20, 70)
+    with _as_playbook():
+        result = await handler.execute("task_route_apply", {"task_id": "routine", "plan": plan})
+    assert result["outcome"] == "routed"
+    assert result["provider"] == "claude"
+    assert result["adjusted_at_apply"]
+    route = (await orch.db.get_task("routine")).route
+    chosen = route["decision"]["candidates"][0]
+    assert chosen["usage_headroom_factor"] == 0.8
+    assert chosen["usage_binding_window"]["window"] == "weekly"
+    assert "usage headroom factor 0.8 (binding weekly(account), resets at" in route["reason"]
+    explained = await handler.execute("explain_task", {"task_id": "routine"})
+    assert explained["assignment_route"]["reason"] == route["reason"]
+
+
 # -- task.route_needed carries the router and the class hint ------------------------------
 
 
@@ -1110,6 +1152,55 @@ async def test_apply_reads_the_preference_from_the_task_not_from_the_plan(handle
         applied = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
     assert applied["outcome"] == "routed"
     assert applied["profile_id"] == "standard-high-claude"
+
+
+async def test_strict_repair_preference_survives_a_concurrent_old_apply(handler, orch, monkeypatch):
+    await _workspace(orch)
+    await _create(orch.db, "repair", task_type=TaskType.BUGFIX,
+                  created_by_kind="integration_repair", class_hint="standard-high")
+    plan = await _plan(handler, "repair", NARROW_NO)
+    assert plan["profile_id"] == "standard-high-codex"
+    snapshot_read, release_apply = asyncio.Event(), asyncio.Event()
+    original_snapshot = handler._routing_snapshot
+
+    async def paused_snapshot(*args, **kwargs):
+        snapshot = await original_snapshot(*args, **kwargs)
+        snapshot_read.set()
+        await release_apply.wait()
+        return snapshot
+
+    monkeypatch.setattr(handler, "_routing_snapshot", paused_snapshot)
+    with _as_playbook():
+        applying = asyncio.create_task(handler.execute("task_route_apply", {
+            "task_id": "repair", "plan": plan,
+        }))
+    resetting = None
+    try:
+        await asyncio.wait_for(snapshot_read.wait(), 10)
+        resetting = asyncio.create_task(orch.db.reset_task_route(
+            "repair", prefer_target="claude", prefer_mode="strict",
+        ))
+        # The reset must wait for the old apply's task row, then clear its
+        # route. Otherwise the old apply can write Codex over strict Claude.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(resetting), 0.2)
+    finally:
+        release_apply.set()
+        applied = await asyncio.wait_for(applying, 10)
+        if resetting is not None:
+            assert await asyncio.wait_for(resetting, 10)
+    assert applied["outcome"] == "routed"
+    task = await orch.db.get_task("repair")
+    assert (task.profile_id, task.route_source, task.prefer_target, task.prefer_mode) == (
+        None, UNROUTED, "claude", "strict",
+    )
+    monkeypatch.setattr(handler, "_routing_snapshot", original_snapshot)
+    strict = await _plan(handler, "repair", NARROW_NO)
+    assert strict["profile_id"] == "standard-high-claude"
+    with _as_playbook():
+        result = await handler.execute("task_route_apply", {"task_id": "repair", "plan": strict})
+    assert result["outcome"] == "routed"
+    assert result["profile_id"] == "standard-high-claude"
 
 
 async def test_apply_refuses_a_plan_that_cannot_serve_a_strict_preference(handler, orch):
@@ -1237,10 +1328,12 @@ async def test_a_worker_filing_may_name_a_preference(handler, orch):
     )
     from src.profiles.capabilities import CapabilityPolicy
 
+    await _create(orch.db, "held", status=TaskStatus.IN_PROGRESS)
+    await _session(orch.db, "worker-1", task_id="held")
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
-        session_id="worker-1", project_id="p",
+        session_id="worker-1", project_id="p", task_id="held",
     )
     with principal_context(principal):
         result = await handler.execute("create_task", {

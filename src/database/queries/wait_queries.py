@@ -132,6 +132,27 @@ async def get_wait(conn, wait_id: str, *, project_id: str):
     )
 
 
+async def pending_human_waits(conn, *, now, project_ids=None):
+    """Current reminders, independent of report windows and wait deadlines."""
+    query = select(wait_records, tasks.c.title).outerjoin(
+        tasks, and_(wait_records.c.owner_kind == "task", tasks.c.id == wait_records.c.owner_id,
+                    tasks.c.project_id == wait_records.c.project_id),
+    ).where(wait_records.c.condition_kind == "human", wait_records.c.outcome == "pending")
+    if project_ids is not None:
+        query = query.where(wait_records.c.project_id.in_(project_ids))
+    rows = (await conn.execute(query.order_by(
+        wait_records.c.created_at, wait_records.c.id,
+    ))).mappings()
+    return [{
+        "wait_id": r["id"], "project_id": r["project_id"],
+        "task_id": r["owner_id"] if r["owner_kind"] == "task" else None,
+        "title": r["title"] or "", "subject": r["condition"]["subject"],
+        "age_seconds": max(0, now - r["created_at"]), "created_at": r["created_at"],
+        **{key: r["condition"][key] for key in ("thread_id", "review_id", "revision")
+           if key in r["condition"]},
+    } for r in rows]
+
+
 async def register_wait(
     conn,
     *,
@@ -194,7 +215,7 @@ async def register_wait(
         source_watermark = await read_source_watermark()
     if type(source_watermark) is not int or source_watermark < 0:
         raise ValueError("source watermark must be a nonnegative committed sequence bound")
-    await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+    await lock_graph(conn)  # REGISTRATION_LOCK is the graph fence; waiting is bounded
     scope = await verify_owner(conn, scope, lock_owner=False)
     cond = registry.normalise(condition)
     request_hash = hashlib.sha256(
@@ -221,6 +242,8 @@ async def register_wait(
         # Replay precedes source verification: the producer may have finished or
         # disappeared since the receipt was committed, and timers may be past due.
         return old["decision_inputs"]["registration_receipt"]
+    if cond.kind == "human" and cond.parameters["subject"] == "task_comment":
+        cond = cond.bind(generation=cond.generation, source_watermark_seq=source_watermark)
     evidence = await registry.verify(conn, cond, scope)
     cond = evidence.condition
     adapter = registry.adapter(cond.kind)
@@ -313,7 +336,7 @@ async def register_wait(
         ceiling_anchor_at = await ceiling_anchor(conn, scope, now=now, policy=policy)
     ceiling_at = (
         ceiling_anchor_at + policy.in_place_ceiling_seconds
-        if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
+        if decision.mode == "in_place" and cond.kind not in {"human", "resource", "close_merge"}
         else None
     )
     wait_id = str(uuid.uuid4())
@@ -714,7 +737,8 @@ async def wait_explain(
         ):
             raise WaitError("wait.not_found", "wait owner is outside the query scope or missing")
         query = query.where(
-            wait_records.c.owner_id == task_id, wait_records.c.owner_kind.in_(("task", "scheduler"))
+            wait_records.c.owner_id == task_id,
+            wait_records.c.owner_kind.in_(("task", "scheduler", "integration")),
         )
         if not history:
             query = query.where(wait_records.c.outcome == "pending")
@@ -902,10 +926,13 @@ async def wait_graph(
         cost_projection = {}
         if costs:
             from src.database.queries.continuation_queries import measurement_medians
+            from src.database.queries.wait_metrics import wait_metrics_snapshot
 
             medians = await measurement_medians(conn, pid, now=now)
             cost_projection = {'costs': {'durations': list(medians['durations'].values()),
-                                         'resume': medians['cost']}}
+                                         'resume': medians['cost'],
+                                         'metrics': await wait_metrics_snapshot(
+                                             conn, now=now, project_id=pid)}}
         summaries.append(
             {
                 "project_id": pid,
