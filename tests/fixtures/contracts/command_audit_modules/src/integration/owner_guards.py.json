@@ -1,0 +1,77 @@
+{
+  "integration_transfer_owner": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/integration/owner_guards.py:IntegrationCommandsMixin._cmd_integration_transfer_owner",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'transferred', 'fence': transferred.model_dump(mode='json')}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', 'target repository is not configured')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', 'destination owner is not bound to the target repository branch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('stale_owner', 'branch ownership record does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', f'invalid ownership transfer: {exc}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', refusal)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('stale_owner', 'branch ownership fence is stale')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', 'playbook ownership transfer authority is outside the target scope')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', 'ownership transfer authority is unresolved')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('stale_owner', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('busy', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('human_required', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('busy', 'parent delivery is not ready for verifier handoff')"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:53df9dcd8c371cc00bd6205a77087ddcd0d5f9eb7e83f50b5ae92eebf0c62a63",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/doctor/builtin.py::_scan_vault": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/builtin.py::builtin_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/doctor/builtin.py::_check_config_parse": {
+      "baseline_span": [
+        28,
+        81
+      ],
+      "landing_span": [
+        28,
+        81
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

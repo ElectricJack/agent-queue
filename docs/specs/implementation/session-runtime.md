@@ -221,6 +221,13 @@ async def _tmux(self, *args: str, timeout: float = 30.0) -> str   # asyncio.crea
   continues. The final pass runs with `quiet_seconds = dialog_settle_seconds` so a trust
   screen painted *after* readiness is still answered, and if one fires there the prefix
   wait is re-entered on the remaining dialog budget.
+  For Codex the builder also appends a built-in `trust-folder` rule when the harness's own
+  rules miss the 0.162 "Trust this folder?" screen (`› 1. Trust and continue`): it sends
+  Enter when `SessionSpec.codex_project_trust` is set and otherwise fails startup rather than
+  idling. That flag is set for a Codex launch that qualifies for the isolated-worktree
+  argument; `_launch` then records the repository root (the main checkout, for a linked
+  worktree) as `trust_level = "trusted"` in `$CODEX_HOME/config.toml` before
+  `provider.start()` (`src/sessions/codex_trust.py`), never changing an existing entry.
 - `nudge()` — `asyncio.Lock` per session name; `_find_agent_pane()` via
   `list-panes -F '#{pane_id}\t#{pane_current_command}'` matched against `process_names`;
   cancel copy-mode (`#{pane_in_mode}` → `send-keys -X cancel`); `send-keys -l` ≤ 4096 B else
@@ -277,8 +284,17 @@ def build_session_env(*, session_id: str, task_id: str | None, project_id: str,
                       harness_env: dict[str, str]) -> dict[str, str]
 ```
 
-— sets the nine `AQ_*` markers, strips `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` (relocated
-from `src/runtimes/_subprocess.py::isolated_env`; further scrubbing per [trust-and-ops](trust-and-ops.md)).
+— sets the nine `AQ_*` markers; further scrubbing per [trust-and-ops](trust-and-ops.md).
+Launch isolation correction (2026-10-15): discard all inherited `CLAUDE*` controls
+and `AQ_*` values, even when sensitive-variable scrubbing is disabled or its
+allowlist matches those controls. Fresh AQ identity and policy values come from
+the session builder. Only explicit launch configuration may supply Claude
+settings such as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; an enclosing shell's
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` must never reach a worker. The tmux pane must
+receive the scrubbed environment, rather than an overlay on a persistent server's
+environment, while retaining tmux terminal metadata. Daemon startup warns with
+inherited harness-control and `AQ_*` names only, preserving its database guard.
+
 Hook material (Claude `--settings <path>` merge; other harnesses' template files) is
 written into `work_dir` here, rendering the templates the harness profile declares.
 
@@ -352,6 +368,14 @@ class SessionReconciler:
    `deferred_reason`. With no such evidence to offer (a harness with neither reader nor store),
    the stall is announced with `evidence="unverified"` and how long the pane has held still,
    and nothing is spent — a terminal read is never the decision (design spec §4.3).
+   Pool guarded-failure reporting checks the stopped session instance and released
+   claim after teardown before announcing a return to READY or emitting
+   `task.restarted`. A retained integration owner or unconfirmed stop emits
+   `task.needs_attention` instead; its comment records the observed task status
+   and asks for investigation. A concurrent pause, manual recovery decision or
+   changed claim preserves those controls without a misleading recovery report.
+   A saved continuation note
+   is historical evidence, never permission to retry or release a recovery hold.
 4a. **Wedged-turn override** — the gate above is `window_activity`, and a TUI that repaints
    its in-turn spinner keeps it fresh forever (`crisp-horizon-90.10`: 42 minutes, zero rungs,
    zero events, task held). When the pane claims activity, the reconciler asks the CLI's own
