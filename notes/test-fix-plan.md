@@ -1,5 +1,11 @@
 # Test Suite Fix Plan
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Date:** 2026-03-14
 **Test suite:** ~2141 tests (1730 passed, 393 skipped, 2 failed)
 

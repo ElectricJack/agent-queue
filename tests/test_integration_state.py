@@ -19,12 +19,10 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("integration-state.db"))
-    await database.initialize()
+async def db(request, tmp_path, reuse_database):
+    database = await reuse_database("integration-state.db")
     await database.create_project(Project(id="p", name="integration project"))
     yield database
-    await database.close()
 
 
 async def _integrity_error_in_savepoint(conn, statement) -> None:
