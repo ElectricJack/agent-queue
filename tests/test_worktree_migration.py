@@ -102,7 +102,7 @@ async def test_new_rows_get_the_shipped_worktree_default(database):
 
 
 async def test_kind_limits_upgrade_existing_rows_idempotently(database):
-    revision = import_module("migrations.versions.a00000000096_workspace_kind_limits")
+    revision = import_module("migrations.versions.a00000000102_workspace_kind_limits")
 
     def verify(conn):
         with Operations.context(MigrationContext.configure(conn)):
