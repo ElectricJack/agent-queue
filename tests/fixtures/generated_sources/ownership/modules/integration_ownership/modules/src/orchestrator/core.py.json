@@ -1,0 +1,243 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/core.py::Orchestrator._on_config_reloaded": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/core.py::Orchestrator._reap_worktree_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/orchestrator/core.py::Orchestrator.__init__": {
+      "baseline_span": [
+        227,
+        673
+      ],
+      "landing_span": [
+        227,
+        662
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._branch_materialization_hierarchy": {
+      "baseline_span": [
+        1257,
+        1261
+      ],
+      "landing_span": [
+        1246,
+        1250
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace": {
+      "reason": "Managed pause requires full durable capture, exact source identity and fresh provider/process proof before cleanup; bounded retry exhaustion cannot release an uncaptured managed slot."
+    },
+    "src/orchestrator/core.py::Orchestrator._dispatch_integration_repair_stage": {
+      "baseline_span": [
+        1243,
+        1251
+      ],
+      "landing_span": [
+        1232,
+        1240
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._observe_integration_source_ci": {
+      "baseline_span": [
+        1220,
+        1226
+      ],
+      "landing_span": [
+        1209,
+        1215
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
+    },
+    "src/orchestrator/core.py::Orchestrator._reconcile_sessions": {
+      "baseline_span": [
+        3554,
+        3604
+      ],
+      "landing_span": [
+        3519,
+        3569
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._repair_integration_source_ancestry": {
+      "baseline_span": [
+        1227,
+        1235
+      ],
+      "landing_span": [
+        1216,
+        1224
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._reverify_integration_parent_source": {
+      "baseline_span": [
+        1236,
+        1242
+      ],
+      "landing_span": [
+        1225,
+        1231
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator._run_daily_git_branch_sweep": {
+      "landing_span": [
+        3650,
+        3794
+      ],
+      "reason": "Sweeps exact Git-proven local and remote refs across registered Git-first project checkouts and reports preserved work and stash inventory."
+    },
+    "src/orchestrator/core.py::Orchestrator._salvage_paused_workspace": {
+      "reason": "Partial-source salvage validates the stopped task and exact workspace/branch before recording context; it does not qualify managed-slot release without a full checkpoint."
+    },
+    "src/orchestrator/core.py::Orchestrator._schedule_daily_git_branch_sweep": {
+      "landing_span": [
+        3625,
+        3649
+      ],
+      "reason": "Schedules the fleet Git branch sweep once per UTC day while Git-first integration is active."
+    },
+    "src/orchestrator/core.py::Orchestrator._stop_task_locked": {
+      "reason": "Task-stop implementation proves managed writer handoff, retains unproven attachments and protects successor preparation claims under the task control lock."
+    },
+    "src/orchestrator/core.py::Orchestrator._sweep_stranded_owners": {
+      "baseline_span": [
+        1274,
+        1289
+      ],
+      "landing_span": [
+        1263,
+        1278
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator.initialize": {
+      "baseline_span": [
+        1442,
+        2413
+      ],
+      "landing_span": [
+        1431,
+        2381
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator.run_one_cycle": {
+      "reason": "Builds one revalidated Git prerequisite view per cycle and shares it across scheduling and pool measurement."
+    },
+    "src/orchestrator/core.py::Orchestrator.shutdown": {
+      "baseline_span": [
+        2816,
+        2865
+      ],
+      "landing_span": [
+        2784,
+        2833
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::Orchestrator.stop_task": {
+      "baseline_span": [
+        1290,
+        1399
+      ],
+      "landing_span": [
+        1279,
+        1388
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/core.py::import from src.notifications.builder import build_task_detail": {
+      "baseline_span": [
+        101,
+        101
+      ],
+      "landing_span": [
+        101,
+        101
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::2a67d31d352ea3e6d723c1927b29f55f52d855576c04aa1ff9899093637f01ad": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1489,
+      "owner": "Orchestrator._checkpoint_paused_workspace",
+      "owner_fingerprint": "61f98f89da22661ea1d2555b7d43ca9817be4a3d3d38a6a376bcc21399a5e002",
+      "reason": "Stores pause-checkpoint retry attempts, next retry time and reason; this backoff telemetry cannot prove a handoff or move a ref."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::cda00a809de8dac8c704f9da910433579b679b64df6e34c7ec8b86d4e6dc3882": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1532,
+      "owner": "Orchestrator._checkpoint_paused_workspace",
+      "owner_fingerprint": "61f98f89da22661ea1d2555b7d43ca9817be4a3d3d38a6a376bcc21399a5e002",
+      "reason": "Stores exhausted pause-checkpoint attempts and reason for diagnosis; the failure record leaves actual retained branch ownership intact."
+    },
+    "src/orchestrator/core.py::Orchestrator._finish_manual_pause::42aa00e8ced31b193cf50efcb0d356bb67a4fdf96c0380cd95c85329ab1acf31": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1192,
+      "owner": "Orchestrator._finish_manual_pause",
+      "owner_fingerprint": "1a806dbd51d08e4d08c99834e40a5033855c215d08e9e883680f0fa5a74693b5",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'session_resume_key'"
+    },
+    "src/orchestrator/core.py::Orchestrator._finish_manual_pause_resources::42aa00e8ced31b193cf50efcb0d356bb67a4fdf96c0380cd95c85329ab1acf31": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1300,
+      "owner": "Orchestrator._finish_manual_pause_resources",
+      "owner_fingerprint": "8bcd8daa4388c2884d1edf5177b32b03e4c864bed661caa4dce4fcc9eaa45ead",
+      "reason": "Stores session_resume_key for resuming the paused agent conversation after resource cleanup; it is session continuity metadata, not integration ownership."
+    },
+    "src/orchestrator/core.py::Orchestrator._resolve_gate_and_emit::22993b2ffb9b93f695c534c4676a41301fe3a6bd73276abc291182210469a9ee": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3569,
+      "owner": "Orchestrator._resolve_gate_and_emit",
+      "owner_fingerprint": "c71f4be332144576c826233734247ddc7981d6d4296b6b7f98b950b639bfd1f3",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/core.py::Orchestrator._stop_task_locked::d86ccbef339ede4d738a06fe782e380b5a8f344ba31c80022f4f060258184622": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1711,
+      "owner": "Orchestrator._stop_task_locked",
+      "owner_fingerprint": "a5f037b8ccf895a24f10d5ec0e58155a25da77e61fce32db655e0ec2377494e9",
+      "reason": "Marks integration_handoff_unproven when stopping cannot establish a safe handoff; it signals refusal and cannot override retained ownership."
+    },
+    "src/orchestrator/core.py::Orchestrator._sweep_gates::09a8c81adcd7b86401088dbc04f5d3e98384c7378264232630db2ae930f309f5": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3528,
+      "owner": "Orchestrator._sweep_gates",
+      "owner_fingerprint": "04ea81b81c9015bf038d1ef4295163ba2f014bd2eddaa878c1f6e1adbc621392",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/core.py::Orchestrator.skip_task::bf803774f1f897dc0defd360deab175de13c1575620473d2e734e3ceb5e9f68f": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1057,
+      "owner": "Orchestrator.skip_task",
+      "owner_fingerprint": "250ca454cbb596a4bf27474c0ee3b4db5ae58ec003b8130d493d79949aa107ac",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -308,7 +308,7 @@ def sweep(monkeypatch):
                  "_reviewed_file_guard_findings", "_orphaned_pr_findings", "_validation_findings",
                  "_subject_unknown_findings", "_object_bootstrap_findings",
                  "_continuous_promotion_findings", "_escalation_delivery_findings",
-                 "_slot_capacity_findings", "_train_batch_findings",
+                 "_slot_capacity_findings", "_workspace_capacity_findings", "_train_batch_findings",
                  "_stranded_promotion_findings"):
         monkeypatch.setattr(stall, name, AsyncMock(return_value=[]))
     monkeypatch.setattr(stall, "_waiting_train_repairs", AsyncMock(return_value={}))

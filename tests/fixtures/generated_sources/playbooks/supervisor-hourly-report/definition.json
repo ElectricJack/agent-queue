@@ -5,7 +5,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-06T19:51:03.524524Z",
+  "compiled_at": "2026-10-23T07:39:12.769538Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "supervisor-hourly-report",
   "purpose": "routine",
@@ -15,11 +15,11 @@
       "id": "request-window",
       "name": "request-window",
       "source": {
-        "end_line": 33,
+        "end_line": 34,
         "excerpt": "## Rule: request-window",
         "heading": "Rule: request-window",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 33
+        "path": "source.md",
+        "start_line": 34
       },
       "trigger": {
         "event_type": "digest.window_ready"
@@ -30,11 +30,11 @@
       "id": "recover-window",
       "name": "recover-window",
       "source": {
-        "end_line": 39,
+        "end_line": 40,
         "excerpt": "## Rule: recover-window",
         "heading": "Rule: recover-window",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 39
+        "path": "source.md",
+        "start_line": 40
       },
       "trigger": {
         "event_type": "timer.1m"
@@ -45,17 +45,17 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:d70f34a214154f118187435955fab062a85c9cfba80fc062676cb2cc0a61513d",
+  "source_hash": "sha256:a3f51598421e46e5864ad64758b32cfa5190ec1b4d3debc9a653478744cf0a1f",
   "steps": {
     "recover-window--done": {
       "outcome": "completed",
       "rule": "recover-window",
       "source": {
-        "end_line": 45,
+        "end_line": 46,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 45
+        "path": "source.md",
+        "start_line": 46
       },
       "title": "Completed",
       "type": "terminal"
@@ -64,11 +64,11 @@
       "outcome": "failed",
       "rule": "recover-window",
       "source": {
-        "end_line": 45,
+        "end_line": 46,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 45
+        "path": "source.md",
+        "start_line": 46
       },
       "title": "Failed",
       "type": "terminal"
@@ -79,11 +79,11 @@
       "rule": "recover-window",
       "save_result_as": "requests",
       "source": {
-        "end_line": 41,
+        "end_line": 42,
         "excerpt": "1. On `timer.1m`, call `report_reconcile` without inputs and bind the result",
         "heading": "Rule: recover-window",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 41
+        "path": "source.md",
+        "start_line": 42
       },
       "title": "request",
       "transitions": {
@@ -97,11 +97,11 @@
       "outcome": "completed",
       "rule": "request-window",
       "source": {
-        "end_line": 45,
+        "end_line": 46,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 45
+        "path": "source.md",
+        "start_line": 46
       },
       "title": "Completed",
       "type": "terminal"
@@ -110,11 +110,11 @@
       "outcome": "failed",
       "rule": "request-window",
       "source": {
-        "end_line": 45,
+        "end_line": 46,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 45
+        "path": "source.md",
+        "start_line": 46
       },
       "title": "Failed",
       "type": "terminal"
@@ -125,11 +125,11 @@
       "rule": "request-window",
       "save_result_as": "requests",
       "source": {
-        "end_line": 35,
+        "end_line": 36,
         "excerpt": "1. Call `report_reconcile` without inputs and bind the result as `requests`.",
         "heading": "Rule: request-window",
-        "path": "supervisor-hourly-report.md",
-        "start_line": 35
+        "path": "source.md",
+        "start_line": 36
       },
       "title": "request",
       "transitions": {
