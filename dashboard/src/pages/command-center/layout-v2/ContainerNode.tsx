@@ -8,11 +8,35 @@ import { StatusPill } from "../StatusPill";
 import { statusPillFor } from "../statusPillModel";
 import { epicCountLine } from "../taskReason";
 import { UNIT_H } from "./units";
+import { childCountText, epicLeafProgress } from "../../../components/epicActivityFormat";
 
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
 const FOCUS_RING = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-g-accent";
 const HEADER_BUTTON = `nodrag nopan flex h-6 min-w-0 shrink-0 items-center gap-1 rounded-md border border-g-border bg-g-card px-[9px] text-[11px] font-medium text-g-text hover:bg-g-card-hover ${FOCUS_RING}`;
+
+/** A frame's rolled-up activity: child counts by state, the server's reason,
+ *  and progress over leaves (intermediate containers not counted). */
+function frameActivity(node: ContainerNodeData["node"]) {
+  return {
+    stateCounts: childCountText(node.child_state_counts),
+    displayReason: node.display_reason,
+    progress: epicLeafProgress(node.descendant_state_counts) ?? {
+      done: node.agg_completed ?? 0, total: node.agg_descendants ?? 0,
+      running: node.agg_running ?? 0, blocked: node.agg_blocked ?? 0,
+    },
+  };
+}
+
+function FrameActivity({ counts, reason }: { counts: string; reason?: string | null }) {
+  const note = "min-w-0 shrink truncate text-[11px] text-g-muted";
+  return (
+    <>
+      {counts && <span data-child-state-counts title={counts} className={note}>{counts}</span>}
+      {reason && <span data-display-reason title={reason} className={note}>{reason}</span>}
+    </>
+  );
+}
 
 /**
  * An epic as a quiet frame around its children (§2.4): a panel with one
@@ -35,15 +59,14 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   // stands, the count line only how much of it is built. The stored status
   // (an integration hold reads PAUSED) stays in the pill's tooltip.
   const pill = statusPillFor({
-    status: node.status,
+    status: node.status, display_state: node.display_state, display_reason: node.display_reason,
     isBlocked: node.is_blocked,
     delivery: node.delivery ?? null,
     reviewBlock: reviewWaits.find((wait) => wait.blocking) ?? null,
   });
-  const total = node.agg_descendants ?? 0;
-  const count = epicCountLine({
-    done: node.agg_completed ?? 0, total, running: node.agg_running, blocked: node.agg_blocked,
-  });
+  const { progress, stateCounts, displayReason } = frameActivity(node);
+  const total = progress.total;
+  const count = epicCountLine(progress);
   const border = node.depth === 0 ? "border-g-border-strong" : "border-g-border";
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-xl border bg-g-panel font-g ${border} ${selected ? "outline-2 outline-offset-2 outline-g-accent" : ""} ${node.context_only ? "border-dashed" : ""}`}>
@@ -84,6 +107,7 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
             ))}
           </span>
         )}
+        <FrameActivity counts={stateCounts} reason={displayReason} />
         {/* §1.2: a phase held on failed work condenses to "N failed" in the
           * count line; it opens the first failed child, and the tooltip
           * names the rest until the frame's hover card carries them. */}
@@ -126,13 +150,7 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
         ) : null}
         {total > 0 && (
           <div className="absolute inset-x-3.5 bottom-0">
-            <ProgressBar
-              variant="line"
-              done={node.agg_completed ?? 0}
-              total={total}
-              running={node.agg_running ?? 0}
-              blocked={node.agg_blocked ?? 0}
-            />
+            <ProgressBar variant="line" {...progress} />
           </div>
         )}
       </div>
