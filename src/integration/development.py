@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import shlex
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -89,13 +90,14 @@ def _publishable_object_task(task):
     ).correlate(task).exists()
 #: The ``merge`` attribute a repository gives its generated artifacts in
 #: ``.gitattributes``.  Under a ``regenerate`` policy the publisher defines this
-#: driver for its own merges as a text merge that keeps our side of every
-#: overlapping hunk -- it never conflicts -- and then rebuilds the files with
-#: the policy's command, so a conflict confined to them never parks a source.
+#: driver for its own merges, then rebuilds the files with the policy's command.
+#: Legacy reviewed bookkeeping requires verified shard provenance first.
 GENERATED_MERGE_DRIVER = "aq-generated"
 GENERATED_MERGE_CONFIG = (
     "-c", f"merge.{GENERATED_MERGE_DRIVER}.name=generated artifact, rebuilt after the merge",
-    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver=git merge-file --quiet --ours %A %O %B",
+    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver="
+    f"{shlex.quote(sys.executable)} "
+    f"{shlex.quote(str(Path(__file__).with_name('generated_merge_driver.py')))} %O %A %B %P",
 )
 REGENERATION_OUTPUT_TAIL_CHARS = 4000
 
@@ -188,7 +190,9 @@ def _carried_sources(repair_id, contracts):
 #: A repair in one of these is still being worked on (or will be).
 OPEN_REPAIR_STATUSES = frozenset({
     TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
-    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value, TaskStatus.PAUSED.value,
+    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value,
+    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value,
+    TaskStatus.RESUME_PENDING.value, TaskStatus.PAUSED.value,
 })
 #: Links followed through repairs of repairs.  The generation budget keeps a
 #: real chain at three; a longer one is a loop in the journal.
@@ -436,19 +440,32 @@ class DevelopmentPrimitives:
         return result.stdout.strip()
 
 
+    async def resolved_backup(self, repository_id):
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.backup_dir)
+
     def _store_path(self, repo):
         return self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
 
 
     async def store(self, repo, *, fetch=True):
-        path = self._store_path(repo)
+        from src.integration.repository_recovery import (
+            fetch_retained_origin, harden_retained_repository,
+        )
+
+        from src.projects.storage_binding import repository_path
+
+        path = await repository_path(self.db, repo.id, self._store_path(repo))
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
         if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
             raise ValueError("retained repository URL differs from configured repository")
+        await harden_retained_repository(self.git, path)
         if fetch:
-            await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
+            await fetch_retained_origin(self.git, path, repository_url=repo.url,
+                                        project_id=repo.project_id, repository_id=repo.id)
         return path
 
 
@@ -655,7 +672,7 @@ class DevelopmentPrimitives:
                     self.git, self.run_git, store, targets,
                     default_branch=repo.default_branch,
                     main_head=heads.get(repo.default_branch),
-                    backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                    backup_dir=await self.resolved_backup(repo.id), repository_id=repo.id, now=now,
                     protected=protected,
                 )
             except Exception as exc:  # noqa: BLE001 - one attempt, recorded, retried
@@ -917,7 +934,7 @@ class DevelopmentPrimitives:
                 self.git, self.run_git, store,
                 {e["branch"]: {"head": e["head"], "reason": e["reason"]} for e in report["stale"]},
                 default_branch=repo.default_branch, main_head=report["main_head"],
-                backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                backup_dir=await self.resolved_backup(repo.id), repository_id=repo.id, now=now,
                 protected=protected,
             )
         outcomes = deletion["outcomes"]
@@ -973,6 +990,7 @@ class DevelopmentPrimitives:
         parent-child edge plus this required reverse edge would be a blocking
         cycle.
         """
+        from src.integration.models import INTEGRATION_REPAIR_PRIORITY
         from src.models import DepType, Task, TaskType
         from src.task_names import MAX_STRUCTURAL_DEPTH
 
@@ -1075,6 +1093,7 @@ class DevelopmentPrimitives:
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
                 task_type=TaskType.BUGFIX,
+                priority=INTEGRATION_REPAIR_PRIORITY,
                 max_retries=3,
                 # The routing policy names this origin
                 # (``origins.development_repair``) instead of matching the
