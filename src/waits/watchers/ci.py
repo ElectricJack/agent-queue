@@ -33,8 +33,8 @@ KINDS = ("ci_check", "ci_run", "pull_request")
 # Final conclusions plus cancellation: each is a result the waiter must read.
 TERMINAL = frozenset({Conclusion.SUCCESS, Conclusion.FAILURE, Conclusion.MISSING,
                       Conclusion.CANCELLED})
-# Reads also run under the graph fence during registration and dispatch. Keep
-# their remote work below the listener renewal interval and control lock budget.
+# Registration may read under the graph fence; listener dispatch prepares reads
+# before taking it. Bound remote work below the listener renewal interval.
 OBSERVATION_TIMEOUT_SECONDS = 5.0
 
 
@@ -86,11 +86,11 @@ class CheckWatcher:
         return {"ci_reader": self.read, "pr_reader": self.read}
 
     async def lock_source(self, conn, cond):
-        """Keep repository binding/cache stable across the fresh remote verdict.
+        """Fence repository/cache identities when applying a fresh remote verdict.
 
-        Remote state cannot be transaction locked: read() re-verifies the
-        exact head and check with its authenticated provider on every dispatch.
-        Events and cached results never substitute for that observation.
+        Remote state cannot be transaction locked. Listener dispatch prepares
+        read() before GRAPH_LOCK and revalidates these SQL bindings under this
+        fence. Events and cached results never substitute for that observation.
         """
         await conn.execute(select(repos.c.id).where(
             repos.c.id == cond.parameters["repository_id"],
@@ -235,6 +235,7 @@ class CheckWatcher:
                 raise WaitError("wait.unavailable", "CI observation is backing off",
                                 retry_after=due - self.clock()) from exc
             if isinstance(exc, (TimeoutError, ConnectionError)):
+                self._backoff[repo_id] = self.clock() + 60
                 raise WaitError("wait.unavailable", "CI observation temporarily unavailable",
                                 retry_after=300) from exc
             return self._snapshot(cond, "unavailable", "provider_unavailable",

@@ -412,6 +412,7 @@ class AdmissionSnapshot:
     allowed: set[str]
     inputs: tuple
     snapshots: list = field(default_factory=list)
+    snapshot_tasks: dict[int, frozenset[str]] = field(default_factory=dict)
     reasons: dict[str, list[dict]] = field(default_factory=dict)
     lock_ids: set[str] = field(default_factory=set)
     required: dict[str, set[str]] = field(default_factory=dict)
@@ -425,27 +426,42 @@ class AdmissionSnapshot:
     delivery_required: dict = field(default_factory=dict)
     delivery_view: object = None
 
+    def record_change(self, code, detail, task_id=None):
+        """Explain a failed guard before callers discard the allowed set."""
+        for tid in ({task_id} if task_id else self.candidate_ids):
+            reason = {"code": code, "ref": tid, "detail": detail}
+            reasons = self.reasons.setdefault(tid, [])
+            if reason not in reasons:
+                reasons.append(reason)
+        return False
+
     async def is_fresh(self, task_id=None):
         required = self.required.get(task_id, set()) if task_id else None
         if self.delivery_view is not None:
             await self.delivery_view.fresh()
-            if not await self._delivery_matches(task_id=task_id):
-                return False
+        if not await self._delivery_matches(task_id=task_id):
+            return False
         if self.pr is not None and not await self.pr.is_fresh(task_id):
             return False
         if task_id is None or self.hierarchy_required.get(task_id):
             fresh = all([await view.fresh() for view in self.hierarchy_views.values()])
             if not fresh and (task_id is None or not await self.matches(task_id=task_id)):
                 return False
-            if any([(await v.currentness()).state == "changed" for v in self.stack_views.values()]):
-                return False
-        return all(
-            [
-                snapshot.error is not None or await snapshot.is_fresh()
-                for snapshot in self.snapshots
-                if required is None or required.intersection(snapshot._identities)
-            ]
-        )
+            for pid, view in self.stack_views.items():
+                if (await view.currentness()).state == "changed":
+                    return self.record_change(
+                        "admission_stack_snapshot_changed",
+                        f"Stack project {pid} snapshot currentness changed; retry", task_id,
+                    )
+        for snapshot in self.snapshots:
+            if required is not None and not required.intersection(self.snapshot_tasks[id(snapshot)]):
+                continue
+            if snapshot.error is None and not await snapshot.is_fresh():
+                return self.record_change(
+                    "development_snapshot_changed",
+                    f"Stale development target: {snapshot.observation.target_ref}; retry", task_id,
+                )
+        return True
 
     async def matches(self, *, conn=None, lock=False, task_id=None):
         """Fence graph/generation/config under the mutation's transaction.
@@ -487,7 +503,11 @@ class AdmissionSnapshot:
                     )
             except DBAPIError as exc:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
-                    return False
+                    return self.record_change(
+                        "admission_lock_unavailable",
+                        "Admission task/project/repository input lock unavailable (55P03); retry",
+                        task_id,
+                    )
                 raise
         if not await self._delivery_matches(conn=conn, task_id=task_id):
             return False
@@ -495,7 +515,14 @@ class AdmissionSnapshot:
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
             if policy != self.policy_inputs:
-                return False
+                groups = ("candidate routing/parent", "project/repository policy", "edges",
+                          "sources", "completions", "metadata")
+                changed = ", ".join(name for name, before, after in zip(
+                    groups, self.policy_inputs, policy, strict=True) if before != after)
+                return self.record_change(
+                    "admission_policy_changed", f"Admission frontier inputs changed: {changed}; retry",
+                    task_id,
+                )
         for pid, view in self.hierarchy_views.items():
             mode = self.hierarchy_modes[pid]
             current_mode = await view.mode(mode, conn=conn)
@@ -507,10 +534,21 @@ class AdmissionSnapshot:
                 if (before & ids if ids is not None else before) != (
                     after & ids if ids is not None else after
                 ):
-                    return False
+                    changed_ids = sorted((before ^ after) & ids)
+                    return self.record_change(
+                        "admission_hierarchy_changed",
+                        f"Hierarchy project {pid} comparison {name} changed for "
+                        f"{', '.join(changed_ids)}; retry", task_id,
+                    )
             if task_id and any((task_id in getattr(mode, n)) != (task_id in getattr(current_mode, n))
                                for n in ("parent_contained_task_ids", "unknown_parent_task_ids")):
-                return False
+                changed = ", ".join(n for n in (
+                    "parent_contained_task_ids", "unknown_parent_task_ids"
+                ) if (task_id in getattr(mode, n)) != (task_id in getattr(current_mode, n)))
+                return self.record_change(
+                    "admission_hierarchy_changed",
+                    f"Hierarchy project {pid} comparison {changed} changed; retry", task_id,
+                )
         for pid, view in self.stack_views.items():
             verified = frozenset(await view.verified_on(conn))
             before = self.hierarchy_modes[pid].stackable_prerequisite_ids
@@ -519,28 +557,50 @@ class AdmissionSnapshot:
             if (before & ids if ids is not None else before) != (
                 verified & ids if ids is not None else verified
             ):
-                return False
-        return self.inputs == current[-1] and (
-            self.pr is None
-            or await self.pr.matches(
-                conn=conn,
-                lock=lock,
-                task_id=task_id,
+                return self.record_change(
+                    "admission_stack_changed",
+                    f"Stack project {pid} comparison stackable_prerequisite_ids changed for "
+                    f"{', '.join(sorted((before ^ verified) & ids))}; retry",
+                    task_id,
+                )
+        if self.inputs != current[-1]:
+            groups = ("edges", "children", "gates", "obsolete markers", "delivery requests",
+                      "project configuration", "repository configuration", "labels")
+            changed = ", ".join(name for name, before, after in zip(
+                groups, self.inputs, current[-1], strict=True) if before != after)
+            return self.record_change(
+                "admission_inputs_changed", f"Admission source inputs changed: {changed}; retry",
+                task_id,
             )
-        )
+        if self.pr is not None and not await self.pr.matches(
+            conn=conn, lock=lock, task_id=task_id,
+        ):
+            for tid, reasons in self.pr.reasons.items():
+                own = self.reasons.setdefault(tid, [])
+                own.extend(reason for reason in reasons if reason not in own)
+            return False
+        return True
 
 
     async def _delivery_matches(self, *, conn=None, task_id=None):
-        if self.delivery_view is None:
+        dependents = {task_id} if task_id else self.allowed
+        required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
+        if not required:
             return True
+        if self.delivery_view is None:
+            return False
         if conn is None:
             async with self.db._engine.connect() as conn:
                 return await self._delivery_matches(conn=conn, task_id=task_id)
-        dependents = {task_id} if task_id else self.allowed
-        required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
         verified = await self.delivery_view.verified_on(conn, required)
-        return all(verified[t].satisfied or verified[t].unloaded if t in verified
-                   else t not in self.delivery_view.evidence for t in required)
+        failed = sorted(t for t in required if t not in verified or not verified[t].satisfied)
+        if failed:
+            return self.record_change(
+                "admission_delivery_changed",
+                f"Delivery evidence comparison changed for prerequisites {', '.join(failed)}; retry",
+                task_id,
+            )
+        return True
 
 
 async def _observe_sources(
@@ -588,6 +648,7 @@ async def _observe_sources(
                 for r in requests.values()
                 if (r.project_id, r.repository_id, r.target_ref) == (project_id, repo_id, target)
             ]
+            batch.snapshot_tasks[id(snapshot)] = frozenset(r.task_id for r in scoped)
             observed = await snapshot.evaluate_many(scoped)
             evidence.update(observed)
         except (GitError, OSError, ValueError):
@@ -622,7 +683,7 @@ async def _observe_sources(
         if not await snapshot.is_fresh():
             batch.changed |= snapshot.error is None
             for task_id, deps in required.items():
-                if deps.intersection(snapshot._identities):
+                if deps.intersection(batch.snapshot_tasks[id(snapshot)]):
                     batch.allowed.discard(task_id)
                     batch.reasons.setdefault(task_id, []).append(
                         {
@@ -720,6 +781,14 @@ class AdmissionView:
     async def matches(self, *, conn=None, lock=False, task_id=None):
         return await self._snapshot.matches(conn=conn, lock=lock, task_id=task_id)
 
+    def rejection_reasons(self, task_id):
+        """Return current guard diagnostics without changing the selected decision."""
+        reasons = list(self._snapshot.reasons.get(task_id, ()))
+        if self.pr is not None:
+            reasons.extend(reason for reason in self.pr.reasons.get(task_id, ())
+                           if reason not in reasons)
+        return _freeze(reasons)
+
     async def counts(self, project_id, **policy):
         """Project the same eligible IDs into compatible pool demand."""
         return await self._snapshot.db.count_ready_by_profile(
@@ -806,17 +875,33 @@ async def _observe_delivery_edges(batch, *, cached_only):
             await batch.delivery_view.fresh()
         async with batch.db._engine.connect() as conn:
             verified = await batch.delivery_view.verified_on(conn, source_ids)
+    retry_ids = set()
     for tid, sources in batch.delivery_required.items():
         for source in sorted(sources):
             proof = verified.get(source)
-            if proof is None or proof.satisfied or proof.unloaded:
+            if proof is not None and proof.satisfied:
                 continue
+            if observer is None:
+                reason = "observer absent"
+            elif source not in batch.delivery_view.targets:
+                reason = "delivery target unavailable"
+            elif proof is None or proof.unloaded:
+                retry_ids.add(source)
+                reason = ("cache cold or expired" if cached_only else "fetch failed or evidence changed")
+                if proof is not None:
+                    reason += f": {proof.reason}"
+            else:
+                reason = proof.reason
+            unproven = proof is None or proof.unloaded
             batch.allowed.discard(tid)
             batch.reasons.setdefault(tid, []).append({
                 "code": "prerequisite_delivery",
                 "ref": source,
-                "detail": f"Delivery prerequisite {source}: {proof.state} ({proof.reason})",
+                "detail": f"Delivery prerequisite {source} "
+                          f"{'unproven' if unproven else proof.state} ({reason})",
             })
+    if retry_ids:
+        observer.request_delivery_refresh(retry_ids)
 
 
 async def structural_candidates(db, project_id, *, page_size=128):

@@ -48,6 +48,11 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
+
+env:
+  # Official PostgreSQL 18 multi-platform index; mirror-postgres.yml copies these exact bytes.
+  POSTGRES_DIGEST: sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
 
 jobs:
   test:
@@ -137,48 +142,19 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
-      # The image comes from Google's Docker Hub mirror: anonymous Docker Hub
-      # pulls are rate limited per runner IP (run 37990643989 failed every
-      # Postgres job with `toomanyrequests`), and a login secret would not
-      # reach pull requests from forks.
+      # GHCR is primary; public mirrors cover bootstrap and unavailable package access.
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
-        run: |
-          # A mirror can fail mid-pull with `unknown blob` (run 38157010908).
-          # Retry image fetching separately so a container-start error is fatal.
-          for pull_attempt in 1 2 3; do
-            if docker pull mirror.gcr.io/library/postgres:18; then
-              break
-            else
-              pull_status=$?
-            fi
-            if (( pull_attempt == 3 )); then
-              echo "::error::PostgreSQL image pull failed after $pull_attempt attempts"
-              exit "$pull_status"
-            fi
-            echo "::warning::PostgreSQL image pull failed (attempt $pull_attempt/3); retrying in 5s"
-            sleep 5
-          done
-          docker run --pull=never --detach --name ci-postgres \
-            --publish 127.0.0.1:5432:5432 \
-            --env POSTGRES_USER=agent_queue \
-            --env POSTGRES_PASSWORD=agent_queue \
-            --env POSTGRES_DB=agent_queue \
-            mirror.gcr.io/library/postgres:18 \
-            -c max_connections=300 \
-            -c fsync=off \
-            -c synchronous_commit=off \
-            -c full_page_writes=off
-          for attempt in {1..60}; do
-            # The entrypoint's temporary initialization server listens only on
-            # a Unix socket; require TCP so migrations see the final server.
-            if docker exec ci-postgres pg_isready \
-              -h 127.0.0.1 -U agent_queue -d agent_queue; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::PostgreSQL did not become ready after $attempt attempts"
-          exit 1
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: bash .github/scripts/start-postgres.sh
 
       - name: Set up Python
         id: python
@@ -329,22 +305,6 @@ jobs:
         # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S20.
         group: [claims, cli, graphs, failover]
 
-    services:
-      postgres:
-        # The same Docker Hub mirror as the test job's `Start PostgreSQL`.
-        image: mirror.gcr.io/library/postgres:18
-        env:
-          POSTGRES_USER: agent_queue
-          POSTGRES_PASSWORD: agent_queue
-          POSTGRES_DB: agent_queue
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -h 127.0.0.1 -U agent_queue -d agent_queue"
-          --health-interval 1s
-          --health-timeout 5s
-          --health-retries 60
-
     env:
       POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
       AQ_REQUIRE_POSTGRES_TESTS: "1"
@@ -363,6 +323,19 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
+      - name: Start PostgreSQL
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: bash .github/scripts/start-postgres.sh
 
       - name: Set up Python
         id: python
@@ -433,6 +406,14 @@ jobs:
           path: |
             e2e-results.xml
             ${{ runner.temp }}/e2e-timings/*.jsonl
+
+      - name: PostgreSQL logs on failure
+        if: failure()
+        run: docker logs ci-postgres || true
+
+      - name: Remove PostgreSQL
+        if: always()
+        run: docker rm --force --volumes ci-postgres || true
 
   dashboard:
     name: Dashboard (typecheck/build)

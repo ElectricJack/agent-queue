@@ -69,6 +69,8 @@ async def test_row_aspect_reload_relays_out_every_published_pair(orchestrator_fa
 
 async def test_layout_step_is_noop_when_disabled(orchestrator_factory):
     o = await orchestrator_factory()
+    o.config.graph_layout.enabled = False
+    o.config.graph_layout.incremental_debounce_ms = 0
     await o.db.create_project(Project(id="p1", name="P1"))
     await o.db.create_task(Task(id="a", project_id="p1", title="a", description=""))
     await o._run_layout_step()
