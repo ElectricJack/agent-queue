@@ -1,0 +1,67 @@
+{
+  "source_base": "9f5497be69a7dbcdecc0fc84976f5b111f208a9b",
+  "source_commit": "8ec0c84e3afdd0b9bc79b9dbd7b59df197a47ff6",
+  "previous_cli_catalogue_sha256": "27eea7007f305f62593d9c853a144d1cbd21a3894cccc032106de692d8566dc8",
+  "cli_catalogue_sha256": "64f173d7f562d58688d72ad5691aec9552dbd1220bf659b2bc6e050c6226253b",
+  "added_commands": {
+    "integration_repair_target": {
+      "transport_definition": {
+        "name": "integration_repair_target",
+        "description": "Authenticated hierarchical integration operational control.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "minLength": 1,
+              "title": "Batch Id",
+              "type": "string"
+            },
+            "reason": {
+              "default": "",
+              "title": "Reason",
+              "type": "string"
+            },
+            "dry_run": {
+              "default": true,
+              "title": "Dry Run",
+              "type": "boolean"
+            },
+            "expected_target_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expected Target Sha"
+            },
+            "expected_candidate_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expected Candidate Sha"
+            }
+          },
+          "required": [
+            "batch_id"
+          ],
+          "title": "IntegrationRepairTargetArgs",
+          "type": "object"
+        }
+      },
+      "contract_fingerprint": "sha256:a65ddfb86a5d8520da040cb62b69dde8ee51e7c08a6743a9872419889b315b55"
+    }
+  },
+  "review_notes": [
+    "The sealed epic target repair adds exactly one typed command. Removing it recovers every prior catalogue byte, including property ordering. The command retains live operator/supervisor authority, exact candidate/target guards, and the existing repair allocator budget."
+  ]
+}
