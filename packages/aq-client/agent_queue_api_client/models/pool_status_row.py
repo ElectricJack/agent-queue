@@ -36,10 +36,12 @@ class PoolStatusRow:
             starting (int):
             draining (int):
             ready (int):
+            name (str | Unset):  Default: ''.
             service_tier (None | str | Unset):
             enabled (bool | Unset):  Default: True.
             max_active (int | None | Unset):
             min_per_project (int | Unset):  Default: 0.
+            evictable (int | Unset):  Default: 0.
             blocked_on_input (int | Unset):  Default: 0.
             projects (list[PoolProjectStatus] | Unset):
             instances (list[PoolInstanceStatus] | Unset):
@@ -55,10 +57,12 @@ class PoolStatusRow:
     starting: int
     draining: int
     ready: int
+    name: str | Unset = ""
     service_tier: None | str | Unset = UNSET
     enabled: bool | Unset = True
     max_active: int | None | Unset = UNSET
     min_per_project: int | Unset = 0
+    evictable: int | Unset = 0
     blocked_on_input: int | Unset = 0
     projects: list[PoolProjectStatus] | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
@@ -85,6 +89,8 @@ class PoolStatusRow:
 
         ready = self.ready
 
+        name = self.name
+
         service_tier: None | str | Unset
         if isinstance(self.service_tier, Unset):
             service_tier = UNSET
@@ -100,6 +106,8 @@ class PoolStatusRow:
             max_active = self.max_active
 
         min_per_project = self.min_per_project
+
+        evictable = self.evictable
 
         blocked_on_input = self.blocked_on_input
 
@@ -146,6 +154,8 @@ class PoolStatusRow:
                 "ready": ready,
             }
         )
+        if name is not UNSET:
+            field_dict["name"] = name
         if service_tier is not UNSET:
             field_dict["service_tier"] = service_tier
         if enabled is not UNSET:
@@ -154,6 +164,8 @@ class PoolStatusRow:
             field_dict["max_active"] = max_active
         if min_per_project is not UNSET:
             field_dict["min_per_project"] = min_per_project
+        if evictable is not UNSET:
+            field_dict["evictable"] = evictable
         if blocked_on_input is not UNSET:
             field_dict["blocked_on_input"] = blocked_on_input
         if projects is not UNSET:
@@ -191,6 +203,8 @@ class PoolStatusRow:
 
         ready = d.pop("ready")
 
+        name = d.pop("name", UNSET)
+
         def _parse_service_tier(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -212,6 +226,8 @@ class PoolStatusRow:
         max_active = _parse_max_active(d.pop("max_active", UNSET))
 
         min_per_project = d.pop("min_per_project", UNSET)
+
+        evictable = d.pop("evictable", UNSET)
 
         blocked_on_input = d.pop("blocked_on_input", UNSET)
 
@@ -268,10 +284,12 @@ class PoolStatusRow:
             starting=starting,
             draining=draining,
             ready=ready,
+            name=name,
             service_tier=service_tier,
             enabled=enabled,
             max_active=max_active,
             min_per_project=min_per_project,
+            evictable=evictable,
             blocked_on_input=blocked_on_input,
             projects=projects,
             instances=instances,
