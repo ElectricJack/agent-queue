@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:269e23ecc54e6ec31ba5e387d9b20da610509f3b98f96647f89cd9cb6a0da962` |
+| Contract fingerprint | `sha256:75785d313bc21e864b446beab087fa865273c81e1e1c135b61aa24b15ccf2bab` |
 
 ## Parameters
 
@@ -27,9 +27,9 @@
 
 | Field | Type | Description |
 |---|---|---|
-| `action` | `"repair" \| "infrastructure_retry" \| "inconclusive" \| "completion_ready" \| "dispatch_debug" \| "block_for_human" \| "duplicate" \| "stale" \| null` | — |
+| `action` | `"repair" \| "infrastructure_retry" \| "inconclusive" \| "completion_ready" \| "dispatch_debug" \| "block_for_human" \| "supervisor_recovery" \| "duplicate" \| "stage_opened" \| "no_stage_blocked" \| "stale" \| null` | — |
 | `attempts` | `integer \| null` | — |
-| `stage` | `0 \| 1 \| null` | — |
+| `stage` | `integer \| null` | — |
 
 Projected into the run receipt: `action`, `attempts`, `stage`.
 
@@ -41,6 +41,7 @@ Projected into the run receipt: `action`, `attempts`, `stage`.
 | `continue` | success | — |
 | `escalate` | success | — |
 | `human_required` | failure | — |
+| `started` | success | — |
 
 ## Declared effects
 
@@ -156,7 +157,7 @@ to [`integration_parent_verify`](integration_parent_verify.md), not here.
 
 `aq integration status <project>` shows the live stage with its `attempts`,
 `state` and `deadline_at` under `repair[]`; the resulting repair delegate is
-described in [Repair tasks](../../guides/integration-troubleshooting.md#repair-tasks).
+described in [Repair tasks](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress).
 
 ## Example step
 
@@ -175,5 +176,5 @@ and `escalate` complete; `human_required` and `budget_exhausted` fail. The typed
 
 * [`integration_repair_start`](integration_repair_start.md) — opens the stage this command spends.
 * [`integration_repair_dispatch`](integration_repair_dispatch.md) — acts on `dispatch_debug`.
-* [`integration_resume`](integration_resume.md) — the operator answer to `block_for_human`.
+* [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress) — inspect and resolve the named human gate.
 * Spec: [Roll-forward repair and escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#9-roll-forward-repair-and-escalation).

@@ -1,8 +1,14 @@
 # Discord supervisor conversations
 
-An allowlisted operator can mention the bot user, for example `@Agent Q what
-is blocking the build?`, in the configured channel to open a thread with the
-global supervisor. This route is off by default. It deliberately relaxes the
+An allowlisted operator can talk to the supervisor in the configured channel.
+By default that means mentioning the bot user, for example `@Agent Q what is
+blocking the build?`; with `discord.conversation.require_mention: false` any
+message in the channel joins that channel's one conversation, and the next
+plain message continues it. The supervisor answers in the channel itself, as a
+reply to the operator's message, falling back from the project supervisor to
+the global one. A mention-created or operator-created *thread* still carries its
+own conversation. This route is off by default.
+It deliberately relaxes the
 2026-09-08 Discord simplification without restoring slash commands, task
 controls, gate buttons, worker input or unrestricted channel chat.
 
@@ -24,8 +30,16 @@ text itself cannot resolve gates, create approval evidence or call
 `escalation_apply_reply`. Prompt instructions cannot hard-restrict the tools of
 an already-running elevated session. An installation requiring enforced
 read-only chat must keep this feature off until a separately scoped author
-session exists. There is no per-project routing syntax in this version; the
-supervisor clarifies project identity when needed.
+session exists.
+
+The approved 2026-10-03 chat-extension spec adds project routing. Set
+`discord.project_id` to the project served by this channel. AQ infers it when
+there is exactly one project. Inputs go to that project's live named
+supervisor, then to the live global supervisor. With several projects and no
+`discord.project_id`, a shared channel belongs to none of them in particular,
+so the global supervisor answers for it rather than the input being queued for
+nobody. When no supervisor is running at all, the input remains queued and the
+channel says so; conversation intake does not cold-start a session.
 
 ## Enable the route
 
@@ -38,14 +52,22 @@ discord:
   bot_token: "${DISCORD_BOT_TOKEN}"
   guild_id: "123456789012345678"
   channel_id: "234567890123456789"
+  project_id: "agent-queue"
   authorized_users: ["345678901234567890"]
   conversation:
     enabled: true
+    require_mention: false   # true (the default) keeps mention-only routing
+    allow_dm: false          # true admits an allow-listed direct message
 messages:
   enabled: true
 sessions:
   enabled: true
 ```
+
+`require_mention` and `allow_dm` are the P2 phase flags of the 2026-10-03
+chat-extension spec. Both default to the mention-routing behaviour, so setting
+`require_mention: true` restores "only a top-level bot mention opens a
+conversation" without any other change. `allow_dm` requires `enabled`.
 
 Both the gateway and `supervisor_inbox_post` require all eight preconditions:
 
@@ -56,7 +78,7 @@ Both the gateway and `supervisor_inbox_post` require all eight preconditions:
 | Configured `discord.guild_id` | `no_guild` |
 | Configured `discord.channel_id` | `no_channel` |
 | `messages.enabled: true` | `messages_disabled` |
-| `sessions.enabled: true` for supervisor delivery/cold start | `sessions_disabled` |
+| `sessions.enabled: true` for supervisor delivery | `sessions_disabled` |
 | Discord cutover status `complete` | `cutover_incomplete` |
 | Conversation delivery outbox bound by the daemon | `outbox_unbound` |
 
@@ -88,34 +110,87 @@ ordinary worker and project-supervisor tokens are refused. Check `enabled`,
 intent/permissions field means the cached gateway information is unavailable,
 not permission granted.
 
-## What happens to a mention
+## What happens to a message
 
-Mention the actual bot user at the top level of the configured channel. A role
-mention, `@everyone` or a typed/quoted mention token without a gateway-observed
-bot mention cannot open a conversation. The bot mention is stripped from the
-normalized input, which must contain some remaining text.
+With `require_mention: true`, mention the actual bot user at the top level of
+the configured channel. A role mention, `@everyone` or a typed/quoted mention
+token without a gateway-observed bot mention cannot open a conversation. The
+bot mention is stripped from the normalized input, which must contain some
+remaining text.
+
+With `require_mention: false`, no mention is needed and one changes nothing:
+
+| Where the message is | What it becomes |
+|---|---|
+| Top level in the configured channel | a turn in the channel's one conversation |
+| A thread bound to an escalation | an escalation reply, never chat |
+| A thread bound to a conversation | a follow-up in that conversation |
+| A thread on a digest or morning report | a conversation turn tagged `digest_id` / `report_id` |
+| Any other thread Jack starts | a conversation turn, bound to that thread |
+| A direct message, with `allow_dm: true` | a turn in that DM channel's own conversation |
+
+The tag is `<kind>:<id>` from the durable post receipt AQ recorded for the parent
+message. A producer that records no receipt (today's review-ready post) yields
+no tag, and the thread simply becomes a conversation of its own.
+
+A conversation that *is* a thread answers inside it. A conversation the channel
+carries — a plain top-level message, or a direct message — never creates one:
+its acknowledgement, answer, status line and notices are ordinary posts in that
+channel, each carrying a Discord reply reference to the conversation's first
+message so the thread of conversation is visible without a Discord thread. If
+that referenced message has been deleted, Discord posts the answer without the
+reference rather than refusing it. An escalation incident still owns its own
+thread (§escalations.md); nothing here changes that.
 
 AQ persists the conversation, verified author and input before queuing any
-Discord delivery. It queues one thread-open acknowledgement on the operator's
-root message and sends a durable input notice to `supervisor-global`. Follow-up
-messages in the bound thread need no new mention; each is checked against the
-current allowlist and conversation audience.
+Discord delivery. It queues one acknowledgement on the operator's message —
+posted in the channel for a channel conversation, or in the thread it is bound
+to — and addresses a durable input notice to `supervisor-<project_id>` or
+`supervisor-global`. If both are offline, the pending notice is assigned when
+a supervisor becomes available. Follow-up messages in the channel continue that
+conversation, and messages in a bound thread need no new mention; each is
+checked against the current allowlist and conversation audience.
 
-Only an explicit `supervisor_inbox_reply` from the assigned global supervisor
-or local operator queues an answer. Generic mailbox messages, `message.sent`
-events and transcript-tail fallback replies are never relayed. The Discord
+An explicit `supervisor_inbox_reply` or `message_reply` to the input notice from
+the assigned supervisor or local operator queues one answer per input. The
+supervisor's live launch and instance token must match its recipient address.
+Unrelated mailbox messages, `message.sent` events and transcript-tail fallback
+replies are never relayed. The Discord
 reply is at most 1,900 characters including its marker and dashboard pointer;
 a longer answer stays in conversation content with a dashboard pointer. Sends
 disable all mentions, remove control characters and mention tokens, and retain
 only links beginning with the configured dashboard base URL.
 
-If thread creation fails, AQ queues one bounded failure reply in the channel
+If creating the thread of a thread-bound conversation fails, AQ queues one
+bounded failure reply in the channel
 and marks delivery blocked; the accepted input remains visible internally.
 It does not start inline channel chat. If an input remains unanswered after
 15 minutes, one deduplicated delay notice says it is still queued. An
 acknowledgement or delay notice is not completion. Removing an author from the
 allowlist revokes future intake and pending replies that would expose content
 to the newly restricted audience.
+
+## When no supervisor is live
+
+A turn whose supervisor is offline stays durable and queued, and the channel says
+so out loud rather than letting the message disappear into a queue: one status
+line per conversation, edited in place as the count grows —
+`⏸ Supervisor is offline. 2 messages queued; I'll answer when it starts.` — and
+one notice per conversation reading `No supervisor is running, so nothing is
+watching this channel. Your message is queued.` When the supervisor answers, the
+status line is retired rather than left claiming the supervisor is away. Edits
+count against the shared outbound budget (20
+operations per minute) and the acknowledgement is always sent before the line,
+so a line never posts into a thread that does not exist yet. A queued turn that
+stays unanswered for 15 minutes is also escalated internally through the
+`supervisor_delivery` incident family, which never posts in the human channel.
+
+Nothing in the daemon's health reports an input that no supervisor is live to
+answer, so `aq doctor --check stall.sweep` does: it reports one
+`conversation_unowned` line naming how many such inputs there are and how old
+the oldest is. That line is the operator's evidence that a message went
+unanswered; on an install with conversations enabled it appears whether or not
+any project is active.
 
 The durable outbox leases work, prioritizes escalations and reconciles stable
 markers after an ambiguous send. Unknown delivery is not proof of failure or
@@ -132,8 +207,10 @@ These values are shared code constants, not operator tuning settings.
 | Accepted inputs per channel | 60 per sliding 10 minutes |
 | Rate-limit notice | At most one per author per 10-minute bucket |
 | Outbound reply, including pointer and marker | 1,900 characters |
+| Shared Discord outbound posts and edits | 20 operations per minute |
 | Reconnect history | Last 24 hours, at most 1,000 messages per pass |
 | Unanswered-input delay notice | After 15 minutes |
+| Offline status line | One post per conversation, 120 characters, edited in place |
 | Conversation text retention | 30 days |
 | Dedup tombstone retention | 90 days |
 
@@ -154,14 +231,14 @@ Conversation classification uses these stable ignore codes:
 | `own_message` | The bot's own post |
 | `bot_author` | Another bot's post |
 | `webhook_author` | A webhook post |
-| `dm` | A direct message |
+| `dm` | A direct message, and `allow_dm` is false |
 | `edit` | An edit, which cannot rewrite accepted instructions; send a new message |
 | `foreign_guild` | Outside the configured guild |
 | `foreign_channel` | Outside the configured channel or its threads |
 | `author_not_allowlisted` | Author absent from the current allowlist |
-| `no_bot_mention` | Top-level message lacks a real bot-user mention |
+| `no_bot_mention` | Top-level message lacks a real bot-user mention and `require_mention` is true |
 | `escalation_thread` | Thread belongs exclusively to an escalation |
-| `unknown_thread` | No matching conversation binding |
+| `unknown_thread` | No matching conversation binding, or the row found disagrees with the observed channel |
 | `empty_text` | No text remains after normalization |
 | `classify_error` | Observation/classification failed; inspect the warning traceback |
 
@@ -217,8 +294,11 @@ verified Discord sender identity and supports filtering by conversation.
 
 Read [Messaging](../concepts/messaging.md), [Escalations and the hourly
 digest](escalations.md) and the [replacement checklist](discord-replacement-checklist.md).
-The approved design is in the operator vault at
-`projects/agent-queue/specs/2026-09-24-discord-mention-routing-to-the-supervisor.md`;
+The approved designs are in the operator vault at
+`projects/agent-queue/specs/2026-09-24-discord-mention-routing-to-the-supervisor.md`
+and `projects/agent-queue/specs/2026-10-03-discord-as-a-chat-extension-of-the-supervisor.md`
+(§2.1-§2.4 are the mention-free routing, the direct-message opt-in and the
+offline status line implemented here);
 the [simplification spec](../superpowers/specs/2026-09-08-discord-simplification-implementation.md#1-decisions-and-scope)
 records its deliberate opt-in exception.
 
