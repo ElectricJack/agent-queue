@@ -45,7 +45,7 @@ async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch,
         status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
     ))
     await db.add_dependency("candidate", "source")
-    observer = AsyncMock(return_value=MagicMock(allowed=set()))
+    observer = AsyncMock(return_value=MagicMock(allowed=set(), counts=AsyncMock(return_value={})))
     monkeypatch.setattr(orch, "_delivery_admission", observer)
     measurement = await orch._measure_pools()
     assert measurement.demand[PoolKey("worker")] == int(not artifact)
@@ -172,7 +172,10 @@ async def git_first_frontier(orch, db, tmp_path):
             ))
     await db.add_dependency("second", "first")
     await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
-                            integration_repository_id="repo", repo_url=origin.url)
+                            integration_repository_id="repo", repo_url=origin.url,
+                            hierarchical_integration_policy={
+                                "prerequisite_branches": "wait-for-parent",
+                            })
     await db.save_task_completion(TaskCompletion(
         id="close-first", task_id="first", outcome="pass", commits=[source], completed_at=time.time(),
     ))
@@ -471,7 +474,11 @@ async def test_container_sibling_contained_by_external_fast_forward_releases_dep
 async def test_container_sibling_shadow_mode_still_requires_receipts(
     orch, db, git_first_frontier,
 ):
-    """Without a truth-bearing observer the receipt predicate is unchanged."""
+    """Without a truth-bearing observer the sibling stays excluded as unknown evidence.
+
+    Receipts no longer prove delivery (fast-smooth §3.3), so a missing observer
+    withholds the dependent and explain names the unavailable evidence.
+    """
     from src.commands.handler import CommandHandler
     from src.integration.delivery_observer import prerequisite_observer
 
@@ -480,7 +487,8 @@ async def test_container_sibling_shadow_mode_still_requires_receipts(
     _fast_forward_epic(env, "aq/first", "aq/group-a", "aq/group-b")
     db.set_delivery_observer(None)
     assert prerequisite_observer(db) is None
-    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False)
+    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False,
+                    evidence_unavailable=True)
 
 
 async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
@@ -697,10 +705,14 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
     assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
     assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
     explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
+    # DB-invalidated identities give a negative result. A rewind invalidates
+    # the bounded advisory cache; display does not fetch a replacement proof.
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
-        movement not in {"rewind", "unstable"}
+        movement in {"retarget", "generation"}
     )
-    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (movement == "rewind")
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (
+        movement in {"rewind", "shadow"}
+    )
     if movement == "unstable":
         # The mocked freshness failure checks no refs, so it must not poison
         # otherwise valid cached display evidence. Decisions above still withhold.
@@ -1506,6 +1518,27 @@ async def test_stopped_pool_worker_cannot_take_role_assignment(orch, db, existin
     assert (await db.get_agent(row.agent_id)).profile_id == "worker"
 
 
+async def test_idle_pool_session_uses_push_cap_until_confirmed_stopped(orch, db):
+    await db.update_project(PROJECT_ID, max_concurrent_agents=1)
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    assert row.task_id is None
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    await ready(db, "push", profile_id="reviewer", intelligence_class="standard-medium")
+
+    assert await orch._schedule() == []
+    assert orch._last_scheduler_state.project_active_agent_counts == {PROJECT_ID: 1}
+    assert not any(agent.profile_id == "reviewer" for agent in await db.list_agents())
+
+    await orch._terminate_pool_session(row, reason="rotate")
+
+    actions = await orch._schedule()
+    assert [action.task_id for action in actions] == ["push"]
+    assert orch._last_scheduler_state.project_active_agent_counts == {}
+
+
 async def test_repeated_pool_teardown_does_not_steal_new_launch_reservation(orch, db):
     await ready(db, "pooled")
     await orch._reconcile_pools()
@@ -2226,3 +2259,42 @@ async def test_native_demand_launches_matching_workspace_and_counts_supply_once(
     assert (native.ready, len(native.idle_session_ids)) == (1, 1)
     assert (ordinary.ready, len(ordinary.idle_session_ids)) == (0, 0)
     assert len(project_pool_candidates(measurement.candidates[key])) == 1
+
+
+async def test_admission_view_projects_identical_ids_counts_and_reasons(
+    orch, db, git_first_frontier,
+):
+    from src.database.tables import task_branch_origins
+    from src.models import Task, TaskStatus
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    await db.create_task(Task(
+        id="independent", project_id=PROJECT_ID, title="Independent", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+        repo_id="repo", branch_name="aq/independent",
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("independent", "epic", conn=conn, integration_authorized=True)
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin-independent", task_id="independent", repository_id="repo",
+            branch_name="aq/independent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    view = await orch._delivery_admission(["second", "independent"])
+    assert view.allowed == {"second", "independent"}
+    assert await view.counts(PROJECT_ID) == {"worker": 2}
+    assert not any(view.reasons.values())
+    assert set(await db.hierarchy_runnable_task_ids(
+        view.candidate_ids, hierarchy_modes=view.hierarchy_modes,
+    )) == view.allowed
+
+    env.observer.truth = None
+    unknown = await orch._delivery_admission(["second", "independent"])
+    assert unknown.allowed == {"independent"}
+    assert await unknown.counts(PROJECT_ID) == {"worker": 1}
+    assert [reason["code"] for reason in unknown.reasons["second"]] == [
+        "delivery_evidence_unavailable",
+    ]
+    assert not unknown.reasons.get("independent")
