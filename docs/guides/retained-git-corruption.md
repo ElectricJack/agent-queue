@@ -32,7 +32,9 @@ receives one coalesced incident notice with diagnostics and backup location. At
 most two attempts are allowed, including interrupted/cancelled attempts. Restart
 or another visit does not reset an exhausted incident.
 
-An ordinary authentication/network error with a clean cache does not move objects.
+An ordinary authentication/network error with a clean cache does not move objects,
+opens no incident and spends no attempt. Each attempt's real error is recorded in the
+incident's checks, and the exhausted notice names the last one.
 Pack corruption, unsafe or unidentified object paths, unreadable local-only history,
 failed publication, timeout or failed final checking require intervention. Read
 the notice and manifest; preserve them and all original bytes. Do not delete the
@@ -41,9 +43,24 @@ source refs to make verification pass.
 
 After the source is delivered, the operator uses the normal deployment/restart
 procedure to activate it. Workers do not deploy, restart the operator daemon,
-migrate its database or mutate a live cache. There is no new live repair command.
-An exhausted incident remains held for supervisor/operator handling; it is not
-cleared by a deployment or by approval of the implementation.
+migrate its database or mutate a live cache. An exhausted incident remains held
+for supervisor/operator handling; it is not cleared by a deployment or by approval
+of the implementation. Once the cache is repaired (or proves clean), the project
+supervisor or operator clears the hold:
+
+```bash
+aq integration clear-retained-recovery --project-id <project> [--incident-id <id>]
+```
+
+It reruns the full `fsck` under the cache's repository transaction and clears only a
+clean cache: `cleared` resolves the incident's escalation, `not_clean` leaves the
+hold and the journal untouched. It never moves objects, refetches or publishes.
+
+Retained stores never run automatic gc or maintenance (`gc.auto=0`,
+`gc.autoDetach=false`, `maintenance.auto=false`); AQ maintains them in the
+foreground after a successful acquisition. A `gc.log` left by an older detached
+auto-gc is no longer read as a fetch failure, and the next successful foreground
+gc removes it.
 
 Historical evidence for `crisp-crest-36` recorded 51 empty loose objects; the
 operator reported that setting those objects aside and refetching produced clean

@@ -5,9 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
-from src.database.tables import integration_batches, integration_subject_journal, task_delivery_receipts
+from src.database.tables import (
+    integration_batches, integration_subject_journal, projects, task_delivery_receipts,
+    wait_source_events,
+)
 from src.integration.batches import Batch, BatchMember, BatchService, BatchStore, candidate_ref, ordered_members
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import branch
@@ -123,6 +126,81 @@ async def test_green_does_not_override_hold_or_changed_candidate(batch_env):
     git(repo.store, "push", "origin", f"{repaired}:{branch(candidate_ref(batch.id))}")
     result = await service.visit(batch, members, await snapshot())
     assert result.state == "testing" and result.candidate_sha == repaired
+
+
+async def test_assigned_fixer_push_wakes_exhausted_batch_and_tests_new_exact_head(batch_env, monkeypatch):
+    """Real Git: a manual fix survives spent repair policy and reaches the target."""
+    from src.event_bus import EventBus
+    from src.git.identity import GitIdentity, PublishPolicy
+    from src.git.manager import GitManager
+    from src.integration.batch_repair_publication import BatchRepairAssignments, wake_pushed_batch
+    from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+    from tests.test_integration_train import Batches, Checks, ChecksState, Repair, Targets
+
+    db, _, repo, _, _, store, batch, members, green, _, snapshot, service = batch_env
+    await db.create_project(Project(id="p", name="p"))
+    await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE,
+                                   url=str(repo.store.parent / "remote.git")))
+    await db.update_project("p", hierarchical_integration_mode="train", integration_repository_id="r")
+    await db.create_task(Task(id="fixer", project_id="p", repo_id="r", title="fix batch",
+                             description="fix", status=TaskStatus.IN_PROGRESS,
+                             branch_name="aq/epic/fixer-canonical-branch"))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(repair_attempt_count=4, lifecycle="failed"))
+    batch = await store.get(batch.id)
+    original = await service.visit(batch, members, await snapshot())
+    checks = Checks(ChecksState.RED, ChecksState.GREEN)
+    refresh = checks.refresh
+
+    async def refresh_exact(head):
+        verdict = await refresh(head)
+        if verdict.green:
+            green.add(head.sha)
+        return verdict
+
+    checks.refresh = refresh_exact
+    repairs = Repair()
+    repairs.allocate = AsyncMock(return_value={"outcome": "human_required", "attempt_count": 4})
+    target = TrainTarget("p", "r", batch.target_ref)
+    lane = TrainLane(snapshot=snapshot, service=service, checks=CandidateChecks.fixed(checks))
+    train = IntegrationTrain(targets=Targets(target),
+                             batches=Batches({target.key: (batch, members)}),
+                             lane_for=AsyncMock(return_value=lane), repair=repairs)
+    await train.tick()
+    await train.drain()
+    assert train.status()[0]["state"] == "blocked"
+    assert not (await train.tick())["started"]
+
+    assignments = BatchRepairAssignments(db)
+    assignment = await assignments.assign(await db.get_task("fixer"), batch.id)
+    for key, value in {"GIT_AUTHOR_NAME": "Tester", "GIT_AUTHOR_EMAIL": "tester@example.test",
+                       "GIT_COMMITTER_NAME": "Tester", "GIT_COMMITTER_EMAIL": "tester@example.test"}.items():
+        monkeypatch.setenv(key, value)
+    repaired = commit(repo.store, {"fix.txt": "fixed"}, base=original.candidate_sha)
+    git(repo.store, "branch", assignment["branch"], repaired)
+    identity = GitIdentity("Tester", "tester@example.test")
+    policy = PublishPolicy(identity, "project", frozenset({identity.digest}))
+    bus = EventBus()
+
+    async def on_push(event):
+        await wake_pushed_batch(db, train, event)
+
+    bus.subscribe("git.push", on_push)
+    assert await assignments.publish(
+        "fixer", assignment, git=GitManager(), checkout=str(repo.store), policy=policy,
+        event_bus=bus,
+    ) == repaired
+    assert (await db.get_task("fixer")).branch_name == "aq/epic/fixer-canonical-branch"
+    assert (await train.tick())["started"]
+    await train.drain()
+    assert checks.refreshes[-1].sha == repaired
+    assert train.status()[0]["state"] == "delivered"
+    assert git(repo.store, "ls-remote", "origin", batch.target_ref).split()[0] == repaired
+    assert (await store.get(batch.id)).repair_attempt_count == 4
+    repairs.allocate.assert_awaited_once()
 
 
 async def test_squash_delivery_survives_lost_candidate_and_aborted_intent(batch_env):
@@ -325,6 +403,12 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
     from src.integration.train_sources import DaemonLanes
 
     db, ops, repo, _, _, _, batch, members, _, _, snapshot, _ = batch_env
+    async with db.immediate() as conn:
+        await conn.execute(insert(projects).values(
+            id="p", name="Local integration lane", integration_repository_id="r",
+            hierarchical_integration_mode="development",
+            created_at=1700000000,
+        ))
     monkeypatch.setattr(db, "get_repo", AsyncMock(return_value=SimpleNamespace(
         url=str(ops.git.remote_path), default_branch="main",
     )))
@@ -372,6 +456,30 @@ async def test_attestation_io_cannot_override_final_authorization(batch_env, cha
     refused = await service.visit(batch, members, await snapshot())
     assert refused.state == "held"
     assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base
+
+
+async def test_batch_source_events_follow_lifecycle_and_replay_is_silent(batch_env):
+    db, _, repo, _, _, store, batch, members, _, _, _, _ = batch_env
+    from src.waits.sources import execute_batch_mutation, record_batch_event
+
+    await store.freeze(batch, members, trees={"task": git(repo.store, "rev-parse",
+                                                         f"{members[0].source_sha}^{{tree}}")})
+    async with db._engine.begin() as conn:
+        await execute_batch_mutation(conn, update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(lifecycle="sealed", updated_at=1700000100))
+        await record_batch_event(conn, batch.id)
+    with pytest.raises(RuntimeError):
+        async with db._engine.begin() as conn:
+            await execute_batch_mutation(conn, update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(lifecycle="failed"))
+            raise RuntimeError("abort")
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == "batch:batch",
+        ).order_by(wait_source_events.c.seq))).mappings().all()
+    assert [row["payload"]["lifecycle"] for row in rows] == ["sealing", "sealed"]
 
 
 async def test_frozen_batch_retries_recovered_cache_through_exact_candidate_gate(
