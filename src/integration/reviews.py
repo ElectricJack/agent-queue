@@ -199,12 +199,13 @@ class TreeReviews:
     comes from current policy, never from fields supplied by a worker.
     """
 
-    def __init__(self, db, *, clock: Callable[[], float] = time.time):
+    def __init__(self, db, *, clock: Callable[[], float] = time.time, allow_missing=False):
         self.db, self.clock = db, clock
+        self.allow_missing = allow_missing
 
     async def verdict_on(self, conn, subject: ReviewSubject,
                          requirements: ReviewRequirements) -> TreeVerdict:
-        if not requirements.required:
+        if not requirements.required and not self.allow_missing:
             return TreeVerdict("optional")
         rows = (await conn.execute(select(evidence).where(
             evidence.c.repository_id == subject.repository_id,
@@ -220,7 +221,7 @@ class TreeReviews:
                             "reopen_with_feedback"} or not requirements.allows(reviewer):
                 continue
             return TreeVerdict(row["verdict"], row["id"], reviewer)
-        return TreeVerdict("missing")
+        return TreeVerdict("optional" if self.allow_missing else "missing")
 
     async def verdict(self, subject: ReviewSubject,
                       requirements: ReviewRequirements) -> TreeVerdict:

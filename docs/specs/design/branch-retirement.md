@@ -27,9 +27,17 @@ so deleted remote branches do not remain visible as stale local observations.
 Repository binding uses the shared GitHub identity parser, including HTTPS
 without `.git` and SSH forms, then the daemon's configured credential authority.
 It does not rewrite operator remotes. An unavailable binding or missing/mismatched
-client leaves retirement pending before any ref observation or retained-store
+client leaves GitHub retirement pending before any ref observation or retained-store
 creation. Provider failures preserve their safe diagnostic instead of becoming
 an unavailable-client error; no credential fallback is permitted.
+
+Local filesystem remotes (paths or local `file://` URLs) use plain Git transport
+against the registered repository location. Relative paths resolve from the
+registered repository checkout, never the retained store or daemon working directory.
+They require no GitHub binding and share the same durable audit, verified backup,
+live-reference guards and exact-SHA push lease. An unreachable local repository is
+a retryable transport failure, never proof that its branches are absent. Other
+non-GitHub network transports remain pending when no authenticated binding exists.
 
 Explicit materialized-origin deletes use the same retirement mechanism. Ordinary
 delete with `branches=keep` remains an explicit preservation choice. Archive's
@@ -62,8 +70,18 @@ default branch. Each deletion records its exact SHA and proof in the project's
 daily TSV before mutation, and uses an expected-old-SHA lease. Before each delete,
 the sweep holds the shared per-ref exclusion, locks associated task rows and
 rechecks live references, unreleased owners, configured flow targets and attached
-worktrees. Unknown repository identities are skipped. Unique unmerged refs and
+worktrees. A checkout whose origin matches no project registration falls back to
+the project's own repository (`project:<id>`, the project's default branch) when
+the origin matches the project's `repo_url`, or when the project has neither a
+`repo_url` nor a registration; an origin another project registers, or any other
+unknown repository identity, is skipped and reported. Unique unmerged refs and
 stashes remain intact.
+
+Repository selection is scoped to the project's registrations. A linked repository
+with no configured URL derives its origin from its registered source path, which
+is also included in the sweep. If multiple registrations match a checkout's origin,
+the project's integration repository binding selects among those matches. A binding
+never overrides an origin mismatch; missing or still ambiguous identities are skipped.
 
 Legacy provenance branches use the existing verified copy-before-delete migration
 under those same live-reference guards, with a pre-delete audit entry. Invalid or

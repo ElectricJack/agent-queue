@@ -10,7 +10,9 @@ from ..models.layout_node_display_state_type_0 import LayoutNodeDisplayStateType
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.claim_readiness import ClaimReadiness
     from ..models.epic_delivery_status import EpicDeliveryStatus
+    from ..models.held_batch_summary import HeldBatchSummary
     from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
     from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
     from ..models.phase_hold_detail import PhaseHoldDetail
@@ -37,6 +39,7 @@ class LayoutNode:
         display_reason (None | str | Unset):
         child_state_counts (LayoutNodeChildStateCountsType0 | None | Unset):
         descendant_state_counts (LayoutNodeDescendantStateCountsType0 | None | Unset):
+        claim_readiness (ClaimReadiness | None | Unset):
         priority (int | Unset):  Default: 100.
         is_blocked (bool | Unset):  Default: False.
         profile_id (None | str | Unset):
@@ -46,6 +49,7 @@ class LayoutNode:
         pr_url (None | str | Unset):
         playbook_run_id (None | str | Unset):
         parent_task_id (None | str | Unset):
+        held_batch (HeldBatchSummary | None | Unset):
         container_id (None | str | Unset):
         context_only (bool | Unset):  Default: False.
         agg_children (int | Unset):  Default: 0.
@@ -76,6 +80,7 @@ class LayoutNode:
     display_reason: None | str | Unset = UNSET
     child_state_counts: LayoutNodeChildStateCountsType0 | None | Unset = UNSET
     descendant_state_counts: LayoutNodeDescendantStateCountsType0 | None | Unset = UNSET
+    claim_readiness: ClaimReadiness | None | Unset = UNSET
     priority: int | Unset = 100
     is_blocked: bool | Unset = False
     profile_id: None | str | Unset = UNSET
@@ -85,6 +90,7 @@ class LayoutNode:
     pr_url: None | str | Unset = UNSET
     playbook_run_id: None | str | Unset = UNSET
     parent_task_id: None | str | Unset = UNSET
+    held_batch: HeldBatchSummary | None | Unset = UNSET
     container_id: None | str | Unset = UNSET
     context_only: bool | Unset = False
     agg_children: int | Unset = 0
@@ -103,7 +109,9 @@ class LayoutNode:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
         from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
         from ..models.phase_hold_detail import PhaseHoldDetail
@@ -156,6 +164,14 @@ class LayoutNode:
         else:
             descendant_state_counts = self.descendant_state_counts
 
+        claim_readiness: dict[str, Any] | None | Unset
+        if isinstance(self.claim_readiness, Unset):
+            claim_readiness = UNSET
+        elif isinstance(self.claim_readiness, ClaimReadiness):
+            claim_readiness = self.claim_readiness.to_dict()
+        else:
+            claim_readiness = self.claim_readiness
+
         priority = self.priority
 
         is_blocked = self.is_blocked
@@ -201,6 +217,14 @@ class LayoutNode:
             parent_task_id = UNSET
         else:
             parent_task_id = self.parent_task_id
+
+        held_batch: dict[str, Any] | None | Unset
+        if isinstance(self.held_batch, Unset):
+            held_batch = UNSET
+        elif isinstance(self.held_batch, HeldBatchSummary):
+            held_batch = self.held_batch.to_dict()
+        else:
+            held_batch = self.held_batch
 
         container_id: None | str | Unset
         if isinstance(self.container_id, Unset):
@@ -284,6 +308,8 @@ class LayoutNode:
             field_dict["child_state_counts"] = child_state_counts
         if descendant_state_counts is not UNSET:
             field_dict["descendant_state_counts"] = descendant_state_counts
+        if claim_readiness is not UNSET:
+            field_dict["claim_readiness"] = claim_readiness
         if priority is not UNSET:
             field_dict["priority"] = priority
         if is_blocked is not UNSET:
@@ -302,6 +328,8 @@ class LayoutNode:
             field_dict["playbook_run_id"] = playbook_run_id
         if parent_task_id is not UNSET:
             field_dict["parent_task_id"] = parent_task_id
+        if held_batch is not UNSET:
+            field_dict["held_batch"] = held_batch
         if container_id is not UNSET:
             field_dict["container_id"] = container_id
         if context_only is not UNSET:
@@ -337,7 +365,9 @@ class LayoutNode:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
         from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
         from ..models.phase_hold_detail import PhaseHoldDetail
@@ -422,6 +452,23 @@ class LayoutNode:
 
         descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
 
+        def _parse_claim_readiness(data: object) -> ClaimReadiness | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_readiness_type_0 = ClaimReadiness.from_dict(data)
+
+                return claim_readiness_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimReadiness | None | Unset, data)
+
+        claim_readiness = _parse_claim_readiness(d.pop("claim_readiness", UNSET))
+
         priority = d.pop("priority", UNSET)
 
         is_blocked = d.pop("is_blocked", UNSET)
@@ -488,6 +535,23 @@ class LayoutNode:
             return cast(None | str | Unset, data)
 
         parent_task_id = _parse_parent_task_id(d.pop("parent_task_id", UNSET))
+
+        def _parse_held_batch(data: object) -> HeldBatchSummary | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                held_batch_type_0 = HeldBatchSummary.from_dict(data)
+
+                return held_batch_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(HeldBatchSummary | None | Unset, data)
+
+        held_batch = _parse_held_batch(d.pop("held_batch", UNSET))
 
         def _parse_container_id(data: object) -> None | str | Unset:
             if data is None:
@@ -591,6 +655,7 @@ class LayoutNode:
             display_reason=display_reason,
             child_state_counts=child_state_counts,
             descendant_state_counts=descendant_state_counts,
+            claim_readiness=claim_readiness,
             priority=priority,
             is_blocked=is_blocked,
             profile_id=profile_id,
@@ -600,6 +665,7 @@ class LayoutNode:
             pr_url=pr_url,
             playbook_run_id=playbook_run_id,
             parent_task_id=parent_task_id,
+            held_batch=held_batch,
             container_id=container_id,
             context_only=context_only,
             agg_children=agg_children,
