@@ -1,0 +1,81 @@
+{
+  "playbook_id": "project-defaults",
+  "activatable": true,
+  "artifact_sha256": "sha256:b9976e3316b33c30d462160b579ad4e564b1d2d9b10b5322250357b4fce6fdb8",
+  "diagnostics": [],
+  "semantic_diff": {
+    "rules": [
+      {
+        "rule_id": "file-graft-hooks-chore",
+        "change": "unchanged",
+        "steps_added": [],
+        "steps_removed": []
+      }
+    ],
+    "steps": [
+      {
+        "step_id": "file-graft-hooks-chore--done",
+        "rule_id": "file-graft-hooks-chore",
+        "change": "unchanged",
+        "fields": []
+      },
+      {
+        "step_id": "file-graft-hooks-chore--ensure_chore",
+        "rule_id": "file-graft-hooks-chore",
+        "change": "unchanged",
+        "fields": []
+      },
+      {
+        "step_id": "file-graft-hooks-chore--failed",
+        "rule_id": "file-graft-hooks-chore",
+        "change": "unchanged",
+        "fields": []
+      }
+    ],
+    "edges": [
+      {
+        "edge_id": "file-graft-hooks-chore::file-graft-hooks-chore--ensure_chore::created",
+        "rule_id": "file-graft-hooks-chore",
+        "source": "file-graft-hooks-chore--ensure_chore",
+        "target": "file-graft-hooks-chore--done",
+        "outcome": "created",
+        "change": "unchanged"
+      },
+      {
+        "edge_id": "file-graft-hooks-chore::file-graft-hooks-chore--ensure_chore::rejected",
+        "rule_id": "file-graft-hooks-chore",
+        "source": "file-graft-hooks-chore--ensure_chore",
+        "target": "file-graft-hooks-chore--failed",
+        "outcome": "rejected",
+        "change": "unchanged"
+      },
+      {
+        "edge_id": "file-graft-hooks-chore::file-graft-hooks-chore--ensure_chore::reused",
+        "rule_id": "file-graft-hooks-chore",
+        "source": "file-graft-hooks-chore--ensure_chore",
+        "target": "file-graft-hooks-chore--done",
+        "outcome": "reused",
+        "change": "unchanged"
+      },
+      {
+        "edge_id": "file-graft-hooks-chore::file-graft-hooks-chore--ensure_chore::runtime_error",
+        "rule_id": "file-graft-hooks-chore",
+        "source": "file-graft-hooks-chore--ensure_chore",
+        "target": "file-graft-hooks-chore--failed",
+        "outcome": "runtime_error",
+        "change": "unchanged"
+      }
+    ],
+    "contracts": [
+      [
+        "ensure_task",
+        "sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4",
+        "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5"
+      ]
+    ],
+    "executable_change": true,
+    "semantic_change_count": 1,
+    "presentation_change_count": 0,
+    "integration_policy": []
+  }
+}

@@ -12,6 +12,15 @@ tags: [spec, tools, context-management]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+> **Superseded design (audit 2026-10-23).** The category counts, core list,
+> `browse_tools`, rule stubs, hook category and `ChatAgent.chat()` flow below
+> describe the retired chat runtime. Current source is `src/tools/` and
+> `src/commands/tool_commands.py`; `load_tools` returns names but does not
+> inject schemas into tmux harnesses and is excluded from CLI/MCP.
+> `find_applicable_tool` uses embeddings when available and keyword overlap
+> otherwise. For current categories, command descriptors, filtering and
+> shipped skills, read [Agent-facing tools](../reference/cli/agent-tools.md).
+
 ## Purpose
 
 Reduce the LLM's per-interaction context by presenting only ~11 core tools by default.
