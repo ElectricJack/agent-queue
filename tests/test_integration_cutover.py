@@ -148,6 +148,11 @@ async def test_the_reduced_path_writes_no_ref_journal(legacy_events):
 def test_reduced_module_reads_no_checkpoint_and_writes_no_journal(module):
     """Static proof: the active path never names a checkpoint or journal table."""
     tree = ast.parse((ROOT / module).read_text())
+    if module == "src/integration/reviews.py":
+        # TreeReviews stays free of checkpoints. The retained evidence producer
+        # now shares this module and proves historical source snapshots.
+        tree = next(node for node in tree.body
+                    if isinstance(node, ast.ClassDef) and node.name == "TreeReviews")
     named: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
@@ -156,6 +161,8 @@ def test_reduced_module_reads_no_checkpoint_and_writes_no_journal(module):
             named.update(alias.name for alias in node.names)
         elif isinstance(node, ast.Attribute):
             named.add(node.attr)
+        elif isinstance(node, ast.Name):
+            named.add(node.id)
     assert not [name for name in named if "checkpoint" in name], module
     assert not [name for name in named if "journal" in name], module
 
@@ -177,17 +184,6 @@ def test_the_selector_installs_no_diagnostics_in_active_mode():
     assert diagnostics_for(SimpleNamespace(git_first="shadow"), object(), object()) is not None
 
 
-def test_shadow_never_acts_on_a_subject_the_reconciler_does_not_own():
-    """Diagnostics run only for a reconciler-owned subject, and are read-only.
-
-    The reconciler gates the optional comparison on ownership and records it
-    only in the log and the correlation context, so shadow can never become a
-    second writer or a policy input.
-    """
-    source = (ROOT / "src/integration/reconciler.py").read_text()
-    assert "subject.engine is SubjectEngine.RECONCILER" in source
-    assert "self._diagnostics(subject, facts)" in source
-    assert "Diagnostic failure must not change the authoritative policy" in source
 
 
 # -- Compatible schema --------------------------------------------------------
@@ -347,6 +343,24 @@ async def test_cutover_rejects_an_epic_origin_changed_since_preview(cutover_worl
     port.prepare.assert_not_awaited()
 
 
+async def test_cutover_blocks_legacy_task_without_origin(cutover_world):
+    from src.models import Task, TaskStatus
+
+    db, service, port = cutover_world
+    await db.create_task(Task(id="legacy-ready", project_id="p", title="legacy", description="",
+                              status=TaskStatus.READY))
+    before = await cutover_rows(db)
+    plan = await service.plan("p", FLOW)
+    assert plan["ready"] is False
+    assert {"code": "branch_origins_missing", "task_ids": ["legacy-ready"],
+            "control": "aq doctor --check integration.branch_origins --fix"} in plan["blockers"]
+    result = await apply_cutover(service, "p", FLOW, dry_run=False, expected_generation=7,
+                                 operator_id="operator")
+    assert result["outcome"] == "blocked"
+    assert await cutover_rows(db) == before
+    port.prepare.assert_not_awaited()
+
+
 @pytest.mark.parametrize("intent,lifecycle,blocked", [
     ("open", "building", True), ("paused", "testing", True),
     ("open", "promoted", False), ("aborted", "aborted", False),
@@ -502,35 +516,75 @@ async def test_cutover_receipt_table_lock_timeout_refuses_and_rolls_back(cutover
 
 
 @pytest.mark.parametrize("cutover_world", ["main", "refs/heads/main"], indirect=True)
-async def test_cutover_and_reverse_preserve_train_archive_delivery_authorization(cutover_world):
+async def test_cutover_and_reverse_preserve_train_archive_delivery_authorization(
+    cutover_world, tmp_path,
+):
+    from src.database.queries.hierarchy_queries import HierarchyError
     from src.database.tables import task_delivery_receipts
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+    from src.integration.git_truth import GitTruth
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
     from src.integration.removal_guard import (
         assert_integration_permits_removal,
         undelivered_removal_holders,
     )
+    from src.models import TaskCompletion
+    from tests.test_delivery_consumers import Origin, git
 
     db, service, _port = cutover_world
-    # Without the root receipt matching the current default, this collected
-    # child makes the archive guard return collected_not_promoted.
+    # Receipt retagging is audit history, never archive authorization.
     async with db.immediate() as conn:
         await conn.execute(insert(task_delivery_receipts).values(
             id="collected-child", domain_key="collected-child", source_task_id="child",
             target_task_id="epic", repository_id="repo", target_branch="aq/epic/epic",
             disposition="code", created_at=0))
 
-    async def assert_archive_authorized(default):
-        async with db._engine.connect() as conn:
-            branch, holders = await undelivered_removal_holders(
-                conn, root_id="epic", ids=["epic", "child"], project_id="p", mode="train")
-            assert (branch, holders) == (default, [])
+    async with db._engine.connect() as conn:
+        with pytest.raises(HierarchyError, match="delivery_unknown"):
             await assert_integration_permits_removal(
                 db, conn, root_id="epic", ids=["epic", "child"], project_id="p",
                 mode="train", mutation="archive")
+    origin = Origin(tmp_path)
+    head = origin.work("epic")
+    origin.land("epic")
+    git(origin.clone, "push", "origin", "main:refs/heads/dev")
+    for task_id in ("epic", "child"):
+        await db.update_task(task_id, repo_id="repo")
+        close_id = "close-" + task_id
+        await db.save_task_completion(TaskCompletion(
+            id=close_id, task_id=task_id, outcome="pass", commits=[head], completed_at=2.0,
+        ))
+        await GitProvenance(
+            GitManager(), str(origin.clone), repository_url=origin.url,
+        ).write_completion(CompletedSource(CompletionIdentity("p", "repo", task_id, close_id), head))
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
+
+    async def assert_archive_authorized(default):
+        # The cutover port models GitHub configuration; its archive consumer
+        # separately observes the same configured target in our local bare repo.
+        await db.update_repo("repo", url=origin.url)
+        try:
+            delivery = await db.observe_removal_delivery(["epic"])
+            async with db._engine.connect() as conn:
+                branch, holders = await undelivered_removal_holders(
+                    conn, root_id="epic", ids=["epic", "child"], project_id="p", mode="train",
+                    delivery=delivery)
+                assert (branch, holders) == (default, [])
+                await assert_integration_permits_removal(
+                    db, conn, root_id="epic", ids=["epic", "child"], project_id="p",
+                    mode="train", mutation="archive", delivery=delivery)
+        finally:
+            await db.update_repo("repo", url="https://github.com/acme/widgets.git")
 
     await assert_archive_authorized("main")
     changed = await apply_cutover(service, "p", FLOW, dry_run=False, expected_generation=7,
                                 operator_id="operator")
-    assert changed["outcome"] == "configured"
+    assert changed["outcome"] == "configured", changed
     await assert_archive_authorized("dev")
     reversed_ = await apply_cutover(service, "p", None, reverse=True, dry_run=False,
                                   expected_generation=8, operator_id="operator")

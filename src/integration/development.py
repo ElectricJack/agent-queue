@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     events,
     task_metadata,
@@ -187,7 +188,9 @@ def _carried_sources(repair_id, contracts):
 #: A repair in one of these is still being worked on (or will be).
 OPEN_REPAIR_STATUSES = frozenset({
     TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
-    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value, TaskStatus.PAUSED.value,
+    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value,
+    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value,
+    TaskStatus.RESUME_PENDING.value, TaskStatus.PAUSED.value,
 })
 #: Links followed through repairs of repairs.  The generation budget keeps a
 #: real chain at three; a longer one is a loop in the journal.
@@ -435,19 +438,32 @@ class DevelopmentPrimitives:
         return result.stdout.strip()
 
 
+    async def resolved_backup(self, repository_id):
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.backup_dir)
+
     def _store_path(self, repo):
         return self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
 
 
     async def store(self, repo, *, fetch=True):
-        path = self._store_path(repo)
+        from src.integration.repository_recovery import (
+            fetch_retained_origin, harden_retained_repository,
+        )
+
+        from src.projects.storage_binding import repository_path
+
+        path = await repository_path(self.db, repo.id, self._store_path(repo))
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
         if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
             raise ValueError("retained repository URL differs from configured repository")
+        await harden_retained_repository(self.git, path)
         if fetch:
-            await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
+            await fetch_retained_origin(self.git, path, repository_url=repo.url,
+                                        project_id=repo.project_id, repository_id=repo.id)
         return path
 
 
@@ -654,7 +670,7 @@ class DevelopmentPrimitives:
                     self.git, self.run_git, store, targets,
                     default_branch=repo.default_branch,
                     main_head=heads.get(repo.default_branch),
-                    backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                    backup_dir=await self.resolved_backup(repo.id), repository_id=repo.id, now=now,
                     protected=protected,
                 )
             except Exception as exc:  # noqa: BLE001 - one attempt, recorded, retried
@@ -916,7 +932,7 @@ class DevelopmentPrimitives:
                 self.git, self.run_git, store,
                 {e["branch"]: {"head": e["head"], "reason": e["reason"]} for e in report["stale"]},
                 default_branch=repo.default_branch, main_head=report["main_head"],
-                backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                backup_dir=await self.resolved_backup(repo.id), repository_id=repo.id, now=now,
                 protected=protected,
             )
         outcomes = deletion["outcomes"]
@@ -972,6 +988,7 @@ class DevelopmentPrimitives:
         parent-child edge plus this required reverse edge would be a blocking
         cycle.
         """
+        from src.integration.models import INTEGRATION_REPAIR_PRIORITY
         from src.models import DepType, Task, TaskType
         from src.task_names import MAX_STRUCTURAL_DEPTH
 
@@ -1047,15 +1064,9 @@ class DevelopmentPrimitives:
         )
         conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
         recovery = (
-            f"Fetch origin and, in your own task branch (it starts from origin/{target_branch}), "
-            "merge each listed source revision by its exact SHA (`git merge <sha>`). Resolve "
-            "the named conflicting files and preserve the intended source changes; where a "
-            "conflicting file is generated, regenerate it from the merged sources instead of "
-            "hand-merging it. Do not rebase, squash or cherry-pick: every listed source "
-            "revision must stay an ancestor of your branch, so delivering the repair delivers "
-            f"the source too. If origin/{target_branch} moves before you push, merge it again. "
+            render_task_template("development-conflict-recovery", target_branch=target_branch)
             if conflict else
-            f"Preserve their intended changes and resolve against current origin/{target_branch}. "
+            render_task_template("development-source-recovery", target_branch=target_branch)
         ) + self._regeneration_text(parked)
         repair = Task(
                 id=identity,
@@ -1063,21 +1074,24 @@ class DevelopmentPrimitives:
                 repo_id=repository_id,
                 title="Repair development integration: " + reason,
                 description=(
-                    f"Development repair generation: {generation}\nThe development batch parked these source revisions:\n{sources}\n"
-                    f"Candidate/base: {candidate_sha}.\nSource branches:\n{branches}\n"
-                    f"Publication target: refs/heads/{target_branch}.\n"
-                    + recovery
-                    + "Publish the repair on your own task branch. Ordinary merge commits are allowed. "
-                    "Run focused local checks and close with actual evidence; no parent verifier or PR is required. "
-                    "A passing close attests that every listed source revision is resolved; once your repair "
-                    f"is delivered to {target_branch}, that delivery also satisfies those sources for their successors. "
-                    f"Do not push {target_branch}. The development publisher will collect your branch. "
-                    "This is one resumable repair task; queue and provider waits do not expire it."
-                    + self._repair_failure_text(project_id, parked)
+                    # The retry budget reads this factual marker, so wording edits
+                    # must not remove or change it.
+                    f"Development repair generation: {generation}\n"
+                    + render_task_template(
+                        "development-repair",
+                        generation=generation,
+                        sources=sources,
+                        candidate_sha=candidate_sha,
+                        branches=branches,
+                        target_branch=target_branch,
+                        recovery=recovery,
+                        failure_details=self._repair_failure_text(project_id, parked),
+                    )
                 ),
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
                 task_type=TaskType.BUGFIX,
+                priority=INTEGRATION_REPAIR_PRIORITY,
                 max_retries=3,
                 # The routing policy names this origin
                 # (``origins.development_repair``) instead of matching the
@@ -1218,9 +1232,9 @@ class DevelopmentPrimitives:
         if not command:
             return ""
         return (
-            f"Files marked merge={GENERATED_MERGE_DRIVER} in .gitattributes are generated: never "
-            "hand-merge them. Take either side (`git checkout --ours -- <path>`), resolve the "
-            f"source files, then run `{command}` and commit what it writes. "
+            render_task_template(
+                "development-regeneration", generated_merge_driver=GENERATED_MERGE_DRIVER, command=command
+            )
         )
 
 

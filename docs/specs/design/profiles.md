@@ -393,7 +393,7 @@ in step automatically (`src/profiles/capability_sync.py`):
   an operator who curates the supervisor's grants by hand; the daemon and the
   doctor fix then never merge. The key also generalises the other way:
   `capability_sync: true` opts any other shipped profile in to the same
-  merge. `supervisor`, `worker-claude` and `worker-codex` are synced by default.
+  merge. `supervisor` and every shipped `worker-*` template are synced by default.
 - **Doctor.** `profiles.supervisor_capability_drift` reports the shipped
   grants the vault copy still lacks — `warn` while any are missing (`info`
   when the profile opted out), `ok` when none are — and `--fix` runs the
@@ -433,6 +433,20 @@ and can be updated or removed as the agent accumulates real experience.
 
 ### Routine worker verification and synchronization
 
+The shipped `worker-claude`, `worker-codex` and `worker-opencode` templates
+share one grant list: the `## Capabilities` block in `worker-codex/profile.md`.
+`scripts/generate-worker-capabilities.py` copies that block to every other
+shipped `worker-*` template; the aggregate regeneration command runs it too.
+Edit the shared list there and regenerate, rather than editing the generated
+blocks. Tests require every worker template to have identical grants and
+`plugin_tools.git_push`, so a new harness cannot silently lose publication.
+OpenCode rungs and harness recipes remain operator configured; shipping its
+template does not activate a pool or change routing.
+
+`profiles.system_drift` compares all capability namespaces, including
+`plugin_tools`. Missing `git_push` or `git_create_pr` is reported as missing
+plugin grants, with the same explicit additive repair as missing AQ commands.
+
 Worker templates grant side-effect-free `dry_run_playbook`, task children/progress,
 and Git status/log/diff/changed-files/branch reads. Dry-run events are pinned to
 the live held task and project, and AI execution remains simulated. Actual
@@ -452,7 +466,7 @@ the updated template without rewriting their local overrides.
 ### Rollout of routine worker grants and knowledge authorization
 
 Deploy the scope implementation together with the shipped worker templates.
-On daemon startup or profile reload, existing `worker-claude` and `worker-codex`
+On daemon startup or profile reload, existing shipped `worker-*` template
 files receive missing shipped grants additively; custom prose and extra grants
 survive, and `capability_sync: false` preserves a curated grant list. Fresh
 installs seed the same defaults. Derived rungs inherit their worker template.
@@ -475,7 +489,7 @@ those failures use `record.stale_claim`. `--source-task-id` adds an evidence lin
 and does not supply or relax authorization. Thus the calm-current-21 report of
 `record.forbidden` despite enabled read/write flags is consistent with an
 operation-grant or live-session identity refusal, separately from the routine
-Git/playbook grant issue. Both shipped worker templates contain `record_search`
+Git/playbook grant issue. All shipped worker templates contain `record_search`
 and `knowledge_create`; an existing install's effective template and authenticated
 session bindings must be checked after deployment to distinguish these causes.
 No ACL or ownership widening is part of this permission rollout.
