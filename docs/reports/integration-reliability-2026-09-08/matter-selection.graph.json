@@ -18,8 +18,7 @@
         "Test partial/malformed input, escaping, duplicate request IDs, mixed logs, delayed completion, disconnect/reconnect and native Windows file polling."
       ],
       "needs": [],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -36,8 +35,7 @@
       "needs": [
         "contract"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -55,8 +53,7 @@
       "needs": [
         "inspect"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -74,8 +71,7 @@
       "needs": [
         "selection"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -92,8 +88,7 @@
       "needs": [
         "pick"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -111,8 +106,7 @@
       "needs": [
         "capture"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     }

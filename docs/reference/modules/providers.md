@@ -1,0 +1,102 @@
+# Module catalog — providers
+
+LLM providers, availability, allocation, usage accounting, tokens and budgets:
+modules that choose a model, make an API or headless CLI call, preserve work
+during outages, and record what the provider says is left.
+
+Prose for everything here lives on three pages:
+
+* [Providers, models and token accounting](../../concepts/providers.md) — the
+  concepts, the two paths, and what the numbers mean.
+* [Setting up LLM providers](../../guides/llm-providers.md) — credentials,
+  classes, the quota probe, prices.
+* [Usage accounting reference](../usage-accounting.md) — every field, table,
+  key and outcome.
+
+> **Scope note.** This shard covers the *direct* LLM path and the accounting
+> around it. Coding-agent sessions — the CLIs that do repository work — belong
+> to the [sessions shard](sessions.md), and the transcript watcher that writes
+> the token ledger is one of its modules.
+
+## The direct LLM path
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/llm/__init__.py`](../../../src/llm/__init__.py) | Re-exports the direct path's public surface — client, spec, response and turn types — so callers never import from submodules. | [concepts/providers.md](../../concepts/providers.md) | The package docstring names the design spec the path implements. `tests/llm/test_client.py` |
+| [`src/llm/client.py`](../../../src/llm/client.py) | `LLMClient`: resolves a spec, caches one adapter per resolution, and offers exactly two calls — `complete()` and the `run_tools()` loop. | [concepts/providers.md](../../concepts/providers.md) | Owned by the orchestrator; a consumer receives one and never builds it. Every SDK call is logged in a `finally`, errors included; gate refusals happen before logging. `tests/llm/test_client.py`, `tests/llm/test_run_tools.py` |
+| [`src/llm/spec.py`](../../../src/llm/spec.py) | `LLMCallSpec`, `ResolvedCall` and `resolve_call` — the pure resolution of what a caller asked for against config and intelligence classes. | [reference/usage-accounting.md](../usage-accounting.md) | Order is `spec.model` → class → `llm.model` → adapter default; an unknown class warns and falls through rather than failing. `tests/llm/test_spec.py` |
+| [`src/llm/types.py`](../../../src/llm/types.py) | The normalized response vocabulary: `TokenUsage`, `TextBlock`, `ToolUseBlock`, `ChatResponse`, and `serialize_canonical`. | [reference/usage-accounting.md](../usage-accounting.md) | `TokenUsage.reported` is separate from the counts on purpose: zero is an observation, absence is not. `tests/test_llm_usage.py` |
+| [`src/llm/fake.py`](../../../src/llm/fake.py) | `FakeProvider`: a FIFO queue of scripted responses that records every call it received. | [concepts/providers.md](../../concepts/providers.md) | Its `reports_usage` mirrors whatever was scripted, which is how hard-budget behaviour is tested both ways. `tests/llm/test_providers.py` |
+| [`src/llm/tool_conversion.py`](../../../src/llm/tool_conversion.py) | Backwards-compatible re-export of `anthropic_tools_to_openai` after the conversion logic moved into the adapters package. | [reference/usage-accounting.md](../usage-accounting.md) | Ten lines, no logic — a shim kept so existing imports resolve. `tests/llm/test_openai_adapter.py` |
+| [`src/llm/cli.py`](../../../src/llm/cli.py) | `ask_cli`: one tool-free structured response through a logged-in Claude, Codex or Gemini CLI in an empty temporary directory. | [guides/llm-providers.md](../../guides/llm-providers.md#use-a-subscription-login-for-a-playbook-step) | No task, tmux session, SDK credential, ledger row or direct API log. Parses reported usage for step budgets; kills the process group on timeout or cancellation. `tests/llm/test_cli.py` |
+
+## Provider adapters
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/llm/providers/__init__.py`](../../../src/llm/providers/__init__.py) | `create_provider`, the single constructor, and the mapping of class extras (`thinking`, `thinking_budget`, `reasoning_effort`) onto each adapter. | [reference/usage-accounting.md](../usage-accounting.md) | Holds the anthropic thinking-level → token-budget table; unknown extras are ignored, and an unknown provider id raises. `tests/llm/test_providers.py` |
+| [`src/llm/providers/errors.py`](../../../src/llm/providers/errors.py) | Classifies SDK auth, quota, throttling and transport errors into direct-credential availability evidence; defines `ProviderUnavailableError`. | [guides/provider-outage.md](../../guides/provider-outage.md) | Caller errors are not provider evidence. A gate refusal reports `provider_unavailable` without an SDK attempt. `tests/llm/test_fallback.py` |
+| [`src/llm/providers/base.py`](../../../src/llm/providers/base.py) | The `LLMProvider` ABC: `create_message`, `model_name`, `is_configured`, `reports_usage`, `is_model_loaded`. | [reference/usage-accounting.md](../usage-accounting.md) | `reports_usage` defaults to `False`, so a new adapter is ineligible for a hard total-token budget until it opts in. `tests/llm/test_providers.py` |
+| [`src/llm/providers/anthropic.py`](../../../src/llm/providers/anthropic.py) | The Anthropic adapter, with four credential paths tried in a fixed order: Vertex, Bedrock, API key, Claude Code OAuth. | [guides/llm-providers.md](../../guides/llm-providers.md) | The fixed order is why a stray `AWS_REGION` silently routes to Bedrock. A thinking budget also raises `max_tokens` to `budget + 1024`. `tests/llm/test_provider_requests.py` |
+| [`src/llm/providers/google.py`](../../../src/llm/providers/google.py) | The Gemini adapter over `google-genai`, in either API-key or Vertex mode. | [guides/llm-providers.md](../../guides/llm-providers.md) | Adds the thinking budget *on top of* the caller's `max_output_tokens`, because Gemini counts thinking against that ceiling. `tests/llm/test_provider_requests.py` |
+| [`src/llm/providers/openai.py`](../../../src/llm/providers/openai.py) | The OpenAI adapter, also used for any OpenAI-compatible local endpoint; adds keep-alive hints and an `/api/ps` residency probe in local mode. | [guides/llm-providers.md](../../guides/llm-providers.md) | `is_model_loaded` fails open — a probe that cannot answer never blocks a caller. `tests/llm/test_provider_requests.py` |
+| [`src/llm/providers/adapters/__init__.py`](../../../src/llm/providers/adapters/__init__.py) | Package marker for the wire-format adapters; deliberately empty so both adapters can be imported without pulling in a vendor SDK. | [reference/usage-accounting.md](../usage-accounting.md) | No code. The lazy-import discipline lives in the adapter modules themselves. |
+| [`src/llm/providers/adapters/openai_adapter.py`](../../../src/llm/providers/adapters/openai_adapter.py) | Translates Anthropic-shaped tools and messages into OpenAI function-calling format, and parses completions back into `ChatResponse`. | [reference/usage-accounting.md](../usage-accounting.md) | A tool call with non-JSON arguments becomes a text block, never an exception — one malformed payload must not abort a tool loop. `tests/llm/test_openai_adapter.py` |
+| [`src/llm/providers/adapters/gemini_adapter.py`](../../../src/llm/providers/adapters/gemini_adapter.py) | The same translation for Gemini `Content`/`Part`/`FunctionDeclaration` objects, including JSON Schema → `types.Schema`. | [reference/usage-accounting.md](../usage-accounting.md) | Resolves tool-result ids back to function names (Gemini needs the name), and drops `null` from unions and enums, which Gemini cannot express. `tests/llm/test_gemini_adapter.py` |
+
+## Provider usage observation
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/providers/__init__.py`](../../../src/providers/__init__.py) | Exports the snapshot type and the `/usage` parser, and documents why the two providers are observed by completely different mechanisms. | [concepts/providers.md](../../concepts/providers.md) | Codex publishes quota passively on transcript lines; Claude has no local equivalent and must be probed. `tests/test_provider_usage_probe.py` |
+| [`src/providers/snapshot.py`](../../../src/providers/snapshot.py) | `ProviderUsageSnapshot`: one reading of one `(provider, window, scope)` limit window. | [reference/usage-accounting.md](../usage-accounting.md) | A plain value object with no database or I/O coupling, which is what lets the parser be a pure function. `tests/test_provider_usage_queries.py` |
+| [`src/providers/claude_usage.py`](../../../src/providers/claude_usage.py) | Pure parser for `claude -p "/usage"` output: one regex per limit line, plus year-less reset-clause resolution. | [concepts/providers.md](../../concepts/providers.md) | Text with no limit line yields zero snapshots and `unparsed=True` — except the API-key preamble, which is an answer, not a fault. `tests/test_claude_usage_parser.py` |
+| [`src/providers/probe.py`](../../../src/providers/probe.py) | Runs the probe subprocess under a 20-second ceiling and turns every failure mode into a typed `ProbeResult` instead of an exception. | [guides/llm-providers.md](../../guides/llm-providers.md) | Never passes `--bare` (it would read a different account); a timed-out child is killed *and reaped*, or a ten-minute timer accumulates zombies. `tests/test_provider_usage_probe.py` |
+
+## Provider availability and failover
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/providers/availability.py`](../../../src/providers/availability.py) | The pure state machine: folds one piece of typed evidence (or the clock) into a provider's row — six states in two halves, trip rules with hysteresis, the probation canary, operator overrides. | [concepts/scheduling.md](../../concepts/scheduling.md#provider-availability-and-failover) | No clock, database or subprocess: every rule is a function of the row, the evidence, the newest usage reading and an injected `now`. `tests/test_provider_availability.py` |
+| [`src/providers/availability_service.py`](../../../src/providers/availability_service.py) | `ProviderAvailabilityService` (`Orchestrator.provider_availability`): the in-memory snapshot, the evidence collectors, the per-cycle tick and login probe, launch admission, derived holds, state-change messages and provider escalations. | [guides/provider-outage.md](../../guides/provider-outage.md) | The only writer of `provider_availability`; reads `provider_failover` through a getter, so edits hot-reload. `tests/test_provider_evidence.py`, `tests/test_provider_suppression.py`, `tests/test_provider_escalation.py` |
+| [`src/providers/intent.py`](../../../src/providers/intent.py) | `tasks.provider_intent` semantics — `pinned`, `preferred`, `class_only` — and the default a write stores. The router writes `pinned` for a `hold` lane and `class_only` otherwise, an override writes `pinned`, and `preferred` is left only on role tasks and legacy routes. | [concepts/scheduling.md](../../concepts/scheduling.md#pin-semantics) | Pure. A `pinned`/`preferred` row with no profile reads as `class_only`. `tests/test_provider_intent.py` |
+| [`src/providers/reroute.py`](../../../src/providers/reroute.py) | The re-route engine: the pure `plan_sweep` (a router-routed task moves to the next candidate in `tasks.route.candidates` whose profile still exists and whose provider may take the traffic, a task without candidates to the same class on the next provider in `provider_failover.order`, else hold; the trickle, per-task limits) and `ProviderRerouteService` (apply under the routing guard, record, notify, undo, explain a hold). | [concepts/scheduling.md](../../concepts/scheduling.md#the-fallback-rule) | Runs only when the `provider-failover` playbook calls `provider_reroute`; `--dry-run` returns the plan verbatim. A manual move of a routed task, even `--force`, and an undo stay among its candidates: a move outside them is an override. Neither the route source nor the intent changes on a move. `tests/test_provider_reroute.py` |
+| [`src/providers/spill.py`](../../../src/providers/spill.py) | Capacity spill's pure half: `CapacityView` (pool arithmetic folded from one `PoolMeasurement` the way the sizer and placement count it) and `plan_capacity_spill` (move READY work off a pool that cannot serve it to a same-class pool with headroom — for a router-routed task, only to one of its route candidates — or hold with a `spill_*` reason). | [specs/provider-failover.md](../../specs/provider-failover.md#4a-capacity-spill-d24) | No I/O and no clock. Runs as the second pass of the automatic `provider_reroute` sweep; `provider_failover.spill` configures it. `tests/test_provider_spill.py` |
+| [`src/providers/inflight.py`](../../../src/providers/inflight.py) | Decides whether a failed launch or dead session is its provider's fault (`tripped`, `suspect`, `unattributed`) and builds the WIP checkpoint and hand-off note. | [guides/provider-outage.md](../../guides/provider-outage.md) | An attributed failure spends no retry and never pauses a task into a dead provider; a failed push holds the task instead of moving it. `tests/test_provider_inflight.py` |
+| [`src/providers/reroute_args.py`](../../../src/providers/reroute_args.py) | Typed argument validation shared by reroute and undo commands. | [guides/provider-outage.md](../../guides/provider-outage.md) | Rejects invalid selectors, force combinations and malformed task ids before planning. `tests/test_provider_commands.py` |
+| [`src/providers/allocation.py`](../../../src/providers/allocation.py) | Provider-wide allocation snapshots, scoped views, pure previews and the in-memory single-use preview-token registry. | [guides/provider-outage.md](../../guides/provider-outage.md#review-provider-worker-allocation) | Includes aggregate ceilings, supply, pins, manual agents, preferences and session drain actions. Tokens expire after 15 minutes or restart; apply rebuilds the preview. `tests/test_provider_allocation.py` |
+
+## Token accounting and budgets
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/llm_logger.py`](../../../src/llm_logger.py) | `LLMLogger` and `PromptAnalytics`: date-partitioned JSONL for SDK calls, plus hourly aggregates and retention cleanup. The agent-session helper remains but has no production caller. | [reference/usage-accounting.md](../usage-accounting.md) | Its token figures are characters ÷ 4 **estimates**, named `*_est`, and never reach the ledger or a price. `tests/test_llm_logger.py` |
+| [`src/tokens/__init__.py`](../../../src/tokens/__init__.py) | Package marker for the token-accounting helpers; empty, so importing a submodule pulls in nothing else. | [reference/usage-accounting.md](../usage-accounting.md) | No code. |
+| [`src/tokens/budget.py`](../../../src/tokens/budget.py) | `BudgetManager`: holds the configured fleet-wide daily token budget, plus target token ratios from per-project credit weights, deficit scores, and global/per-project exhaustion predicates. | [reference/usage-accounting.md](../usage-accounting.md) | `Orchestrator.budget` is the single source of truth for `global_token_budget_daily` — the config-reload hook writes it and `_schedule` copies it into `SchedulerState`, so the cap is hot-reloadable. The ratio/deficit helpers have no production caller; the scheduler recomputes them inline. `tests/test_budget.py`, `tests/test_orchestrator.py::TestGlobalBudgetReload` |
+
+## Where the rest of the story lives
+
+These modules are documented by other shards, but this subsystem is hard to
+follow without knowing they exist:
+
+| Module | Shard | What it contributes |
+|---|---|---|
+| `src/sessions/transcripts/watcher.py` | [sessions](sessions.md) | The routine writer of `token_ledger`, and the passive source of Codex quota snapshots. |
+| `src/database/queries/token_queries.py`, `provider_usage_queries.py` | [database](database.md) | The ledger and snapshot readers and writers, including the duplicate-reading rule. |
+| `src/database/queries/provider_availability_queries.py`, `task_reroute_queries.py` | [database](database.md) | The availability rows and transition log, and the guarded re-route write plus its history. |
+| `src/orchestrator/provider_failover.py` | [scheduler](scheduler.md) | The WIP checkpoint, hand-off note and hold for a session that died on its provider. |
+| `src/sessions/usage_limit_screen.py` | [sessions](sessions.md) | Recognises a CLI parked on its usage-limit screen so the stall ladder takes it out at once. |
+| `src/api/providers.py`, `src/api/metrics.py` | [api](api.md) | Server-side staleness verdicts and the per-model token rates. |
+| `src/commands/provider_commands.py`, `provider_allocation_commands.py`, `ops_commands.py` | [cli](cli.md) | `provider_usage_probe`, `get_costs`, `aq pool provider status/preview/apply`, and the `aq provider` commands (`status`, `history`, `held-tasks`, `recheck`, `set-state`, `reroute`, `reroute-undo`). |
+| `src/doctor/provider_checks.py`, `provider_availability_checks.py` | [operations](operations.md) | `providers.claude_usage`, `providers.usage_activity_gap`, and the four availability checks (`providers.availability`, `.recovery_stuck`, `.failover_playbook`, `.held_tasks`); all report-only. |
+| `src/playbooks/executors/llm.py` | [playbooks](playbooks.md) | Enforces hard per-step call, token and timeout budgets for API and headless CLI transports. |
+| `src/intelligence_classes/` | [vault](vault.md) | The class files that decide which model a tier means. |
+
+## Tests
+
+```bash
+aq test tests/llm tests/test_llm_usage.py tests/test_llm_logger.py \
+    tests/test_provider_usage_probe.py tests/test_claude_usage_parser.py \
+    tests/test_provider_usage_queries.py tests/test_api_provider_usage.py \
+    tests/test_provider_doctor.py tests/test_budget.py
+```
