@@ -59,7 +59,11 @@ def test_explanation_uses_registered_contract_and_never_executes_it() -> None:
     assert explanation.effects[0].text == 'Create or reuse a task keyed by "dedup_key"'
     assert explanation.inputs[0].value.text == "this event's project"
     assert {item.target_node_id for item in explanation.outcomes} == {"linked", "done"}
-    assert explanation.result and explanation.result.fields == ["task_id", "created"]
+    assert explanation.result and explanation.result.fields == [
+        "task_id",
+        "created",
+        "parent_id",
+    ]
 
 
 def test_unknown_fields_are_visible_and_uncontracted_nodes_remain_legacy() -> None:

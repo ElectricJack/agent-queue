@@ -1,0 +1,185 @@
+# Repository map
+
+Where things live in the Agent Queue checkout, and which documentation page
+explains each area.
+
+## Why this page exists
+
+This page maps behavior to the package that owns it. The coverage manifest
+records file counts for its source revision; use the generator below for
+current counts.
+
+For a module-by-module catalog rather than a directory-level map, use the
+[module catalog](../reference/modules/README.md); every tracked path in the
+repository is assigned to exactly one shard of it.
+
+## Vocabulary
+
+* **Shard** — the slice of the module catalog owned by one subject area, e.g.
+  `scheduler` or `sessions`. See the
+  [documentation map](../documentation-map.md).
+* **Component page** — the concept or guide page that explains a module in
+  prose. Every catalog row names one.
+* **Generated artefact** — see [code generation](codegen.md).
+
+## The top level
+
+| Path | What it is | Tracked files | Documented by |
+|---|---|---|---|
+| [`src/`](../../src/) | The daemon: orchestrator, command layer, API, CLI, sessions, playbooks, database. | 592 | spread across every subject shard |
+| [`dashboard/`](../../dashboard/) | The React + Vite web UI. An installed AQ serves its built bundle from the dashboard server (`src/dashboard_server/`); a checkout runs it from Vite. | 407 | [dashboard guide](../guides/dashboard.md) |
+| [`tests/`](../../tests/) | The pytest suite, its fixtures and its helpers. | 771 | [testing](testing.md) |
+| [`packages/`](../../packages/) | The two generated API clients — never hand-edited. | 1,441 | [code generation](codegen.md) |
+| [`migrations/`](../../migrations/) | Alembic revisions and environment. | 18 | [migrations](../guides/migrations.md) |
+| [`scripts/`](../../scripts/) | Developer and release tooling. | 28 | [scripts](scripts.md) |
+| [`.github/`](../../.github/) | Workflows and integration configuration. | 3 | [CI](ci.md) |
+| [`docs/`](../README.md) | This documentation set plus the preserved historical material. | 323 | [documentation map](../documentation-map.md) |
+| [`vault/`](../../vault/) | Shipped vault templates the runtime reads at run time. | 2 | `docs/concepts/configuration-and-vault.md` — **planned** |
+| `.superpowers/`, `notes/`, `reports/` | Historical working material. | 106 | `docs/history/README.md` — **planned** |
+
+Counts come from the coverage manifest and move with the tree; regenerate
+rather than trusting them:
+
+```bash
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
+```
+
+```text
+ok — 3746 tracked paths assigned (791 production modules)
+```
+
+## Inside `src/`
+
+`src/` is flat at the top — around fifty modules — with subpackages for the
+larger subsystems. The subject shard in the last column is where that area's
+module catalog and prose live.
+
+| Package | Owns | Shard |
+|---|---|---|
+| [`src/orchestrator/`](../../src/orchestrator/) | The scheduling cycle, workspace acquisition, pool measurement and reconciliation. | `scheduler`, `workspaces` |
+| [`src/commands/`](../../src/commands/) | The single command handler every surface (CLI, API, MCP) dispatches through, split into mixins. | `cli` |
+| [`src/cli/`](../../src/cli/) | The `aq` command line, including [`test_runner.py`](../../src/cli/test_runner.py). | `cli` |
+| [`src/api/`](../../src/api/) | FastAPI routers, request/response models and the offline OpenAPI spec builder. The daemon's HTTP surface is API only. | `api` |
+| [`src/dashboard_server/`](../../src/dashboard_server/) | The dashboard server process: bundle verification, SPA serving, the same-origin relay to the daemon, Host/Origin/peer gates and the managed PID/log lifecycle. Imports nothing from the daemon but `src.config`. | `dashboard` |
+| [`src/database/`](../../src/database/) | SQLAlchemy Core tables, the query modules, the engine and the migration guard. | `database` |
+| [`src/sessions/`](../../src/sessions/) | Harness sessions: tmux specs, reconciler, default harnesses. | `sessions` |
+| [`src/playbooks/`](../../src/playbooks/) | Playbooks V2: authoring, definition, validation, engine, runtime, executors. | `playbooks` |
+| [`src/profiles/`](../../src/profiles/) | Agent profiles, the MCP server registry and profile migrations. | `routing` |
+| [`src/routing/`](../../src/routing/) | Mandatory task routing: route sources, the routing policy schema, the pure planner behind `task_route_plan` / `task_route_apply`, and the filing-surface refusal of routing choices (`routing.choice_forbidden`). | `routing` |
+| [`src/integration/`](../../src/integration/) | Branch delivery, batches, attestation and discard. | `integration` |
+| [`src/task_graph/`](../../src/task_graph/) | Formulas and the spatial graph layout engine. | `tasks` |
+| [`src/resources/`](../../src/resources/) | Per-session caps, the `flock` test semaphore, process attribution. | `scheduler` |
+| [`src/escalations/`](../../src/escalations/), [`src/digest/`](../../src/digest/), [`src/messages/`](../../src/messages/), [`src/discord/`](../../src/discord/) | Human-facing messaging: escalation threads, the activity digest, agent inboxes, the Discord transport. | `communications` |
+| [`src/plugins/`](../../src/plugins/) | The plugin base, registry, loader and the four internal plugins. | `plugins` |
+| [`src/llm/`](../../src/llm/), [`src/providers/`](../../src/providers/) | The direct LLM path and provider adapters. | `providers` |
+| [`src/doctor/`](../../src/doctor/) | `aq doctor` checks. | `operations` |
+| [`src/metrics/`](../../src/metrics/) | The fleet-metrics sampler. | `operations` |
+| [`src/prompts/`](../../src/prompts/) | Shipped playbook markdown and reviewed playbook artefacts. | `playbooks` |
+
+The remaining subpackages (`agents/`, `digest/`, `editor/`, `git/`,
+`intelligence_classes/`, `messaging/`, `notifications/`, `panes/`, `prime/`,
+`projects/`, `runtimes/`, `services/`, `skills/`, `tokens/`, `tools/`,
+`integrations/`) each belong to one shard as well; the authoritative mapping is
+[`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json),
+which is machine-checked and never guessed.
+
+## Train fidelity and release modules
+
+These are the modules introduced or retained by the train and release changes.
+The [policy entry](../specs/design/promotion-flow.md) maps fidelity §§2.2 and 4
+to the guides; this table is orientation, not a second module ownership manifest.
+
+| Phase | Modules or resource family | Responsibility and delivery |
+|---|---|---|
+| A: restored train | [train_sources.py](../../src/integration/train_sources.py), [root_pull_requests.py](../../src/integration/root_pull_requests.py), [reviews.py](../../src/integration/reviews.py), [models.py](../../src/integration/models.py) | Epic PR opening, exact-head root gate and immediate idle dispatch; shipped. |
+| A: cleanup and controls | [cleanup.py](../../src/integration/cleanup.py), [train_controls.py](../../src/integration/train_controls.py), [stacked_branches.py](../../src/integration/stacked_branches.py), [CLI integration](../../src/cli/integration.py) | Per-batch cleanup, pause/resume/eject/seal-now and epic refresh; shipped. |
+| B: deploy and recovery | [install/deploy.py](../../src/install/deploy.py), [install/update.py](../../src/install/update.py), [database/backup.py](../../src/database/backup.py), [database/additive_migrations.py](../../src/database/additive_migrations.py), [CLI db](../../src/cli/db.py) | Annotated-tag selection, deployment record, additive-migration tooling and custom-archive backup/restore; shipped. |
+| C: legacy removal | [development_policy.py](../../src/integration/development_policy.py), [repository_git.py](../../src/integration/repository_git.py), [retirement audit](../reports/2026-10-12-legacy-consumer-retirement.md) | C1 and the remaining dormant development runtime are retired. Active train helpers, repair evidence and historical recovery/archival fences remain; the audit records an empty safe table-drop subset. |
+| D: flow and promotion lane | [promotion_steps.py](../../src/integration/promotion_steps.py), [promotion_routing.py](../../src/integration/promotion_routing.py), [commands/promote_commands.py](../../src/commands/promote_commands.py), [CLI promote](../../src/cli/promote.py) | Schema, activation helpers, promotion target, pinned-PR lane and request/approve/cancel/status/list; shipped. Generated [schema](../reference/promotion-flow-schema.json) is regenerated, never edited. |
+| E1: remote configuration | [CLI promote_rulesets](../../src/cli/promote_rulesets.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [protection.py](../../src/integration/protection.py), [.github/workflows/](../../.github/workflows/) | Ruleset output, chain/tag protection, remote diagnostics and workflow requirements. |
+| E2: prepare and notes | [promotion_notes.py](../../src/integration/promotion_notes.py), [promote_commands.py](../../src/commands/promote_commands.py) | Prepare filing, immutable notes input, both notes formats and exact-source request checks. |
+| E3: hotfix and back-merge | [promotion routing](../../src/integration/promotion_routing.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [promote_commands.py](../../src/commands/promote_commands.py) | Hotfix filing, `BackmergeAdmission`, default sources, intermediate intents and cached back-merge ledger. |
+| E4: policy bundles | [reviewed playbooks](../../src/prompts/reviewed_playbooks/), [fixture bundles](../../tests/fixtures/playbooks/v2/) | `promotion-request` and `promotion-continuous`, reviewed artifacts and step-type binding; inactive until activated per project. |
+| E5: documentation | [Promotion flows](../guides/promotion-flow.md), [releases](../guides/releases.md), [factory policy](../concepts/factory-policy.md), this map | Mechanism and operator guidance; live rollout evidence belongs to the project cutover record. |
+
+`epic_pr.py` was moved to `root_pull_requests.py`; `parent_completion.py` and
+`delivered_parent_adoption.py` were already removed. Fidelity restores their
+process through the train, rather than restoring the removed database record
+machinery. Do not confuse the existing `integration/release.py` train-release
+service or legacy `integration/promotion.py` with `promotion_steps.py`.
+
+## Root files a contributor meets
+
+| File | Purpose |
+|---|---|
+| [`pyproject.toml`](../../pyproject.toml) | Python package metadata, dependency pins, extras, entry points, pytest configuration and ruff configuration. One file, four jobs. |
+| [`package.json`](../../package.json) / [`package-lock.json`](../../package-lock.json) | The npm workspace root: `dashboard` and `packages/aq-ts-client`. |
+| [`docker-compose.yml`](../../docker-compose.yml) | The operator's PostgreSQL service and a separate disposable PostgreSQL service for tests. |
+| [`alembic.ini`](../../alembic.ini) | Alembic configuration; see [migrations](../guides/migrations.md). |
+| [`openapi.json`](../../openapi.json) | The committed API schema both clients are generated from. Generated — see [codegen](codegen.md). |
+| [`setup.sh`](../../setup.sh), [`uninstall.sh`](../../uninstall.sh) | Operator install and teardown. Not the contributor path — see [setup](setup.md#install). |
+| [`run_tests.sh`](../../run_tests.sh), [`test_suite.bat`](../../test_suite.bat) | **Historical.** Whole-suite runners that predate `aq test`; see [scripts](scripts.md#historical-and-unsupported). |
+| [`README.md`](../../README.md) | The GitHub landing page. |
+| [`LICENSE`](../../LICENSE) | The MIT licence text. The matching SPDX expression and `license-files` pin live in `pyproject.toml`; change both together. |
+
+## Agent-facing instruction files
+
+Three tracked markdown files at the root are read by coding agents rather than
+by people, and are part of how AQ develops itself. They are documentation, not
+code, but changing them changes agent behaviour, so treat them as interface.
+
+| File | Read by | Contains |
+|---|---|---|
+| [`AGENTS.md`](../../AGENTS.md) | Every harness: `codex` reads it directly, `claude` through the `CLAUDE.md` import. | The quick reference: subsystem pointers, invariants, the testing rules, the migration prohibitions, conventions. |
+| [`CLAUDE.md`](../../CLAUDE.md) | The `claude` harness, automatically, at session start. | One line, `@AGENTS.md`: Claude Code auto-loads only `CLAUDE.md`, so this shim imports the real file. Never put content here. |
+| [`profile.md`](../../profile.md) | Loaded as the repository architecture briefing when an agent primes. | The long-form architecture, codebase map and design decisions. |
+
+> **Note.** `AGENTS.md` is the first thing an agent working in this repository
+> reads, and it is *terse on purpose*. When it and a page under `docs/`
+> disagree, the source wins; open an issue rather than quietly editing one of
+> them to match the other.
+
+`dashboard/AGENTS.md` and `src/cli/AGENTS.md` are the same idea scoped to the
+frontend and the CLI, each with its own one-line `CLAUDE.md` shim.
+
+## Directories that are not source
+
+| Path | Why it is there |
+|---|---|
+| `/.aq/` | Per-checkout agent state: worktree slots, claim files, hook settings. Gitignored, generated by the session runtime, never shared. |
+| `node_modules/`, `dashboard/dist/`, `packages/aq-ts-client/src/` | Build inputs and outputs. Gitignored. |
+| `.pytest_cache/`, `.ruff_cache/`, `__pycache__/` | Tool caches. |
+| `docs/specs/`, `docs/superpowers/`, `docs/reports/`, `docs/reviews/`, `docs/analysis/`, `docs/plans/` | Active design specs remain normative. Dated plans, superseded specs and reports preserve historical decisions; check each document’s status and scope. |
+
+## Finding the code for a behaviour
+
+Three moves, in order of how often they work:
+
+1. **Ask the CLI.** `aq schema` prints the machine-readable command surface and
+   `aq <group> <command> --help` the current flags. Most behaviour is reachable
+   as a command, and the command names its handler.
+2. **Search the catalog.** Grep
+   [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json)
+   for a path to get its shard, component page and category in one line.
+3. **Search the tests.** The suite is one file per area,
+   `tests/test_<area>.py`; the test file for a subsystem is usually a faster
+   read than the subsystem. See [testing](testing.md#finding-the-right-tests).
+
+## Related pages
+
+* [Testing](testing.md) — the layout of `tests/` and how to run a slice of it.
+* [Code generation](codegen.md) — which of these directories are written by a
+  command rather than by a person.
+* [Module catalog](../reference/modules/README.md) — the per-module index this
+  page summarises.
+* [Documentation map](../documentation-map.md) — which page owns which subject.
+* [Scripts](scripts.md) — what everything in `scripts/` is for.
+
+## Source and tests
+
+The mapping in this page is generated and checked by
+[`docs/plans/documentation-overhaul/refresh_inventory.py`](../plans/documentation-overhaul/refresh_inventory.py).
+
+```bash
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
+```

@@ -17,7 +17,15 @@ async def seed_project(
     per_epic: int = 40,
     big_epic: int = 1000,
     hub_dependents: int = 50,
+    id_prefix: str = "",
 ) -> None:
+    """Write the shape above into ``project_id``.
+
+    Every task id carries ``id_prefix``.  ``tasks.id`` is unique across the
+    whole database rather than per project, so a second project seeded
+    alongside the first — a smaller twin to measure the first against —
+    needs its own id namespace.
+    """
     await db.create_project(Project(id=project_id, name=project_id))
 
     async def make(tid: str, parent: str | None, status=TaskStatus.DEFINED):
@@ -29,7 +37,7 @@ async def seed_project(
                 await db.set_parent(tid, parent, conn=conn)
 
     for e in range(epics):
-        eid = f"epic{e}"
+        eid = f"{id_prefix}epic{e}"
         await make(eid, None)
         n = big_epic if e == 0 else per_epic
         for p in range(max(1, n // 10)):
@@ -42,10 +50,11 @@ async def seed_project(
                 )
                 if t > 0:
                     await db.add_dependency(tid, f"{pid}-t{t - 1}")
-    await make("hub", None)
+    hub = f"{id_prefix}hub"
+    await make(hub, None)
     for i in range(hub_dependents):
-        await make(f"hubdep{i}", None)
-        await db.add_dependency(f"hubdep{i}", "hub")
+        await make(f"{id_prefix}hubdep{i}", None)
+        await db.add_dependency(f"{id_prefix}hubdep{i}", hub)
 
 
 if __name__ == "__main__":

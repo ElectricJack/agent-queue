@@ -1,5 +1,12 @@
 # Playbook V2 — Package 0 child plan: Security and compiler authority baseline
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` (or `superpowers:subagent-driven-development`) to run this plan task by task. Every task below is a red/green/refactor unit with a named failing assertion, a named implementation, and its own verification command. Do not reorder tasks across commit boundaries.
 
 **Parent roadmap:** `docs/superpowers/plans/2026-09-01-playbook-v2-implementation-roadmap.md` § "Package 0 — Security and compiler authority baseline"
