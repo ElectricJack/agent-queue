@@ -672,6 +672,40 @@ async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
     )]
 
 
+async def _activation_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Recompute health before another trigger discovers blocked automation."""
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+
+    if not ctx.config.playbooks.enabled:
+        return []
+    if not callable(getattr(ctx.handler, "_v2_lookups", None)):
+        raise ObservationUnavailable("playbook health registries unavailable")
+    contracts, profiles, _events = await ctx.handler._v2_lookups()
+    records = await load_activation_health(ctx.db, contracts=contracts, profiles=profiles)
+    findings = []
+    for record in records:
+        if record.health is ActivationHealth.READY:
+            continue
+        age = max(0, now - record.activated_at) if record.activated_at is not None else None
+        age_text = f"activated {age / 3600:.1f}h ago" if age is not None else "activation age unknown"
+        reasons = "; ".join(
+            f"{reason.code}: {reason.subject or reason.message}" for reason in record.reasons
+        ) or "no health reasons"
+        findings.append(_finding(
+            "playbook_activation_unhealthy",
+            record.scope_identifier if record.scope == "project" else None,
+            f"{record.playbook_id} ({record.scope}:{record.scope_identifier or '-'}) is "
+            f"{record.health.value}, enabled={record.enabled}, {age_text}; {reasons}; "
+            "inspect activation-health, then recompile and reactivate through the reviewed path",
+            activation_id=record.activation_id, playbook_id=record.playbook_id,
+            scope=record.scope, scope_identifier=record.scope_identifier,
+            health=record.health.value, enabled=record.enabled,
+            artifact_sha256=record.active_artifact_sha256, activated_at=record.activated_at,
+            activation_age_seconds=age, reasons=[reason.as_dict() for reason in record.reasons],
+        ))
+    return findings
+
+
 def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> CheckResult:
     summary = (
         f"{len(findings)} stall finding(s) across {active} active project(s)" if findings
@@ -693,6 +727,7 @@ def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> Chec
 # The producer owns every identity mapping. None denotes a scope aggregate,
 # never a guessed task/project reference hidden somewhere in legacy JSON.
 _SUBJECTS = {
+    "playbook_activation_unhealthy": ("playbook_activation", "activation_id"),
     "unclaimed_work": ("task", "task_id"),
     "undelivered_blocker": ("task", "task_id"),
     "WAITING-ON-DELIVERY": ("task", "task_id"),
@@ -701,7 +736,7 @@ _SUBJECTS = {
     "worker_relaunch_loop": ("task", "task_id"),
     "train_repair_capacity_wait": ("task", "task_id"),
     "train_repair_off_frontier": ("task", "task_id"),
-    "slot_capacity_short": None, "train_batch_stalled": ("batch", "batch_id"),
+    "slot_capacity_short": None, "workspace_capacity_held": None, "train_batch_stalled": ("batch", "batch_id"),
     "non_design_expensive_route": ("task", "task_id"),
     "pool_without_claim": ("session", "session_name"),
     "idle_worker": ("task", "task_id"), "idle_pool": ("session", "session_name"),
@@ -783,7 +818,8 @@ async def _probe(ctx, active, kinds, run):
         retained.append(row)
     projects = set(active) | {row["project_id"] for row in retained}
     global_kinds = {kind for kind in kinds if _SUBJECTS[kind] is None
-                    or kind in {"validation_db", "session_authentication"}}
+                    or kind in {"validation_db", "session_authentication",
+                                "playbook_activation_unhealthy"}}
     if global_kinds:
         projects.add(None)
     if not projects:
@@ -853,6 +889,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         failed_projects.update(active)
         tasks = tasks[:MAX_ROWS]
     runs = [
+        _probe(ctx, active, ("playbook_activation_unhealthy",),
+               lambda c: _activation_findings(c, now)),
         _probe(ctx, active, ("flock_untracked", "session_authentication"),
                lambda c: _flock_findings(c, now)),
         _probe(ctx, active, ("conversation_unowned",), lambda c: _conversation_findings(c, now)),
@@ -901,6 +939,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _continuous_promotion_findings(c, active, now)),
             _probe(ctx, active, ("stranded_promotion_task",),
                    lambda c: _stranded_promotion_findings(c, active)),
+            _probe(ctx, active, ("workspace_capacity_held",),
+                   lambda c: _workspace_capacity_findings(c, active, tasks)),
             _probe(ctx, active, ("slot_capacity_short",),
                    lambda c: _slot_capacity_findings(c, active)),
             _probe(ctx, active, ("train_batch_stalled",),
@@ -968,6 +1008,31 @@ async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -
             "container_dependencies_truncated", None,
             "container dependency report capped at 50 edges; resolve findings and rerun",
         ))
+    return findings
+
+
+async def _workspace_capacity_findings(ctx, active, task_inventory):
+    from src.workspace_ownership import workspace_capacity_holds
+
+    findings = []
+    for project_id in sorted(active):
+        ready = [t for t in task_inventory if t.project_id == project_id
+                 and t.status == TaskStatus.READY and not getattr(t, "is_blocked", False)]
+        if not ready:
+            continue
+        project = await ctx.db.get_project(project_id)
+        cap = project.max_concurrent_agents if ctx.config.worktrees.enabled else None
+        if await ctx.db.count_available_workspaces(
+            project_id, kind_id="project-repo", worktree_slot_cap=cap,
+        ):
+            continue
+        holds = await workspace_capacity_holds(ctx.db, project_id)
+        if holds:
+            findings.append(_finding(
+                "workspace_capacity_held", project_id,
+                "Ready work has no physical checkout capacity; inspect retained ownership "
+                "before releasing locks", holds=holds, ready_task_ids=[t.id for t in ready],
+            ))
     return findings
 
 
@@ -1130,44 +1195,8 @@ async def _validation_findings(ctx: DoctorContext | None = None) -> list[dict]:
 
 
 async def _stranded_child_findings(ctx: DoctorContext, now: float) -> list[dict]:
-    """Completed children whose container cannot deliver their pushed branch.
-
-    Both existing pull-request lines require a pull request to already be on the
-    row, so neither sees a completed task with ``pr_url`` NULL -- which is
-    exactly how bright-rapids-84.1/.2/.3/.4/.7/.9 stranded.  This line reports
-    the missing one and names which part of the container's path is gone.
-
-    Quiet under ``git_first: active``: the train collects every child into its
-    parent branch without a parent Subject, so "no collector" would be false;
-    ``aq integration status`` names a train lane's blockers instead.
-    """
-    integration = getattr(ctx.config, "integration", None)
-    if getattr(integration, "git_first", "shadow") == "active":
-        return []
-    from src.integration.stranded_children import (
-        STRANDED_CHILD_AFTER_SECONDS,
-        stranded_child_statement,
-    )
-
-    async with ctx.db._engine.connect() as conn:
-        rows = await _mapping_rows(conn, stranded_child_statement(
-            completed_before=now - STRANDED_CHILD_AFTER_SECONDS,
-        ))
-    return [
-        _finding(
-            "stranded_child",
-            row["project_id"],
-            f"{row['task_id']} completed {int((now - row['updated_at']) / 60)}m ago "
-            f"on branch {row['branch']} with "
-            f"no pull request and no delivery, and its container {row['parent_task_id']} "
-            f"is {row['parent_status']} "
-            f"(checkpoint {_row(row, 'parent_state')}, operation "
-            f"{_row(row, 'operation_state')}, Subject {_row(row, 'subject_phase')}); "
-            "no collector will carry it",
-            **{key: value for key, value in row.items() if key != "project_id"},
-        )
-        for row in rows
-    ]
+    """The train collects children without Subjects; its status names blockers."""
+    return []
 
 
 def _row(row, key: str) -> str:

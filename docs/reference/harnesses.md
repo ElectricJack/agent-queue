@@ -78,7 +78,7 @@ aq vault reset-harness --dry-run
 | `command` | string | — | The executable. Required, unless inherited via `base`. |
 | `args` | list of strings | `[]` | Operator-supplied arguments, kept in their declared position. |
 | `env` | object | `{}` | Environment entries for this harness. Merged as *explicit* values, so they survive scrubbing. |
-| `base` | string | — | Inherit from another harness. **Single level only** — a chain is rejected, so cycles are impossible by construction. |
+| `base` | string | — | Inherit from another harness. **Single level only**. A missing base, self-reference or derived base logs an error and leaves the child unresolved; the registry does not reject that child. |
 | `provider` | string | — | The key this harness's model is looked up under in an intelligence class's per-provider mapping. Omit it for `claude`, `codex` and `gemini`, whose provider is inferred from the id (`anthropic`, `openai`, `google`). **Any other harness must declare it**: an unrecognised id infers `""`, and the launch then resolves no model at all and says so once in the log. Inherits through `base`. |
 
 Session launches discard inherited `CLAUDE*` controls and `AQ_*` variables,
@@ -103,9 +103,8 @@ retains AQ variables so the worker database guard still prevents unsafe starts.
 | `max_argv_prompt_bytes` | integer | `1024` | Above this, the prompt is written to a file and passed by path. |
 
 The bootstrap prompt is deliberately tiny: who you are, where you are, and
-"run `aq prime`". The full prompt is rendered to `<work_dir>/.aq/prompt.md` and
-comes back through `aq prime`, so a launch never has to squeeze a large prompt
-through a command line.
+"run `aq prime`". The worker retrieves the full brief through that command;
+the launcher does not write `.aq/prompt.md`.
 
 Above `max_argv_prompt_bytes` the prompt is written to `.aq/tmp/prompt-<name>.txt`
 and the argv becomes a small `sh -c` wrapper that reads it back and `exec`s the
@@ -135,7 +134,7 @@ it. The launcher emits them only when the corresponding value resolves.
 | `ready_delay_ms` | integer | `0` | Grace before the readiness poll starts. |
 | `ready_prompt_prefix` | string | — | The composer's prompt prefix, matched against the pane capture. |
 | `process_names` | list of strings | `[]` | Which processes in the pane's subtree count as "the agent". |
-| `transcript_paths` | list of strings | `[]` | Globs for the CLI's on-disk conversation log. `{work_dir_slug}` is substituted. |
+| `transcript_paths` | list of strings | `[]` | Retained harness metadata. Current transcript readers use harness-specific paths in code; these globs and `{work_dir_slug}` do not control discovery. |
 | `input_prompts` | list of objects | `[]` | Named `pattern` signatures for interactive screens that block an unclaimed pool session; set `is_regex: true` for regular expressions. Used only for observation and reporting, never automatic input. |
 
 > **Warning.** `ready_prompt_prefix` characters are exact and are not
@@ -251,9 +250,11 @@ attachable, a human can answer them.
 Flags are composed idempotently: if a profile opt-in and the harness's `args`
 request the same flag, the launch carries it once, in the position `args` gave
 it. A profile value of `false` never removes a flag an operator deliberately
-placed in `args`. Where `codex_full_auto` and the stronger bypass would both
-apply, the bypass wins and `--full-auto` is suppressed rather than sending
-conflicting modes to the CLI.
+placed in `args`. When `codex_full_auto` is enabled, the launcher removes the retired
+`--full-auto` shorthand from the harness argv. It adds the explicit approval
+and sandbox defaults only when a stronger permitted bypass does not apply;
+explicit harness flags override those defaults. Without that profile opt-in,
+the launcher does not remove a literal `--full-auto` in harness args.
 
 > **Warning.** "Dangerously" is accurate. These modes let the CLI use tools
 > without interactive approval. A disposable worktree limits where ordinary
@@ -266,9 +267,8 @@ conflicting modes to the CLI.
 
 Three harness files ship with AQ in
 [`src/sessions/default_harnesses/`](../../src/sessions/default_harnesses/) and
-are copied into `vault/harnesses/` on first start. Once a vault copy exists it
-is the source of truth; a copy you have edited is never overwritten by an
-upgrade.
+are copied into `vault/harnesses/` when missing. Known older shipped copies
+refresh automatically; a copy you have edited is retained and reported as drift.
 
 | | [claude](../../src/sessions/default_harnesses/claude.md) | [codex](../../src/sessions/default_harnesses/codex.md) | [gemini](../../src/sessions/default_harnesses/gemini.md) |
 |---|---|---|---|
@@ -371,7 +371,7 @@ turn and drags in system-prompt frames.
 | Nudge / send input | yes | no | scripted |
 | Survives a daemon restart | yes — the tmux server owns it | the process does, but it cannot be re-adopted | n/a |
 | Drain-ack durability | survives a restart (`tmux set-environment`) | lost on restart (daemon memory) | in memory |
-| `confirm_stopped` | fresh, cache-bypassing probe | **not implemented** — cannot confirm | n/a |
+| `confirm_stopped` | fresh, cache-bypassing probe | tracked-child check plus fresh instance-token process scan | scripted |
 
 The *code* default is `sessions.provider: subprocess`, because it is the
 provider every host can construct; a default the registry cannot build would
@@ -484,10 +484,10 @@ aq vault reset-harness --all
 
 The running daemon picks the change up without a restart.
 
-> **Configured local policy.** On this machine the `claude` and `codex` vault
-> copies are operator-edited, so they read as `edited` and shipped fixes do not
-> reach them automatically. `aq vault reset-harness` or a hand-applied patch is
-> required for a shipped harness change to take effect here.
+> **Operator edits.** A copy classified as `edited` keeps those edits and does
+> not receive shipped fixes automatically. Inspect `aq doctor --check
+> harness.drift`; apply the desired fix manually or use `aq vault reset-harness`
+> to restore the shipped copy.
 
 ## Related pages
 
