@@ -1069,11 +1069,32 @@ class SupervisorConfig:
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
+    turn_timeout_seconds: int = 900
+    question_timeout_seconds: int = 900
+    retry_backoff_seconds: int = 60
+    max_turn_retries: int = 2
+    max_session_age_seconds: int = 86400
+    context_ceiling_tokens: int = 160000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.global_.validate())
+        for key in ("turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                    "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens"):
+            value = getattr(self, key)
+            if type(value) is not int or value <= 0:
+                errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
+
+    @classmethod
+    def from_mapping(cls, section: Mapping) -> SupervisorConfig:
+        """Build from the YAML ``supervisor`` section; ``global`` is the nested section."""
+        global_section = section.get("global", {}) or {}
+        kwargs = _dataclass_kwargs(cls, section)
+        kwargs["global_"] = GlobalSupervisorConfig(
+            idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
+        )
+        return cls(**kwargs)
 
 
 LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
@@ -2416,9 +2437,17 @@ class GitHubAppConfig:
     app_id: int = field(metadata={"json_schema": {"minimum": 1}})
     installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
     private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
+    actions_permission: str = field(default="read", metadata={"json_schema": {
+        "enum": ["read", "write"],
+    }})
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if not isinstance(self.actions_permission, str) or self.actions_permission not in (
+            "read", "write",
+        ):
+            errors.append(ConfigError("integration", "github_app.actions_permission",
+                                      "must be read or write"))
         if not _is_safe_identity(self.client_id):
             errors.append(
                 ConfigError("integration", "github_app.client_id", "must be a safe identity")
@@ -2443,7 +2472,7 @@ class GitHubAppConfig:
 
 
 _GITHUB_APP_CONFIG_KEYS = frozenset(
-    {"client_id", "app_id", "installation_id", "private_key_path"}
+    {"client_id", "app_id", "installation_id", "private_key_path", "actions_permission"}
 )
 
 _SCRATCH_PROBE_CONFIG_KEYS = frozenset(
@@ -2564,6 +2593,7 @@ def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
                 "app_id": _is_positive_int,
                 "installation_id": _is_positive_int,
                 "private_key_path": _is_safe_path_or_env,
+                "actions_permission": lambda v: isinstance(v, str) and v in ("read", "write"),
             }
             if name == "github_app"
             else {
@@ -2644,17 +2674,14 @@ class IntegrationConfig:
     #: An explicit ``false`` keeps the sweep off.
     owner_recovery_sweep: bool = True
 
-    #: Install root subject observations without performing primitives.
+    #: Historical compatibility flag; installs no subject runtime.
     reconciler_shadow: bool = False
-    #: Run the subject reconciler. New subjects belong to it by default;
-    #: disabling visits preserves ownership and pauses delivery.
+    #: Historical ownership-transfer guard; does not select a delivery engine.
     reconciler_active: bool = True
-    #: Integration protocol selector. Shadow keeps the subject runtimes
-    #: authoritative and logs Git-first comparisons. Active replaces the root,
-    #: parent and development runtimes with one Git-first train
-    #: (src/integration/train.py). Only promotion policy outbox events are
-    #: dispatched in active mode; read at daemon start.
-    git_first: str = "shadow"
+    #: Compatibility key: the Git-first train is always active. Trial mode was
+    #: removed; old shadow configurations must remove this key or set active.
+    #: Only promotion policy outbox events are dispatched by the train.
+    git_first: str = "active"
 
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
@@ -2684,8 +2711,12 @@ class IntegrationConfig:
         for name in ("reconciler_shadow", "reconciler_active"):
             if not isinstance(getattr(self, name), bool):
                 errors.append(ConfigError("integration", name, "must be a boolean"))
-        if self.git_first not in ("shadow", "active"):
-            errors.append(ConfigError("integration", "git_first", "must be shadow or active"))
+        if self.git_first != "active":
+            errors.append(ConfigError(
+                "integration", "git_first",
+                "trial (shadow) mode has been removed; remove integration.git_first "
+                "or set it to active",
+            ))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(
@@ -2795,13 +2826,22 @@ class ResourceCgroupConfig:
 
 @dataclass
 class ScriptsConfig:
-    """Ordinary script processes, enabled by default; no isolation prerequisites."""
+    """Ordinary script processes, enabled by default; no isolation prerequisites.
+
+    Empty roots resolve under ``{data_dir}/scripts/`` (see :meth:`resolved`).
+    Without ``runtime_manifest`` a program's executable is an ordinary host
+    file found under ``runtime_root`` or ``search_path``; a manifest opts into
+    digest pinning of the declared runtime files instead.
+    """
 
     enabled: bool = True
     runtime_root: str = ""
     runtime_manifest: str = ""
     input_root: str = ""
     state_root: str = ""
+    search_path: list[str] = field(
+        default_factory=lambda: ["/usr/local/bin", "/usr/bin", "/bin"]
+    )
     env_allowlist: list[str] = field(default_factory=list)
     queue_seconds: int = 300
     wall_seconds: int = 60
@@ -2827,6 +2867,10 @@ class ScriptsConfig:
             if (not isinstance(value, str) or "\0" in value
                     or (value and not value.startswith("/"))):
                 error(name, "must be an absolute path when supplied")
+        if (not isinstance(self.search_path, list)
+                or any(not isinstance(value, str) or "\0" in value or not value.startswith("/")
+                       or ":" in value for value in self.search_path)):
+            error("search_path", "must be a list of absolute directories")
         if not isinstance(self.env_allowlist, list):
             error("env_allowlist", "must be a list of permitted environment names")
         else:
@@ -2845,6 +2889,20 @@ class ScriptsConfig:
             if type(value) is not int or value <= 0:
                 error(name, "must be a positive integer")
         return errors
+
+    def resolved(self, data_dir: str) -> ScriptsConfig:
+        """Copy with every empty root filled in under ``{data_dir}/scripts/``.
+
+        The manifest stays optional: an empty ``runtime_manifest`` selects host
+        executables rather than a default manifest path.
+        """
+        base = os.path.join(os.path.abspath(os.path.expanduser(data_dir)), "scripts")
+        return dataclasses.replace(
+            self,
+            runtime_root=self.runtime_root or os.path.join(base, "runtime"),
+            input_root=self.input_root or os.path.join(base, "inputs"),
+            state_root=self.state_root or os.path.join(base, "state"),
+        )
 
 
 @dataclass
@@ -5317,13 +5375,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
-        s = raw["supervisor"]
-        global_section = s.get("global", {}) or {}
-        config.supervisor = SupervisorConfig(
-            global_=GlobalSupervisorConfig(
-                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
-            ),
-        )
+        config.supervisor = SupervisorConfig.from_mapping(raw["supervisor"])
 
     # hook_engine config section removed (playbooks spec §13 Phase 3).
     # Existing config files with hook_engine section are silently ignored.
@@ -5578,6 +5630,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 app_id=github_app_raw.get("app_id"),
                 installation_id=github_app_raw.get("installation_id"),
                 private_key_path=github_app_raw.get("private_key_path", ""),
+                actions_permission=github_app_raw.get("actions_permission", "read"),
             )
         scratch_probe_raw = integ.get("scratch_probe")
         scratch_probe = None
@@ -5608,7 +5661,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             reconciler_shadow=integ.get("reconciler_shadow", False),
             reconciler_active=integ.get("reconciler_active", True),
-            git_first=integ.get("git_first", "shadow"),
+            git_first=integ.get("git_first", "active"),
             owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),

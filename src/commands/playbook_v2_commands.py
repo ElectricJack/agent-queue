@@ -556,10 +556,13 @@ class PlaybookV2CommandsMixin:
         programs = source.frontmatter.get("scripts", {})
         if not programs:
             return {}
-        settings = self.config.resources.scripts
-        manifest_path = Path(settings.runtime_manifest)
-        manifest = RuntimeManifest.model_validate_json(await asyncio.to_thread(
-            read_file, manifest_path.parent, manifest_path.name, settings.runtime_bytes))
+        settings = self.config.resources.scripts.resolved(self.config.data_dir)
+        runtimes = None
+        if settings.runtime_manifest:
+            manifest_path = Path(settings.runtime_manifest)
+            manifest = RuntimeManifest.model_validate_json(await asyncio.to_thread(
+                read_file, manifest_path.parent, manifest_path.name, settings.runtime_bytes))
+            runtimes = {manifest.runtime: manifest}
         store = InputStore(Path(settings.input_root), quota_bytes=settings.input_storage_bytes)
         scope = scope_from_v1(source.frontmatter["scope"])
         vault = self._v2_vault_root()
@@ -587,7 +590,7 @@ class PlaybookV2CommandsMixin:
 
             one = replace(source, frontmatter={**source.frontmatter, "scripts": {step_id: body}})
             result.update(await pin_source_scripts(one, source_root=source_root,
-                source_revision=revision, store=store, runtimes={manifest.runtime: manifest},
+                source_revision=revision, store=store, runtimes=runtimes,
                 max_bytes=settings.input_bytes))
         return result
 
