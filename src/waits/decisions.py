@@ -18,7 +18,7 @@ from src.database.queries.wait_queries import wait_explain
 from src.database.tables import (
     admission_reservations, continuations, escalation_deliveries, escalations, events,
     integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines,
-    wait_edges, wait_escalations, wait_records,
+    wait_edges, wait_escalations, wait_records, wait_source_events,
 )
 from src.waits.admission import admission_pass
 from src.waits.conditions import Condition, Scope, WaitError
@@ -151,6 +151,8 @@ class WaitDecisions:
             return await self.service.lifecycle.resume.requeue(
                 args, principal=principal, scope=scope, handler=handler,
             )
+        if args['decision'] == 'retire':
+            return await self.retire(args, principal=principal, scope=scope)
         now = self.clock()
         routing = None
         async with self.service.orch.db._engine.begin() as conn:
@@ -214,9 +216,12 @@ class WaitDecisions:
                 raise WaitError("wait.out_of_scope", "verified source generation changed")
             observed = await self.service.registry.observe(conn, cond)
             if observed.state != "unsatisfied":
-                # Let source dispatch record the real evidence; never supersede
-                # a source result with a stale supervisor digest decision.
-                raise WaitError("wait.not_escalated", "source changed; dispatch its evidence first")
+                # Never supersede a source result with a stale supervisor digest
+                # decision: settle from the source instead.
+                return await self.settle_source(
+                    conn, wait, task, observed, args=args, principal=principal,
+                    escalation=escalation, keys=keys, now=now,
+                )
             decision = args["decision"]
             owner_scope, continuation = await fence_owner(
                 conn, wait, task, parked_required=decision in {"wake", "reroute"},
@@ -255,6 +260,122 @@ class WaitDecisions:
             return {"success": True, "wait_id": wait["id"], "decision": decision,
                     "outcome": "cancelled" if decision in {"wake", "cancel", "reroute"}
                     else "pending", "generation": escalation["generation"]}
+
+    async def settle_source(self, conn, wait, task, observed, *, args, principal, escalation,
+                            keys, now):
+        """Settle a changed source whose evidence the listener will never dispatch.
+
+        Undispatched evidence still belongs to source dispatch. A consumed event
+        (an owner fence failing across a restart stamps it without committing)
+        is never revisited by the cursor, so refusing would deadlock the wait.
+        """
+        same_source = ((wait_source_events.c.source_key == wait["source_key"])
+                       & (wait_source_events.c.source_generation == wait["source_generation"])
+                       & (wait_source_events.c.seq > wait["source_watermark_seq"]))
+        pending = await conn.scalar(select(func.min(wait_source_events.c.seq)).where(
+            same_source, wait_source_events.c.dispatched_at.is_(None),
+        ))
+        if pending is not None:
+            raise WaitError("wait.not_escalated", "source changed; dispatch its evidence first",
+                            source_seq=pending)
+        _, continuation = await fence_owner(conn, wait, task, parked_required=True)
+        seq = await conn.scalar(select(func.max(wait_source_events.c.seq)).where(same_source))
+        result = await self.service.dispatcher.settle(
+            conn, wait, observed, event={"seq": seq, "note": args["note"]}, task=task,
+            continuation=continuation, changed_keys=keys,
+        )
+        if not result.get("committed"):
+            raise WaitError("wait.not_escalated", "wait changed before decision commit")
+        await self.audit(conn, wait, "wait.decided", now, generation=escalation["generation"],
+                         decision=args["decision"], note=args["note"], outcome=result["outcome"],
+                         reason="source_reverified", source_seq=seq,
+                         supervisor_session_id=principal.session_id, at=now)
+        return {"success": True, "wait_id": wait["id"], "decision": args["decision"],
+                "outcome": result["outcome"], "generation": escalation["generation"],
+                "next_step": "The source already changed; the wait settled from a fresh "
+                             "observation and the requested decision was not applied."}
+
+    async def retire(self, args, *, principal, scope):
+        """Retire one current suspension; termination still owns writer release."""
+        from src.database.queries.continuation_queries import retire_task_waits
+        from src.wait_runtime.hibernate import locked_suspension, suspension_writer
+
+        db = self.service.orch.db
+        async with db._engine.connect() as conn:
+            task_id = await conn.scalar(select(continuations.c.task_id).where(
+                continuations.c.id == args['continuation_id'],
+            ))
+        if task_id is None:
+            raise WaitError('continuation.stale_generation', 'continuation disappeared')
+        # Serialize with stop/save/park and resume's external effects, then use
+        # their graph -> task -> wait -> continuation lock order.
+        async with self.service.orch._task_control_lock(task_id):
+            async with db._engine.begin() as conn:
+                await lock_graph(conn, queued=True)
+                task, wait, intent = await locked_suspension(conn, args['wait_id'])
+                if scope.get('project_id') not in (None, task['project_id']):
+                    raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')
+                await self.authorize(conn, principal, task['project_id'])
+                if ((intent['id'], intent['suspension_generation']) != (
+                        args['continuation_id'], args['expected_generation'])
+                        or task['branch_name'] != intent['branch']
+                        or task['status'] not in {
+                            'WAITING', 'IN_PROGRESS', 'HIBERNATED', 'RESUME_PENDING', 'PAUSED'}
+                        or wait['cleared_at'] is not None):
+                    raise WaitError('continuation.stale_generation', 'retirement owner changed')
+                writer_id = wait['session_id']
+                if intent['stopped_at'] is None:
+                    writer = await suspension_writer(conn, task, wait, intent)
+                elif intent['new_session_id']:
+                    writer_id = intent['new_session_id']
+                    delivery = intent['facts'].get('resume_delivery', {})
+                    writer = (await conn.execute(select(sessions).where(
+                        sessions.c.id == writer_id, sessions.c.task_id == task['id'],
+                        sessions.c.agent_id == task['assigned_agent_id'],
+                        sessions.c.last_claim_epoch == task['claim_epoch'],
+                        sessions.c.instance_token == delivery.get('instance_token'),
+                    ).with_for_update())).mappings().first()
+                    if not writer or delivery.get('claim_epoch') != task['claim_epoch']:
+                        raise WaitError('continuation.stale_generation', 'resume writer changed')
+                else:
+                    if task['claim_epoch'] <= wait['claim_epoch']:
+                        raise WaitError('continuation.stale_generation', 'parked claim changed')
+                    # Parking retired this attachment. Its former session row
+                    # may now belong to a different instance or task.
+                    writer_id = None
+                if await conn.scalar(select(sessions.c.id).where(
+                    sessions.c.task_id == task['id'], sessions.c.id != writer_id,
+                    sessions.c.state.not_in(('stopped', 'failed')),
+                ).limit(1)):
+                    raise WaitError('continuation.stop_uncertain', 'another task writer exists')
+                now = self.clock()
+                audit = {'continuation_id': intent['id'],
+                         'generation': intent['suspension_generation'], 'note': args['note'],
+                         'principal_kind': principal.kind, 'session_id': principal.session_id}
+                await retire_task_waits(conn, task['id'], wait_id=wait['id'],
+                                        reason='supervisor_retire', now=now)
+                if writer_id:
+                    changed = await conn.execute(update(sessions).where(
+                        sessions.c.id == writer_id, sessions.c.task_id == task['id'],
+                        sessions.c.instance_token == writer['instance_token'],
+                    ).values(desired_state='stopped'))
+                    if changed.rowcount != 1:
+                        raise WaitError('continuation.stale_generation', 'retirement writer changed')
+                # The durable manual-pause snapshot fences the old claim and
+                # lets normal maintenance stop/checkpoint/release its resources.
+                # A bare PAUSED status is an orphan that maintenance can reopen.
+                snapshot, transition = await db._pause_task_on(task['id'], conn=conn)
+                if snapshot['status'] in {'WAITING', 'HIBERNATED', 'RESUME_PENDING'}:
+                    # Explicit Resume must not restore a suspended status after
+                    # its only continuation has been retired.
+                    await db._upsert_meta(task['id'], 'manual_pause', {
+                        **snapshot, 'status': 'READY', 'retired_status': snapshot['status'],
+                    }, conn=conn)
+                await self.audit(conn, wait, 'wait.continuation_retired', now, **audit)
+            if transition:
+                await db.log_blocked_flips(transition.flipped)
+            return {'success': True, 'wait_id': wait['id'], 'decision': 'retire',
+                    'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     @admission_pass("service.scheduler.reader")
     async def cancel(self, args, *, principal, scope, handler):
@@ -300,7 +421,21 @@ class WaitDecisions:
             wait = dict((await conn.execute(select(wait_records).where(
                 wait_records.c.id == candidate["id"],
             ).with_for_update())).mappings().one())
-            if wait["outcome"] != "pending":
+            privileged = principal.kind == "local" or (
+                principal.kind == "session" and isinstance(scope, dict) and principal.elevated
+            )
+            # A resolved outcome still needs delivery to a valid owner. Only
+            # privileged callers may test a historical hold's lost-owner fence
+            # and retire its execution state without replacing that outcome.
+            resolved_hold = wait["outcome"] != "pending" and privileged and (
+                wait["owner_kind"] == "task"
+            ) and await conn.scalar(
+                select(continuations.c.id).where(
+                    continuations.c.wait_id == wait["id"],
+                    continuations.c.resume_state == "held",
+                ).limit(1),
+            )
+            if wait["outcome"] != "pending" and not resolved_hold:
                 # Replays of an earlier cancel (or a lost race with the source)
                 # report the committed row, as the v1 verb did.
                 return {"success": True, "wait_id": wait["id"], "wait": wait,
@@ -317,10 +452,6 @@ class WaitDecisions:
                 # A supervisor can retire a stale task wait even before it has
                 # escalated. Never impersonate its lost holder, send a wake or
                 # modify the task/new claim while cleaning up the old wait.
-                privileged = principal.kind == "local" or (
-                    principal.kind == "session" and isinstance(scope, dict)
-                    and principal.elevated
-                )
                 if exc.code not in {"wait.out_of_scope", "stale_claim"} or not privileged or not (
                     wait["owner_kind"] == "task"
                 ):
@@ -337,6 +468,10 @@ class WaitDecisions:
                     wait_records.c.id == wait["id"],
                 ))).mappings().one())
                 return {"success": True, "wait_id": row["id"], "wait": row}
+            if wait["outcome"] != "pending":
+                return {"success": True, "wait_id": wait["id"], "wait": wait,
+                        "changed": False,
+                        "warnings": [f"wait already resolved: {wait['outcome']}"]}
             if continuation is None and wait["sleep_decision"] == "hibernate":
                 wait = await self.withdraw_intent(conn, wait)
             result = await dispatcher.finish(

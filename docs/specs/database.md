@@ -3563,6 +3563,33 @@ idempotency_key)`. `ck_agent_cron_state` bounds lifecycle values and
 `idx_agent_cron_scan` indexes `(state, checked_at, next_fire_at)`.
 Legacy SQLite files predate this table and have no schedules to import.
 
+### Table: `project_schedules`
+
+Project-owned one-shot supervisor notifications introduced by PostgreSQL revision
+`a00000000123` ([implementation](implementation/2026-10-24-project-schedules.md)).
+Rows survive session and claim turnover; they hold no worker or continuation.
+Legacy SQLite files predate this table and contain no notifications to import.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Stable schedule id and notification thread id |
+| `project_id` | TEXT | NOT NULL, FK → projects, ON DELETE CASCADE | Owning project |
+| `idempotency_key` | TEXT | NOT NULL | Unique within the project |
+| `due_at` | REAL | NOT NULL | Absolute UTC instant as Unix seconds |
+| `body` | TEXT | NOT NULL | Notification text |
+| `state` | TEXT | NOT NULL | pending, fired or cancelled |
+| `created_at` | REAL | NOT NULL | Registration time |
+| `cancelled_at` | REAL | nullable | Present only for cancelled schedules |
+| `fired_at` | REAL | nullable | Present only for fired schedules |
+| `message_id` | TEXT | nullable | Soft reference to the queued supervisor message |
+
+`uq_project_schedules_key` covers `(project_id, idempotency_key)`.
+`ck_project_schedules_receipt` enforces lifecycle values and requires exactly
+the receipt fields appropriate to each state. Firing queues the message and
+records its id in the same transaction; row locks serialize cancellation and
+firing. `idx_project_schedules_due` indexes `(due_at, id)` for pending rows;
+`idx_project_schedules_project` indexes `(project_id, due_at, id)` for inspection.
+
 ### Table: `agent_waits`
 
 One row per durable condition an agent keeps open while it stays blocked on

@@ -830,6 +830,23 @@ async def test_failed_revision_close_does_not_require_publication(handler, db):
     assert (await db.get_task(tid)).status == TaskStatus.FAILED
 
 
+async def test_followup_close_accepts_amendment_and_keeps_review_deliverables(handler, db):
+    tid = await _started(handler, db, task_type="research")
+    await _submitted_review(db, "rev-approved", task_id=None, state="approved")
+    await db.set_task_meta(tid, "review_response", {
+        "review_id": "rev-approved", "revision": 1, "task_kind": "followup",
+    })
+    refused = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+    assert refused["code"] == "deliverables.unmet"
+
+    await _submitted_review(db, "rev-amendment", task_id=tid)
+    closed = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+    assert closed["success"], closed
+    assert (await db.get_task(tid)).status == TaskStatus.COMPLETED
+    assert (await db.get_review("rev-approved"))["current_revision"] == 1
+    assert (await db.get_review("rev-approved"))["state"] == "approved"
+
+
 # ---------------------------------------------------------------------------
 # Subtasks: a close refusal for open checklist rows (C3)
 # ---------------------------------------------------------------------------

@@ -14,12 +14,15 @@ import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import task_dependencies, tasks, wait_edges, wait_priority_projection
 from src.models import BLOCKING_DEP_TYPES
+from src.metrics.operation_profile import current_profile
 from src.metrics.perf import timed_operation
 from src.waits.conditions import WaitError
 
@@ -31,20 +34,25 @@ GRAPH_LOCK_TIMEOUT = 20.0
 GRAPH_LOCK_WARN_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
+# Connection.info accesses the DBAPI connection and may try to reconnect after
+# asyncpg invalidates it on cancellation. Rollback events fire BEFORE SQLAlchemy
+# clears that transaction, so watchdog cleanup must use only local Python state.
+_graph_holders = WeakKeyDictionary()
+
 
 def graph_locked(conn):
-    transaction = conn.info.get("wait_graph_transaction")
+    transaction = _graph_holders.get(conn.sync_connection, {}).get("transaction")
     return transaction is not None and transaction is conn.sync_connection.get_transaction()
 
 
 def _release_graph_lock(sync_conn):
-    timer = sync_conn.info.pop("wait_graph_timer", None)
-    if timer:
-        timer.cancel()
-    state = sync_conn.info.pop("wait_graph_holder", None)
+    state = _graph_holders.pop(sync_conn, None)
+    if state:
+        state["timer"].cancel()
+        if state["profile"] is not None:
+            state["profile"].record("db.hold_graph_lock", time.monotonic() - state["started"])
     if state and not state["warned"] and time.monotonic() - state["started"] >= GRAPH_LOCK_WARN_SECONDS:
         _warn_graph_holder(state)
-    sync_conn.info.pop("wait_graph_transaction", None)
 
 
 def _warn_graph_holder(state):
@@ -65,11 +73,12 @@ def track_graph_lock(conn):
         frame = frame.f_back
     caller = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
     del frame
-    conn.info["wait_graph_transaction"] = conn.sync_connection.get_transaction()
-    state = {"started": time.monotonic(), "caller": caller, "warned": False}
-    conn.info["wait_graph_holder"] = state
+    state = {"started": time.monotonic(), "caller": caller, "warned": False,
+             "profile": current_profile(),
+             "transaction": conn.sync_connection.get_transaction()}
     timer = asyncio.get_running_loop().call_later(GRAPH_LOCK_WARN_SECONDS, _warn_graph_holder, state)
-    conn.info["wait_graph_timer"] = timer
+    state["timer"] = timer
+    _graph_holders[conn.sync_connection] = state
     for name in ("commit", "rollback"):
         if not event.contains(conn.sync_connection, name, _release_graph_lock):
             event.listen(conn.sync_connection, name, _release_graph_lock)
@@ -89,15 +98,37 @@ async def background_graph_work():
 
 
 @timed_operation("db.wait_graph_lock")
-async def lock_graph(conn, *, timeout=None):
+async def lock_graph(conn, *, timeout=None, queued=False):
     """Take the transaction-scoped graph fence, or refuse with ``wait.graph_busy``.
 
-    Polls the non-blocking form so a refused waiter leaves its transaction
-    usable and hands its connection back promptly instead of convoying.
+    Ordinary background work polls briefly and releases its connection. Resume
+    reservation queues in PostgreSQL so back-to-back listener batches cannot
+    overtake it. Both paths leave a refused caller's transaction usable.
     """
     if timeout is None:
-        timeout = (BACKGROUND_GRAPH_LOCK_TIMEOUT if _background_graph_work.get()
+        timeout = (BACKGROUND_GRAPH_LOCK_TIMEOUT if _background_graph_work.get() and not queued
                    else GRAPH_LOCK_TIMEOUT)
+    if queued:
+        # A savepoint contains lock_timeout's transaction-aborting error and
+        # restores the caller's previous setting on rollback. On success the
+        # advisory lock survives RELEASE until the outer transaction ends.
+        async with conn.begin_nested():
+            previous = await conn.scalar(select(func.current_setting("lock_timeout")))
+            await conn.execute(select(func.set_config(
+                "lock_timeout", f"{max(1, int(timeout * 1000))}ms", True,
+            )))
+            try:
+                await conn.execute(select(func.pg_advisory_xact_lock(GRAPH_LOCK)))
+            except DBAPIError as exc:
+                if getattr(exc.orig, "sqlstate", None) == "55P03":
+                    raise WaitError(
+                        "wait.graph_busy",
+                        f"wait graph lock not acquired within {timeout:g}s; retry",
+                    ) from exc
+                raise
+            await conn.execute(select(func.set_config("lock_timeout", previous, True)))
+        track_graph_lock(conn)
+        return
     deadline = time.monotonic() + timeout
     delay = 0.005
     while not await conn.scalar(select(func.pg_try_advisory_xact_lock(GRAPH_LOCK))):

@@ -31,9 +31,16 @@ from sqlalchemy import and_, case, delete, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.waits.holding import message_is_held
 from src.waits.sources import insert_message_with_source_event
 from src.conversations.intake import KIND_CHANNEL, KIND_THREAD
-from src.conversations.limits import AUTHOR_WINDOW_LIMIT, CHANNEL_WINDOW_LIMIT, WINDOW_SECONDS
+from src.conversations.limits import (
+    AUTHOR_WINDOW_LIMIT,
+    CHANNEL_WINDOW_LIMIT,
+    SUPERVISOR_CHANNEL_WINDOW_LIMIT,
+    SUPERVISOR_WINDOW_LIMIT,
+    WINDOW_SECONDS,
+)
 from src.conversations.outbox import STATUS_LINE_ACTION
 from src.database.tables import (
     conversation_backfill_cursors,
@@ -44,6 +51,8 @@ from src.database.tables import (
     doc_review_comments,
     messages,
     outbound_deliveries,
+    projects,
+    sessions,
     supervisor_conversations,
 )
 
@@ -147,59 +156,117 @@ class ConversationQueriesMixin:
     # ------------------------------------------------------------------
 
     async def resolve_conversation_supervisor(
-        self, project_id: str = ""
+        self, project_id: str = "", *, conn=None
     ) -> tuple[str | None, str | None]:
-        """Choose a live project supervisor, then global, otherwise keep the input queued.
+        """Address human chat to global, independently of the ask project scope.
 
-        A shared channel may belong to more than one project, and a message
-        there cannot be attributed to any of them.  Rather than refusing to
-        guess and leaving the input on ``conversation-queued`` forever (the
-        2026-10-04 shared-channel stall), the global supervisor is the one
-        launch that can answer for the installation, so the fallback is what
-        runs.  Only when it is not live either does the input stay queued --
-        which the caller must say out loud, not leave silent.
+        Stopped/sleeping named sessions retain their address so delivery can
+        wake them. A missing global session queues chat; projects never take over.
         """
         from src.sessions.spec import named_session_name
 
+        if conn is None:
+            async with self._engine.connect() as connection:
+                return await self.resolve_conversation_supervisor(conn=connection)
+        supervisor = await conn.scalar(
+            select(sessions.c.id).where(
+                sessions.c.name == named_session_name("supervisor", "global"),
+                sessions.c.profile_id == "supervisor",
+                sessions.c.lifecycle == "named",
+                sessions.c.project_id.is_(None),
+            ).limit(1)
+        )
+        return (SUPERVISOR_RECIPIENT if supervisor is not None else None), None
+
+    async def resolve_ask_supervisor(
+        self, project_id: str = "", *, conn=None
+    ) -> tuple[str | None, str | None]:
+        """Resolve project-scoped ask discussion/interpretation ownership.
+
+        A stopped project supervisor keeps its address instead of handing the
+        ask to a different live supervisor. Only a missing supervisor falls
+        back to global, then the caller's existing missing-owner policy.
+        """
+        from src.sessions.spec import named_session_name
+
+        if conn is None:
+            async with self._engine.connect() as connection:
+                return await self.resolve_ask_supervisor(project_id, conn=connection)
         if not project_id:
-            projects = await self.list_projects()
-            if len(projects) == 1:
-                project_id = projects[0].id
-            # A shared channel cannot guess which project's supervisor owns it,
-            # so it goes to the global supervisor rather than waiting forever.
+            project_ids = list((await conn.execute(select(projects.c.id).limit(2))).scalars())
+            if len(project_ids) == 1:
+                project_id = project_ids[0]
         for scope in [project_id, None] if project_id else [None]:
-            live = await self.get_session_by_name(
-                named_session_name("supervisor", scope or "global")
-            )
-            if (
-                live is not None
-                and live.state in {"starting", "running"}
-                and live.desired_state == "running"
-                and live.profile_id == "supervisor"
-                and live.lifecycle == "named"
-                and live.project_id == scope
+            if scope and not await conn.scalar(
+                select(projects.c.supervisor_enabled).where(projects.c.id == scope)
             ):
+                continue
+            supervisor = await conn.scalar(
+                select(sessions.c.id).where(
+                    sessions.c.name == named_session_name("supervisor", scope or "global"),
+                    sessions.c.profile_id == "supervisor",
+                    sessions.c.lifecycle == "named",
+                    sessions.c.project_id == scope,
+                ).limit(1)
+            )
+            if supervisor is not None:
                 return f"supervisor-{scope or 'global'}", scope
         return None, project_id or None
 
     async def route_queued_conversation_inputs(self, project_id: str = "") -> int:
-        """Drain only unassigned notices; assigned envelopes retain their recipient."""
+        """Route pending chat and reference notices to global, including legacy mail.
+
+        Repair inconsistent read-only stamps only for still-unanswered inputs.
+        Consumed/archived history is otherwise preserved. Ask discussions retain
+        their project routing. Safe to repeat from the independent delivery loop.
+        """
         recipient, scope = await self.resolve_conversation_supervisor(project_id)
         if recipient is None:
             return 0
         async with self.immediate() as conn:
+            reply = messages.alias("conversation_recovery_reply")
+            unanswered = select(conversation_inputs.c.id).join(
+                supervisor_conversations,
+                supervisor_conversations.c.id == conversation_inputs.c.conversation_id,
+            ).where(
+                conversation_inputs.c.supervisor_message_id == messages.c.id,
+                conversation_inputs.c.ask_id.is_(None),
+                conversation_inputs.c.routing_state == "conversation",
+                conversation_inputs.c.state == "accepted",
+                conversation_inputs.c.reply_message_id.is_(None),
+                supervisor_conversations.c.state.in_(JOINABLE_STATES),
+            ).exists()
+            repaired = await conn.execute(update(messages).where(
+                messages.c.to_kind == "session",
+                messages.c.body_kind == "conversation_input",
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_not(None),
+                messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                unanswered,
+                ~select(reply.c.id).where(reply.c.reply_to_id == messages.c.id).exists(),
+            ).values(
+                to_id=recipient, project_id=scope, read_at=None,
+                last_notified_at=None, notification_attempts=0, via=None,
+            ))
             result = await conn.execute(
                 update(messages)
                 .where(
                     messages.c.to_kind == "session",
-                    messages.c.to_id == QUEUED_SUPERVISOR_RECIPIENT,
-                    messages.c.body_kind == "conversation_input",
+                    messages.c.to_id != recipient,
+                    or_(
+                        messages.c.body_kind == "conversation_input",
+                        and_(
+                            messages.c.from_id == "discord-intake",
+                            messages.c.id.startswith("msg-reference-"),
+                        ),
+                    ),
                     messages.c.delivered_at.is_(None),
                     messages.c.archived_at.is_(None),
                 )
                 .values(to_id=recipient, project_id=scope)
             )
-            return result.rowcount
+            return repaired.rowcount + result.rowcount
 
     async def find_conversation_input_by_supervisor_message(self, message_id: str) -> dict | None:
         async with self._engine.connect() as conn:
@@ -237,6 +304,7 @@ class ConversationQueriesMixin:
         now: float | None = None,
         enforce_limits: bool = False,
         kind: str = KIND_THREAD,
+        resolve_project_id: str | None = None,
     ) -> dict[str, Any]:
         """Persist one verified operator message and queue its supervisor notice.
 
@@ -245,6 +313,10 @@ class ConversationQueriesMixin:
         -- (b) the ``conversation_inputs`` row and (c) the deterministic
         ``msg-<input id>`` message to ``session:<supervisor_recipient>`` in
         the conversation's thread.
+
+        With *resolve_project_id* (including an empty string), resolve the
+        named supervisor on this same connection before inserting the notice.
+        Otherwise the explicit recipient arguments are used.
 
         *kind* is ``thread`` for one conversation per opened thread and
         ``channel`` for the one a channel carries (chat-extension spec §2.2).
@@ -324,6 +396,7 @@ class ConversationQueriesMixin:
                 now=stamp,
                 enforce_limits=enforce_limits,
                 kind=kind,
+                resolve_project_id=resolve_project_id,
             )
         except IntegrityError as exc:
             # The lock order above makes this unreachable for one message, but
@@ -358,6 +431,7 @@ class ConversationQueriesMixin:
         now: float,
         enforce_limits: bool,
         kind: str,
+        resolve_project_id: str | None,
     ) -> dict[str, Any]:
         async with self.immediate() as conn:
             if enforce_limits:
@@ -464,6 +538,11 @@ class ConversationQueriesMixin:
             if conversation["state"] == "closed":
                 raise ConversationClosed(f"conversation {conversation['id']} is closed")
 
+            if resolve_project_id is not None:
+                recipient, supervisor_project_id = await self.resolve_conversation_supervisor(
+                    resolve_project_id, conn=conn
+                )
+                supervisor_recipient = recipient or QUEUED_SUPERVISOR_RECIPIENT
             input_id = f"cinput-{uuid.uuid4()}"
             supervisor_message_id = f"msg-{input_id}"
             # The renderer needs the server-allocated ids. Render before any
@@ -784,9 +863,9 @@ class ConversationQueriesMixin:
         return int(total or 0)
 
     async def stalled_conversation_queue(self) -> dict[str, Any]:
-        """Conversation inputs no supervisor session is live to answer.
+        """Conversation inputs with no eligible supervisor to answer.
 
-        An input accepted while no supervisor was running stays addressed to
+        An input accepted before any eligible supervisor exists stays addressed to
         :data:`QUEUED_SUPERVISOR_RECIPIENT`.  Nothing delivers it and nothing
         retries it, so the count and the age of the oldest such row are the
         only honest evidence that a message went unanswered; the stall sweep
@@ -966,6 +1045,97 @@ class ConversationQueriesMixin:
     # Replies
     # ------------------------------------------------------------------
 
+    async def get_conversation_recipient(self, conversation_id: str) -> dict | None:
+        """The most recent ordinary input's addressed supervisor and project.
+
+        Conversations span projects; an initiated post follows the latest
+        routed input rather than claiming ownership from a caller-supplied id.
+        """
+        async with self._engine.connect() as conn:
+            return _row((await conn.execute(
+                select(messages.c.to_id, messages.c.project_id)
+                .join(conversation_inputs, conversation_inputs.c.supervisor_message_id == messages.c.id)
+                .where(
+                    conversation_inputs.c.conversation_id == conversation_id,
+                    conversation_inputs.c.ask_id.is_(None),
+                    conversation_inputs.c.routing_state == "conversation",
+                )
+                .order_by(conversation_inputs.c.received_at.desc(), conversation_inputs.c.id.desc())
+                .limit(1)
+            )).mappings().first())
+
+    async def record_conversation_say(
+        self, *, conversation_id: str, reply_message_id: str, body: str,
+        sender: str, project_id: str | None, now: float,
+    ) -> dict[str, Any]:
+        """Persist an initiated post once, with restart-safe serialized quotas.
+
+        The first durable body wins, including a retry after an enqueue crash.
+        Outbound messages never consume or answer a conversation input.
+        """
+        async with self.immediate() as conn:
+            conversation = (await conn.execute(
+                select(supervisor_conversations)
+                .where(supervisor_conversations.c.id == conversation_id)
+            )).mappings().first()
+            if conversation is None:
+                raise ConversationNotFound(conversation_id)
+            for key in (f"conversation-say:sender:{sender}",
+                        f"conversation-say:channel:{conversation['channel_id']}"):
+                await conn.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+            conversation = (await conn.execute(
+                select(supervisor_conversations)
+                .where(supervisor_conversations.c.id == conversation_id)
+                .with_for_update()
+            )).mappings().first()
+            if conversation is None:
+                raise ConversationNotFound(conversation_id)
+            if conversation["state"] not in {"opening", "open"} or (
+                conversation["kind"] == KIND_THREAD and not conversation["external_thread_id"]
+            ):
+                raise ConversationStateError("conversation has no active delivery destination")
+            existing = (await conn.execute(
+                select(messages).where(messages.c.id == reply_message_id)
+            )).mappings().first()
+            if existing is not None:
+                if (existing["thread_id"] != conversation["thread_id"]
+                        or existing["from_id"] != sender
+                        or existing["project_id"] != project_id
+                        or existing["body_kind"] != "conversation_say"):
+                    raise ConversationConflict("idempotency key belongs to another sender")
+                return {"created": False, "message": dict(existing)}
+            for scope, predicate, limit in (
+                ("supervisor", messages.c.from_id == sender, SUPERVISOR_WINDOW_LIMIT),
+                ("channel", supervisor_conversations.c.channel_id == conversation["channel_id"],
+                 SUPERVISOR_CHANNEL_WINDOW_LIMIT),
+            ):
+                count = await conn.scalar(
+                    select(func.count()).select_from(messages)
+                    .join(supervisor_conversations,
+                          supervisor_conversations.c.thread_id == messages.c.thread_id)
+                    .where(messages.c.body_kind == "conversation_say",
+                           messages.c.created_at >= now - WINDOW_SECONDS, predicate)
+                )
+                if count >= limit:
+                    raise ConversationRateLimited(scope)
+            message = (await insert_message_with_source_event(
+                conn, pg_insert(messages).values(
+                    id=reply_message_id, project_id=project_id,
+                    from_kind="session", from_id=sender,
+                    to_kind="user", to_id=f"discord:{conversation['created_by'].removeprefix('human:discord:')}",
+                    thread_id=conversation["thread_id"],
+                    subject=f"Discord conversation {conversation_id}", body=body,
+                    priority=_SUPERVISOR_PRIORITY, created_at=now,
+                    archive_after_inject=0, body_kind="conversation_say",
+                ).returning(messages),
+            )).mappings().one()
+            await conn.execute(
+                update(supervisor_conversations)
+                .where(supervisor_conversations.c.id == conversation_id)
+                .values(updated_at=func.greatest(supervisor_conversations.c.updated_at, now))
+            )
+            return {"created": True, "message": dict(message)}
+
     async def record_conversation_reply(
         self,
         *,
@@ -1057,7 +1227,7 @@ class ConversationQueriesMixin:
             notice = (
                 (
                     await conn.execute(
-                        select(messages.c.to_id, messages.c.read_at, messages.c.project_id).where(
+                        select(messages.c.id).where(
                             messages.c.id == item["supervisor_message_id"]
                         )
                     )
@@ -1065,14 +1235,14 @@ class ConversationQueriesMixin:
                 .mappings()
                 .one_or_none()
             )
-            sender = notice["to_id"] if notice is not None else SUPERVISOR_RECIPIENT
+            sender = SUPERVISOR_RECIPIENT
             reply = (
                 (
                     await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             id=reply_message_id,
-                            project_id=notice["project_id"] if notice is not None else None,
+                            project_id=None,
                             from_kind="session",
                             from_id=sender,
                             to_kind="user",
@@ -1097,14 +1267,16 @@ class ConversationQueriesMixin:
                 .mappings()
                 .one()
             )
-            if notice is not None and notice["read_at"] is None:
+            if notice is not None:
                 await conn.execute(
                     update(messages)
                     .where(
                         messages.c.id == item["supervisor_message_id"],
-                        messages.c.read_at.is_(None),
                     )
-                    .values(read_at=now)
+                    .values(
+                        read_at=func.coalesce(messages.c.read_at, now),
+                        delivered_at=func.coalesce(messages.c.delivered_at, now),
+                    )
                 )
             answered = (
                 (

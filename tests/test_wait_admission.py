@@ -288,10 +288,13 @@ def test_policy_defaults_enable_cutover_and_string_flags_refused():
     assert policy.v2_enabled and policy.hibernation_enabled and policy.scheduler_waits_enabled
     assert policy.v1_bodies == "refuse"
     assert policy.branch_admission_deadline_seconds == 1800
+    assert policy.listener_lag_events == 500
     assert not policy.validate()
     assert parse_wait_policy({"v2_enabled": "false"}).validate()
     assert parse_wait_policy({"branch_admission_deadline_seconds": 1}).validate()
     assert parse_wait_policy({"projects": {"p": {"hibernate_margin": 0.5}}}).validate()
+    for invalid in (0, -1, True, "500"):
+        assert parse_wait_policy({"listener_lag_events": invalid}).validate()
 
 
 async def test_workspace_release_reobserves_same_identity_and_retracts_wait(env):
@@ -666,6 +669,56 @@ async def test_prepared_admission_does_not_admit_changed_project(env):
     assert "delivery_not_verified" in observation.constraints["batch_hold"]["reasons"]
 
 
+@pytest.mark.parametrize('expired', [False, True])
+async def test_fresh_admission_rechecks_stack_cache_without_git_under_graph(env, monkeypatch, expired):
+    from src.database.queries import claim_queries
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration import admission, stacked_branches
+    from src.waits.graph import lock_graph
+
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(side_effect=AssertionError('Git under graph fence')),
+        als_remote_refs=AsyncMock(side_effect=AssertionError('Git under graph fence')),
+    )
+    stack = StackView(env.db, 'p', snapshot=SimpleNamespace(
+        target_ref='refs/heads/main', target_oid='a' * 40, error=None,
+        store='/tmp/stack', repository_url='https://example.test/repo', git=git,
+    ))
+    monkeypatch.setattr(stacked_branches, 'time', SimpleNamespace(monotonic=lambda: 100))
+    stack.ref_cache[('/tmp/stack', 'https://example.test/repo', 'main')] = (
+        90 if expired else 100,
+        RemoteRefResult(RemoteRefState.PRESENT, 'a' * 40),
+    )
+    mode = replace(ProjectIntegrationMode.of(await env.db.get_project('p')),
+                   stackable_prerequisite_ids=frozenset({'source'}))
+    observe = admission.observe_admission
+
+    async def with_stack(*args, **kwargs):
+        view = await observe(*args, **kwargs)
+        view._snapshot.stack_views['p'] = stack
+        view._snapshot.hierarchy_modes['p'] = mode
+        return replace(view, hierarchy_modes={'p': mode})
+
+    monkeypatch.setattr(admission, 'observe_admission', with_stack)
+    predicates = claim_queries.claim_frontier_predicates
+    modes = []
+
+    def capture(*args, **kwargs):
+        if 'hierarchy_mode' in kwargs:
+            modes.append(kwargs['hierarchy_mode'])
+        return predicates(*args, **kwargs)
+
+    monkeypatch.setattr(claim_queries, 'claim_frontier_predicates', capture)
+    async with env.service.reader.prepared(task_ids=['holder'], cached_only=False):
+        async with env.db._engine.begin() as conn:
+            await lock_graph(conn)
+            assert await env.service.reader.observe_task(conn, 'holder') is not None
+    assert modes[-1].stackable_prerequisite_ids == (frozenset() if expired else {'source'})
+    git.aget_remote_url.assert_not_awaited()
+    git.als_remote_refs.assert_not_awaited()
+
+
 
 
 @pytest.mark.parametrize("entrypoint", ["sync", "startup_bridge"])
@@ -789,3 +842,86 @@ async def test_tick_runs_startup_bridge_beside_the_scheduler(env, monkeypatch):
     assert calls == 1
     release.set()
     await service._bridge_task
+
+
+@pytest.mark.parametrize("blocker", [
+    "slot", "workspace", "provider", "backoff", "budget", "policy_hold", "branch_owner", "batch_hold",
+])
+async def test_resource_verification_reads_only_its_constraint_with_identical_evidence(env, blocker):
+    from sqlalchemy import event
+
+    reader = env.service.reader
+    registry = env.service.registry
+    queries = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    async with reader.prepared(project_id="p"):
+        async with env.db._engine.begin() as conn:
+            event.listen(conn.sync_connection, "before_cursor_execute", record)
+            full = await reader.observe_task(conn, "holder", migration_audit=True)
+            full_queries = list(queries)
+            queries.clear()
+            snapshot = full.snapshot(blocker)
+            condition = registry.normalise({
+                "kind": "resource", "generation": 0, "blocker": blocker,
+                "identity": full.identity(blocker),
+                "source_revision": snapshot.observation.revision,
+            })
+            evidence = await registry.verify(conn, condition, Scope(
+                "p", "scheduler", "holder", claim_epoch=full.task["claim_epoch"], principal="service",
+            ))
+            assert evidence.observation == snapshot.observation
+            assert len(queries) < len(full_queries)
+            if blocker in {"slot", "provider", "budget", "branch_owner"}:
+                assert not any("AS ingest_held" in sql for sql in queries)
+            if blocker != "workspace":
+                assert not any("FROM workspaces" in sql for sql in queries)
+            # No configured budget: neither the full observation nor individual
+            # resource checks need to scan the append-only fleet ledger.
+            assert not any("FROM token_ledger" in sql for sql in full_queries + queries)
+
+
+async def test_selective_budget_observation_rechecks_committed_usage(env):
+    from src.database.tables import token_ledger
+
+    env.o.config.global_token_budget_daily = 100
+    await env.db.create_project(Project(id="other", name="Other"))
+    reader = env.service.reader
+    async with reader.prepared(project_id="p"):
+        async with env.db._engine.begin() as conn:
+            first = await reader.observe_task(conn, "holder", blocker="budget")
+            assert not first.constraints["budget"]["blocked"]
+        # A new observation on the same prepared pass must see another
+        # project's committed spend. A per-pass verdict cache would miss it.
+        async with env.db._engine.begin() as conn:
+            await conn.execute(insert(token_ledger).values(
+                id="usage", project_id="other", agent_id="worker-agent", task_id="archived",
+                tokens_used=100, timestamp=NOW,
+            ))
+        async with env.db._engine.begin() as conn:
+            second = await reader.observe_task(conn, "holder", blocker="budget")
+            assert second.identity("budget") == first.identity("budget")
+            assert second.constraints["budget"] == {
+                "blocked": True, "usage": 0, "fleet_usage": 100,
+            }
+            full = await reader.observe_task(conn, "holder")
+            assert second.snapshot("budget") == full.snapshot("budget")
+
+
+async def test_selective_policy_observation_rechecks_ingestion_hold(env):
+    reader = env.service.reader
+    async with reader.prepared(project_id="p"):
+        async with env.db._engine.begin() as conn:
+            first = await reader.observe_task(conn, "holder", blocker="policy_hold")
+            assert not first.constraints["policy_hold"]["blocked"]
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "holder").values(
+                held_batch_id="awaiting-review",
+            ))
+        async with env.db._engine.begin() as conn:
+            second = await reader.observe_task(conn, "holder", blocker="policy_hold")
+            assert second.identity("policy_hold") == first.identity("policy_hold")
+            assert second.constraints["policy_hold"]["blocked"]
+            assert "ingest_held" in second.constraints["policy_hold"]["reasons"]

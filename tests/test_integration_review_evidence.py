@@ -7,6 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, func, insert, select, update
@@ -405,6 +406,9 @@ async def test_reviewer_reopen_command_requires_git_delivery_proof(review_case, 
     elif proof == "missing":
         db.set_prerequisite_observer(None)
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db = db
     handler._current_scope = {"kind": "session", "task_id": "review", "session_id": "session"}
     handler._integration_repository_git = lambda: case["promotion"]

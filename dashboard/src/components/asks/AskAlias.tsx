@@ -1,6 +1,5 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAskAlias } from "../../api/asks";
-import { focusAskHref } from "../../pages/focus/routes";
 
 /** Resolve the audience-checked alias before loading its document or decisions. */
 export function AskAlias({ kind, id }: { kind: "review" | "escalation"; id: string }) {
@@ -13,5 +12,5 @@ export function AskAlias({ kind, id }: { kind: "review" | "escalation"; id: stri
     <button type="button" className="min-h-11 px-3" onClick={() => void query.refetch()}>Retry</button>
   </div>;
   if (!query.data) return <p role="status" className="p-4">Resolving request…</p>;
-  return <Navigate replace to={`${focusAskHref(query.data.ask.id)}${location.search}${location.hash}`} />;
+  return <Navigate replace to={`/asks/${encodeURIComponent(query.data.ask.id)}${location.search}${location.hash}`} />;
 }

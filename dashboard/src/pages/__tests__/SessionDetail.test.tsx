@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import SessionDetail from "../SessionDetail";
 import { TerminalMock, FitAddonMock, TerminalSocketMock, ResizeObserverMock } from "../../testUtils/terminal";
 
-const state = vi.hoisted(() => ({ session: { id: "session-a", name: "Worker", project_id: "p1", state: "running", provider: "tmux" } }));
+const state = vi.hoisted(() => ({ session: { id: "session-a", name: "Worker", project_id: "p1", state: "running", provider: "tmux", started_at: 100 } }));
+vi.mock("../../api/agents", () => ({ useAgentFlock: () => ({ data: [] }) }));
 vi.mock("../../api/hooks", () => ({
   useSession: () => ({ data: state.session }),
   useSessionAttach: () => ({ data: { attach_command: "tmux attach" } }),
@@ -23,7 +24,7 @@ function page(initial: string | { pathname: string; state: unknown } = "/session
   </Routes></MemoryRouter>;
 }
 beforeEach(() => {
-  state.session.state = "running"; state.session.provider = "tmux";
+  state.session.started_at = 100; state.session.state = "running"; state.session.provider = "tmux";
   TerminalMock.instances = []; TerminalSocketMock.instances = []; FitAddonMock.instances = []; ResizeObserverMock.instances = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
@@ -106,9 +107,15 @@ describe("Session terminal", () => {
 
 describe("The session terminal is one window at every width", () => {
   const original = window.matchMedia;
-  afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
+  const originalWidth = window.innerWidth;
+  afterEach(() => {
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original });
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: originalWidth });
+  });
 
-  it.each(["(max-width: 767.98px)", "(min-width: 768px)"])("opens the host shell page's terminal at %s", async (query) => {
+  it.each([390, 1440])("opens the shared terminal at %ipx", async (width) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
+    const query = width < 768 ? "(max-width: 767.98px)" : "(min-width: 768px)";
     Object.defineProperty(window, "matchMedia", {
       configurable: true, writable: true,
       value: (asked: string) => ({ matches: asked === query, media: asked,
@@ -119,5 +126,25 @@ describe("The session terminal is one window at every width", () => {
     // One attach, from the same component the host shell page draws.
     expect(TerminalSocketMock.instances[0]!.url).toContain("/ws/terminal/session-a");
     expect(screen.getByRole("textbox", { name: "Worker terminal input" })).toBeInTheDocument();
+  });
+});
+
+describe("Process pin", () => {
+  it("holds an old deep link until the new process is acknowledged", async () => {
+    render(page("/sessions/session-a?started=50"));
+    expect(screen.getByText(/This session restarted/)).toBeInTheDocument();
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Watch the new process" }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+  });
+  it("disconnects when a live query reports a restarted process", async () => {
+    const view = render(page());
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    const socket = TerminalSocketMock.instances[0]!;
+    act(() => socket.open());
+    state.session.started_at = 200;
+    view.rerender(page());
+    expect(screen.getByText(/This session restarted/)).toBeInTheDocument();
+    expect(socket.closed).toBe(true);
   });
 });

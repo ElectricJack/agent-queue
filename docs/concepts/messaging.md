@@ -159,12 +159,18 @@ Seen — closing the loop.
 ```
 
 ```bash
-aq message inbox --to "session:$AQ_SESSION_ID"
+aq message inbox --to "session:$AQ_SESSION_ID" --inject
 ```
 
 ```text
 No pending messages for session:ac5bb8c6-ca71-484d-827b-5dd8fcc93726.
 ```
+
+Without `--inject`, inbox lists unread, unarchived mail, including rows already
+handed over by injection or prime. Reading that list does not acknowledge the
+messages; `aq message status <id>` or replying acknowledges them. Supervisor
+logical addresses, runtime names and the current named-session UUID share one
+inbox, with priority and the row limit applied across all three addresses.
 
 That is the whole protocol an agent needs: `aq inbox` to see what is waiting,
 `aq reply <id> "…"` to answer, `aq message send` to raise something. The

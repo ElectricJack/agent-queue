@@ -2,8 +2,50 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
+
 from src.models import Project, Task
 from src.task_graph.layout.driver import LayoutDriver
+
+
+def test_layout_import_defers_graph_services_and_preserves_public_exports():
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent("""
+            import sys
+            import src.task_graph as graph
+            from src.task_graph.layout.order_key import between
+
+            assert between(None, None) == 'U'
+            forbidden = (
+                'src.task_graph.creator', 'src.task_graph.parser',
+                'src.task_graph.validator', 'src.commands.command_inventory',
+                'src.plugins.loader', 'src.plugins.internal',
+            )
+            assert not (set(forbidden) & sys.modules.keys())
+            assert set(graph.__all__) <= set(dir(graph))
+
+            from src.task_graph import creator, models, parser, validator
+            for module in (creator, models, parser, validator):
+                for name in graph.__all__:
+                    if hasattr(module, name):
+                        assert getattr(graph, name) is getattr(module, name), name
+            try:
+                graph.missing_export
+            except AttributeError:
+                pass
+            else:
+                raise AssertionError('unknown task graph export was accepted')
+        """)],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 async def test_graph_layout_rebuild_and_tidy(command_handler_factory):

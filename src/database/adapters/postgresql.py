@@ -27,6 +27,7 @@ from src.database.queries.activity_queries import ActivityQueryMixin
 from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.agent_wait_queries import AgentWaitQueriesMixin
 from src.database.queries.agent_cron_queries import AgentCronQueriesMixin
+from src.database.queries.project_schedule_queries import ProjectScheduleQueriesMixin
 from src.database.queries.agent_question_queries import AgentQuestionQueriesMixin
 from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
@@ -104,6 +105,7 @@ logger = logging.getLogger(__name__)
 
 class PostgreSQLDatabaseAdapter(
     WaitSourceQueriesMixin,
+    ProjectScheduleQueriesMixin,
 
     AskQueriesMixin,
     AskDeliveryQueriesMixin,
@@ -228,6 +230,10 @@ class PostgreSQLDatabaseAdapter(
 
     async def close(self) -> None:
         """Gracefully shut down the database engine."""
+        for observer in (self._prerequisite_observer, self._delivery_observer):
+            stop = getattr(observer, "stop_delivery_refresh", None)
+            if stop is not None:
+                await stop()
         if self._engine:
             await self._engine.dispose()
 

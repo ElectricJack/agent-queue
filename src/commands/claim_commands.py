@@ -29,6 +29,11 @@ from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim, SlotSourceDisagreement
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
+from src.git.repository_lock import (
+    RepositoryLockTimeout,
+    RetainedVerificationPending,
+    repository_lock_wait_limit,
+)
 from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 from src.workspace_disable import CLAIM_FAILURES, disable_fields
@@ -41,6 +46,9 @@ _UNSET = object()
 _PREPARATION_RETRY_DELAYS = (0.05, 0.1)
 # A no-wait caller receives progress after this bounded warm-path allowance.
 _PREPARATION_RESPONSE_SECONDS = 0.5
+# A busy train must not leave a worker waiting minutes for repository exclusion.
+# This limits acquisition only; Git commands and fence checks retain their budgets.
+_CLAIM_REPOSITORY_LOCK_SECONDS = 5.0
 # Admission refusals whose Git inputs moved under the claim; a bounded re-read
 # recomputes selection from the new inputs and refuses again if they keep moving.
 _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_changed"})
@@ -49,16 +57,23 @@ _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_chang
 # limit passes it takes no task: a claim made after the caller gave up is orphaned.
 _CLAIM_OBSERVATION_GRACE_SECONDS = 60.0
 _CLAIM_REQUEST_LIMIT_SECONDS = 150.0
+# Progress, never a held result: a worker that ended its turn on it sat idle at
+# its prompt while the preparation settled off-turn (nimble-journey-85).
+CLAIM_IN_PROGRESS_INSTRUCTIONS = (
+    "Preparation is still running. Run `aq task claim --next --wait 60` again now, "
+    "in this same turn, to receive its result. Do not end the turn, run `aq prime`, "
+    "or await inbox delivery."
+)
 
 
 def _retryable_preparation_error(exc: Exception, *, stage: str | None = None) -> bool:
     """Retry fenced I/O expiry and PostgreSQL transaction conflicts."""
     from src.integration.lock import BranchLockTimeout
 
-    if isinstance(exc, BranchLockTimeout):
-        # A reset that repeatedly exceeds the fence must spend the bounded
-        # preparation budget, rather than retaining an invisible retry loop.
-        return stage != "slot_reset"
+    if isinstance(exc, (BranchLockTimeout, RepositoryLockTimeout)):
+        # Repository contention retains preparation; a slot reset that exceeds
+        # its fence must spend the bounded preparation budget.
+        return isinstance(exc, RepositoryLockTimeout) or stage != "slot_reset"
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -320,7 +335,9 @@ class ClaimCommandsMixin:
         token = current_claim_timing.set(timing)
         try:
             outcome = await self._claim_request(args)
-            if outcome.get("result") != ClaimResult.CLAIM_IN_PROGRESS.value:
+            if outcome.get("result") == ClaimResult.CLAIM_IN_PROGRESS.value:
+                outcome.setdefault("instructions", CLAIM_IN_PROGRESS_INSTRUCTIONS)
+            else:
                 if timing.finished is None:
                     timing.finish(outcome.get("result", "refused"))
                 outcome.setdefault("claim_timing", timing.snapshot())
@@ -1351,6 +1368,7 @@ class ClaimCommandsMixin:
         # claim, and a successful claim needs no fifth pool checkout.
         timing = current_claim_timing.get()
         async with AsyncExitStack() as stack:
+            stack.enter_context(repository_lock_wait_limit(_CLAIM_REPOSITORY_LOCK_SECONDS))
             if timing is not None:
                 timing.activation_stack = stack
             try:
@@ -1367,7 +1385,7 @@ class ClaimCommandsMixin:
         preparation_key = (session.id, task.id, task.claim_epoch)
         timing = current_claim_timing.get()
         try:
-            outcome = await self._prepare_and_activate(
+            outcome = await self._bounded_prepare_and_activate(
                 session, row, task, cap, slot=slot, admission=admission,
             )
             outcome = await self._record_claim_refusal(
@@ -1426,6 +1444,169 @@ class ClaimCommandsMixin:
             if stale is not None and not stale.done():
                 stale.set_result("prepare_failed")
 
+    async def _bounded_prepare_and_activate(self, session, row, task, cap, *, slot, admission):
+        # The reconciler must not release a live reset. Its registry fence also
+        # means a stuck owner/lease await needs a deadline in the owning job.
+        deadline = asyncio.timeout(self.config.swarm.prepare_timeout)
+        timing = current_claim_timing.get()
+        if timing is not None:
+            timing.preparation_timeout = deadline
+        try:
+            async with deadline:
+                return await self._prepare_and_activate(
+                    session, row, task, cap, slot=slot, admission=admission,
+                )
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            reason = ("claim preparation exceeded its deadline "
+                      "(swarm.prepare_timeout before reset; configured slot reset budget during reset)")
+        except asyncio.CancelledError:
+            timing = current_claim_timing.get()
+            if timing is None or timing.abort_reason is None:
+                raise
+            reason = timing.abort_reason
+        finally:
+            if timing is not None:
+                timing.preparation_timeout = None
+        timing = current_claim_timing.get()
+        if timing is not None and timing.abort_reason is None:
+            # An abort arriving during timeout cleanup must not cancel it again.
+            timing.abort_reason = reason
+        # Cancellation has unwound Git and SQL contexts before any release.
+        # A child with unproved cleanup leaves PREPARE_CLEANUP_HOLD and stays held.
+        return await self._settle_interrupted_preparation(session, row, task, cap, slot, reason)
+
+    def _extend_claim_reset_deadline(self, task):
+        from src.integration.lock import slot_preparation_timeout_seconds
+
+        timing = current_claim_timing.get()
+        if timing is not None and timing.preparation_timeout is not None:
+            # The owner wait must be finite without shortening the repository's
+            # deliberately longer queue/reset allowance.
+            timing.preparation_timeout.reschedule(
+                asyncio.get_running_loop().time() + slot_preparation_timeout_seconds(
+                    self.config.worktrees, task.project_id,
+                )
+            )
+
+    async def _settle_interrupted_preparation(self, session, row, task, cap, slot, reason):
+        from src.preparation_failure import describe_preparation_failure
+
+        failure = describe_preparation_failure(TimeoutError(reason), "owner_lease")
+        current = await self.db.get_session(session.id)
+        if (current is None or not same_session_launch(session, current)
+                or current.task_id != task.id or current.last_claim_epoch != task.claim_epoch):
+            return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+        if current.claim_phase == "active":
+            # Activation may have committed before a slow event listener was
+            # interrupted. Never undo it or tell its worker preparation failed.
+            return await self._claimed_response(task, task.claim_epoch, current, cap)
+        if current.claim_phase != "preparing" or current.claim_phase_at != row.claim_phase_at:
+            return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+        await self.db.record_failed_preparation(
+            session.id, instance_token=session.instance_token, task_id=task.id,
+            claim_epoch=task.claim_epoch, preparation_started_at=row.claim_phase_at,
+            task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+        )
+        cleanup_unproved = await self.db.get_task_meta(task.id, PREPARE_CLEANUP_HOLD) is not None
+        if not cleanup_unproved:
+            # The retry handoff repeats the exact claim/checkout/fence proof.
+            # Its external confirmer is bounded as well; no proof means retention.
+            try:
+                async with asyncio.timeout(10):
+                    detached = await self.orchestrator.arelease_integration_writer_for_retry(
+                        task, reason="claim_preparation_interrupted", pool=True,
+                    )
+            except Exception:
+                detached = False
+            if detached is not False:
+                released = await self.db.release_claim(
+                    session.id, expected_task_id=task.id, expected_claim_epoch=task.claim_epoch,
+                    expected_instance_token=session.instance_token,
+                    task_status=TaskStatus.READY, context="claim_preparation_interrupted",
+                    now=time.time(), result="prepare_failed", prepare_backoff=True,
+                )
+                if released.released:
+                    remove_claim_file_if_matches(
+                        row.work_dir, task.id, task.claim_epoch, session_id=session.id,
+                    )
+            else:
+                released = None
+        else:
+            released = None
+        await self._record_prepare_failure(
+            task, failure, session=session, slot=slot, epoch=task.claim_epoch,
+            disposition="released" if released and released.released else "retained",
+            cleanup_unproved=cleanup_unproved,
+        )
+        try:
+            async with asyncio.timeout(5):
+                await self.orchestrator.bus.emit("pool.prepare_failed", {
+                    "project_id": task.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id, "claim_epoch": task.claim_epoch,
+                    **failure.event_fields(),
+                })
+        except TimeoutError:
+            logger.warning("Timed out delivering preparation failure for %s", task.id)
+        self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
+        return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+
+    async def _cmd_task_claim_abort(self, args: dict) -> dict:
+        """Cancel one exact preparation without waiting for its task-control lock."""
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.preparation_failure import safe_text
+
+        session = await self.db.get_session(args["session_id"])
+        if session is not None and (denied := self._session_project_scope_error(session)):
+            return denied
+        task = await self.db.get_task(args["task_id"])
+        if task is None:
+            return {"success": False, "error": "Task not found"}
+        actor, refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="claim preparation abort",
+        )
+        if refusal:
+            return {"success": False, "error": refusal}
+        epoch = args["claim_epoch"]
+        if (session is None or session.task_id != task.id
+                or session.last_claim_epoch != epoch or task.claim_epoch != epoch
+                or session.claim_phase != "preparing"
+                or session.instance_token != args["instance_token"]):
+            return {"success": False, "error": "Claim preparation identity changed"}
+        key = (session.id, task.id, epoch)
+        job = self.orchestrator.claim_preparations.get(key)
+        timing = self.orchestrator.claim_timings.get(task.id)
+        if job is None or job.done() or timing is None:
+            return {"success": False, "error": "No live preparation; use normal claim recovery"}
+        if timing.abort_reason is None:
+            abort_reason = "claim preparation aborted: " + safe_text(args["reason"])
+            await self.db.log_event(
+                "pool.preparation_abort_requested", project_id=task.project_id, task_id=task.id,
+                payload=f"{actor} session={session.id} epoch={epoch}: {abort_reason}",
+            )
+            # Recheck after audit I/O; never cancel a replacement or an activated worker.
+            current = await self.db.get_session(session.id)
+            if (current is None or not same_session_launch(session, current)
+                    or current.task_id != task.id or current.last_claim_epoch != epoch
+                    or current.claim_phase != "preparing"
+                    or self.orchestrator.claim_preparations.get(key) is not job):
+                return {"success": False, "error": "Claim preparation identity changed"}
+            timing.abort_reason = abort_reason
+            if not job.cancelling():
+                job.cancel()
+        done, _ = await asyncio.wait({job}, timeout=10)
+        if not done:
+            return {"success": True, "outcome": "cleanup_pending", "task_id": task.id,
+                    "session_id": session.id, "claim_epoch": epoch}
+        # Retrieve the settled job, never cancel it again during Git cleanup.
+        result = await asyncio.gather(job, return_exceptions=True)
+        current = await self.db.get_session(session.id)
+        return {"success": True, "outcome": "settled", "task_id": task.id,
+                "session_id": session.id, "claim_epoch": epoch,
+                "claim_phase": current.claim_phase if current else None,
+                "result": result[0].get("result") if isinstance(result[0], dict) else "interrupted"}
+
     @timed_claim_phase("owner_lease")
     async def _prepare_and_activate(
         self, session, row, task, cap=None, *, slot=None, admission=None
@@ -1474,6 +1655,15 @@ class ClaimCommandsMixin:
                 except Exception as exc:
                     if not _retryable_preparation_error(exc):
                         raise
+                    from src.preparation_failure import describe_preparation_failure
+
+                    # A shared full object check outlived the wait: its own
+                    # stage, retained like repository contention.
+                    stage = ("retained_verification"
+                             if isinstance(exc, RetainedVerificationPending)
+                             else "repository_lock" if isinstance(exc, RepositoryLockTimeout)
+                             else "preparation_retry")
+                    failure = describe_preparation_failure(exc, stage)
                     active = await self.db.get_session(session.id)
                     if (active is not None and active.task_id == task.id
                             and active.last_claim_epoch == task.claim_epoch
@@ -1483,6 +1673,11 @@ class ClaimCommandsMixin:
                         # already active checkout or report preparation failed.
                         self._resolve_claim_waiters(session.id, task.claim_epoch, "claimed")
                         return await self._claimed_response(task, task.claim_epoch, active, cap)
+                    if isinstance(exc, RepositoryLockTimeout):
+                        # The owning train/read keeps running. Unwind SQL and
+                        # branch exclusions and report the existing cooldown
+                        # immediately, retaining this preparation for re-entry.
+                        break
                     # Every immediate()/mutation_exclusion transaction has
                     # rolled back before this catch. Keep the claim and ref
                     # reservation: releasing either would strand a delegate
@@ -1494,10 +1689,22 @@ class ClaimCommandsMixin:
                     )
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
-            remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch, session_id=session.id)
-            self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
+            # The retry budget ended, but this exact preparation still owns
+            # its task, workspace and possibly a ref reservation. Report the
+            # concrete failure through the durable refusal cooldown instead
+            # of disguising retained work as an empty frontier.
+            await self.db.record_failed_preparation(
+                session.id, instance_token=session.instance_token, task_id=task.id,
+                claim_epoch=task.claim_epoch, preparation_started_at=row.claim_phase_at,
+                task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+            )
+            await self._record_prepare_failure(
+                task, failure, session=session, slot=slot, epoch=task.claim_epoch,
+                disposition="retained",
+            )
+            self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
             return self._simple(
-                ClaimResult.NO_READY_WORK, "claim preparation transient contention", row, cap
+                ClaimResult.PREPARE_FAILED, failure.reason, row, cap
             )
 
     async def _branch_fenced_prepare_failed(
@@ -1773,7 +1980,7 @@ class ClaimCommandsMixin:
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
         cleanup_unproved=False,
     ) -> None:
-        """Record what a permanent preparation failure observed, and who saw it.
+        """Record what a failed preparation observed, and who saw it.
 
         The identity (session instance, claim epoch, workspace) makes a late
         or stale completion attributable; the record decides nothing --
@@ -1842,6 +2049,7 @@ class ClaimCommandsMixin:
         # assignment inside ``try`` (a missing slot raises first).
         hierarchy_enabled = False
         fresh = None
+        recheck_detail = None
         prepared_branch: str | None = None
         # The preparation step running when an exception escapes; the
         # failure description names it (src/preparation_failure.py).
@@ -1918,7 +2126,9 @@ class ClaimCommandsMixin:
             async def prepare_and_activate(
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
-                nonlocal prepared_branch, stage, slot
+                nonlocal prepared_branch, stage, slot, recheck_detail
+                if not hierarchy_enabled and conn is None:
+                    self._extend_claim_reset_deadline(task)
                 if conn is None:
                     timing = current_claim_timing.get()
                     if timing is not None and timing.activation_stack is not None:
@@ -1957,17 +2167,15 @@ class ClaimCommandsMixin:
                 if preserve_branch:
                     reset_kwargs["preserve_branch"] = True
                 if hierarchy_enabled:
-                    reset_kwargs["fetch_origin"] = False
+                    reset_kwargs.update(fetch_origin=False, origin_refreshed=origin_refreshed is True)
                 stage = "slot_reset"
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
                 stage = "claim_file"
                 prepared_branch = branch if isinstance(branch, str) and branch else None
-                # Writing the claim file joins the same guard as the slot
-                # reset: any failure after ``record_holder`` committed — a slot
-                # reset error or an OSError on this write — must release the
-                # claim and leave no claim file behind.
+                # Reset and marker writes share cleanup: failures release the
+                # committed holder and remove the claim file.
                 marker = {
                     "task_id": task.id,
                     "claim_epoch": epoch,
@@ -1999,11 +2207,8 @@ class ClaimCommandsMixin:
                 stage = "activate_claim"
                 activation_args = dict(
                     epoch=epoch, now=time.time(), branch_name=prepared_branch,
-                    # A successful preparation clears its pause checkpoint
-                    # and failure ladder together, so a later, unrelated
-                    # prepare starts at minimum.  Done inside the activation
-                    # transaction rather than after it: same guards, same
-                    # table, one fewer pooled checkout.
+                    # Clear pause and failure metadata atomically with activation;
+                    # a later preparation starts at the minimum backoff.
                     clear_preparation_metadata=True,
                     admission=admission,
                     ordinary_admission_guard=admission is None,
@@ -2019,6 +2224,10 @@ class ClaimCommandsMixin:
                     )
                 except OrdinaryAdmissionChanged:
                     stage = "admission_recheck"
+                    recheck_detail = (
+                        "ordinary_admission_changed: artifact-free source, integration policy "
+                        "or graph eligibility changed; retry with current admission"
+                    )
                     return None
                 if activated and hierarchy_enabled:
                     stage = "finalize_preparation"
@@ -2085,8 +2294,9 @@ class ClaimCommandsMixin:
                         cwd=slot.workspace_path,
                     )
                 stage = "slot_prefetch"
-                await self.orchestrator._worktree_slots().prefetch_slot_for_task(
-                    slot, base_branch=base_sha, preserve_branch=preparation_args["preserve_branch"],
+                origin_refreshed = await self.orchestrator._worktree_slots().prefetch_slot_for_task(
+                    slot, base_branch=base_sha, target_branch=fence.target.branch,
+                    preserve_branch=preparation_args["preserve_branch"],
                 )
                 stage = "integration_attach"
                 if not hierarchy_attached:
@@ -2099,24 +2309,31 @@ class ClaimCommandsMixin:
                     )
                 hierarchy_attached = True
                 stage = "activation_lock"
+                self._extend_claim_reset_deadline(task)
+                from src.integration.lock import slot_preparation_timeout_seconds
+
+                preparation_timeout = slot_preparation_timeout_seconds(
+                    self.config.worktrees, task.project_id,
+                )
                 if previous_owner and previous_owner.get("fence") is not None:
-                    # Managed recovery/filing takes task before ref. Holding
-                    # ref while activate_claim locks session/task reverses
-                    # that order, including FK key-share locks from filing.
+                    # Match recovery/filing: session/task before ref, including
+                    # filing's FK key-share locks, then repository mutex.
                     async with self.db.immediate() as conn:
                         claim = await self.db.lock_claim_for_activation(
                             conn, session.id, task.id, epoch=epoch
                         )
                         if claim is not None:
                             async with ownership.mutation_exclusion_on(
-                                conn, fence, state="attached", expected_role=owner_role
+                                conn, fence, state="attached", expected_role=owner_role,
+                                timeout_seconds=preparation_timeout,
                             ):
                                 fresh = await prepare_and_activate(
                                     conn=conn, **preparation_args,
                                 )
                 else:
                     async with ownership.mutation_exclusion(
-                        fence, state="attached", expected_role=owner_role
+                        fence, state="attached", expected_role=owner_role,
+                        timeout_seconds=preparation_timeout,
                     ) as conn:
                         fresh = await prepare_and_activate(
                             conn=conn, **preparation_args,
@@ -2482,20 +2699,51 @@ class ClaimCommandsMixin:
                 return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
-            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             if stage == "admission_recheck" or (
-                admission is not None and not await admission.matches()
+                admission is not None and (
+                    admission.rejection_reasons(task.id) or not await admission.matches()
+                )
             ):
-                await self.db.release_claim(
+                from src.preparation_failure import describe_preparation_failure
+
+                reasons = admission.rejection_reasons(task.id) if admission is not None else []
+                detail = "; ".join(
+                    f"{reason['code']}: {reason['detail']}" for reason in reasons
+                ) or recheck_detail or (
+                    "admission_recheck_unexplained: admission guard rejected preparation "
+                    f"at {stage} without comparison diagnostics; inspect task {task.id} "
+                    f"claim epoch {epoch}"
+                )
+                failure = describe_preparation_failure(RuntimeError(detail), "admission_recheck")
+                await self.db.record_failed_preparation(
+                    session.id, instance_token=session.instance_token, task_id=task.id,
+                    claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
+                    task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+                )
+                released = await self.db.release_claim(
                     session.id,
                     expected_task_id=task.id, expected_claim_epoch=epoch,
                     expected_instance_token=session.instance_token, task_status=TaskStatus.READY,
+                    # A prerequisite/gate can now block the selected task.
+                    # Release that exact IN_PROGRESS claim even when its
+                    # blocked projection changed; preserve the epoch so the
+                    # settled refusal still matches this preparation.
+                    expected_task_status=TaskStatus.IN_PROGRESS,
+                    expected_task_claim_epoch=epoch,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
+                    prepare_backoff=True,
+                )
+                if released.released:
+                    remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="released" if released.released else "retained",
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(
-                    ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
+                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap
                 )
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
         if prepared_branch:

@@ -13,12 +13,14 @@ from src.database.tables import (
     messages,
     projects,
     system_config,
+    task_branch_origins,
     task_labels,
     tasks,
     wait_measurements,
     wait_records,
 )
 from src.integration import delivery_truth
+from src.integration.branch_materialization import BranchMaterializationService
 from src.integration.delivery_watchdog import (
     CURSOR_KEY,
     THRESHOLD_KEY,
@@ -26,8 +28,9 @@ from src.integration.delivery_watchdog import (
     measured_threshold_on,
     scan_stuck_deliveries,
 )
+from src.integration.hierarchy import HierarchyIntegration
 from src.integration.models import DeliveryWatchdogPolicy
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 
@@ -488,6 +491,68 @@ async def test_stuck_generation_gets_one_takeover_and_one_incident_across_restar
     assert incident["outcome"] == "sweep"
     assert incident["terminal_evidence"]["automatic_rule"] == "delivery_contained"
     assert len(await watch.rows(events, events.c.event_type == "delivery.recovered")) == 1
+
+
+@pytest.mark.parametrize("mode", ["train", "hierarchy"])
+@pytest.mark.parametrize("reserve_at_filing", [True, False], ids=["new", "legacy"])
+async def test_watchdog_takeover_reaches_claim_frontier(watch, mode, reserve_at_filing):
+    db = watch.state.db
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    base = "b" * 40
+    branches = {}
+
+    def materialize(_repo, branch, pinned_base):
+        branches[branch] = pinned_base
+        return pinned_base
+
+    hierarchy = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: base,
+        branch_head_resolver=lambda _repo, branch: branches.get(branch),
+        branch_materializer=materialize,
+    )
+    await watch.complete("p", "t1", age=1900)
+    await watch.scan()
+    # Older watchdogs filed READY tasks without an origin. Reconciliation must
+    # recover those as well as materializing reservations from the current filer.
+    await watch.scan(hierarchy=hierarchy if reserve_at_filing else None)
+    (takeover,) = _takeovers(await watch.rows(tasks))
+    task_id = takeover["id"]
+    await db.update_task(task_id, profile_id="worker", route_source="router")
+    origins = await watch.rows(task_branch_origins)
+    assert len(origins) == int(reserve_at_filing)
+    assert "frontier_origin_not_materialized" in {
+        reason["code"] for reason in await db.claim_frontier_exclusions(task_id)
+    }
+    assert await db.count_ready_by_profile("p", router_ready=True) == {}
+
+    async def select_for_claim():
+        async with db.immediate() as conn:
+            return await db.select_ready_for_profile(
+                conn, project_id="p", profile_id="worker", agent_id="worker-agent",
+                router_ready=True, task_id=task_id,
+            )
+
+    assert await select_for_claim() is None
+    service = BranchMaterializationService(
+        db, hierarchy_service_factory=lambda: hierarchy, legacy_container_collection=False,
+    )
+    (result,) = await service.drain_due()
+    assert (result["task_id"], result["outcome"]) == (task_id, "materialized")
+    (origin,) = await watch.rows(task_branch_origins)
+    assert origin["task_id"] == task_id and origin["repository_id"] == "repo-p"
+    assert origin["branch_name"] == takeover["branch_name"]
+    assert origin["parent_task_id"] is None and origin["parent_ref"] == "main"
+    assert origin["base_sha"] == base and origin["materialized"] is True
+    assert branches == {takeover["branch_name"]: base}
+    assert await db.claim_frontier_exclusions(task_id) == []
+    assert await db.count_ready_by_profile("p", router_ready=True) == {"worker": 1}
+    assert await select_for_claim() == task_id
+
+    await watch.scan(hierarchy=hierarchy)
+    assert await service.drain_due() == []
+    assert await watch.rows(task_branch_origins) == [origin]
+    assert len(_takeovers(await watch.rows(tasks))) == 1
 
 
 async def test_failed_takeover_is_repair_deferred_and_raises_its_incident(watch, clock):

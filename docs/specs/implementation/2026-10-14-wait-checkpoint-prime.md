@@ -63,6 +63,23 @@ comments or the summary. Held mail is scoped by sequence cursor and recipient
 and excludes wake/control messages. Reading prime never stamps held mail
 delivered; `wait_ack` owns those stamps and cursor advancement.
 
+If knowledge context preparation refuses a fresh `RESUME_PENDING` holder with
+`record.stale_claim`, prime retains that error code and tells the worker to run
+`aq wait ack`, then retry `aq prime`. Prime records delivery of the bound outcome
+before preparing knowledge context, so acknowledgement is available after that
+refusal. Knowledge context retains its `IN_PROGRESS` claim requirement.
+The fresh continuation bootstrap makes this handshake explicit before task work:
+prime once to receive the outcome, run its exact ack command even when knowledge
+preparation reports the pre-ack `record.stale_claim`, then prime again. An initial
+ack before outcome delivery remains refused; the bootstrap never directs the
+worker to stop on this recoverable pre-ack refusal.
+This handshake also applies when the wait outcome is `cancelled`: cancellation
+resolves the wait condition without releasing the resumed task's claim. The
+bootstrap, outcome section and pre-ack `record.stale_claim` guidance must say to
+acknowledge the cancelled outcome, then run prime again and continue the task.
+Fresh and recovered continuation checkouts retain the same assignment sentinel
+and acquisition receipt for cancelled outcomes as for satisfied outcomes.
+
 No database DDL, claim/pool scheduling or public API model change is made here.
 The tests cover the SQL checkpoint/deadline race on disposable PostgreSQL,
 command activation and claim fences, exact byte/hash capture, comment budgets,

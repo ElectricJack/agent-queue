@@ -1100,6 +1100,110 @@ async def test_revision_task_cannot_submit_to_another_review(env):
     assert len(await db.list_reviews(project_id="p")) == 2
 
 
+async def test_approved_followup_submits_an_amendment_and_can_revise_its_draft(env):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Phased design", "content": "# Draft\n",
+    })
+    review_id = submitted["review_id"]
+    assert (await handler.execute("review_submit", {
+        "review_id": review_id, "content": "# Design\n\nFour phases.\n",
+    }))["success"]
+    assert (await decide(handler, {
+        "review_id": review_id, "revision": 2, "decision": "approve",
+        "note": "Defer phase four in an amendment.",
+    }))["success"]
+    task = next(task for task in await db.list_tasks(project_id="p")
+                if task.title == f"Follow up on Phased design (review {review_id})")
+    metadata = await db.get_task_meta(task.id, "review_response")
+    assert metadata["task_kind"] == "followup"
+    original = await db.get_review(review_id)
+    original_revision = await db.get_review_revision(review_id, 2)
+    original_gate = await db.get_gate(original["gate_id"])
+    original_comments = await db.list_review_comments(review_id)
+    vault_path = Path(handler.config.vault_root) / original["vault_path"]
+    original_bytes = vault_path.read_bytes()
+    await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+    await _live_worker(db, "worker", task.id)
+
+    amendment = await _scoped(handler, "review_submit", {
+        "task_id": task.id, "kind": "spec", "title": "Phase four deferral",
+        "content": "# Amendment\n\nPhase four is deferred.\n",
+        "changes": "Recorded the accepted deferral.",
+    }, session_id="worker", task_id=task.id)
+    assert amendment["success"], amendment
+    assert amendment["review_id"] != review_id
+    assert amendment["revision"] == 1
+    new_review = await db.get_review(amendment["review_id"])
+    assert new_review["state"] == "in_review"
+    assert new_review["author_task_id"] == task.id
+    assert new_review["vault_path"] != original["vault_path"]
+    assert new_review["gate_id"] != original["gate_id"]
+    assert (await db.get_gate(new_review["gate_id"]))["status"] == "open"
+    shown = await _scoped(handler, "review_show", {
+        "review_id": amendment["review_id"],
+    }, session_id="worker", task_id=task.id)
+    assert shown["success"], shown
+    assert shown["revision"]["submitted_task_id"] == task.id
+    assert shown["revision"]["changes_note"] == (
+        f"Amends review {review_id} revision 2 "
+        f"(follow-up decision {metadata['decision_id']}).\n\nRecorded the accepted deferral."
+    )
+
+    # An explicit id still cannot mutate approved bytes or another task's draft.
+    other = await handler.execute("review_submit", {
+        "task_id": "peer", "kind": "spec", "title": "Unrelated", "content": "# Other\n",
+    })
+    assert other["success"], other
+    for target in (review_id, other["review_id"]):
+        refused = await _scoped(handler, "review_submit", {
+            "review_id": target, "content": "# Unauthorized change\n",
+        }, session_id="worker", task_id=task.id)
+        assert refused["error_code"] == "not_your_task"
+
+    revised = await _scoped(handler, "review_submit", {
+        "review_id": amendment["review_id"], "content": "# Amendment\n\nPhase four is deferred to Q2.\n",
+    }, session_id="worker", task_id=task.id)
+    assert revised["success"], revised
+    assert (revised["review_id"], revised["revision"]) == (amendment["review_id"], 2)
+    assert await db.get_review(review_id) == original
+    assert await db.get_review_revision(review_id, 2) == original_revision
+    assert await db.get_gate(original["gate_id"]) == original_gate
+    assert await db.list_review_comments(review_id) == original_comments
+    assert vault_path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("legacy_metadata", [False, True])
+async def test_revision_task_cannot_create_amendment_after_approval(env, legacy_metadata):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Assigned", "content": "# Draft\n",
+    })
+    review_id = submitted["review_id"]
+    assert (await decide(handler, {
+        "review_id": review_id, "revision": 1, "decision": "request_changes",
+    }))["success"]
+    task = next(task for task in await db.list_tasks(project_id="p")
+                if task.title == f"Revise Assigned (review {review_id})")
+    if legacy_metadata:
+        metadata = await db.get_task_meta(task.id, "review_response")
+        del metadata["task_kind"]
+        await db.set_task_meta(task.id, "review_response", metadata)
+    assert (await handler.execute("review_submit", {
+        "review_id": review_id, "content": "# Corrected draft\n",
+    }))["success"]
+    assert (await decide(handler, {
+        "review_id": review_id, "revision": 2, "decision": "approve",
+    }))["success"]
+    await db.update_session("worker", task_id=task.id)
+    refused = await _scoped(handler, "review_submit", {
+        "task_id": task.id, "kind": "spec", "title": "Parallel", "content": "# Amendment\n",
+    }, session_id="worker", task_id=task.id)
+    assert refused["error_code"] == "not_your_task"
+    assert len(await db.list_reviews(project_id="p")) == 1
+    assert (await db.get_review(review_id))["state"] == "approved"
+
+
 async def _enable_train_mode(handler, db) -> None:
     """Put project ``p`` in train mode, resolving its default branch without git."""
     from src.integration.hierarchy import HierarchyIntegration

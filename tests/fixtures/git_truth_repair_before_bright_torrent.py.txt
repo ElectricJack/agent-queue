@@ -1,0 +1,90 @@
+# Frozen _repair from cec0f6de2ba6b7437cf3704e78744322cf395238, for parity only.
+async def _repair(self, view, task_id, now):
+    evidence = view.get(task_id)
+    if (evidence is None or evidence.state not in {
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE,
+    } or evidence.source_oid is None):
+        return False
+    snapshot = next(s for s in view.snapshots if (
+        s.project_id, s.repository_id, s.target_ref
+    ) == (evidence.request.project_id, evidence.request.repository_id,
+          evidence.request.target_ref))
+    request = evidence.request
+    key = hashlib.sha256(json.dumps([
+        request.project_id, request.repository_id, task_id, request.completion_id,
+        request.legacy_generation, request.target_ref, evidence.source_oid,
+    ]).encode()).hexdigest()
+    domain = "git-truth:" + key
+    async with self.db._engine.connect() as conn:
+        receipt = await conn.scalar(select(t.task_delivery_receipts.c.id).where(
+            t.task_delivery_receipts.c.domain_key == domain,
+        ))
+    witness = None if receipt else await retain_delivery(snapshot, evidence)
+    if not await view.fresh():
+        return False
+    async with self.db.immediate() as conn:
+        await self.db.lock_hierarchy_project(conn, request.project_id)
+        task = (await conn.execute(select(t.tasks).where(
+            t.tasks.c.id == task_id,
+        ).with_for_update())).mappings().first()
+        if task is None and request.archived:
+            task = (await conn.execute(select(t.archived_tasks).where(
+                t.archived_tasks.c.id == task_id,
+            ).with_for_update())).mappings().first()
+        if task is None or task["status"] != "COMPLETED":
+            return False
+        if task_id not in await view.verified_on(conn, [task_id]):
+            return False
+        if await self._busy(conn, task_id):
+            return False
+        if witness is not None:
+            await conn.execute(insert(t.task_delivery_receipts).values(
+                id=key, domain_key=domain, source_task_id=task_id,
+                repository_id=request.repository_id,
+                target_branch=request.target_ref.removeprefix("refs/heads/"),
+                reviewed_head_sha=evidence.source_oid, after_sha=evidence.target_oid,
+                disposition="noop" if evidence.state is DeliveryState.NO_CHANGE else "code",
+                resolution_evidence={
+                    "git_truth": witness, "first_observed_at": now,
+                }, created_at=now,
+            ).on_conflict_do_nothing(index_elements=["domain_key"]))
+        # Keep origins as source history; only retire their live reservation.
+        origins = list((await conn.execute(select(t.task_branch_origins).where(
+            t.task_branch_origins.c.task_id == task_id,
+            t.task_branch_origins.c.repository_id == request.repository_id,
+            t.task_branch_origins.c.retired_at.is_(None),
+        ).with_for_update())).mappings())
+        checkpoint = (await conn.execute(select(t.task_integration_checkpoints).where(
+            t.task_integration_checkpoints.c.task_id == task_id,
+            t.task_integration_checkpoints.c.repository_id == request.repository_id,
+        ).with_for_update())).mappings().first()
+        # An active episode still consumes this checkpoint, even for a
+        # terminal task. Its owning workflow, not this projection, ends it.
+        if checkpoint and (checkpoint["episode_id"] or checkpoint["checkpoint_sha"] not in (
+            None, evidence.source_oid, getattr(evidence, "source_base", None),
+        )):
+            return False
+        released = await self._release_owners(conn, task_id, snapshot, evidence, now)
+        if released is None:
+            return False
+        await conn.execute(update(t.task_branch_origins).where(
+            t.task_branch_origins.c.id.in_([row["id"] for row in origins]),
+        ).values(retired_at=now))
+        if checkpoint:
+            await conn.execute(delete(t.task_integration_checkpoints).where(
+                t.task_integration_checkpoints.c.task_id == task_id,
+                t.task_integration_checkpoints.c.version == checkpoint["version"],
+            ))
+        changed = bool(origins or checkpoint or released or witness)
+        if changed:
+            await self.db.log_event(
+                "integration.git_truth_reconciled", project_id=request.project_id,
+                task_id=task_id, payload=json.dumps({
+                    "receipt": domain, "source_oid": evidence.source_oid,
+                    "target_oid": evidence.target_oid,
+                    "origins": [dict(row) for row in origins],
+                    "checkpoint": dict(checkpoint) if checkpoint else None,
+                    "released_owners": released,
+                }), conn=conn,
+            )
+        return changed

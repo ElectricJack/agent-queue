@@ -8906,8 +8906,8 @@
         "tags": [
           "message"
         ],
-        "summary": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
-        "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+        "summary": "List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor aliases and the current named session UUID share an inbox. With inject=true, return only undelivered messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed additionally returns other consumed rows for this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+        "description": "List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor aliases and the current named session UUID share an inbox. With inject=true, return only undelivered messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed additionally returns other consumed rows for this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
         "operationId": "message_inbox",
         "requestBody": {
           "content": {
@@ -13077,6 +13077,53 @@
         }
       }
     },
+    "/api/project/recover-retained-holder": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+        "description": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+        "operationId": "recover_retained_holder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverRetainedHolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoverRetainedHolderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/release-constraint": {
       "post": {
         "tags": [
@@ -16194,6 +16241,194 @@
         }
       }
     },
+    "/api/schedule/cancel": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Cancel a pending project notification schedule.",
+        "description": "Cancel a pending project notification schedule.",
+        "operationId": "schedule_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePointerArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/get": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Read a project schedule and its firing/cancellation receipt.",
+        "description": "Read a project schedule and its firing/cancellation receipt.",
+        "operationId": "schedule_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePointerArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/list": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List project-owned one-shot notifications and due times.",
+        "description": "List project-owned one-shot notifications and due times.",
+        "operationId": "schedule_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/register": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+        "description": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+        "operationId": "schedule_register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleRegisterArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/supervisor/restart": {
       "post": {
         "tags": [
@@ -16308,6 +16543,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SupervisorInboxReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/supervisor_inbox/say": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Initiate a supervisor message in an existing open Discord conversation.",
+        "description": "Initiate a supervisor message in an existing open Discord conversation.",
+        "operationId": "supervisor_inbox_say",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxSayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxSayResponse"
                 }
               }
             }
@@ -21491,6 +21768,53 @@
         }
       }
     },
+    "/api/task/claim-abort": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+        "description": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+        "operationId": "task_claim_abort",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskClaimAbortRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskClaimAbortResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/close": {
       "post": {
         "tags": [
@@ -23251,6 +23575,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/source-redispatch": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
+        "description": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
+        "operationId": "wait_source_redispatch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitSourceRedispatchArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitBridgeResponse"
                 }
               }
             }
@@ -53261,6 +53632,18 @@
             "title": "Project Id",
             "description": "Filter by project ID (optional, but required for tree/compact modes)"
           },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Maximum tasks in a flat live listing, after filtering. The total remains uncapped. Use page_size for snapshots."
+          },
           "status": {
             "anyOf": [
               {
@@ -70703,6 +71086,174 @@
         "type": "object",
         "title": "RecordShowResponse"
       },
+      "RecoverRetainedHolderRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": ""
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "task_id",
+          "session_id",
+          "reason"
+        ],
+        "title": "RecoverRetainedHolderRequest"
+      },
+      "RecoverRetainedHolderResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proof"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "checkpoints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Checkpoints",
+            "default": []
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "RecoverRetainedHolderResponse"
+      },
       "RedactionRowDTO": {
         "properties": {
           "field": {
@@ -74838,6 +75389,203 @@
         },
         "type": "object",
         "title": "ScanStubStalenessResponse"
+      },
+      "ScheduleListArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "fired",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ScheduleListArgs"
+      },
+      "ScheduleListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Schedules",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "title": "ScheduleListResponse"
+      },
+      "SchedulePointerArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "schedule_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs"
+      },
+      "ScheduleRegisterArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body"
+          },
+          "due_at": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Due At"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "body",
+          "due_at",
+          "idempotency_key"
+        ],
+        "title": "ScheduleRegisterArgs"
+      },
+      "ScheduleResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "title": "ScheduleResponse"
       },
       "ScopedConftest": {
         "properties": {
@@ -79506,6 +80254,78 @@
         ],
         "title": "SupervisorInboxReplyResponse"
       },
+      "SupervisorInboxSayRequest": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Conversation Id"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Text"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "SupervisorInboxSayRequest"
+      },
+      "SupervisorInboxSayResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "reply_message_id": {
+            "type": "string",
+            "title": "Reply Message Id"
+          },
+          "delivery_dedup_key": {
+            "type": "string",
+            "title": "Delivery Dedup Key"
+          },
+          "discord_text_chars": {
+            "type": "integer",
+            "title": "Discord Text Chars"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "reply_message_id",
+          "delivery_dedup_key",
+          "discord_text_chars",
+          "truncated",
+          "delivery_id"
+        ],
+        "title": "SupervisorInboxSayResponse"
+      },
       "SupervisorInboxStatusRequest": {
         "properties": {},
         "additionalProperties": false,
@@ -81210,6 +82030,139 @@
           "children"
         ],
         "title": "TaskChildrenResponse"
+      },
+      "TaskClaimAbortRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Preparing task ID."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Exact preparing session ID."
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "instance_token": {
+            "type": "string",
+            "title": "Instance Token",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "instance_token",
+          "reason"
+        ],
+        "title": "TaskClaimAbortRequest"
+      },
+      "TaskClaimAbortResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "cleanup_pending",
+                  "settled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "TaskClaimAbortResponse",
+        "description": "Exact preparation cancellation, including cleanup still in progress."
       },
       "TaskClaimRequest": {
         "properties": {
@@ -87639,8 +88592,15 @@
             "title": "Project Id"
           },
           "wait_id": {
-            "type": "string",
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wait Id"
           },
           "decision": {
@@ -87651,7 +88611,8 @@
               "cancel",
               "reroute",
               "escalate_to_human",
-              "requeue"
+              "requeue",
+              "retire"
             ],
             "title": "Decision"
           },
@@ -87714,7 +88675,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "wait_id",
           "decision",
           "note"
         ],
@@ -89607,6 +90567,63 @@
         },
         "type": "object",
         "title": "WaitSlotSeconds"
+      },
+      "WaitSourceRedispatchArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "redispatch",
+              "blockers",
+              "retire"
+            ],
+            "title": "Action",
+            "default": "redispatch"
+          },
+          "source_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Seq"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "WaitSourceRedispatchArgs"
       },
       "WaitTaskExplanation": {
         "properties": {

@@ -60,6 +60,7 @@ API_EXCLUDED = {
 
     "ask_intake", "ask_button",
     "reconcile_agent_cron",
+    "reconcile_project_schedules",
     "cron_delivery_begin",
     "cron_delivery_finish",
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
@@ -141,6 +142,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "escalation_resolve",
             "escalation_apply_reply",
             "supervisor_inbox_reply",
+            "supervisor_inbox_say",
             "supervisor_inbox_post",
             "supervisor_inbox_status",
             "supervisor_inbox_history",
@@ -183,7 +185,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "policy_apply",
             "wait_register", "wait_get", "wait_list", "wait_cancel",
             "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
-            "wait_decide", "wait_lift", "wait_legacy_bridge",
+            "wait_decide", "wait_lift", "wait_legacy_bridge", "wait_source_redispatch",
         }
     )
     | DASHBOARD_STATE_COMMANDS

@@ -347,3 +347,13 @@ def test_supervisor_reply_requires_exactly_one_text_source(tmp_path, text_option
         result = CliRunner().invoke(command, argv, obj={})
     assert result.exit_code == 2 and "exactly one" in result.output
     client.assert_not_called()
+
+
+def test_supervisor_say_reads_utf8_file_without_input_id(tmp_path):
+    text_file = tmp_path / "question.txt"
+    text_file.write_text("Next question: café?\n", encoding="utf-8")
+    assert _invoke_tool(
+        _supervisor_tool("say"), "say", "--conversation-id", "conv",
+        "--idempotency-key", "question-two", "--file", str(text_file),
+    ) == {"conversation_id": "conv", "idempotency_key": "question-two",
+          "text": "Next question: café?\n"}

@@ -16,6 +16,8 @@ class ListTasksRequest:
     """
     Attributes:
         project_id (None | str | Unset): Filter by project ID (optional, but required for tree/compact modes)
+        limit (int | None | Unset): Maximum tasks in a flat live listing, after filtering. The total remains uncapped.
+            Use page_size for snapshots.
         status (None | str | Unset): Filter by exact status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc. When provided,
             show_all, include_completed, and completed_only are ignored.
         show_all (bool | None | Unset): When true, return ALL tasks regardless of status (active + completed + failed +
@@ -39,6 +41,7 @@ class ListTasksRequest:
     """
 
     project_id: None | str | Unset = UNSET
+    limit: int | None | Unset = UNSET
     status: None | str | Unset = UNSET
     show_all: bool | None | Unset = UNSET
     include_completed: bool | None | Unset = UNSET
@@ -57,6 +60,12 @@ class ListTasksRequest:
             project_id = UNSET
         else:
             project_id = self.project_id
+
+        limit: int | None | Unset
+        if isinstance(self.limit, Unset):
+            limit = UNSET
+        else:
+            limit = self.limit
 
         status: None | str | Unset
         if isinstance(self.status, Unset):
@@ -123,6 +132,8 @@ class ListTasksRequest:
         field_dict.update({})
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if limit is not UNSET:
+            field_dict["limit"] = limit
         if status is not UNSET:
             field_dict["status"] = status
         if show_all is not UNSET:
@@ -158,6 +169,15 @@ class ListTasksRequest:
             return cast(None | str | Unset, data)
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_limit(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        limit = _parse_limit(d.pop("limit", UNSET))
 
         def _parse_status(data: object) -> None | str | Unset:
             if data is None:
@@ -251,6 +271,7 @@ class ListTasksRequest:
 
         list_tasks_request = cls(
             project_id=project_id,
+            limit=limit,
             status=status,
             show_all=show_all,
             include_completed=include_completed,

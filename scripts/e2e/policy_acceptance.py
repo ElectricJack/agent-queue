@@ -21,11 +21,13 @@ import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import asyncpg
 import yaml
 
 from scripts.e2e.dbsetup import refuse
+from scripts.e2e.environment import child_env, database_url, world_env
 from src.playbooks.activation import profile_fingerprint
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
@@ -58,7 +60,12 @@ class Kit:
         self.home = parent / "policy-cases" / name
         self.name = name
         self.evidence = evidence
-        self.env = dict(os.environ)
+        self.env = world_env(
+            self.home, postgres_dsn=os.environ.get("E2E_ADMIN_DSN")
+            if os.environ.get("AQ_TEST_PG_MODE") != "postgres" else None,
+        )
+        if test_dsn := os.environ.get("POSTGRES_TEST_DSN"):
+            self.env["POSTGRES_TEST_DSN"] = test_dsn
         self.db_name = os.environ["E2E_DB_NAME"] + "_policy_" + name.replace("-", "_")
         check(len(self.db_name) <= 63 and refuse(self.db_name) is None, "unsafe child DB name")
         with socket.socket() as sock:
@@ -69,10 +76,12 @@ class Kit:
             AQ_E2E_HOME=str(self.home), AQ_E2E_PORT=str(port), AQ_E2E_API_URL=self.url,
             AQ_API_URL=self.url, AQ_E2E_TMUX_SOCKET=f"aq-policy-{port}",
             AQ_E2E_SESSION_PROVIDER="fake", E2E_DB_NAME=self.db_name,
-            AQ_E2E_FORBID_LLM="1",
+            AQ_E2E_FORBID_LLM="1", AQ_CONFIG_PATH=str(self.home / "config.yaml"),
         )
         for key in ("AQ_E2E_CLI_SOCKET", "AQ_E2E_EXTRA_CONFIG"):
             self.env.pop(key, None)
+        if parent_dsn := self.env.get("E2E_DB_URL"):
+            self.env["E2E_DB_URL"] = database_url(parent_dsn, self.db_name, sqlalchemy=True)
         self.dsn = ""
         self.running = False
 
@@ -99,7 +108,7 @@ class Kit:
         config = yaml.safe_load(config_path.read_text())
         check(config["data_dir"] == str(self.home), "child config escaped its home")
         self.dsn = config["database"]["url"].replace("postgresql+asyncpg:", "postgresql:")
-        check(self.dsn.rsplit("/", 1)[-1] == self.db_name, "child DSN mismatch")
+        check(urlsplit(self.dsn).path.removeprefix("/") == self.db_name, "child DSN mismatch")
         # No demand scheduling or real provider probes in policy-only cases.
         config["swarm"]["enabled"] = False
         config["providers"] = {"claude": {"usage_probe_enabled": False}}
@@ -466,7 +475,8 @@ def main():
     check(parent != Path.home() / ".agent-queue", "operator home refused")
     output = args.output or parent / "policy-acceptance.json"
     evidence = {
-        "tested_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+        "tested_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True,
+                                                env=child_env(os.environ)).strip(),
         "scenario_files": inventory(REPO / "scripts/e2e"), "events": [], "passed": False,
     }
     kits = [Kit(parent, name, evidence) for name in ("absent", "empty", "existing", "failed")]

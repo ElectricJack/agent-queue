@@ -421,6 +421,7 @@ class ReviewCommandsMixin:
         review_id = args.get("review_id")
         held = None
         response = None
+        amendment = None
         if self._is_worker():
             held, error = await self._worker_held_task()
             if error:
@@ -430,14 +431,30 @@ class ReviewCommandsMixin:
             response = await self.db.get_task_meta(held.id, "review_response")
             if isinstance(response, dict):
                 assigned_id = response["review_id"]
-                if review_id and review_id != assigned_id:
-                    return _error(
-                        "not_your_task",
-                        f"this revision task must update review {assigned_id}; use "
-                        f"aq review submit --review-id {assigned_id} --file <draft.md> "
-                        '--changes "<comment dispositions and evidence>"',
-                    )
-                review_id = assigned_id
+                if response.get("task_kind") == "followup":
+                    if not review_id:
+                        predecessor, error = await self._review_for_caller(assigned_id)
+                        if error:
+                            return error
+                        if (
+                            predecessor["state"] != "approved"
+                            or predecessor["current_revision"] != response.get("revision")
+                        ):
+                            return _error(
+                                "not_your_task",
+                                "an amendment requires the assigned predecessor to remain approved "
+                                "at the follow-up revision",
+                            )
+                        amendment = response
+                else:
+                    if review_id and review_id != assigned_id:
+                        return _error(
+                            "not_your_task",
+                            f"this revision task must update review {assigned_id}; use "
+                            f"aq review submit --review-id {assigned_id} --file <draft.md> "
+                            '--changes "<comment dispositions and evidence>"',
+                        )
+                    review_id = assigned_id
         try:
             if review_id:
                 review, error = await self._review_for_caller(review_id)
@@ -455,6 +472,7 @@ class ReviewCommandsMixin:
                 if self._is_worker():
                     is_response_task = (
                         isinstance(response, dict)
+                        and response.get("task_kind") != "followup"
                         and response.get("review_id") == review["id"]
                         and response.get("revision") == review["current_revision"]
                         and review["state"] in {"changes_requested", "rejected"}
@@ -511,6 +529,14 @@ class ReviewCommandsMixin:
                         self.db, experiment, str(args.get("title") or "") + "\n" + content,
                     ):
                         return _error("object_result_language", error)
+            changes_note = None
+            if amendment is not None:
+                changes_note = (
+                    f"Amends review {amendment['review_id']} revision {amendment['revision']} "
+                    f"(follow-up decision {amendment['decision_id']})."
+                )
+                if args.get("changes"):
+                    changes_note += "\n\n" + str(args["changes"])
             return {
                 "success": True,
                 **await service.submit(
@@ -522,6 +548,7 @@ class ReviewCommandsMixin:
                     submitted_by=principal.describe(),
                     decider=decider,
                     single_author=bool(experiment and experiment["final_result"]),
+                    changes_note=changes_note,
                     playbook=playbook,
                 ),
                 **({"playbook": playbook.meta} if playbook else {}),

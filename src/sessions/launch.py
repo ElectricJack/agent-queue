@@ -5,6 +5,7 @@ commit before a provider is allowed to spawn, including named supervisors.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextvars import ContextVar
@@ -134,6 +135,10 @@ async def _launch(db, provider, spec, record, *, registered, release_agent_reser
             await provider.stop(handle)
             if not await provider.confirm_stopped(handle):
                 raise RuntimeError("provider still reports the launched instance")
+        except asyncio.CancelledError:
+            # Keep the STARTING row for reconciliation, but let the consumer
+            # stop. Wrapping cancellation as a retryable error loses shutdown.
+            raise
         except BaseException as cleanup:
             raise SessionLaunchUncertain(
                 f"session {record.id}: launch cleanup could not confirm stop"

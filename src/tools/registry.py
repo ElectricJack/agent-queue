@@ -81,6 +81,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
     "policy": CategoryMeta(
         name="policy", description="Portable project policy profiles: export, diff and selective import"
     ),
+    "schedule": CategoryMeta(
+        name="schedule",
+        description="Project-owned one-shot supervisor notifications at absolute UTC instants.",
+    ),
     "cron": CategoryMeta(
         name="cron",
         description="Session-owned recurring prompts: register, inspect and cancel wake-ups.",

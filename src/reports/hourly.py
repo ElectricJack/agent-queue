@@ -14,6 +14,7 @@ from src.digest.facts import DigestWindow
 from src.digest.schedule import DigestSchedule
 
 MAX_BRIEF_BYTES = 24 * 1024
+NO_REPORT_TEXT = "No report this hour: the supervisor update is unavailable."
 
 
 def local_day_bounds(now: float, zone_name: str) -> tuple[float, float]:
@@ -82,7 +83,7 @@ def build_hourly_brief(
     dashboard_notice: str = "",
     previous_narrative: str = "",
 ) -> tuple[dict, str]:
-    """Keep structural evidence and omission counts inside a 24 KiB JSON cap."""
+    """Build input-only evidence, never delivered prose, inside a 24 KiB JSON cap."""
     eligibility = result.eligibility
     if eligibility is None or not result.send:
         raise ValueError("an ineligible digest has no report brief")
@@ -91,6 +92,11 @@ def build_hourly_brief(
         "destination": destination,
         "dashboard_url": dashboard_url,
         "dashboard_notice": dashboard_notice,
+        "counts": {
+            "facts": len(eligibility.facts),
+            "completed": result.completed_count,
+            "active": result.active_count,
+        },
         "facts": [
             {
                 "key": fact.key,

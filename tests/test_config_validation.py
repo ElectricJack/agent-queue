@@ -40,6 +40,9 @@ from tests.db_fixtures import lease_dsn
     ("branch_admission_deadline_seconds", -1), ("transition_budget_seconds", -1),
     ("resume_launch_attempts", 0), ("projects", []), ("kinds", []),
     ("resume_stall_seconds", 0), ("resume_stall_seconds", True), ("resume_stall_seconds", 86401),
+    ("listener_lag_alert_minutes", 0), ("listener_lag_alert_minutes", -1),
+    ("listener_lag_alert_minutes", True), ("listener_lag_alert_minutes", 1.5),
+    ("listener_lag_alert_minutes", "15"),
 ])
 def test_wait_policy_invalid_scalars_return_config_errors(name, value):
     errors = WaitPolicyConfig(**{name: value}).validate()

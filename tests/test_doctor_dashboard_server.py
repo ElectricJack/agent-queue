@@ -452,12 +452,12 @@ def _shell_probe(monkeypatch, answer=(200, "")):
         seen.append(origin)
         return answer
 
-    monkeypatch.setattr(checks, "_focus_shell_probe", probe)
+    monkeypatch.setattr(checks, "_shell_probe", probe)
     return seen
 
 
 def _no_probe(monkeypatch, why: str) -> None:
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda origin: pytest.fail(why))
+    monkeypatch.setattr(checks, "_shell_probe", lambda origin: pytest.fail(why))
 
 
 def test_public_url_unset_warns_with_the_tailscale_serve_recipe(monkeypatch):
@@ -501,9 +501,9 @@ def test_public_url_trusted_serve_origin_with_the_shell_is_ok(monkeypatch):
 
     assert result.severity is Severity.OK, result.detail
     assert seen == [SERVE_ORIGIN]
-    assert result.detail == f"{SERVE_ORIGIN} serves the dashboard shell at /focus over HTTPS"
+    assert result.detail == f"{SERVE_ORIGIN} serves the dashboard shell at / over HTTPS"
     assert result.data["https"] is True and result.data["tailnet"] is True
-    assert result.data["focus_status"] == 200
+    assert result.data["shell_status"] == 200
 
 
 def test_public_url_https_outside_the_tailnet_is_ok_but_names_the_proxy(monkeypatch):
@@ -552,8 +552,8 @@ def test_public_url_plain_http_outside_the_tailnet_warns(monkeypatch):
     "failure",
     [
         "box.tail1234.ts.net:443 is not listening (connection refused)",
-        "GET /focus answered 404",
-        "GET /focus did not answer with the dashboard's HTML shell",
+        "GET / answered 404",
+        "GET / did not answer with the dashboard's HTML shell",
     ],
 )
 def test_public_url_whose_shell_does_not_answer_warns_with_why(monkeypatch, failure):
@@ -577,7 +577,7 @@ def test_public_url_is_info_when_the_server_is_disabled(monkeypatch):
 
 @pytest.fixture
 def shell_server():
-    """A real HTTP server on 127.0.0.1: /focus answers as ``routes`` says."""
+    """A real HTTP server on 127.0.0.1: / answers as ``routes`` says."""
     import http.server
     import threading
 
@@ -604,19 +604,19 @@ def shell_server():
         server.server_close()
 
 
-def test_focus_shell_probe_against_a_real_server(shell_server):
+def test_shell_probe_against_a_real_server(shell_server):
     origin, routes = shell_server
 
-    assert checks._focus_shell_probe(origin, timeout=5)[1] == "GET /focus answered 404"
-    routes["/focus"] = (200, "application/json")
-    assert "HTML shell" in checks._focus_shell_probe(origin, timeout=5)[1]
-    routes["/focus"] = (200, "text/html; charset=utf-8")
-    assert checks._focus_shell_probe(origin, timeout=5) == (200, "")
+    assert checks._shell_probe(origin, timeout=5)[1] == "GET / answered 404"
+    routes["/"] = (200, "application/json")
+    assert "HTML shell" in checks._shell_probe(origin, timeout=5)[1]
+    routes["/"] = (200, "text/html; charset=utf-8")
+    assert checks._shell_probe(origin, timeout=5) == (200, "")
 
 
-def test_focus_shell_probe_tells_a_closed_port_apart():
+def test_shell_probe_tells_a_closed_port_apart():
     port = unused_port()
-    status, why = checks._focus_shell_probe(f"http://127.0.0.1:{port}", timeout=5)
+    status, why = checks._shell_probe(f"http://127.0.0.1:{port}", timeout=5)
 
     assert status == 0
     assert why == f"127.0.0.1:{port} is not listening (connection refused)"

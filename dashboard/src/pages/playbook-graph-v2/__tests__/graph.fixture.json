@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:b894e6bc791942583a9ab4afa8a0731d9f036d20e7f0136bbc00103933cb2bd9",
+    "artifact_sha256": "sha256:2a8e08bf1ed328ef2ad37072bee6b28d4e028201ea3bdfa227baa3f09e89288b",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:209dc19b99329ce904a31045b4792ae440ab7acca9d5486ae9c1d3399afab5ac",
+    "contract_fingerprint": "sha256:b32610e7df6b3d81ccca82cd2e5309b63e41802026bf125a5ab8914f9d421370",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",

@@ -50,6 +50,7 @@ DEFAULT_EXCLUDED_COMMANDS = {
 
     "ask_intake", "ask_button",
     "reconcile_agent_cron",
+    "reconcile_project_schedules",
     "cron_delivery_begin",
     "cron_delivery_finish",
     # Trusted daemon facts carry a SourceCIObservation, never agent-authored JSON.

@@ -1567,6 +1567,12 @@ from .record_show_request import RecordShowRequest
 from .record_show_response import RecordShowResponse
 from .record_show_response_422 import RecordShowResponse422
 from .record_show_response_snapshot import RecordShowResponseSnapshot
+from .recover_retained_holder_request import RecoverRetainedHolderRequest
+from .recover_retained_holder_response import RecoverRetainedHolderResponse
+from .recover_retained_holder_response_422 import RecoverRetainedHolderResponse422
+from .recover_retained_holder_response_checkpoints_item import RecoverRetainedHolderResponseCheckpointsItem
+from .recover_retained_holder_response_evidence_type_0 import RecoverRetainedHolderResponseEvidenceType0
+from .recover_retained_holder_response_snapshot_type_0 import RecoverRetainedHolderResponseSnapshotType0
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .reflow_failed_scope import ReflowFailedScope
@@ -1743,6 +1749,18 @@ from .sampler_metrics import SamplerMetrics
 from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
 from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
+from .schedule_cancel_response_422 import ScheduleCancelResponse422
+from .schedule_get_response_422 import ScheduleGetResponse422
+from .schedule_list_args import ScheduleListArgs
+from .schedule_list_args_state_type_0 import ScheduleListArgsStateType0
+from .schedule_list_response import ScheduleListResponse
+from .schedule_list_response_422 import ScheduleListResponse422
+from .schedule_list_response_schedules_item import ScheduleListResponseSchedulesItem
+from .schedule_pointer_args import SchedulePointerArgs
+from .schedule_register_args import ScheduleRegisterArgs
+from .schedule_register_response_422 import ScheduleRegisterResponse422
+from .schedule_response import ScheduleResponse
+from .schedule_response_schedule_type_0 import ScheduleResponseScheduleType0
 from .scoped_conftest import ScopedConftest
 from .script_execution_dto import ScriptExecutionDTO
 from .script_execution_dto_output_refs import ScriptExecutionDTOOutputRefs
@@ -1907,6 +1925,8 @@ from .supervisor_inbox_history_request_states_type_0_item import SupervisorInbox
 from .supervisor_inbox_history_response import SupervisorInboxHistoryResponse
 from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
 from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
+from .supervisor_inbox_say_request import SupervisorInboxSayRequest
+from .supervisor_inbox_say_response import SupervisorInboxSayResponse
 from .supervisor_inbox_status_request import SupervisorInboxStatusRequest
 from .supervisor_inbox_status_response import SupervisorInboxStatusResponse
 from .supervisor_restart_request import SupervisorRestartRequest
@@ -1967,6 +1987,10 @@ from .task_batch_validate_response_hard_item import TaskBatchValidateResponseHar
 from .task_children_request import TaskChildrenRequest
 from .task_children_response import TaskChildrenResponse
 from .task_children_response_422 import TaskChildrenResponse422
+from .task_claim_abort_request import TaskClaimAbortRequest
+from .task_claim_abort_response import TaskClaimAbortResponse
+from .task_claim_abort_response_422 import TaskClaimAbortResponse422
+from .task_claim_abort_response_outcome_type_0 import TaskClaimAbortResponseOutcomeType0
 from .task_claim_request import TaskClaimRequest
 from .task_claim_response import TaskClaimResponse
 from .task_claim_response_422 import TaskClaimResponse422
@@ -2237,6 +2261,9 @@ from .wait_response_wait_type_1 import WaitResponseWaitType1
 from .wait_sleep_explanation import WaitSleepExplanation
 from .wait_sleep_explanation_inputs import WaitSleepExplanationInputs
 from .wait_slot_seconds import WaitSlotSeconds
+from .wait_source_redispatch_args import WaitSourceRedispatchArgs
+from .wait_source_redispatch_args_action import WaitSourceRedispatchArgsAction
+from .wait_source_redispatch_response_422 import WaitSourceRedispatchResponse422
 from .wait_task_explanation import WaitTaskExplanation
 from .wait_verified_evidence import WaitVerifiedEvidence
 from .wait_verified_evidence_condition import WaitVerifiedEvidenceCondition
@@ -3832,6 +3859,12 @@ __all__ = (
     "RecordShowResponse",
     "RecordShowResponse422",
     "RecordShowResponseSnapshot",
+    "RecoverRetainedHolderRequest",
+    "RecoverRetainedHolderResponse",
+    "RecoverRetainedHolderResponse422",
+    "RecoverRetainedHolderResponseCheckpointsItem",
+    "RecoverRetainedHolderResponseEvidenceType0",
+    "RecoverRetainedHolderResponseSnapshotType0",
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReflowFailedScope",
@@ -4008,6 +4041,18 @@ __all__ = (
     "ScanStubStalenessRequest",
     "ScanStubStalenessResponse",
     "ScanStubStalenessResponse422",
+    "ScheduleCancelResponse422",
+    "ScheduleGetResponse422",
+    "ScheduleListArgs",
+    "ScheduleListArgsStateType0",
+    "ScheduleListResponse",
+    "ScheduleListResponse422",
+    "ScheduleListResponseSchedulesItem",
+    "SchedulePointerArgs",
+    "ScheduleRegisterArgs",
+    "ScheduleRegisterResponse422",
+    "ScheduleResponse",
+    "ScheduleResponseScheduleType0",
     "ScopedConftest",
     "ScriptExecutionDTO",
     "ScriptExecutionDTOOutputRefs",
@@ -4172,6 +4217,8 @@ __all__ = (
     "SupervisorInboxHistoryResponse",
     "SupervisorInboxReplyRequest",
     "SupervisorInboxReplyResponse",
+    "SupervisorInboxSayRequest",
+    "SupervisorInboxSayResponse",
     "SupervisorInboxStatusRequest",
     "SupervisorInboxStatusResponse",
     "SupervisorRestartRequest",
@@ -4230,6 +4277,10 @@ __all__ = (
     "TaskChildrenRequest",
     "TaskChildrenResponse",
     "TaskChildrenResponse422",
+    "TaskClaimAbortRequest",
+    "TaskClaimAbortResponse",
+    "TaskClaimAbortResponse422",
+    "TaskClaimAbortResponseOutcomeType0",
     "TaskClaimRequest",
     "TaskClaimResponse",
     "TaskClaimResponse422",
@@ -4500,6 +4551,9 @@ __all__ = (
     "WaitSleepExplanation",
     "WaitSleepExplanationInputs",
     "WaitSlotSeconds",
+    "WaitSourceRedispatchArgs",
+    "WaitSourceRedispatchArgsAction",
+    "WaitSourceRedispatchResponse422",
     "WaitTaskExplanation",
     "WaitVerifiedEvidence",
     "WaitVerifiedEvidenceCondition",

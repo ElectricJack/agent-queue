@@ -17,10 +17,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.config import AppConfig, DatabaseConfig
-from src.database.tables import task_branch_origins, tasks
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+from src.database.tables import (
+    admission_reservations,
+    continuations,
+    task_branch_origins,
+    tasks,
+    wait_records,
+)
 from src.integration.lock import DEFAULT_TTL_SECONDS, RENEWAL_MARGIN_SECONDS, BranchLock
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, StaleFence
@@ -1158,6 +1165,9 @@ class TestExitHandling:
         class Git:
             detached = False
 
+            async def _arun(self, args, *, cwd):
+                return await self._arun_unlocked(args, cwd=cwd)
+
             async def aget_current_branch(self, _path, *, strict=False):
                 return "HEAD" if self.detached else "aq/t1"
 
@@ -1611,6 +1621,92 @@ class TestIdleStopIntent:
             await reconciler._step_observe(at), at
         )
 
+    @pytest.mark.parametrize("acknowledge", [False, True])
+    async def test_taskless_drain_is_submitted_and_stops_without_an_ack(
+        self, db, provider, pool_reconciler, tmp_path, acknowledge,
+    ):
+        row = await self._finished_worker(
+            db, provider, tmp_path, claims=0, failed_preparation={"task_id": "t1"},
+        )
+        detach = pool_reconciler.test_orch._detach_idle_pool_branch = AsyncMock()
+        await pool_reconciler._step_drain_ack([row], NOW)
+        await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
+        detach.assert_awaited_once()
+        assert len(provider.sent_nudges) == 1
+        assert "aq session drain-ack" in provider.sent_nudges[0][1]
+        assert (await db.get_session(row.id)).state == "running"
+        await pool_reconciler._step_drain_ack([row], NOW + 59)
+        assert pool_reconciler.test_orch.terminations == []
+        assert len(provider.sent_nudges) == 1
+        if acknowledge:
+            await provider.set_meta(pool_reconciler._handle(row), DRAIN_ACK_KEY, "1")
+        await pool_reconciler._step_drain_ack([row], NOW + (59 if acknowledge else 61))
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+        assert (await db.get_session(row.id)).state == "stopped"
+
+    async def test_slow_branch_release_never_holds_the_tick(
+        self, db, provider, pool_reconciler, tmp_path,
+    ):
+        # 2026-10-27: drain-ack awaited an origin fetch queued ~160s behind a
+        # slot preparation; every tick hit its stage bound and exits, stalls
+        # and orphans never ran anywhere in the fleet.
+        row = await self._finished_worker(
+            db, provider, tmp_path, claims=0, failed_preparation={"task_id": "t1"},
+        )
+        fetching, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def slow_detach(session):
+            calls.append(session.id)
+            fetching.set()
+            await release.wait()
+
+        pool_reconciler.test_orch._detach_idle_pool_branch = slow_detach
+        ran = []
+        for name in ("_step_exits", "_step_stall_ladder"):
+            step = getattr(pool_reconciler, name)
+
+            async def recorded(live, now, step=step, name=name):
+                ran.append(name)
+                return await step(live, now)
+
+            setattr(pool_reconciler, name, recorded)
+        try:
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW), 5)
+            await asyncio.wait_for(fetching.wait(), 5)
+            assert ran == ["_step_exits", "_step_stall_ladder"]
+            assert len(provider.sent_nudges) == 1
+            # The next pass neither waits on nor duplicates the release in flight.
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW + 1), 5)
+            assert calls == [row.id]
+        finally:
+            release.set()
+            await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
+        assert pool_reconciler._branch_detaches == {}
+
+    @pytest.mark.parametrize("deferred", [False, True])
+    async def test_taskless_drain_retries_submission_without_extending_grace(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, deferred,
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        original = provider.nudge
+        if deferred:
+            async def defer(*args):
+                raise NudgeDeferred("existing user draft")
+            monkeypatch.setattr(provider, "nudge", defer)
+        else:
+            provider.swallow_next_nudge(row.name)
+        await pool_reconciler._step_drain_ack([row], NOW)
+        assert provider.sent_nudges == []
+        assert pool_reconciler.test_orch.terminations == []
+        monkeypatch.setattr(provider, "nudge", original)
+        await pool_reconciler._step_drain_ack([row], NOW + 59)
+        assert len(provider.sent_nudges) == 1
+        assert pool_reconciler.test_orch.terminations == []
+        await pool_reconciler._step_drain_ack([row], NOW + 61)
+        assert len(provider.sent_nudges) == 1
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+
     async def test_a_finished_worker_is_stopped_and_its_slot_freed(
         self, db, provider, pool_reconciler, tmp_path
     ):
@@ -1902,6 +1998,71 @@ class TestIdleStopIntent:
 
 
 class TestPoolLifecycle:
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED])
+    async def test_dead_worker_with_changed_task_is_stopped_in_one_tick(
+        self, db, provider, pool_reconciler, tmp_path, status
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.transition_task("t1", status, context="operator_decision")
+        task_before = await db.get_task("t1")
+        workspace_before = await db.get_workspace("ws1")
+        provider.script_death(row.name)
+
+        await pool_reconciler.tick(now=NOW)
+
+        stopped = await db.get_session(row.id)
+        assert stopped.state == stopped.desired_state == "stopped"
+        assert stopped.ended_at == NOW
+        assert stopped.task_id == row.task_id
+        assert stopped.claim_phase == row.claim_phase
+        assert await db.get_task("t1") == task_before
+        assert await db.get_workspace("ws1") == workspace_before
+        assert not pool_reconciler.test_orch.terminations
+        assert await db.get_task_meta("t1", "worker_failure_streak") is None
+
+    @pytest.mark.parametrize("change", ["replacement", "stop_failed"])
+    async def test_changed_task_exit_retirement_keeps_instance_and_stop_fences(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, change
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.transition_task("t1", TaskStatus.BLOCKED, context="operator_decision")
+        provider.script_death(row.name)
+
+        async def stop(*args, **kwargs):
+            if change == "stop_failed":
+                raise RuntimeError("stop unconfirmed")
+            await db.update_session(row.id, instance_token="successor-instance")
+
+        monkeypatch.setattr(provider, "stop", stop)
+
+        await pool_reconciler._step_exits([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert current.state == "running"
+        assert current.ended_at is None
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        assert not pool_reconciler.test_orch.terminations
+        if change == "replacement":
+            assert current.instance_token == "successor-instance"
+
+    async def test_killed_task_worker_is_stopped_despite_failure_record_guard(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(db, provider, agent_id="a1", desired_state="stopped")
+        task_before = await db.get_task("t1")
+        provider.script_death(row.name)
+
+        await releasing_reconciler.tick(now=NOW)
+
+        stopped = await db.get_session(row.id)
+        assert stopped.state == stopped.desired_state == "stopped"
+        assert stopped.ended_at == NOW
+        assert await db.get_task("t1") == task_before
+        assert releasing_reconciler.test_orch.calls == []
+        assert await db.get_task_meta("t1", "worker_failure_streak") is None
+
     @pytest.mark.parametrize("during", ["process_probe", "final_capture"])
     async def test_pool_kill_during_exit_probe_uses_persisted_stop_intent(
         self, db, provider, pool_reconciler, tmp_path, monkeypatch, during
@@ -2254,6 +2415,70 @@ class TestStallLadder:
         )
         await reconciler.tick(now=NOW)
         assert provider.sent_nudges == []
+
+
+class TestClaimBinding:
+    """bold-rapids-90.3: a live holder whose claim binding cannot publish.
+
+    The resumed worker kept heartbeating and commenting while push and
+    message send refused it, so neither the stall ladder nor the exit path
+    saw anything; the binding itself has to be surfaced.
+    """
+
+    async def _holder(self, db, provider, tmp_path):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        task = await db.get_task("t1")
+        return await _session(
+            db, provider, agent_id="a1", last_claim_epoch=task.claim_epoch,
+            started_at=NOW - 100, last_activity=NOW,
+        )
+
+    async def test_empty_binding_is_flagged_once_and_clears_when_bound(
+        self, db, provider, reconciler, bus, tmp_path
+    ):
+        row = await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "")  # what park leaves
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_empty"
+        assert bus.payload("task.needs_attention")["reason"] == "claim_binding_empty"
+        assert bus.payload("task.needs_attention")["session_id"] == row.id
+        await reconciler.tick(now=NOW + 10)
+        assert bus.types().count("task.needs_attention") == 1
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, row.id)
+        await reconciler.tick(now=NOW + 20)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+
+    async def test_binding_to_another_session_is_a_mismatch(
+        self, db, provider, reconciler, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "old-session")
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_mismatch"
+
+    async def test_unpinned_agent_is_flagged(self, db, provider, reconciler, tmp_path):
+        await self._holder(db, provider, tmp_path)
+        await db.update_agent("a1", state=AgentState.IDLE, current_task_id=None)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_agent_unpinned"
+
+    async def test_scheduler_launch_without_a_record_is_healthy(
+        self, db, provider, reconciler, bus, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert "task.needs_attention" not in bus.types()
+
+    async def test_an_unrelated_flag_is_neither_overwritten_nor_cleared(
+        self, db, provider, reconciler, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", "needs_attention", "stuck_timeout")
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "")
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "stuck_timeout"
 
 
 class TestLiveRefLeases:
@@ -3796,6 +4021,54 @@ class TestOrphanStep:
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_session("s1")).state == "running"
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    @pytest.mark.parametrize("new_session_id", ["s1", "old-session"])
+    async def test_resume_pending_retains_only_the_continuations_new_session(
+        self, db, provider, reconciler, lifecycle, new_session_id
+    ):
+        await db.create_task(Task(
+            id="t1", project_id="p1", title="Resuming", description="",
+            status=TaskStatus.RESUME_PENDING,
+        ))
+        row = await _session(db, provider, lifecycle=lifecycle, claim_phase="active")
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(wait_records).values(
+                id="resume-wait", project_id="p1", owner_kind="task", owner_id="t1",
+                origin="agent", session_id="old-session", condition_kind="timer",
+                condition={}, source_key="timer", source_generation=1, source_watermark_seq=0,
+                verification_state="verified", evidence_ref="timer", verified_at=NOW,
+                created_at=NOW, request_hash="resume", outcome="satisfied", resolved_at=NOW,
+                sleep_decision="hibernate",
+            ))
+            await conn.execute(insert(continuations).values(
+                id="continuation", task_id="t1", wait_id="resume-wait", suspension_generation=1,
+                facts={}, branch="aq/t1", prior_status="IN_PROGRESS", held_cursor_seq=0,
+                resume_state="launching", new_session_id=new_session_id,
+            ))
+            await conn.execute(insert(admission_reservations).values(
+                id="reservation", project_id="p1", task_id="t1", continuation_id="continuation",
+                scope={"profile_id": row.profile_id}, effective_priority=100, provenance="resume",
+                deadline_at=NOW + 1800, state="consumed", created_at=NOW,
+            ))
+
+        live = await reconciler._step_observe(NOW)
+        await reconciler._step_orphans(live, NOW)
+
+        session = await db.get_session(row.id)
+        if new_session_id == row.id:
+            assert (session.state, session.task_id, session.claim_phase) == (
+                "running", "t1", "active",
+            )
+            assert await provider.list_running("s-")
+            assert await db.get_pending_messages("session", row.id) == []
+        elif lifecycle == "task":
+            assert session.state == "stopped"
+            assert await provider.list_running("s-") == []
+        else:
+            assert session.task_id is None
+            assert len(await db.get_pending_messages("session", row.id)) == 1
+        assert (await db.get_task("t1")).status is TaskStatus.RESUME_PENDING
 
     async def test_named_sessions_have_no_task_to_disagree_with(
         self, db, provider, releasing_reconciler

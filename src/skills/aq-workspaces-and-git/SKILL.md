@@ -1,11 +1,18 @@
 ---
 name: aq-workspaces-and-git
-description: Workspace and git operations for aq worker sessions — the isolated worktree you were assigned, the branch it lives on, and how to commit / push / open PRs from the CLI. Use when you need to check where you're working, inspect the branch state, commit your changes, push, or open a pull request. Also covers workspace release / doctor / reap.
+description: Covers workspace and git operations for aq worker sessions — locating the assigned worktree and task branch, committing, updating the branch with `aq git pull`, publishing with the guarded `aq git push` (including an exact-lease rewrite after a squash), opening a PR with `aq git create-pr`, read-only reviewer workspaces, and the operator workspace admin commands (list, doctor, reap, retire-claim, clear-sentinel, release). Use when checking where a session works, committing or pushing task work, rewriting a published branch, opening a pull request, or diagnosing a workspace lock.
 allowed-tools:
   - Bash
 ---
 
 # aq workspaces + git
+
+## Contents
+
+- Where am I working? · Local git work · Updating your task branch
+- Committing your work (with the publish-before-close checklist)
+- Opening a PR · Stacked branches · Never leave commits only in your worktree
+- Reviewers and read-only workspaces · Workspace admin commands · Release
 
 ## Where am I working?
 
@@ -76,8 +83,9 @@ Commit rules:
 - **Never `--no-verify`** — pre-commit hooks catch regressions before
   anyone else has to.
 - **Never amend a pushed commit** — always create a new commit.
-- **One commit per logical change** where practical. If you did five
-  small independent things, five commits is better than one giant one.
+- **One commit per logical change** where practical — unless your prime or
+  task says otherwise. A task that asks for a single squashed commit (common for
+  reviewed or integration-train work) wins over this default.
 
 For a review workflow that asks you to squash a branch already pushed, record the
 full OID you last observed for your own branch (normally the `oid` that `aq git push`
@@ -85,6 +93,18 @@ reported, which is `git rev-parse HEAD` at that push). After the local squash, r
 
 ```bash
 aq git push --expected-remote-oid <previously-pushed-oid>
+```
+
+Before you close, work through this checklist:
+
+```
+- [ ] git status is clean (commit or deliberately discard every change)
+- [ ] commits follow the task's shape (squash only if prime or the task asks)
+- [ ] aq git push succeeded; for a rewrite, --expected-remote-oid named the
+      OID you last pushed
+- [ ] the pushed oid equals git rev-parse HEAD
+- [ ] a PR exists if the task or project requires one (aq git create-pr)
+- [ ] the workspace is on the task branch, not detached, before aq task close
 ```
 
 This is an exact lease on your task branch, not a way to overwrite another worker's
@@ -96,7 +116,7 @@ if it is still absent. Do not force push reviewed or delivered history.
 
 ## Opening a PR
 
-For tasks that carry a `pr_url` or a `--needs-pr` flag:
+When your prime, task or project requires a pull request:
 
 ```bash
 aq git create-pr --title "..." --body "..."
@@ -118,9 +138,8 @@ only when your task or project asks for one, and never merge it yourself.
 
 A PR merged into a feature branch has shipped nothing to `main`. The tasks
 close COMPLETED and dependents are released, but `main` does not have the
-code — this is exactly how `feature/playbook-v2-pkg4-core` swallowed three
-merged PRs. `aq doctor --check pools.stranded_feature_branches` lists
-branches in that state.
+code. `aq doctor --check pools.stranded_feature_branches` lists branches in
+that state.
 
 ## Never leave commits only in your worktree
 
@@ -190,7 +209,7 @@ task's sentinel only with no task lock, claim, live claiming session,
 integration owner or job pin, a clean tree and published HEAD. A worker reports
 the blocker to its supervisor; it never removes these files itself.
 
-## Release + attach
+## Release
 
 You do not normally release the workspace — task close does it. If you
 absolutely need to (e.g. hand off mid-run), the supervisor should call

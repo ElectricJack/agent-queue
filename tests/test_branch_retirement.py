@@ -18,10 +18,12 @@ from src.integration.branch_retirement import (
     BranchRetirementService,
     request_branch_retirement_on,
     request_task_retirement_on,
+    retirement_backlog_report,
     retirement_report,
 )
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+from src.integration.delivery_branches import live_branch_references
 from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from src.sessions.obsolete import ObsoleteClose
@@ -547,6 +549,99 @@ async def aborted_batch(db, head, *, aborted=True):
             created_at=1, updated_at=1,
         ))
     return await db.get_integration_batch("batch")
+
+
+@pytest.mark.parametrize(
+    ("intent", "lifecycle", "queue_status", "cleanup_state", "held"),
+    [
+        ("open", "sealed", None, "pending", True),
+        ("paused", "repairing", None, "pending", True),
+        ("aborted", "sealed", None, "pending", False),
+        ("aborted", "repairing", None, "pending", False),
+        ("aborted", "aborted", None, "pending", False),
+        ("aborted", "aborted", "deferred", "retained", False),
+        ("aborted", "aborted", "companion", "retained", False),
+        ("aborted", "repairing", "deferred", "retained", False),
+        ("open", "aborted", "companion", "retained", False),
+        ("paused", "repairing", "deferred", "retained", True),
+        ("aborted", "aborted", "deferred", "pending", False),
+        ("aborted", "aborted", "companion", "pending", False),
+        ("aborted", "aborted", "companion", "complete", False),
+        ("open", "promoted", None, "pending", False),
+        ("open", "promoted", "companion", "retained", False),
+        ("open", "promoted", None, "complete", False),
+    ],
+)
+async def test_batch_intent_overrides_stale_liveness_for_retirement(
+    setup, intent, lifecycle, queue_status, cleanup_state, held,
+):
+    db, git, service, checkout, remote, head = setup
+    await BatchStore(db).freeze(
+        Batch(id="batch", project_id="p", repository_id="repo", target_ref="refs/heads/main"),
+        [BatchMember(task_id="retired", source_sha=head, source_base_sha=head)],
+        trees={"retired": await git.arev_parse(str(checkout), head + "^{tree}")},
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches).where(integration_batches.c.id == "batch").values(
+                intent=intent, lifecycle=lifecycle, cleanup_state=cleanup_state,
+                fixer_queue={"status": queue_status} if queue_status else None,
+            )
+        )
+        references = await live_branch_references(conn)
+    for ref in (candidate_ref("batch").removeprefix("refs/heads/"), BRANCH):
+        assert (ref in references) is held
+
+    # An explicit task retirement may retire its source independently of the
+    # aborted batch. The daily sweep uses the same live-reference predicate.
+    await request(db)
+    outcomes = await service.drain_due()
+    assert outcomes
+    audit = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert audit["state"] == ("pending" if held else "complete")
+    assert await git.arev_parse(str(remote), BRANCH) == (head if held else None)
+
+
+@pytest.mark.parametrize("lifecycle", ["aborted", "promoted", "failed"])
+async def test_legacy_batch_backlog_and_operator_review_use_current_state(setup, lifecycle):
+    from src.integration.development import DevelopmentPrimitives, revise_operation_on
+
+    db, _git, _service, _checkout, _remote, head = setup
+    legacy_id = "integration-batch-legacy"
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id=legacy_id, project_id="p", repository_id="repo", request_id="legacy-request",
+            target_ref="refs/heads/main", intent="open", lifecycle=lifecycle,
+            integration_branch=BRANCH, cleanup_state="retained", fixer_queue={"status": "deferred"},
+            source_manifest_digest="digest", base_sha=head, policy_snapshot={}, artifact_snapshot={},
+            created_at=1, updated_at=1,
+        ))
+        await conn.execute(DevelopmentPrimitives._operation_insert(
+            id="legacy-operation:parked", project_id="p", repository_id="repo",
+            target_ref="refs/heads/aq/legacy-assembly", state="parked",
+            manifest=[{"task_id": "legacy-source", "source_sha": head}],
+            evidence={}, reason="legacy journal", created_at=1, updated_at=1,
+        ))
+    await request(db)
+    async with db.immediate() as conn:
+        holds = await live_branch_references(conn, retiring_task_id="retired")
+        report = "\n".join(await retirement_backlog_report(conn, "p"))
+        terminal = lifecycle in {"aborted", "promoted"}
+        assert (BRANCH in holds) is not terminal
+        assert "operator review required: legacy development batch" in holds["aq/legacy-source"]
+        assert f"associated with terminal batches: {int(terminal)} " in report
+        assert f"Legacy holders requiring operator review: {1 if terminal else 2}." in report
+        assert f"{legacy_id} is {lifecycle}" in report
+        assert "legacy-operation:parked is parked" in report
+        # Only the latest revision owns refs; a resolved legacy action leaves
+        # neither a hold nor an indefinite operator-review entry.
+        await revise_operation_on(conn, "legacy-operation:parked",
+                                  lambda row: {"state": "cancelled", "updated_at": 2})
+        assert "aq/legacy-source" not in await live_branch_references(conn)
+        assert "legacy-operation:parked" not in "\n".join(await retirement_backlog_report(conn, "p"))
+        assert "Legacy holders requiring operator review: 0." in "\n".join(
+            await retirement_backlog_report(conn, "another-project"),
+        )
 
 
 async def test_abort_decision_queues_private_refs_but_preview_does_not(setup):

@@ -26,16 +26,18 @@ import os
 import re
 import uuid
 import warnings
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
 from src.database.schema_key import schema_key_slug
-from src.database import Database
 from tests.pg_dsn import (
+    _replace_database,
     _run_id,
     drop_databases,
     ensure_worker_postgres_dsn,
     hold_owner_lock,
     owned_name,
+    require_postgres_dependency,
 )
 
 #: Advisory-lock key guarding template construction across xdist workers.
@@ -59,11 +61,6 @@ def template_name() -> str:
     return f"aq_tmpl_{schema_key_slug()}"
 
 
-def _split(dsn: str) -> tuple[str, str]:
-    prefix, _, dbname = dsn.rpartition("/")
-    return prefix, dbname
-
-
 def _admin_dsn(dsn: str) -> str:
     """asyncpg wants the plain scheme, not SQLAlchemy's ``+asyncpg`` suffix."""
     return dsn.replace("postgresql+asyncpg://", "postgresql://")
@@ -72,6 +69,7 @@ def _admin_dsn(dsn: str) -> str:
 async def _connect_admin(base_dsn: str):
     import asyncpg
 
+    require_postgres_dependency()
     return await asyncpg.connect(_admin_dsn(base_dsn))
 
 
@@ -93,6 +91,7 @@ async def ensure_template(base_dsn: str) -> str:
     reliable (that statement fails while any session is attached to the source).
     """
     global _TEMPLATE_READY
+    require_postgres_dependency()
     name = template_name()
     if _TEMPLATE_READY == name:
         return name
@@ -102,8 +101,7 @@ async def ensure_template(base_dsn: str) -> str:
     # other worker's clone.  Check first, lock only to build.
     # Advisory locks are database-scoped. Every worker must coordinate through
     # the same maintenance database, even though its test DSN is worker-local.
-    prefix, _ = _split(base_dsn)
-    maintenance_dsn = f"{prefix}/postgres"
+    maintenance_dsn = _replace_database(base_dsn, "postgres")
     conn = await _connect_admin(maintenance_dsn)
     try:
         if await _database_exists(conn, name):
@@ -123,7 +121,7 @@ async def ensure_template(base_dsn: str) -> str:
             await conn.execute(f'CREATE DATABASE "{building}"')
             # Hold the lock until publication: releasing it during migration
             # lets another worker drop the database we are still building.
-            await _migrate(f"{prefix}/{building}")
+            await _migrate(_replace_database(base_dsn, building))
             await conn.execute(f'ALTER DATABASE "{name}_building" RENAME TO "{name}"')
             await conn.execute(
                 "UPDATE pg_database SET datistemplate = true WHERE datname = $1", name
@@ -157,7 +155,6 @@ async def clone_database(base_dsn: str, name: str) -> str:
     reason this substrate can stand in for the SQLite template cache.
     """
     template = await ensure_template(base_dsn)
-    prefix, _ = _split(base_dsn)
     import asyncpg
 
     conn = await _connect_admin(base_dsn)
@@ -176,7 +173,7 @@ async def clone_database(base_dsn: str, name: str) -> str:
             ) from exc
     finally:
         await conn.close()
-    return f"{prefix}/{name}"
+    return _replace_database(base_dsn, name)
 
 
 async def drop_database(base_dsn: str, name: str) -> None:
@@ -250,6 +247,17 @@ SELECT setval(format('%I.%I', schemaname, sequencename)::regclass, start_value, 
 FROM pg_sequences WHERE schemaname = 'public' AND last_value IS NOT NULL;
 """
 
+#: Tests can delete their own rows (including by cascade) before reset sees
+#: them. Such empty heaps still carry dead pages and relation statistics;
+#: probing them in the next fixture must not pay for the previous fixture's
+#: storage. Discover them independently of the live-row DELETE list.
+_TABLES_TO_VACUUM = """
+SELECT relname FROM pg_class
+WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'
+  AND relname <> 'alembic_version'
+  AND (pg_relation_size(oid) > 0 OR reltuples <> -1)
+"""
+
 #: What a truncate left the planner: each emptied table and its indexes read as
 #: never vacuumed (``reltuples = -1``, no pages).  VACUUM records them as
 #: vacuumed-empty instead, which turns off the planner's minimum-size guess for
@@ -302,12 +310,12 @@ def _refuse_row_reset(reason: str) -> None:
 @asynccontextmanager
 async def _reset_connection(dsn: str):
     """Keep one reset connection while refusing competing lease writers."""
-    prefix, database = _split(dsn)
+    database = urlsplit(dsn).path.lstrip("/")
     quoted_database = '"' + database.replace('"', '""') + '"'
     conn = await _connect_admin(dsn)
     try:
         # PostgreSQL refuses ALLOW_CONNECTIONS false for the current database.
-        control = await _connect_admin(f"{prefix}/postgres")
+        control = await _connect_admin(_replace_database(dsn, "postgres"))
         try:
             await control.execute(f"ALTER DATABASE {quoted_database} ALLOW_CONNECTIONS false")
             await conn.execute(_END_TEST_SESSIONS)
@@ -336,8 +344,9 @@ async def reset_all(dsn: str) -> None:
     ``DELETE`` only dirties pages of files that already exist, so the fsyncs a
     worker owes stay bounded by the tables its tests touch.  Replica mode
     skips the foreign-key triggers and the schema's delete guards (all
-    origin-enabled), so tables empty in any order.  VACUUM then returns the
-    emptied heaps to zero pages and ``pg_clear_relation_stats`` their planner
+    origin-enabled), so tables empty in any order. VACUUM returns every heap
+    with storage or statistics to zero pages, including tables a test already
+    emptied, and ``pg_clear_relation_stats`` resets their planner
     statistics to never-vacuumed. Column statistics are also cleared so the
     next test cannot inherit an earlier fixture's ANALYZE distributions.
     The perf suites' buffer counts and plan shapes need that isolation.
@@ -370,11 +379,12 @@ async def reset_all(dsn: str) -> None:
             except asyncpg.exceptions.InsufficientPrivilegeError:
                 _refuse_row_reset("the PostgreSQL test role may not set session_replication_role")
             else:
-                if tables:
+                vacuum_tables = [row["relname"] for row in await conn.fetch(_TABLES_TO_VACUUM)]
+                if vacuum_tables:
                     await conn.execute(
-                        "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in tables)
+                        "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in vacuum_tables)
                     )
-                    await conn.execute(_CLEAR_STATS, tables)
+                    await conn.execute(_CLEAR_STATS, vacuum_tables)
                 await conn.execute(_CLEAR_ATTRIBUTE_STATS)
                 return
         await conn.execute(_TRUNCATE_ALL)
@@ -603,10 +613,13 @@ def lease_dsn(name: str = "test") -> str:
     the same database, so tests that reopen a path to check persistence keep
     working; different names get different databases.
     """
+    require_postgres_dependency()
     if name in _LEASES:
         return _LEASES[name]
     if not _FREE:
         raise RuntimeError(
+            "PostgreSQL lease unavailable: declare a PostgreSQL target with a disposable "
+            "POSTGRES_TEST_DSN; if already provisioned, "
             f"this test asked for more distinct databases than the pool holds "
             f"({len(_TAKEN)} already leased). Raise AQ_TEST_DB_POOL_SIZE."
         )
@@ -614,34 +627,3 @@ def lease_dsn(name: str = "test") -> str:
     _LEASES[name] = dsn
     _TAKEN.append(dsn)
     return dsn
-
-
-class InitializedDatabases:
-    """Initialize each session-owned lease database once, with fresh adapters.
-
-    The lease pool resets rows and restores migration seeds between tests.
-    Each test gets its own adapter and engine so callbacks, asyncio locks, and
-    pool configuration (including ``unpooled_postgres``) cannot leak across
-    tests. Only schema and startup data initialization are amortized.
-
-    Only use this cache for data tests. Schema, startup migration, and restart
-    tests must continue to initialize their own adapters.
-    """
-
-    def __init__(self):
-        self._initialized: set[str] = set()
-
-    async def get(self, dsn: str) -> Database:
-        from src.database.engine import create_postgres_engine
-
-        database = Database(dsn)
-        if dsn in self._initialized:
-            database._engine = create_postgres_engine(dsn)
-        else:
-            try:
-                await database.initialize()
-            except BaseException:
-                await database.close()
-                raise
-            self._initialized.add(dsn)
-        return database

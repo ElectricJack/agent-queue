@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.database.queries.task_queries import PauseFenceError
 from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
@@ -48,6 +49,7 @@ from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
 from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
+from src.commands.schedule_commands import ScheduleCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
 from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
@@ -419,6 +421,7 @@ class CommandHandler(
     WaitCommandsMixin,
     WaitV2CommandsMixin,
     CronCommandsMixin,
+    ScheduleCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
     CollaborationLifecycleMixin,
@@ -1253,6 +1256,10 @@ class CommandHandler(
                 _emit_error = f"Unknown command: {name}"
                 return {"success": False, "error_code": "unknown_command",
                         "error": f"Unknown command: {name}"}
+            except PauseFenceError as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": "task.pause_fence", "error": str(e)}
             except InvalidTransition as e:
                 _emit_ok = False
                 _emit_error = str(e)

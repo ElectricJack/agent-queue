@@ -1061,6 +1061,7 @@ class SessionCommandsMixin:
         from sqlalchemy import select
 
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+        from src.database.queries.task_queries import PauseFenceError
         from src.database.tables import sessions, workspaces
 
         task = await self.db.get_task(task_id)
@@ -1086,7 +1087,9 @@ class SessionCommandsMixin:
         if pause is None:
             return False  # The close's own refusal names what is still held.
         try:
-            await pause(task_id)
+            await pause(task_id, require_workspace_release=True)
+        except PauseFenceError:
+            raise  # The command boundary returns the typed safety refusal.
         except ValueError as exc:
             return {
                 "success": False,
@@ -1314,8 +1317,12 @@ class SessionCommandsMixin:
 
         if outcome == "pass":
             response = await self.db.get_task_meta(task.id, "review_response")
-            if response and not await self.db.has_review_response_submission(
-                task.id, response["review_id"], response["revision"]
+            if (
+                response
+                and response.get("task_kind") != "followup"
+                and not await self.db.has_review_response_submission(
+                    task.id, response["review_id"], response["revision"]
+                )
             ):
                 return {
                     "success": False,

@@ -230,10 +230,16 @@ async def test_list_tasks_over_200_and_source_changes_do_not_change_pages(db, se
     # Default is still the existing live shape and behavior.
     live = await h.execute("list_tasks", {"project_id": "p", "status": "READY"})
     assert "snapshot_id" not in live and len(live["tasks"]) == 251
+    limited = await h.execute("list_tasks", {"project_id": "p", "status": "READY", "limit": 5})
+    assert len(limited["tasks"]) == 5 and limited["total"] == 251
     async with db.immediate() as conn:
         await conn.execute(update(t.tasks).values(status="COMPLETED"))
     live = await h.execute("list_tasks", {"project_id": "p", "completed_only": True})
     assert live["total"] == 251 and len(live["tasks"]) == 200
+    limited = await h.execute("list_tasks", {
+        "project_id": "p", "completed_only": True, "limit": 240,
+    })
+    assert len(limited["tasks"]) == 240 and limited["total"] == 251
     complete = await h.execute("list_tasks", {"project_id": "p", "completed_only": True,
                                               "pagination": "snapshot"})
     assert len(complete["identity_manifest"]) == 251

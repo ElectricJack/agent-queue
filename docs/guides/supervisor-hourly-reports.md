@@ -14,6 +14,20 @@ activate it through the playbook operator surfaces when enabling it. Restart
 does not install the bundle or change an existing activation.
 Review sample narratives before enabling it for general use.
 
+The supervisor writes a short first-person developer update for Jack in plain
+English: progress since the last update, highlights, anything blocked or needing
+Jack, and next steps. It combines related changes and drops repeated noise,
+grounding claims and plans in the evidence.
+The update describes what changed for Jack without internal IDs or train, batch
+or loop jargon unless he must act on one. A blocker names the exact question he
+needs to answer. Windows without new facts stay silent even if work is active.
+The bounded brief contains facts, counts and links as INPUT ONLY; it is never
+the delivered text. The durable wake
+includes these writing instructions, so existing installations receive them
+without overwriting operator-edited supervisor profiles. The server appends its
+dashboard link and marker to the submitted prose within the existing 600-character
+budget; the author cites evidence refs rather than supplying URLs.
+
 ```bash
 aq playbook v2-import --path reviewed-playbooks/supervisor-hourly-report
 aq playbook activate --playbook-id supervisor-hourly-report --artifact-sha256 <returned-hash>
@@ -27,8 +41,13 @@ Authored reports require `reports.hourly.full_fleet_visibility: true` and an emp
 `discord.digest.project_ids`: the global supervisor may author only for a full
 fleet destination. Restricted destinations use scoped deterministic rendering.
 The grace, daily cap, quiet hours and install-wide `reports.timezone` remain in
-configuration. Quiet hours suppress author wakes, not deterministic information.
-Disabling the feature or its authoring activation releases unclaimed fallback;
+configuration. Quiet hours still suppress author wakes. Full-fleet hourly windows
+without an available, timely supervisor submission send only the one-line notice
+“No report this hour: the supervisor update is unavailable.” This includes missed
+deadlines, daily caps, a busy author and inactive authoring playbooks; evidence
+is never substituted for the narrative. Feature-off and restricted-destination
+deterministic digests retain their existing behavior.
+Disabling the feature or its authoring activation releases the reserved notice;
 claimed payloads drain without rewriting them.
 
 The two reviewed rules handle `digest.window_ready` and `timer.1m` by calling the
