@@ -15,12 +15,15 @@ has no code path to ``registration.invoke`` at all.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
 
 from src.commands.contracts.models import CommandResult, OutcomeClass
 from src.commands.contracts.registry import CommandRegistration, UnknownContract
+from src.commands.descriptors import PLAYBOOK_DENIALS
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.playbooks.definition import CommandStep
 from src.playbooks.executors.base import (
     EngineServices,
@@ -31,6 +34,11 @@ from src.playbooks.executors.base import (
     project_step_receipt,
 )
 from src.playbooks.invocation import _invocation_context
+from src.playbooks.private_values import (
+    PrivateValueError,
+    needs_private_result,
+    private_result_fields,
+)
 from src.playbooks.receipts import idempotency_key
 from src.playbooks.run_state import DEFAULT_MAX_RESULT_BYTES, canonical_json
 
@@ -43,7 +51,7 @@ def _attempt_key(ctx: StepContext) -> str:
     second iteration's side effect as a duplicate.
     """
     iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
-    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt)
+    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt, ctx.iteration_path)
 
 
 def _fail(
@@ -84,6 +92,33 @@ def _consume(
     """
     execution = registration.contract.execution
     operation = f"command:{step.command}"
+    generic = execution.result_mode == "json_object"
+    diagnostic = None
+    if generic:
+        # The generic adapter transports the original dictionary unchanged.
+        # Protocol interpretation stays here, including unbound/LLM results.
+        try:
+            value_model = execution.result_model.model_validate(result)
+            dumped = value_model.model_dump()
+            if type(dumped.get("success")) is not bool:
+                raise ValueError("non_boolean_success")
+            if len(canonical_json(dumped)) > DEFAULT_MAX_RESULT_BYTES:
+                raise ValueError("result_too_large")
+        except (ValidationError, ValueError, TypeError, RecursionError, OverflowError):
+            return _fail("contract_violation", operation=operation,
+                         diagnostics=("invalid_command_result",), key=key)
+        outcome = "success" if dumped["success"] is True else "failure"
+        if outcome == "failure":
+            from src.commands.resource_authorization import is_authorization_denial
+
+            code = dumped.get("error_code")
+            if is_authorization_denial(dumped):
+                outcome, diagnostic = "unauthorized", "command_unauthorized"
+            elif code == "command_runtime_error":
+                outcome, diagnostic = "runtime_error", "command_runtime_error"
+            else:
+                diagnostic = "command_failed"
+        result = CommandResult(outcome=outcome, value=value_model, summary="")
 
     # 1. Type.  Package 1's adapter is the only caller of CommandHandler,
     #    so a bare dict cannot normally arrive — but the failure is silent if
@@ -102,7 +137,7 @@ def _consume(
         return _fail(
             "contract_violation",
             operation=operation,
-            diagnostics=(f"outcome {result.outcome!r} is not declared by the contract",),
+            diagnostics=("outcome is not declared by the contract",),
             key=key,
         )
 
@@ -136,7 +171,7 @@ def _consume(
         return _fail(
             "contract_violation",
             operation=operation,
-            diagnostics=(f"outcome {result.outcome!r} has no transition and there is no runtime_error edge",),
+            diagnostics=("outcome has no transition and there is no runtime_error edge",),
             key=key,
         )
 
@@ -157,19 +192,23 @@ def _consume(
     receipt_inputs, receipt_result = project_step_receipt(
         resolved_inputs, dumped, contract=execution, run_id=ctx.run_id
     )
+    if ctx.private_inputs:
+        receipt_inputs, receipt_result = project_step_receipt(resolved_inputs, dumped)
     # Only a contract-projected error may become durable diagnostics; the
     # adapter summary can contain unclassified data and is never a fallback.
+    diagnostics = (diagnostic,) if diagnostic else ()
+    if not generic and result.classification(registration.contract) is OutcomeClass.FAILURE:
+        diagnostics = (str(receipt_result["error"]),) if receipt_result.get("error") else ()
     return ExecutorResult(
         control=StepControl.ADVANCE,
         outcome=result.outcome,
         value=value,
+        private_fields=tuple(sorted(private_result_fields(execution, dumped))),
         idempotency_key=key,
         receipt_inputs=receipt_inputs,
         receipt_result=receipt_result,
         operation=operation,
-        diagnostics=(str(receipt_result["error"]),)
-        if (result.classification(registration.contract) is OutcomeClass.FAILURE
-            and receipt_result.get("error")) else (),
+        diagnostics=diagnostics,
     )
 
 
@@ -251,10 +290,12 @@ def _build_args(
     """
     execution = registration.contract.execution
     payload = dict(ctx.inputs)
+    if set(payload).intersection(SERVER_OWNED_ARG_KEYS):
+        return None, {}, "server_owned_argument"
     if execution.idempotency.mode == "keyed":
         _keyed_argument(execution, ctx, payload, fallback=key)
     try:
-        return execution.args_model(**payload), payload, None
+        return execution.args_model.model_validate(payload), payload, None
     except ValidationError as exc:
         return None, payload, f"{exc.error_count()} argument(s) failed validation"
 
@@ -269,6 +310,9 @@ class LiveCommandExecutor:
     async def execute(self, step: CommandStep, ctx: StepContext) -> ExecutorResult:
         operation = f"command:{step.command}"
         key = _attempt_key(ctx)
+        if step.command in PLAYBOOK_DENIALS:
+            return _fail("unauthorized", operation=operation,
+                         diagnostics=("playbook_command_denied",), key=key)
         registration = _lookup(step, ctx.services)
         if registration is None:
             # The runtime half of "a CommandStep can reference only a
@@ -288,12 +332,20 @@ class LiveCommandExecutor:
 
         timeout = registration.contract.execution.timeout_seconds
         try:
+            if step.save_result_as and (ctx.private_inputs or needs_private_result(
+                registration.contract.execution
+            )):
+                if ctx.services.private_values is None:
+                    raise PrivateValueError("private_storage_unavailable")
+                await ctx.services.private_values.check_ready()
             with _invocation_context(ctx):
                 if timeout:
                     async with asyncio.timeout(timeout):
                         result = await registration.invoke(args, ctx.principal)
                 else:
                     result = await registration.invoke(args, ctx.principal)
+        except PrivateValueError as exc:
+            return _fail("unavailable", operation=operation, diagnostics=(exc.code,), key=key)
         except TimeoutError:
             return _fail("timed_out", operation=operation, diagnostics=("step",), key=key)
         except asyncio.CancelledError:
@@ -340,8 +392,13 @@ class PreviewCommandExecutor:
             return _fail(
                 "input_resolution_failed", operation=operation, diagnostics=(error or "",), key=key
             )
+        from src.playbooks.state_preview import StatePreviewUnresolved, preview_context
+
         try:
-            result = await registration.preview(args, ctx.principal)
+            with preview_context(ctx):
+                result = await registration.preview(args, ctx.principal)
+        except StatePreviewUnresolved as exc:
+            return _unresolved(step, registration, operation, str(exc))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6: any executor
@@ -353,11 +410,11 @@ class PreviewCommandExecutor:
 
 
 class ShadowCommandExecutor:
-    """Shadow: records the intended call and invokes nothing.
+    """Shadow: records intended calls and simulates run-local state.
 
-    Not even the preview adapter — a preview may read a database snapshot,
-    and shadow mode runs against production.  What it records is what
-    Package 6's parity harness compares.
+    Only the database-free state overlay runs a preview adapter. Other previews
+    may read production snapshots, so they remain unresolved. Recorded arguments
+    feed the parity harness and never contain private values.
     """
 
     step_type: ClassVar[str] = "command"
@@ -365,6 +422,12 @@ class ShadowCommandExecutor:
     no_side_effects: ClassVar[bool] = True
 
     async def execute(self, step: CommandStep, ctx: StepContext) -> ExecutorResult:
+        from src.commands.resource_authorization import STATE_PREVIEW_COMMANDS
+
+        if step.command in STATE_PREVIEW_COMMANDS:
+            # Simulate only in this path's overlay; there is no live handler here.
+            result = await PreviewCommandExecutor().execute(step, ctx)
+            return replace(result, recorded_command_args={name: "(redacted)" for name in ctx.inputs})
         operation = f"command:{step.command}"
         registration = _lookup(step, ctx.services)
         if registration is None:
@@ -385,7 +448,7 @@ class ShadowCommandExecutor:
             operation=unresolved.operation,
             diagnostics=unresolved.diagnostics,
             possible_outcomes=unresolved.possible_outcomes,
-            recorded_command_args=args.model_dump(mode="json"),
+            recorded_command_args={name: "(redacted)" for name in args.model_dump()},
         )
 
 
