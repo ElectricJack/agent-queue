@@ -20,7 +20,11 @@ from typing import Any
 from sqlalchemy import and_, case, func, insert, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
-from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
+from src.database.queries.claim_queries import (
+    _frontier_predicates,
+    pool_primary_kind,
+    route_claimable_in,
+)
 from src.database.tables import messages, sessions, task_reroutes, tasks
 from src.models import TaskStatus
 
@@ -30,6 +34,7 @@ REROUTABLE_STATUSES = (
     TaskStatus.READY.value,
     TaskStatus.BLOCKED.value,
     TaskStatus.PAUSED.value,
+    TaskStatus.RESUME_PENDING.value,
 )
 #: Automatic reasons share the per-task move limit and cooldown.
 AUTOMATIC_REASON = "provider_unavailable"
@@ -347,7 +352,8 @@ class TaskRerouteQueryMixin:
     ) -> list[dict]:
         """Queued tasks on *profile_ids* the sweep may move, in claim order.
 
-        ``READY`` unblocked unassigned rows, plus every ``PAUSED`` row on an
+        ``READY`` unblocked rows, stopped ``BLOCKED`` rows and unassigned
+        ``RESUME_PENDING`` continuations with no live writer, plus every ``PAUSED`` row on an
         automatic backoff (``resume_after`` set -- never an operator hold) so
         the caller can tell a provider pause (``task_metadata
         ['provider_pause']``) from a legacy one.  *task_ids* narrows to
@@ -356,7 +362,7 @@ class TaskRerouteQueryMixin:
         ids = sorted(set(profile_ids))
         if not ids and task_ids is None:
             return []
-        conditions = [tasks.c.assigned_agent_id.is_(None)]
+        conditions = [_unheld()]
         if ids:
             conditions.append(tasks.c.profile_id.in_(ids))
         if task_ids is not None:
@@ -370,9 +376,11 @@ class TaskRerouteQueryMixin:
             paused = and_(
                 tasks.c.status == TaskStatus.PAUSED.value, tasks.c.resume_after.is_not(None)
             )
-            conditions.append(ready | paused)
+            blocked = tasks.c.status == TaskStatus.BLOCKED.value
+            resume_pending = tasks.c.status == TaskStatus.RESUME_PENDING.value
+            conditions.append(ready | blocked | paused | resume_pending)
         stmt = (
-            select(tasks)
+            select(tasks, pool_primary_kind().label("workspace_kind"))
             .where(and_(*conditions))
             .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc(), tasks.c.id.asc())
         )
@@ -414,6 +422,7 @@ class TaskRerouteQueryMixin:
                 tasks.c.intelligence_class,
                 tasks.c.provider_intent,
                 tasks.c.route,
+                pool_primary_kind().label("workspace_kind"),
             )
             .where(
                 tasks.c.status == TaskStatus.READY.value,
@@ -430,20 +439,17 @@ class TaskRerouteQueryMixin:
             rows = (await conn.execute(stmt)).mappings().all()
         return [dict(row) for row in rows]
 
-    async def reroute_notice_sent(self, thread_id: str, to_kind: str, to_id: str) -> bool:
-        """Has a batch notice with *thread_id* already gone to ``to_kind:to_id``?
+    async def reroute_notice_sent(self, thread_id: str) -> bool:
+        """Has the batch's project notice already been sent?
 
         The per-project supervisor notice is keyed by its ``thread_id``
         (``reroute:<batch>:<project>``), so one batch messages each project
-        once whatever the number of sweeps (D19).
+        once whatever the number of sweeps (D19). Its recipient can change
+        when a project supervisor is enabled or disabled; the thread cannot.
         """
         stmt = (
             select(messages.c.id)
-            .where(
-                messages.c.thread_id == thread_id,
-                messages.c.to_kind == to_kind,
-                messages.c.to_id == to_id,
-            )
+            .where(messages.c.thread_id == thread_id)
             .limit(1)
         )
         async with self._engine.connect() as conn:
