@@ -26,7 +26,7 @@ from src.claim_timing import (
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
-from src.git.manager import ForeignSlotClaim
+from src.git.manager import ForeignSlotClaim, SlotSourceDisagreement
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
 from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
@@ -751,7 +751,8 @@ class ClaimCommandsMixin:
         withheld_source_repairs: dict = {}
         from src.integration.admission import observe_admission, structural_candidates
 
-        if getattr(project, "_source_admission_required", True):
+        if (getattr(project, "_source_admission_required", True)
+                or hierarchy_mode and hierarchy_mode.hierarchical):
             ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
             try:
                 admission = await asyncio.wait_for(observe_admission(
@@ -759,6 +760,7 @@ class ClaimCommandsMixin:
                     ids,
                     self._development_integration(),
                     default_mode=self.config.integration.default_mode,
+                    router_ready_projects={project.id} if router_ready else set(),
                 ), self._observation_budget())
             except TimeoutError:
                 return self._observation_timeout(session, project.id, "delivery admission", cap)
@@ -791,55 +793,15 @@ class ClaimCommandsMixin:
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
-        if hierarchy_mode and hierarchy_mode.hierarchical and observer is not None:
-            async def observe_prerequisites():
-                with claim_phase("delivery_admission"):
-                    view = await observer.prerequisite_view(project.id, task_id=want_id)
-                if not await view.fresh():
-                    return view, None
-                return view, await view.mode(hierarchy_mode)
+        if admission is not None:
+            hierarchy_mode = admission.hierarchy_modes.get(project.id, hierarchy_mode)
+            prerequisite_view, stack_view = admission.hierarchy_evidence(project.id)
+        if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
+            from src.integration.stacked_branches import observe_stacks
 
-            try:
-                prerequisite_view, observed_mode = await asyncio.wait_for(
-                    observe_prerequisites(), self._observation_budget(),
-                )
-            except TimeoutError:
-                if self._claim_out_of_time():
-                    return self._observation_timeout(
-                        session, project.id, "prerequisite delivery view", cap,
-                    )
-                # Fail closed as the scheduler's bounded frontier does: no
-                # delivered prerequisite is proven, so only roots stay claimable.
-                logger.warning("claim %s for %s: prerequisite delivery view outlasted the "
-                               "claim's Git budget; claiming without delivery proofs",
-                               session.id, project.id)
-                prerequisites_timed_out = True
-                hierarchy_mode = replace(hierarchy_mode,
-                                         delivered_prerequisite_ids=frozenset(),
-                                         stackable_prerequisite_ids=frozenset())
-            else:
-                if observed_mode is None:
-                    return self._simple(
-                        ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap
-                    )
-                hierarchy_mode = observed_mode
-        if (hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer
-                and not prerequisites_timed_out):
-            from src.integration.stacked_branches import StackCurrentness, observe_stacks
-
-            async def observe_stack_view():
-                view = await observe_stacks(observer, project.id, task_id=want_id)
-                return view, await view.currentness()
-
-            try:
-                stack_view, stack_state = await asyncio.wait_for(
-                    observe_stack_view(), self._observation_budget(),
-                )
-            except TimeoutError:
-                if self._claim_out_of_time():
-                    return self._observation_timeout(session, project.id, "stack view", cap)
-                stack_view = None
-                stack_state = StackCurrentness("unavailable", "stack_observation_timeout")
+            if stack_view is None:
+                stack_view = await observe_stacks(observer, project.id, task_id=want_id)
+            stack_state = await stack_view.currentness()
             if not stack_state.current:
                 logger.info(
                     "claim %s for %s: stack evidence %s: %s", session.id, project.id,
@@ -929,6 +891,7 @@ class ClaimCommandsMixin:
                     # The previous request failed or the daemon restarted.
                     # Retry this exact held preparation under the task lock;
                     # never discard its attached fence to manufacture a new claim.
+                    await self._mark_prepare_failure_retried(conn, row.task_id)
                     new_claim = (row, held, None)
                 else:
                     out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
@@ -1621,6 +1584,28 @@ class ClaimCommandsMixin:
             fresh, cap,
         )
 
+    async def _quarantine_slot(self, session, slot, failure, cap) -> dict | None:
+        """Quarantine a slot whose checkout contradicts its sentinel.
+
+        Such a slot refuses every claim alike.  Retaining the session's agent
+        lock would keep it retrying there and block slot restore, so the
+        release gave the lock back and drained the session.  Only once that
+        release applied is the slot disabled for the restore cooldown: a
+        retained claim keeps its slot and gets the ordinary refusal.
+        """
+        drained = await self.db.get_session(session.id)
+        if drained is None or drained.desired_state != "stopped":
+            return None
+        await self.db.update_workspace(
+            slot.id, **disable_fields(CLAIM_FAILURES, failure.reason, now=time.time())
+        )
+        return self._simple(
+            ClaimResult.DRAIN_REQUESTED,
+            f"{failure.reason}; workspace {slot.id} released and quarantined. "
+            "Run `aq session drain-ack` and exit 0.",
+            drained, cap,
+        )
+
     async def _retire_stale_slot_claim(
         self, slot, path, *, claimant_task_id=None, claimant_session_id=None, actor="claim", conn=None,
     ) -> dict | None:
@@ -1653,6 +1638,27 @@ class ClaimCommandsMixin:
             "claimant_task_id": claimant_task_id,
         })
         return retired
+
+    async def _mark_prepare_failure_retried(self, conn, task_id) -> None:
+        """Stamp the last failure record before a same-epoch preparation retry.
+
+        Pause recovery accepts that record as proof the attempt it describes
+        unwound its git children; the retry is a new attempt it says nothing
+        about, and one that dies without its own record must stay unproved.
+        """
+        import json
+
+        from sqlalchemy import select, update
+
+        from src.database.tables import task_metadata
+
+        where = (task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_FAILURE)
+        encoded = await conn.scalar(select(task_metadata.c.value).where(*where).with_for_update())
+        record = json.loads(encoded) if encoded is not None else None
+        if isinstance(record, dict) and "retried_at" not in record:
+            await conn.execute(update(task_metadata).where(*where).values(
+                value=json.dumps({**record, "retried_at": time.time()}),
+            ))
 
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
@@ -1744,10 +1750,9 @@ class ClaimCommandsMixin:
                     self._development_integration(),
                     default_mode=self.config.integration.default_mode,
                 )
-            hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
-                "hierarchy",
-                "train",
-            }
+            from src.integration.train_policy import worker_integration_enabled
+
+            hierarchy_enabled = await worker_integration_enabled(self.db, project)
 
             async def check_checkout(*, conn=None):
                 nonlocal stage
@@ -1880,16 +1885,16 @@ class ClaimCommandsMixin:
                 # named on the task row, or neither happens.  Discarding it
                 # here is what left development-mode pool tasks with a NULL
                 # ``branch_name`` and an unclosable completion pipeline.
-                stage = "admission_recheck"
-                if admission is not None and (
-                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
-                ):
-                    return None
                 if hierarchy_enabled:
                     from src.integration.stacked_branches import verify_preparation
 
                     stage = "verify_preparation"
                     await verify_preparation(origin, conn=conn)
+                stage = "admission_recheck"
+                if admission is not None and (
+                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
+                ):
+                    return None
                 if (
                     admission is not None
                     and admission.pr is not None
@@ -2282,6 +2287,34 @@ class ClaimCommandsMixin:
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+            if isinstance(exc, ChildPreparationConflict):
+                # The merge was cleanly aborted. Without a managed train
+                # origin there is no train repair to reserve; retrying the
+                # same inputs would only quarantine an otherwise healthy slot.
+                await self.db.set_task_meta(task.id, "child_preparation_conflict", {
+                    "child_head": exc.child_head, "parent_head": exc.parent_head,
+                    "merge_head": exc.merge_head, "files": list(exc.files),
+                    "reason": failure.reason,
+                })
+                await self.db.release_claim(
+                    session.id,
+                    expected_task_id=task.id, expected_claim_epoch=epoch,
+                    expected_instance_token=session.instance_token,
+                    task_status=TaskStatus.BLOCKED, context="merge_conflict",
+                    now=time.time(), result="prepare_failed",
+                    needs_attention="child_preparation_conflict",
+                )
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="blocked",
+                )
+                await self.orchestrator.bus.emit("pool.prepare_failed", {
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
+                    **failure.event_fields(),
+                })
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if isinstance(exc, ForeignSlotClaim):
                 return await self._foreign_slot_claim_prepare_failed(
                     task, exc=exc, failure=failure, session=session, slot=slot,
@@ -2304,16 +2337,15 @@ class ClaimCommandsMixin:
                 "session_id": session.id, "failed_at": time.time(),
                 "retry": "manual" if attempt >= 3 else "automatic",
             })
+            poisoned = isinstance(exc, SlotSourceDisagreement) and slot is not None
             await self.db.release_claim(
                 session.id,
                 expected_task_id=task.id, expected_claim_epoch=epoch,
                 expected_instance_token=session.instance_token,
                 task_status=TaskStatus.BLOCKED if attempt >= 3 else TaskStatus.READY,
-                context="slot_reset_failed",
-                now=time.time(),
-                result="prepare_failed",
-                needs_attention="slot_reset_failed",
-                prepare_backoff=True,
+                context="slot_reset_failed", now=time.time(), result="prepare_failed",
+                needs_attention="slot_reset_failed", prepare_backoff=True,
+                release_workspace_lock=poisoned, drain_after_release=poisoned,
             )
             await self._record_prepare_failure(
                 task, failure, session=session, slot=slot, epoch=epoch,
@@ -2322,14 +2354,14 @@ class ClaimCommandsMixin:
             await self.orchestrator.bus.emit(
                 "pool.prepare_failed",
                 {
-                    "project_id": session.project_id,
-                    "profile_id": session.profile_id,
-                    "session_id": session.id,
-                    "task_id": task.id,
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
                     **failure.event_fields(),
                 },
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+            if poisoned and (out := await self._quarantine_slot(session, slot, failure, cap)):
+                return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
             remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
