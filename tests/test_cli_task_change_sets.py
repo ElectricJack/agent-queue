@@ -166,3 +166,22 @@ def test_batch_propose_constructs_real_http_client(monkeypatch, placement):
     base = "http://default.test:8081" if placement == "default" else "http://override.test:8082"
     assert [str(request.url) for request in requests] == [base + "/api/health", base + "/api/execute"]
     assert json.loads(requests[-1].content)["command"] == "task_batch_propose"
+
+
+def test_batch_update_transmits_scoped_operations_and_revision():
+    operations = [{"kind": "rewrite", "task_id": "api",
+                   "changes": {"acceptance": ["Verify contract"]}}]
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.execute.return_value = {"success": True, "structure_revision": 2,
+                                   "structure_digest": "new-digest", "diff": {"structural": True}}
+    with patch("src.cli.app._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [
+            "--json", "task", "batch-update", "--proposal-id", "prop-held",
+            "--expected-revision", "1", "--operations", json.dumps(operations),
+        ])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("task_batch_update", {
+        "proposal_id": "prop-held", "expected_revision": 1, "operations": operations,
+    })
+    assert json.loads(result.output)["data"]["structure_revision"] == 2
