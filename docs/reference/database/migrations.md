@@ -15,8 +15,8 @@ If you are changing the schema, also read [Adding a revision](#adding-a-revision
 * **Revision** — one migration file in
   [`migrations/versions/`](../../../migrations/versions/), with an `upgrade()`
   and a `downgrade()`, naming its parent as `down_revision`.
-* **Head** — the newest revision in the chain. This checkout's head is
-  `a0000000000c`; there is exactly one, and
+* **Head** — the newest revision in the chain. Run read-only `alembic heads`
+  to identify this checkout's head. There must be exactly one, and
   `tests/test_migration_single_head.py` fails if a branch ever creates a second.
 * **Stamped** — the revision id recorded in the database's `alembic_version`
   table. "Stamped at head" means the schema matches this checkout.
@@ -26,7 +26,7 @@ If you are changing the schema, also read [Adding a revision](#adding-a-revision
   sessions get, and letting an override redefine "production" would disarm the
   guard exactly where it matters.
 
-## What the chain looks like today
+## The baseline and the current chain
 
 On 2026-09-07 the 117 revisions that preceded it were collapsed into one
 squashed baseline, at the same time SQLite support was removed. Most of their
@@ -34,7 +34,14 @@ weight was dual-backend tax — 71 used `op.batch_alter_table`, which exists onl
 because SQLite cannot `ALTER TABLE`, and 29 branched on the dialect name.
 Replaying them cost about eight seconds per fresh database.
 
-What is left is a baseline plus eleven revisions:
+The chain continues to grow under
+[`migrations/versions/`](../../../migrations/versions/). Use `alembic history`
+and `alembic heads` for the complete local chain; neither command migrates a
+database. Current domains describe their schema in the
+[system specs](../../specs/systems/README.md).
+
+The table below is a **historical snapshot of the first twelve revisions**,
+not today's complete chain:
 
 | Revision | What it does |
 |---|---|
@@ -56,8 +63,8 @@ Supporting files in the same directory:
 | File | Purpose |
 |---|---|
 | [`alembic.ini`](../../../alembic.ini) | Alembic configuration. `sqlalchemy.url` is deliberately empty — the URL is supplied programmatically. A `ruff check --fix` post-write hook formats generated revisions. |
-| [`migrations/env.py`](../../../migrations/env.py) | The environment. Two things matter: `target_metadata` is `src.database.tables.metadata`, and `transaction_per_migration=True`, because one revision opens a *second* connection to inspect what the previous revision created. Its docstring and a `render_as_batch` branch still mention SQLite; PostgreSQL is the only supported backend. |
-| [`migrations/integration_guards.py`](../../../migrations/integration_guards.py) | 29 PL/pgSQL functions and 50 triggers over 31 integration tables, snapshotted at the pre-squash head. Table metadata cannot express a trigger, so these are carried separately. **Immutable** — a behaviour change is a new revision, not an edit here. |
+| [`migrations/env.py`](../../../migrations/env.py) | The environment. Two things matter: `target_metadata` is `src.database.tables.metadata`, and `transaction_per_migration=True`, because one revision opens a *second* connection to inspect what the previous revision created. PostgreSQL is the only supported backend. |
+| [`migrations/integration_guards.py`](../../../migrations/integration_guards.py) | PL/pgSQL functions and triggers snapshotted at the pre-squash head. Table metadata cannot express a trigger, so these are carried separately. **Immutable** — a behaviour change is a new revision, not an edit here. |
 | [`migrations/script.py.mako`](../../../migrations/script.py.mako) | The template new revisions are generated from. |
 
 ## Who may migrate what
@@ -201,10 +208,14 @@ aq start
 ```
 
 Backup may run with the daemon live: PostgreSQL takes a consistent snapshot.
-Restore replaces the objects held in the archive and runs in one transaction,
-so a failed restore rolls back its cleanup and writes. It always takes a fresh
-recovery archive before invoking `pg_restore --clean --if-exists --no-owner
---no-acl --single-transaction --exit-on-error`. A recovery archive retains the
+Restore drops and recreates the `public` application schema, including tables
+and columns added after the input archive. It renders the custom archive with
+`pg_restore --no-owner --no-acl`, then runs schema replacement and the archived
+SQL together with `psql --single-transaction --set=ON_ERROR_STOP=1`. A failed
+restore rolls back both cleanup and writes. It always takes a fresh recovery
+archive before replacing the schema. Rendering uses private temporary files
+and requires disk space for two copies of the expanded SQL. Database clients
+have the same 1,800-second timeout as the updater's backup. A recovery archive retains the
 state immediately before the attempted restore, including rows newer than the
 input dump.
 
@@ -225,7 +236,18 @@ acknowledgement cursor and every other archived row return to the dump's state.
 
 Restore refuses a live daemon unless `--force` is explicit, and refuses agent
 sessions that survive the daemon stopping even with `--force`. Both the database
-session records and the configured tmux socket are checked. A daemon start lock
+session records and the configured tmux socket are checked, including task
+(`s-`), named (`n-`) and pool (`p-`) sessions. `aq stop` kills those tmux
+sessions after stopping the daemon; it can leave records with `ended_at=NULL`.
+Those stale rows are accepted only after a successful tmux probe proves no AQ
+session remains on the configured socket (a missing server also proves this).
+No database edits or restart are needed: run `aq stop`, verify
+`tmux -L <sessions.tmux_socket> list-sessions`, then rerun restore. Missing tmux
+with apparently live rows refuses as `restore_sessions_unverified`; install
+matching tmux tools and verify the socket. Probe failures and live sessions
+remain refusals even with `--force`. A missing target refuses as
+`restore_target_unavailable`; create/configure the intended recovery database
+before retrying. A daemon start lock
 is held through preflight, recovery backup and restore to keep `aq start` and
 the watchdog from racing the operation. Worker sessions and session tokens
 cannot invoke backup or restore. These commands are local, so recovery works
@@ -263,7 +285,14 @@ aq doctor --check db.alembic_orphan          # which branch and file define it
 aq doctor --check db.alembic_orphan --fix    # run that revision's own downgrade()
 ```
 
-The check searches every `refs/remotes` and `refs/heads` for the file declaring
+When `database.schema_ahead_migrations` is configured for rollback, this check
+uses the same retained-source proof and distance limit as startup. A proven
+additive ahead schema is healthy; refused or missing evidence stays an error.
+Neither case offers a fix, and even an explicit `--fix` with the stamp opt-in
+never downgrades or stamps that schema. Deploy matching code or repair the
+retained evidence instead. The direct plugin client uses this startup policy too.
+
+Without retained migrations, the check searches every `refs/remotes` and `refs/heads` for the file declaring
 the unknown revision, so the answer is a branch name and a path rather than a
 bare hex id. `--fix` borrows that file into a private temporary directory that
 Alembic reads alongside `migrations/versions/` for exactly one `alembic
@@ -293,7 +322,10 @@ unknown-revision diagnostic rather than marking a half-migrated database current
 
 The schema's source of truth is
 [`tables.py`](../../../src/database/tables.py). Edit it first, then generate the
-migration that makes a database match it.
+migration that makes a database match it. Autogeneration requires an explicit
+URL for a disposable database. A worker slot has no database to autogenerate
+against: write an idempotent revision by hand and use the test harness to
+validate it. Leave the worker scope and refusal-sentinel environment intact.
 
 ```bash
 alembic revision --autogenerate -m "description of change"
@@ -316,6 +348,10 @@ Rules learned the hard way:
   `DEFAULT '''system'''`. Booleans use `sa.false()` / `sa.true()`, never `"0"` /
   `"1"`. Guarded by `tests/test_migration_string_defaults.py` and
   `tests/test_migration_boolean_defaults.py`.
+* **JSON columns use `JSONB`.** PostgreSQL `json` has no equality operator,
+  which breaks whole-row `DISTINCT`, `UNION` and `GROUP BY`. Keep revision
+  column types consistent with `tables.py`; `tests/test_migration_json_columns.py`
+  guards this rule.
 * **PostgreSQL only.** No `batch_alter_table`, no `dialect.name` branches;
   `tests/test_sqlite_removal.py` is the ratchet.
 * **Be idempotent.** The squashed baseline builds from live metadata, so a fresh

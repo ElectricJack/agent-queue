@@ -22,6 +22,22 @@ from src.cli.app import cli
 from src.sessions.env import AQ_MARKER_KEYS, DAEMON_ENV_STRIP_KEYS, DB_ISOLATION_KEYS
 
 
+def test_post_start_doctor_uses_cli_instead_of_daemon_entrypoint(monkeypatch):
+    response = MagicMock()
+    response.__enter__.return_value.status = 200
+    run = MagicMock(return_value=SimpleNamespace(stdout="", stderr="", returncode=0))
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        daemon_mod, "_resolve_agent_queue_bin",
+        lambda: pytest.fail("daemon entrypoint treats doctor as a config path"),
+    )
+    with patch("urllib.request.urlopen", return_value=response):
+        daemon_mod._post_daemon_checks()
+    command = run.call_args.args[0]
+    assert command[:4] == [daemon_mod.sys.executable, "-m", "src.cli.app", "doctor"]
+    assert command[4:] == ["--check", "pools.stale_worktree_checkouts", "--fix"]
+
+
 def test_log_rotation_preserves_bytes_and_retains_only_its_newest_archives(tmp_path, monkeypatch):
     log = tmp_path / "custom.log"
     content = b"subprocess output\xff\n" * 10
@@ -591,7 +607,14 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
     assert "Config not found" in result.output
     assert "started" not in result.output.lower()
 
-    config_path.write_text("database:\n  url: postgresql://localhost/aq\n")
+    config_path.write_text(
+        "messaging_platform: none\ndatabase:\n  url: postgresql://localhost:5533/agent_queue\n"
+    )
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: agent_queue\n"
+        '    ports: ["5533:5432"]\n'
+    )
 
     # -- Already running: succeed idempotently without a second spawn ------
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=4242):
@@ -602,10 +625,10 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
 
     # -- Postgres configured, Docker down and unstartable ------------------
     # The database probe is patched, not left to the box: on a machine that
-    # happens to run PostgreSQL on 5432 the Docker branch is never reached.
+    # happens to run PostgreSQL on 5533 the Docker branch is never reached.
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=None), \
          patch.object(daemon_mod, "_database_reachable", return_value=False), \
-         patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
+         patch.object(daemon_mod, "_find_compose_file", return_value=str(compose_file)), \
          patch.object(daemon_mod, "_is_docker_running", return_value=False), \
          patch.object(daemon_mod, "_start_docker_desktop", return_value=False):
         result = runner.invoke(cli, ["start", "--no-dashboard"])
@@ -621,7 +644,7 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
          patch.object(daemon_mod, "_database_reachable", return_value=False), \
          patch.object(daemon_mod, "_is_docker_running", return_value=True), \
          patch.object(daemon_mod, "_is_container_running", return_value=False), \
-         patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
+         patch.object(daemon_mod, "_find_compose_file", return_value=str(compose_file)), \
          patch.object(daemon_mod.subprocess, "run", side_effect=[inspect_missing, compose_fail]):
         result = runner.invoke(cli, ["start", "--no-dashboard"])
     assert result.exit_code == 1, result.output
@@ -842,7 +865,7 @@ def test_resolve_daemon_falls_back_to_path_without_venv_entry_point(
 
 def _config(tmp_path, monkeypatch, body: str) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(body, encoding="utf-8")
+    config_path.write_text("messaging_platform: none\n" + body, encoding="utf-8")
     monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
     monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
 
@@ -895,17 +918,78 @@ def test_an_unreachable_database_without_a_compose_file_names_the_installer(
     assert "aq install" in output
 
 
-def test_an_unreachable_database_in_a_checkout_still_starts_the_dev_container(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+def test_an_unreachable_matching_database_starts_the_dev_container(
+    tmp_path, monkeypatch, host,
 ):
-    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5432/aq\n")
+    _config(tmp_path, monkeypatch, f"database:\n  url: postgresql://{host}:5533/agent_queue\n")
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: agent_queue\n"
+        '    ports: ["5533:5432"]\n'
+    )
     monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: False)
-    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: "/x/docker-compose.yml")
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: str(compose_file))
     called: list[bool] = []
     monkeypatch.setattr(daemon_mod, "_ensure_docker_postgres", lambda: called.append(True) or True)
 
     assert daemon_mod._ensure_database() is True
     assert called == [True]
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql://localhost:5432/agent_queue",  # native server on a different port
+    "postgresql://db.internal:5533/agent_queue",  # remote server on the same port
+    "postgresql://localhost:5533/other_database",
+    "postgresql:///agent_queue",  # socket/default host is not a proven compose endpoint
+    "postgresql://localhost:5533/agent_queue?host=db.internal",
+])
+def test_unreachable_external_database_never_starts_compose(tmp_path, monkeypatch, capsys, url):
+    _config(tmp_path, monkeypatch, f"database:\n  url: {url}\n")
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: agent_queue\n"
+        '    ports: ["5533:5432"]\n'
+    )
+    monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: str(compose_file))
+    monkeypatch.setattr(daemon_mod, "_ensure_docker_postgres",
+                        lambda: pytest.fail("must not start an unrelated database"))
+
+    assert daemon_mod._ensure_database() is False
+    assert "no PostgreSQL server is answering" in capsys.readouterr().out
+
+
+def test_database_compose_match_uses_effective_configuration(tmp_path, monkeypatch):
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5533/agent_queue\n")
+    (tmp_path / "config.production.yaml").write_text(
+        "database:\n  url: postgresql://external:5533/agent_queue\n"
+    )
+    monkeypatch.setenv("AGENT_QUEUE_ENV", "production")
+    compose_file = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+
+    assert not daemon_mod._database_matches_compose(str(compose_file))
+
+
+@pytest.mark.parametrize(("definition", "matches"), [
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["127.0.0.1:5533:5432"]', True),
+    ('environment: [POSTGRES_DB=agent_queue]\n    ports: ["5533:5432/tcp"]', True),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: '
+     '[{host_ip: "127.0.0.1", published: "5533", target: 5432}]', True),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["192.0.2.1:5533:5432"]', False),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["5533:5432/udp"]', False),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["5533:6543"]', False),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["${PG_PORT}:5432"]', False),
+    ('environment: {POSTGRES_DB: "${PG_DATABASE}"}\n    ports: ["5533:5432"]', False),
+    ('environment: {}\n    ports: ["5533:5432"]', False),
+    ('environment: [', False),
+])
+def test_compose_endpoint_requires_a_proven_match(tmp_path, monkeypatch, definition, matches):
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5533/agent_queue\n")
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services:\n  postgres:\n    " + definition + "\n")
+
+    assert daemon_mod._database_matches_compose(str(compose_file)) is matches
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1102,7 @@ def predeploy_backup(tmp_path, monkeypatch):
     )
     restore = tmp_path / "pg_restore"
     restore.touch()
+    (tmp_path / "psql").touch()
     state = SimpleNamespace(archive=b"PGDMPmock archive", error=None, calls=[], docker=False)
     monkeypatch.setattr(
         "src.install.update.find_pg_dump",
@@ -1283,3 +1368,19 @@ def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
     assert (tmp_path / "daemon.lock").is_dir()
     assert release_start_lock(lock, owner=__import__("os").getpid()) is True
     assert not (tmp_path / "daemon.lock").exists()
+
+
+def test_stop_agent_sessions_kills_pool_task_and_named_sessions_only(monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+    monkeypatch.setattr(daemon_mod, "_tmux_socket", lambda: "fixture-socket")
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0, stdout="p-worker--fixture\ns-task\nn-supervisor\npersonal\n")
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    assert daemon_mod.stop_agent_sessions(quiet=True) == 3
+    assert [argv[-1] for argv in commands[1:]] == ["p-worker--fixture", "s-task", "n-supervisor"]
+    assert all(argv[2] == "fixture-socket" for argv in commands)
