@@ -20,6 +20,8 @@ class AgentMessageRequest:
         all_running (bool | Unset):  Default: False.
         profile (None | str | Unset): Optional profile filter for broadcast
         wait (int | None | Unset): Wait up to 60 seconds for delivery
+        reply_to (None | str | Unset): Message id this guidance answers; it joins that message's thread, so a worker
+            waiting on the thread resumes
     """
 
     body: str
@@ -27,6 +29,7 @@ class AgentMessageRequest:
     all_running: bool | Unset = False
     profile: None | str | Unset = UNSET
     wait: int | None | Unset = UNSET
+    reply_to: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,6 +55,12 @@ class AgentMessageRequest:
         else:
             wait = self.wait
 
+        reply_to: None | str | Unset
+        if isinstance(self.reply_to, Unset):
+            reply_to = UNSET
+        else:
+            reply_to = self.reply_to
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -67,6 +76,8 @@ class AgentMessageRequest:
             field_dict["profile"] = profile
         if wait is not UNSET:
             field_dict["wait"] = wait
+        if reply_to is not UNSET:
+            field_dict["reply_to"] = reply_to
 
         return field_dict
 
@@ -104,12 +115,22 @@ class AgentMessageRequest:
 
         wait = _parse_wait(d.pop("wait", UNSET))
 
+        def _parse_reply_to(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reply_to = _parse_reply_to(d.pop("reply_to", UNSET))
+
         agent_message_request = cls(
             body=body,
             target=target,
             all_running=all_running,
             profile=profile,
             wait=wait,
+            reply_to=reply_to,
         )
 
         agent_message_request.additional_properties = d

@@ -112,6 +112,8 @@ class SubprocessProvider(SessionProvider):
             )
         except OSError as exc:
             log_file.close()
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"Process creation failed: {exc}\n")
             raise SessionDiedDuringStartup(
                 spec.session_name, start_stderr_path=str(log_path), detail=str(exc)
             ) from exc
@@ -153,19 +155,24 @@ class SubprocessProvider(SessionProvider):
 
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:
         running = self._get(h)
-        if running is None:
-            return  # idempotent + fenced
-        proc = running.proc
-        if proc.returncode is None:
-            _signal_group(proc, signal.SIGTERM)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=grace)
-            except (TimeoutError, asyncio.TimeoutError):
-                # 2 s default, not 100 ms: a short grace orphans Claude.
-                _signal_group(proc, signal.SIGKILL)
-                with contextlib.suppress(Exception):
+        if running is not None:
+            proc = running.proc
+            if proc.returncode is None:
+                _signal_group(proc, signal.SIGTERM)
+                try:
                     await asyncio.wait_for(proc.wait(), timeout=grace)
-        self._sessions.pop(h.name, None)
+                except (TimeoutError, asyncio.TimeoutError):
+                    # 2 s default, not 100 ms: a short grace orphans Claude.
+                    _signal_group(proc, signal.SIGKILL)
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proc.wait(), timeout=grace)
+            self._sessions.pop(h.name, None)
+        # A child that called setsid (every harness Bash call does) left the
+        # group signalled above; it still carries the session's token.
+        if _POSIX and h.instance_token:
+            from src.sessions import proctable
+
+            await proctable.kill_marked(h.instance_token, grace=grace)
 
     async def interrupt(self, h: SessionHandle) -> None:
         running = self._get(h)
@@ -184,6 +191,16 @@ class SubprocessProvider(SessionProvider):
         # second probe to fail and no optimistic-alive branch to take.
         running = self._get(h)
         return bool(running and running.proc.returncode is None)
+
+    async def confirm_stopped(self, h: SessionHandle) -> bool:
+        from src.sessions.proctable import scan_by_env_marker
+
+        if not h.instance_token or await self.is_running(h):
+            return False
+        return not any(
+            process.marker == h.instance_token
+            for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")
+        )
 
     async def list_running(self, prefix: str) -> list[SessionHandle]:
         return [

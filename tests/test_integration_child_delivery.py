@@ -1,0 +1,1109 @@
+"""A completed child of a collecting parent is assembled, or says why not.
+
+Regression for vivid-ridge: after automatic per-task reviews were retired
+(cf0002b9c), nothing wrote the approved review evidence the collector requires
+of a completed child, so train epics stalled with every sibling that needed a
+finished child held out of the claim frontier (sharp-impact).  The collector now
+proves the child's published head from Git and records completion evidence;
+``aq integration redrive-child`` is the supervisor's dry-run-first handle, and
+``integration.stuck_children`` reports what is still waiting.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import insert, select, update
+
+from src.database.queries.hierarchy_queries import (
+    delivered_same_parent_prerequisites_when_hierarchical,
+)
+from src.database.tables import (
+    events,
+    integration_outbox,
+    integration_review_evidence,
+    playbook_artifacts,
+    task_branch_origins,
+    task_delivery_receipts,
+    task_dependencies,
+    task_integration_checkpoints,
+    tasks,
+)
+from src.doctor.task_checks import run_check as run_task_check
+from src.git.manager import GitManager
+from src.integration.child_delivery import (
+    COMPLETION_IDENTITY_PREFIX,
+    REDRIVE_EVENT,
+    ChildDelivery,
+)
+from src.integration.collection import CollectionService
+from src.integration.hierarchy import HierarchyIntegration
+from src.integration.models import (
+    ArtifactSnapshot,
+    Fence,
+    HierarchicalIntegrationPolicy,
+    IntegrationBoundaryPolicy,
+    PlaybookRoute,
+    RepairPolicy,
+    RequiredCheckSet,
+)
+from src.integration.repository_git import RepositoryGit
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
+
+_AMBIENT_IDENTITY_KEYS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_DATE",
+)
+
+
+def _git(args: list[str], cwd: Path | None = None) -> str:
+    env = {key: value for key, value in os.environ.items() if key not in _AMBIENT_IDENTITY_KEYS}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env
+    ).stdout.strip()
+
+
+def _policy_and_artifact() -> tuple[dict, ArtifactSnapshot]:
+    artifact = ArtifactSnapshot(
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "a" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test",
+        version=1,
+    )
+    boundary = IntegrationBoundaryPolicy(
+        required_checks=RequiredCheckSet(version="test", names=("unit",), producer_id="forge"),
+        repair=RepairPolicy(debug_intelligence_class="high"),
+        route=PlaybookRoute(
+            playbook_id="hierarchical-delivery",
+            scope="project",
+            scope_identifier="p",
+            artifact=artifact,
+        ),
+    )
+    policy = HierarchicalIntegrationPolicy(
+        parent=boundary, root=boundary, branchless_parent="verifier", on_failed_child="block"
+    )
+    return policy.model_dump(mode="json"), artifact
+
+
+@pytest.fixture
+async def case(tmp_path, reuse_database, request):
+    """Train epic ``epic`` collecting its COMPLETED child ``epic.1``.
+
+    The child's branch is published at ``head``, one commit past the origin
+    base both branches were cut from; no reviewer ever looked at it.  Its
+    sibling ``epic.2`` needs it, exactly as sharp-impact.2 needed .1.
+    """
+    prior_writer = getattr(request, "param", None) == "nested_writer"
+    parent_id = "epic.1" if prior_writer else "epic"
+    child_id = f"{parent_id}.1"
+    sibling_id = f"{parent_id}.2"
+    parent_branch = f"aq/{parent_id}"
+    child_branch = f"aq/{child_id}"
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    _git(["init", "--bare", "--initial-branch=main", str(origin)])
+    _git(["clone", str(origin), str(work)])
+    _git(["config", "user.name", "Seed"], work)
+    _git(["config", "user.email", "seed@example.test"], work)
+    (work / "shared.txt").write_text("base\n")
+    _git(["add", "shared.txt"], work)
+    _git(["commit", "-m", "base"], work)
+    base = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "main"], work)
+    _git(["push", "origin", f"{base}:refs/heads/{parent_branch}"], work)
+    _git(["switch", "-c", child_branch], work)
+    (work / "child.txt").write_text("child work\n")
+    _git(["add", "child.txt"], work)
+    _git(["commit", "-m", "child work"], work)
+    head = _git(["rev-parse", "HEAD"], work)
+    tree = _git(["rev-parse", "HEAD^{tree}"], work)
+    _git(["push", "origin", child_branch], work)
+
+    db = await reuse_database("child-delivery.db")
+    await db.create_project(Project(id="p", name="train project"))
+    await db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url=str(origin),
+            default_branch="main",
+        )
+    )
+    policy, artifact = _policy_and_artifact()
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **artifact.model_dump(),
+                scope="project",
+                scope_identifier="p",
+                profile_fingerprint="",
+                path="/tmp/hierarchy-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=1.0,
+            )
+        )
+    await db.update_project(
+        "p",
+        hierarchical_integration_mode="train",
+        integration_repository_id="repo",
+        hierarchical_integration_policy=policy,
+    )
+    hierarchy = HierarchyIntegration(
+        db,
+        default_head_resolver=lambda _repo, _branch: base,
+        checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+    )
+    await db.create_task(
+        Task(
+            id="epic", project_id="p", repo_id="repo", title="epic", description="epic",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    if prior_writer:
+        await hierarchy.file_children("epic", [{"title": "nested parent"}], 0)
+        await db.update_task(parent_id, status=TaskStatus.IN_PROGRESS)
+    await hierarchy.file_children(parent_id, [{"title": "child"}, {"title": "sibling"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_dependencies).values(
+                task_id=sibling_id, depends_on_task_id=child_id, dep_type="blocks"
+            )
+        )
+        await conn.execute(
+            update(task_branch_origins).values(materialized=True, materialized_at=2.0)
+        )
+        await conn.execute(
+            update(tasks).where(tasks.c.id == child_id).values(status="COMPLETED", updated_at=3.0)
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == child_id)
+            .values(checkpoint_sha=head, updated_at=3.0)
+        )
+    if not prior_writer:
+        bootstrapped = await hierarchy.bootstrap_container_collection("epic")
+        assert bootstrapped["outcome"] == "checkpointed"
+    promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    yield SimpleNamespace(
+        db=db, hierarchy=hierarchy, promotion=promotion, base=base, head=head, tree=tree,
+        work=work, parent_id=parent_id, child_id=child_id, parent_branch=parent_branch,
+        origin=origin,
+    )
+
+
+def _collector(case, delivery=None):
+    return CollectionService(
+        case.db,
+        hierarchy_service_factory=lambda: case.hierarchy,
+        child_delivery=delivery or ChildDelivery(case.db, case.promotion),
+    )
+
+
+async def _unretained_leaf(case, tmp_path, *, recorded_source=True):
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+
+    await case.db.save_task_completion(TaskCompletion(
+        id="leaf-close", task_id=case.child_id, outcome="pass", branch=f"aq/{case.child_id}",
+        commits=[case.head] if recorded_source else [], completed_at=4.0,
+    ))
+    git = GitManager()
+    observer = DeliveryObserver(case.db, git=git, data_dir=tmp_path / "observer",
+                                truth=GitTruth(git))
+    case.db.set_prerequisite_observer(observer)
+    return ChildDelivery(case.db, case.promotion), observer
+
+
+async def _retained_leaf(case):
+    from src.git.manager import RemoteRefState
+    from src.integration.provenance import CompletionIdentity, GitProvenance
+
+    _ref, result = await GitProvenance(case.promotion.git, str(case.work),
+                              repository_url=str(case.origin)).remote_completion(
+        CompletionIdentity("p", "repo", case.child_id, "leaf-close")
+    )
+    assert result.state is not RemoteRefState.ERROR
+    return result.oid if result.state is RemoteRefState.PRESENT else None
+
+
+@pytest.mark.parametrize("recorded_source", [True, False])
+async def test_git_first_redrive_adopts_missing_source_without_claiming_delivery(
+    case, tmp_path, recorded_source,
+):
+    delivery, observer = await _unretained_leaf(case, tmp_path, recorded_source=recorded_source)
+    before = await case.db.get_task_completion(case.child_id)
+    checkpoint = await case.db.get_integration_checkpoint(case.child_id)
+    diagnosis = await delivery.run(case.child_id)
+    assert diagnosis["outcome"] == "blocked"
+    assert "missing_git_provenance" in diagnosis["reason"]
+    assert "--adopt-source" in diagnosis["reason"]
+    preview = await delivery.run(case.child_id, adopt_source=True)
+    assert preview["outcome"] == "would_advance"
+    assert preview["completion_id"] == before.id
+    assert preview["head_sha"] == case.head
+    assert await _retained_leaf(case) is None
+
+    applied = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                 expected_head_sha=case.head, reason="recover old leaf",
+                                 operator_id="supervisor:p")
+    assert applied["outcome"] == "advanced", applied
+    assert await _retained_leaf(case)
+    assert await case.db.get_task_completion(case.child_id) == before
+    assert await case.db.get_integration_checkpoint(case.child_id) == checkpoint
+    assert (await case.db.get_task(case.child_id)).status is TaskStatus.COMPLETED
+    assert await _evidence(case.db) == []
+    async with case.db._engine.connect() as conn:
+        assert not await conn.scalar(select(task_delivery_receipts.c.id))
+        audit = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == REDRIVE_EVENT,
+        ))).scalars().all()
+    assert len(audit) == 1
+    assert json.loads(audit[0])["action"] == "adopt_source"
+    assert json.loads(audit[0])["reason"] == "recover old leaf"
+    pending = await observer.observe([case.child_id])
+    assert not pending.satisfied(case.child_id)
+    assert pending.get(case.child_id).reason != "missing_git_provenance"
+
+    repeated = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                  expected_head_sha=case.head, reason="retry same recovery",
+                                  operator_id="supervisor:p")
+    assert repeated["outcome"] == "nothing_to_redrive"
+    # Only a real merge changes the delivery answer.
+    _git(["push", "origin", f"{case.head}:refs/heads/{case.parent_branch}"], case.work)
+    assert (await observer.observe([case.child_id])).satisfied(case.child_id)
+
+
+async def test_source_adoption_command_forwards_explicit_opt_in(case, tmp_path):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    await _unretained_leaf(case, tmp_path)
+    handler = IntegrationCommandsMixin()
+    handler.db = case.db
+    handler.orchestrator = SimpleNamespace()
+    handler._integration_repository_git = lambda: case.promotion
+    preview = await handler._cmd_integration_redrive_child({
+        "task_id": case.child_id, "adopt_source": True,
+    })
+    assert preview["success"] is True
+    assert preview["outcome"] == "would_advance"
+    assert await _retained_leaf(case) is None
+
+
+@pytest.mark.parametrize("damage", ["missing_completion", "failed_completion", "recorded_head",
+                                  "unpublished", "moved", "origin", "parent_repo",
+                                  "session", "workspace", "owner", "reopened", "container"])
+async def test_source_adoption_refuses_unproven_or_live_bindings(case, tmp_path, damage):
+    from src.database.tables import integration_branch_owners, task_completion_records
+    from src.models import SessionRecord, Workspace
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    if damage == "unpublished":
+        _git(["push", "origin", "--delete", f"aq/{case.child_id}"], case.work)
+    elif damage == "moved":
+        _git(["push", "origin", f"+{case.base}:refs/heads/aq/{case.child_id}"], case.work)
+    elif damage == "session":
+        await case.db.create_session(SessionRecord(
+            id="live-child", task_id=case.child_id, project_id="p", profile_id="worker",
+            harness="codex", provider="fake", name="child-writer", work_dir=str(case.work),
+            lifecycle="task", epoch="daemon", instance_token="writer", started_at=1.0,
+            state="running",
+        ))
+    elif damage == "workspace":
+        await case.db.create_workspace(Workspace(
+            id="child-slot", project_id="p", workspace_path=str(case.work),
+            source_type=RepoSourceType.CLONE, locked_by_task_id=case.child_id,
+        ))
+    elif damage == "container":
+        await case.db.create_task(Task(id=f"{case.child_id}.1", project_id="p",
+                                       title="nested", description=""))
+        async with case.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == f"{case.child_id}.1").values(
+                parent_task_id=case.child_id,
+            ))
+    else:
+        async with case.db.immediate() as conn:
+            if damage == "missing_completion":
+                await conn.execute(task_completion_records.delete())
+            elif damage == "failed_completion":
+                await conn.execute(update(task_completion_records).values(outcome="fail"))
+            elif damage == "recorded_head":
+                await conn.execute(update(task_completion_records).values(commits=json.dumps([case.base])))
+            elif damage == "origin":
+                await conn.execute(update(task_branch_origins).where(
+                    task_branch_origins.c.task_id == case.child_id,
+                ).values(retired_at=5.0))
+            elif damage == "parent_repo":
+                await conn.execute(update(tasks).where(tasks.c.id == case.parent_id).values(repo_id=None))
+            elif damage == "owner":
+                await conn.execute(update(integration_branch_owners).where(
+                    integration_branch_owners.c.owner_id == case.child_id,
+                ).values(handoff_state="attached"))
+            elif damage == "reopened":
+                await conn.execute(update(tasks).where(tasks.c.id == case.child_id).values(status="READY"))
+    result = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                expected_head_sha=case.head, reason="must refuse",
+                                operator_id="supervisor:p")
+    assert result["outcome"] == "blocked", result
+    assert await _retained_leaf(case) is None
+    assert await _evidence(case.db) == []
+
+
+@pytest.mark.parametrize("change", ["head", "completion", "publish_failure", "conflicting_source",
+                                  "remote_after_proof"])
+async def test_source_adoption_rechecks_preview_and_retains_on_failure(case, tmp_path, monkeypatch, change):
+    from src.git.manager import GitError
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    if change == "conflicting_source":
+        await GitProvenance(case.promotion.git, str(case.work), repository_url=str(case.origin)
+                            ).write_completion(CompletedSource(
+                                CompletionIdentity("p", "repo", case.child_id, "leaf-close"), case.base))
+    if change in {"completion", "remote_after_proof"}:
+        prove = delivery._prove
+        async def changed(snapshot):
+            proof = await prove(snapshot)
+            if change == "completion":
+                await case.db.save_task_completion(TaskCompletion(
+                    id="new-close", task_id=case.child_id, outcome="pass", completed_at=5.0,
+                ))
+            else:
+                _git(["push", "origin", f"+{case.base}:refs/heads/aq/{case.child_id}"], case.work)
+            return proof
+        monkeypatch.setattr(delivery, "_prove", changed)
+    if change == "publish_failure":
+        async def failed(*args, **kwargs):
+            raise GitError("publication unavailable")
+        monkeypatch.setattr(GitProvenance, "write_completion", failed)
+    result = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                expected_head_sha=case.base if change == "head" else case.head,
+                                reason="must retain", operator_id="supervisor:p")
+    assert result["outcome"] in {"changed", "blocked"}, result
+    assert (await case.db.get_task(case.child_id)).status is TaskStatus.COMPLETED
+    if change != "conflicting_source":
+        assert await _retained_leaf(case) is None
+
+
+async def _evidence(db, task_id="epic.1") -> list[dict]:
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(integration_review_evidence).where(
+                    integration_review_evidence.c.source_task_id == task_id
+                )
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def _delivery_ready(db) -> list[dict]:
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "delivery.ready"
+                )
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def _open_reviewer(db) -> None:
+    await db.create_profile(AgentProfile(id="reviewer", name="Reviewer", harness="claude"))
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(tasks).values(
+                id="review-1", project_id="p", title="Review epic.1", description="",
+                status="READY", profile_id="reviewer", route_source="role",
+                created_at=4.0, updated_at=4.0,
+            )
+        )
+        await conn.execute(
+            insert(task_dependencies).values(
+                task_id="review-1", depends_on_task_id="epic.1", dep_type="discovered-from"
+            )
+        )
+
+
+async def _reject_head(case) -> None:
+    await case.db.append_integration_review_evidence(
+        {
+            "id": "rejection", "source_task_id": "epic.1", "repository_id": "repo",
+            "source_base": case.base, "reviewed_head_sha": case.head,
+            "reviewed_tree_sha": case.tree, "reviewer_task_id": "review-1",
+            "reviewer_session_attempt_id": None, "review_kind": "leaf", "generation": 0,
+            "verdict": "rejected", "evidence": {}, "created_at": 4.0,
+        }
+    )
+
+
+async def _sibling_admitted(db) -> bool:
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(
+                select(tasks.c.id).where(
+                    tasks.c.id == "epic.2",
+                    delivered_same_parent_prerequisites_when_hierarchical(),
+                )
+            )
+        ).scalar_one_or_none() == "epic.2"
+
+
+# ---------------------------------------------------------------------------
+# Collector: the durable path
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+async def test_collector_proves_an_unreviewed_child_and_queues_its_delivery(case):
+    await _collector(case).tick(10.0)
+
+    [evidence] = await _evidence(case.db)
+    assert evidence["verdict"] == "approved"
+    assert evidence["review_kind"] == "leaf"
+    assert evidence["reviewer_task_id"] is None
+    assert evidence["reviewer_identity"] == f"{COMPLETION_IDENTITY_PREFIX}epic.1"
+    assert (evidence["source_base"], evidence["reviewed_head_sha"]) == (case.base, case.head)
+    # The exact tree promotion recomputes before it pushes.
+    assert evidence["reviewed_tree_sha"] == case.tree
+    assert evidence["evidence"]["decision_path"] == "completion_proof"
+    [event] = await _delivery_ready(case.db)
+    assert event["payload"]["source_task_id"] == "epic.1"
+    assert event["payload"]["source_head"] == case.head
+    assert event["payload"]["source_base"] == case.base
+
+    # Idempotent: the next pass finds the evidence and records nothing new.
+    await _collector(case).tick(11.0)
+    assert len(await _evidence(case.db)) == 1
+
+
+async def test_collector_without_child_delivery_still_waits_for_a_reviewer(case):
+    collector = CollectionService(case.db, hierarchy_service_factory=lambda: case.hierarchy)
+
+    await collector.tick(10.0)
+
+    assert await _evidence(case.db) == []
+    assert await _delivery_ready(case.db) == []
+
+
+async def test_collector_never_overrides_a_reviewer_rejection(case):
+    await _reject_head(case)
+
+    await _collector(case).tick(10.0)
+
+    assert [row["verdict"] for row in await _evidence(case.db)] == ["rejected"]
+    assert await _delivery_ready(case.db) == []
+
+
+async def test_collector_waits_for_an_open_reviewer(case):
+    await _open_reviewer(case.db)
+
+    await _collector(case).tick(10.0)
+
+    assert await _evidence(case.db) == []
+    assert await _delivery_ready(case.db) == []
+
+
+async def test_collector_backs_off_a_child_whose_branch_moved(case):
+    (case.work / "child.txt").write_text("unreviewed follow-up\n")
+    _git(["commit", "-am", "pushed after close"], case.work)
+    _git(["push", "origin", "aq/epic.1"], case.work)
+    fetches = []
+    original = case.promotion._fetch_all_heads
+
+    async def counting_fetch(*args, **kwargs):
+        fetches.append(args)
+        return await original(*args, **kwargs)
+
+    case.promotion._fetch_all_heads = counting_fetch
+    delivery = ChildDelivery(case.db, case.promotion, retry_seconds=60.0)
+    collector = _collector(case, delivery)
+
+    await collector.tick(100.0)
+    await collector.tick(130.0)  # inside the 60s backoff: no second fetch
+    assert len(fetches) == 1
+    await collector.tick(161.0)
+    assert len(fetches) == 2
+
+    assert await _evidence(case.db) == []
+    assert await _delivery_ready(case.db) == []
+
+
+# ---------------------------------------------------------------------------
+# Redrive: the supervisor's control
+# ---------------------------------------------------------------------------
+
+
+async def test_redrive_dry_run_reports_the_proven_head_and_writes_nothing(case):
+    result = await ChildDelivery(case.db, case.promotion).run("epic.1")
+
+    assert result["outcome"] == "would_advance"
+    assert result["parent_task_id"] == "epic"
+    assert result["branch"] == "aq/epic.1"
+    assert result["parent_branch"] == "aq/epic"
+    assert result["head_sha"] == result["remote_head_sha"] == case.head
+    assert result["base_sha"] == case.base
+    assert result["tree_sha"] == case.tree
+    assert result["checkpoint"]["state"] == "working"
+    assert await _evidence(case.db) == []
+
+
+async def test_redrive_apply_records_evidence_and_queues_the_parent(case):
+    collector = _collector(case)
+    delivery = ChildDelivery(
+        case.db,
+        case.promotion,
+        collect=lambda parent_id: collector.collect_parent(parent_id, 20.0),
+        clock=lambda: 20.0,
+    )
+
+    result = await delivery.run(
+        "epic.1", dry_run=False, expected_head_sha=case.head,
+        reason="sharp-impact stalled", operator_id="supervisor session:s1",
+    )
+
+    assert result["outcome"] == "advanced"
+    assert result["collection"] == "queued"
+    [evidence] = await _evidence(case.db)
+    assert evidence["id"] == result["evidence_id"]
+    assert evidence["reviewer_identity"] == "supervisor session:s1"
+    assert evidence["evidence"]["decision_path"] == "operator_redrive"
+    assert evidence["evidence"]["reason"] == "sharp-impact stalled"
+    [ready] = await _delivery_ready(case.db)
+    assert ready["payload"]["source_head"] == case.head
+    async with case.db._engine.connect() as conn:
+        row = (
+            await conn.execute(select(events).where(events.c.event_type == REDRIVE_EVENT))
+        ).mappings().one()
+    payload = json.loads(row["payload"])
+    assert row["task_id"] == "epic.1"
+    assert payload["operator_id"] == "supervisor session:s1"
+    assert payload["head_sha"] == case.head
+    assert payload["evidence_created"] is True
+
+    # Re-applying reuses the evidence rather than writing a second verdict.
+    again = await delivery.run(
+        "epic.1", dry_run=False, expected_head_sha=case.head, reason="again",
+        operator_id="supervisor session:s1",
+    )
+    assert again["outcome"] == "advanced"
+    assert again["evidence_id"] == evidence["id"]
+    assert len(await _evidence(case.db)) == 1
+
+
+async def test_redrive_apply_refuses_a_head_the_dry_run_did_not_report(case):
+    result = await ChildDelivery(case.db, case.promotion).run(
+        "epic.1", dry_run=False, expected_head_sha="d" * 40, reason="stuck"
+    )
+
+    assert result["outcome"] == "changed"
+    assert await _evidence(case.db) == []
+
+
+async def test_redrive_blocks_a_moved_branch_a_rejection_and_an_open_reviewer(case):
+    delivery = ChildDelivery(case.db, case.promotion)
+    await _open_reviewer(case.db)
+    reviewer = await delivery.run("epic.1")
+    assert reviewer["outcome"] == "blocked"
+    assert "review-1" in reviewer["reason"]
+
+    await _reject_head(case)
+    rejected = await delivery.run("epic.1")
+    assert rejected["outcome"] == "blocked"
+    assert "rejected" in rejected["reason"]
+
+
+async def test_redrive_blocks_a_branch_that_moved_after_the_close(case):
+    (case.work / "child.txt").write_text("moved\n")
+    _git(["commit", "-am", "moved"], case.work)
+    moved = _git(["rev-parse", "HEAD"], case.work)
+    _git(["push", "origin", "aq/epic.1"], case.work)
+
+    result = await ChildDelivery(case.db, case.promotion).run("epic.1")
+
+    assert result["outcome"] == "blocked"
+    assert result["remote_head_sha"] == moved
+    assert "moved" in result["reason"]
+
+
+async def test_redrive_reports_a_delivered_child_and_a_no_code_child(case):
+    delivery = ChildDelivery(case.db, case.promotion)
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="receipt", domain_key="receipt", source_task_id="epic.1",
+                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
+                reviewed_head_sha=case.head, disposition="code", created_at=5.0,
+            )
+        )
+    delivered = await delivery.run("epic.1")
+    assert delivered["outcome"] == "nothing_to_redrive"
+    assert "receipt" in delivered["reason"]
+
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "epic.1")
+            .values(checkpoint_sha=case.base)
+        )
+    no_code = await delivery.run("epic.1")
+    assert no_code["outcome"] == "blocked"
+    assert "record-noop" in no_code["reason"]
+
+
+
+
+async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case, tmp_path):
+    # Unloaded Git evidence admits the sibling; an unprovable source withholds it.
+    await _unretained_leaf(case, tmp_path)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.2").values(
+            status="READY", is_blocked=False,
+        ))
+    result = await run_task_check(case.db, "tasks.ready_frontier_exclusions")
+    assert result.severity.value == "warn"
+    sibling = next(row for row in result.data["tasks"] if row["task_id"] == "epic.2")
+    assert "sibling_prerequisite_not_delivered" in sibling["reasons"]
+
+
+async def test_redrive_classifies_tasks_it_cannot_advance(case):
+    delivery = ChildDelivery(case.db, case.promotion)
+
+    assert (await delivery.run("missing"))["outcome"] == "not_found"
+    root = await delivery.run("epic")
+    assert root["outcome"] == "not_eligible"
+    assert "redrive-root" in root["reason"]
+
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="READY"))
+    parent_moved_on = await delivery.run("epic.1")
+    assert parent_moved_on["outcome"] == "blocked"
+    assert "not PAUSED" in parent_moved_on["reason"]
+
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.1").values(status="READY"))
+    reopened = await delivery.run("epic.1")
+    assert reopened["outcome"] == "not_eligible"
+
+
+# ---------------------------------------------------------------------------
+# Doctor
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+@pytest.mark.parametrize(
+    "checkpoint_state", ["working", "awaiting_children", "integration_ready", "verifying"]
+)
+async def test_removing_manual_hold_preserves_collecting_parent(case, checkpoint_state):
+    """Resume removes the hold; it cannot start an unverified parent worker."""
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "epic",
+        ).values(state=checkpoint_state))
+    before = await case.db.get_integration_checkpoint("epic")
+    snapshot = await case.db.pause_task("epic")
+    await case.db.finish_task_pause("epic", snapshot)
+    await case.db.set_task_meta("epic", "needs_attention", "operator_review")
+
+    resumed = await case.db.resume_task("epic")
+
+    assert resumed.status == TaskStatus.PAUSED
+    assert resumed.resume_after is None
+    assert resumed.assigned_agent_id is None
+    assert await case.db.get_task_meta("epic", "manual_pause") is None
+    assert await case.db.get_task_meta("epic", "needs_attention") is None
+    assert await case.db.get_integration_checkpoint("epic") == before
+    assert await case.db.recover_orphaned_pause("epic") is None
+    if checkpoint_state == "awaiting_children":
+        await _collector(case).tick(10.0)
+        assert len(await _delivery_ready(case.db)) == 1
+
+
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
+async def test_collecting_parent_requires_verifier_for_every_worker_wake(case, status):
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    with pytest.raises(HierarchyError, match="guarded verifier wake"):
+        await case.db.transition_task(
+            "epic", status, context="manual_resume", force=True, _manual_pause_control=True,
+        )
+    assert (await case.db.get_task("epic")).status == TaskStatus.PAUSED
+
+
+async def _block_collector(case):
+    # Reproduce the old resume path, then the stopped-session orphan verdict.
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+    await case.db.transition_task("epic", TaskStatus.BLOCKED, context="session_not_live")
+    await case.db.set_task_meta("epic", "needs_attention", "session_not_live")
+
+
+
+
+async def test_redrive_collection_refuses_a_different_head(case):
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+    await _block_collector(case)
+    result = await CollectingParentRecovery(case.db).run(
+        "epic", dry_run=False, expected_head_sha="f" * 40, reason="wrong head",
+    )
+    assert result["outcome"] == "changed"
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+
+
+@pytest.mark.parametrize("blocker", ["manual_pause", "terminal", "human_required", "owner", "episode"])
+async def test_redrive_collection_does_not_override_real_blockers(case, blocker):
+    from src.database.tables import integration_branch_owners, integration_repair_operations
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+    await _block_collector(case)
+    if blocker == "manual_pause":
+        await case.db.set_task_meta("epic", "manual_pause", {"status": "BLOCKED"})
+    elif blocker == "terminal":
+        await case.db.set_task_meta("epic", "blocked_terminal", "integration_repair_exhausted")
+    else:
+        async with case.db.immediate() as conn:
+            if blocker == "human_required":
+                await conn.execute(update(integration_repair_operations).values(state="human_required"))
+            elif blocker == "owner":
+                await conn.execute(update(integration_branch_owners).values(owner_role="repair"))
+            else:
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == "epic",
+                ).values(episode_id=None))
+    result = await CollectingParentRecovery(case.db).run(
+        "epic", dry_run=False, expected_head_sha=case.base, reason="must refuse",
+    )
+    assert result["outcome"] == "blocked"
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+
+
+
+
+async def test_resume_collecting_parent_survives_stopped_session_orphan_sweep(case):
+    from src.config import AppConfig
+    from src.models import SessionRecord
+    from src.sessions.reconciler import SessionReconciler
+
+    await case.db.create_session(SessionRecord(
+        id="old-parent-writer", project_id="p", profile_id="worker", harness="codex",
+        provider="fake", name="old-parent-writer", lifecycle="task", work_dir=str(case.work),
+        epoch="old-daemon", instance_token="old-writer", started_at=1.0, task_id="epic",
+        state="stopped", desired_state="stopped", ended_at=2.0,
+    ))
+    snapshot = await case.db.pause_task("epic")
+    await case.db.finish_task_pause("epic", snapshot)
+    await case.db.resume_task("epic")
+    # This is the restart path that used to turn IN_PROGRESS into BLOCKED.
+    await SessionReconciler(case.db, AppConfig(), providers=None)._step_orphans([], 10.0)
+    assert (await case.db.get_task("epic")).status == TaskStatus.PAUSED
+    assert await case.db.get_task_meta("epic", "needs_attention") is None
+    await _collector(case).tick(10.0)
+    assert len(await _delivery_ready(case.db)) == 1
+
+
+async def test_removing_hold_does_not_restore_a_blocked_parent_to_collection(case):
+    await _block_collector(case)
+    snapshot = await case.db.pause_task("epic")
+    await case.db.finish_task_pause("epic", snapshot)
+    resumed = await case.db.resume_task("epic")
+    assert resumed.status == TaskStatus.BLOCKED
+
+
+async def test_collection_redrive_rechecks_a_later_hold_before_mutating(case, monkeypatch):
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+    await _block_collector(case)
+    recovery = CollectingParentRecovery(case.db)
+    diagnose = recovery.diagnose
+
+    async def hold_after_diagnosis(task_id):
+        result = await diagnose(task_id)
+        await case.db.set_task_meta(task_id, "manual_pause", {"status": "BLOCKED"})
+        return result
+
+    monkeypatch.setattr(recovery, "diagnose", hold_after_diagnosis)
+    result = await recovery.run(
+        "epic", dry_run=False, expected_head_sha=case.base, reason="race a hold",
+    )
+    assert result["outcome"] == "changed"
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+    assert await case.db.get_task_meta("epic", "manual_pause") == {"status": "BLOCKED"}
+
+
+async def test_collection_redrive_refuses_a_live_parent_session(case):
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+    from src.models import SessionRecord
+
+    await _block_collector(case)
+    await case.db.create_session(SessionRecord(
+        id="live-parent", project_id="p", profile_id="worker", harness="codex",
+        provider="fake", name="live-parent", lifecycle="pool", work_dir=str(case.work),
+        epoch="daemon", instance_token="live-writer", started_at=1.0, task_id="epic",
+        state="running",
+    ))
+    result = await CollectingParentRecovery(case.db).run(
+        "epic", dry_run=False, expected_head_sha=case.base, reason="must refuse live writer",
+    )
+    assert result["outcome"] == "blocked"
+    assert "session or workspace" in result["reason"]
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+
+
+async def _suspend_nested_writer(case):
+    """Exercise the producer checkpoint, actual Git detach and claim release."""
+    from src.models import Agent, AgentState, SessionRecord, Workspace
+    from src.orchestrator.workspace_attachments import (
+        detach_workspace_for_integration_handoff,
+        mark_integration_pool_handoff_released,
+    )
+    from src.integration.models import BranchKey
+
+    db = case.db
+    await db.create_agent(Agent(
+        id="producer", name="Producer", profile_id="worker", state=AgentState.BUSY,
+        current_task_id=case.parent_id,
+    ))
+    workspace = Workspace(
+        id="producer-slot", project_id="p", workspace_path=str(case.work),
+        source_type=RepoSourceType.CLONE, locked_by_agent_id="producer",
+        locked_by_task_id=case.parent_id,
+    )
+    await db.create_workspace(workspace)
+    await db.create_session(SessionRecord(
+        id="producer-session", task_id=case.parent_id, project_id="p", agent_id="producer",
+        profile_id="worker", harness="codex", provider="fake", name="producer-session",
+        lifecycle="pool", work_dir=str(case.work), epoch="daemon", instance_token="producer-token",
+        started_at=time.time(), state="running", claim_phase="active", last_claim_epoch=1,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == case.parent_id).values(
+            claim_epoch=1, assigned_agent_id="producer",
+        ))
+    target = BranchKey(repository_id="repo", branch=case.parent_branch)
+    owner = await case.hierarchy.ownership.get_owner(target)
+    fence = Fence(target=target, owner_id=case.parent_id, token=owner["fence_token"])
+    await case.hierarchy.ownership.attach(fence, "producer-session", workspace.id)
+    _git(["switch", "-c", case.parent_branch, case.base], case.work)
+    checkpoint = await db.get_integration_checkpoint(case.parent_id)
+    suspended = await case.hierarchy.checkpoint_and_suspend_parent(
+        case.parent_id, case.base, checkpoint["generation"], expect_claim_epoch=1,
+        accepted_close={"completion_id": "producer-close", "session_id": "producer-session",
+                        "claim_epoch": 1},
+    )
+    git = case.promotion.git
+    assert await detach_workspace_for_integration_handoff(
+        git, git.arepository_transaction, workspace, expected_branch=case.parent_branch,
+        repository_url=str(case.origin), default_branch="main",
+    )
+    from src.database.tables import integration_branch_owners
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.owner_id == case.parent_id
+        ).values(handoff_state="handoff_pending"))
+    owner = await case.hierarchy.ownership.get_owner(target)
+    assert await mark_integration_pool_handoff_released(
+        db, owner, workspace=workspace, task_id=case.parent_id,
+        session_instance_token="producer-token",
+    )
+    # The ordinary close handoff self-reserves the producer with a fresh fence.
+    detached = await case.hierarchy.ownership.transfer(fence, case.parent_id, "worker")
+    await db.release_claim(
+        "producer-session", task_status=TaskStatus.PAUSED,
+        context="integration_parent_suspended", now=10.0,
+        expected_task_id=case.parent_id, expected_claim_epoch=1,
+    )
+    case.target = target
+    case.detached_fence = detached
+    case.suspended = suspended
+    return suspended
+
+
+
+
+@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
+async def test_suspended_parent_operator_recovery_requires_reported_head_and_reason(case):
+    from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+    await _suspend_nested_writer(case)
+    recovery = SuspendedParentRecovery(case.db, case.hierarchy)
+    for head, reason in [("f" * 40, "recovery"), (case.base, " ")]:
+        assert (await recovery.run(case.parent_id, dry_run=False,
+                                   expected_head_sha=head, reason=reason))["outcome"] == "changed"
+    result = await recovery.run(case.parent_id, dry_run=False, expected_head_sha=case.base,
+                                reason="recover stopped nested producer", operator_id="supervisor:p")
+    assert result["outcome"] == "reopened"
+    assert result["collector_fence_token"] == case.detached_fence.token + 1
+
+
+@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
+@pytest.mark.parametrize("blocker", ["manual_pause", "gate", "human_required", "session",
+                                    "workspace", "detach_proof", "remote_head", "origin"])
+async def test_suspended_parent_recovery_refuses_real_blockers(case, blocker):
+    from src.database.tables import (
+        gates, integration_branch_owners, integration_repair_operations, task_gates, workspaces,
+    )
+    from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+    from src.models import SessionRecord
+
+    await _suspend_nested_writer(case)
+    if blocker == "manual_pause":
+        await case.db.set_task_meta(case.parent_id, "manual_pause", {"status": "PAUSED"})
+    elif blocker == "session":
+        await case.db.create_session(SessionRecord(
+            id="live", task_id=case.parent_id, project_id="p", profile_id="worker",
+            harness="codex", provider="fake", name="live", lifecycle="task",
+            work_dir=str(case.work), epoch="daemon", instance_token="live", started_at=1.0,
+            state="running",
+        ))
+    elif blocker == "remote_head":
+        case.hierarchy.default_head_resolver = lambda _repo, _branch: "f" * 40
+    else:
+        async with case.db.immediate() as conn:
+            if blocker == "gate":
+                await conn.execute(insert(gates).values(
+                    id="hold", project_id="p", gate_type="human", title="Hold",
+                    status="open", await_id="hold",
+                    created_at=20.0,
+                ))
+                await conn.execute(insert(task_gates).values(task_id=case.parent_id, gate_id="hold"))
+            elif blocker == "workspace":
+                await conn.execute(update(workspaces).values(locked_by_task_id=case.parent_id))
+            elif blocker == "human_required":
+                await conn.execute(update(integration_repair_operations).values(state="human_required"))
+            elif blocker == "origin":
+                await conn.execute(update(tasks).where(
+                    tasks.c.id == case.parent_id
+                ).values(parent_task_id=None))
+            else:
+                await conn.execute(update(integration_branch_owners).where(
+                    integration_branch_owners.c.owner_id == case.parent_id
+                ).values(confirmed_workspace_id=None))
+    result = await SuspendedParentRecovery(case.db, case.hierarchy).run(
+        case.parent_id, dry_run=False, expected_head_sha=case.base, reason="must refuse",
+    )
+    assert result["outcome"] == "blocked"
+    assert (await case.hierarchy.ownership.get_owner(case.target))["owner_role"] == "worker"
+    await _collector(case).tick(30.0)
+    assert await _delivery_ready(case.db) == []
+
+
+@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
+@pytest.mark.parametrize("change", ["fence", "episode", "claim", "manual_pause"])
+async def test_suspended_parent_recovery_rechecks_identity_after_observation(case, change):
+    from src.database.tables import integration_branch_owners
+    from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+    await _suspend_nested_writer(case)
+    async def change_after_read(_repo, _branch):
+        if change == "manual_pause":
+            await case.db.set_task_meta(case.parent_id, "manual_pause", {"status": "PAUSED"})
+        else:
+            async with case.db.immediate() as conn:
+                if change == "fence":
+                    await conn.execute(update(integration_branch_owners).where(
+                        integration_branch_owners.c.owner_id == case.parent_id
+                    ).values(fence_token=integration_branch_owners.c.fence_token + 1))
+                elif change == "episode":
+                    await conn.execute(update(task_integration_checkpoints).where(
+                        task_integration_checkpoints.c.task_id == case.parent_id
+                    ).values(episode_id=None))
+                else:
+                    await conn.execute(update(tasks).where(tasks.c.id == case.parent_id).values(
+                        claim_epoch=tasks.c.claim_epoch + 1,
+                    ))
+        return case.base
+    case.hierarchy.default_head_resolver = change_after_read
+    result = await SuspendedParentRecovery(case.db, case.hierarchy).run(
+        case.parent_id, dry_run=False, expected_head_sha=case.base, reason="race",
+    )
+    assert result["outcome"] == "changed"
+    assert (await case.hierarchy.ownership.get_owner(case.target))["owner_role"] == "worker"
+
+
+@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
+async def test_reopen_collection_dispatches_suspended_worker_with_operator_authority(case, monkeypatch):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    await _suspend_nested_writer(case)
+    handler = IntegrationCommandsMixin()
+    handler.db = case.db
+    handler.orchestrator = SimpleNamespace(repository_git=case.promotion)
+    monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: case.hierarchy)
+    dry_run = await handler._cmd_integration_reopen_collection({"task_id": case.parent_id})
+    assert dry_run["success"] is True
+    assert dry_run["outcome"] == "would_reopen"
+    assert dry_run["kind"] == "suspended_worker"
+    assert dry_run["dry_run"] is True
+    applied = await handler._cmd_integration_reopen_collection({
+        "task_id": case.parent_id, "dry_run": False, "expected_head_sha": case.base,
+        "reason": "restore stopped nested parent",
+    })
+    assert applied["success"] is True
+    assert applied["outcome"] == "reopened"
+    replay = await handler._cmd_integration_reopen_collection({"task_id": case.parent_id})
+    assert replay["outcome"] == "nothing_to_reopen"
+
+
+
+
+
+
+@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
+async def test_suspended_parent_recovery_keeps_children_filed_in_current_episode(case):
+    from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+    await _suspend_nested_writer(case)
+    checkpoint = await case.db.get_integration_checkpoint(case.parent_id)
+    await case.hierarchy.file_children(case.parent_id, [{"title": "additional child"}],
+                                       checkpoint["generation"])
+    current = await case.db.get_integration_checkpoint(case.parent_id)
+    assert current["generation"] == checkpoint["generation"] + 1
+    assert current["episode_id"] == checkpoint["episode_id"]
+    result = await SuspendedParentRecovery(case.db, case.hierarchy).run(
+        case.parent_id, dry_run=False, expected_head_sha=case.base, reason="resume current children",
+    )
+    assert result["outcome"] == "reopened"
+    assert await case.db.get_integration_checkpoint(case.parent_id) == current
+
+
+@pytest.mark.parametrize("code", [None, "source_withheld", "queued_behind_open_batch"])
+async def test_git_redrive_explains_pending_child_without_a_batch(case, tmp_path, code):
+    from unittest.mock import AsyncMock
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                       expected_head_sha=case.head, reason="retain source", operator_id="operator")
+    delivery.train_blockers = AsyncMock(return_value={
+        "batches": [], "blockers": [] if code is None else [{
+            "code": code, "detail": "exact source admission reason", "task_id": case.child_id,
+        }],
+    })
+    result = await delivery.run(case.child_id)
+    assert result["outcome"] == "blocked"
+    assert (code or "no batch contains this child") in result["reason"]
+    assert "train owns delivery" not in result["reason"]
+    delivery.train_blockers.assert_awaited_once_with(case.child_id)
