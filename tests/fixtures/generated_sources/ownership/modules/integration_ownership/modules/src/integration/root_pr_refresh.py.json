@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/root_pr_refresh.py::refresh_root_pr::91d4222b13bf2085c50f7f0fb2fbcc916b60f2ee0d19c136d2a5112c437eb9b2": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 192,
+      "owner": "refresh_root_pr",
+      "owner_fingerprint": "0af35706f7f702ca38d7a9f0d387f452f2d3f5fd99769d33a2ba11db7c7bcd84",
+      "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
+    },
+    "src/integration/root_pr_refresh.py::refresh_root_pr::de81a76c43aceca6c39fcf2f9f73e38d8a11fc190cd008a5f3c8a76f16e83b96": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 248,
+      "owner": "refresh_root_pr",
+      "owner_fingerprint": "0af35706f7f702ca38d7a9f0d387f452f2d3f5fd99769d33a2ba11db7c7bcd84",
+      "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
+    }
+  }
+}

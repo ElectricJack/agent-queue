@@ -60,6 +60,7 @@ vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks
 vi.mock("../../../api/hooks", () => ({
   useEditTask: () => ({ mutate: mocks.edit, isPending: false, error: null }),
   useDeleteTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteTaskPreview: () => ({ data: { task_ids: [], tasks: [] }, isFetching: false }),
   usePauseTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useResumeTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useStopTask: () => ({ mutate: mocks.stop, isPending: false, error: null }),
@@ -96,6 +97,24 @@ function windowResponse(items: unknown[], extra: Record<string, unknown> = {}) {
 }
 
 describe("unified task table", () => {
+  it("counts and filters waiting epics using their computed activity", () => {
+    const original = mocks.tasks;
+    mocks.tasks = [Object.assign({ ...original[0]! }, {
+      display_state: "waiting", display_reason: "Paused", child_state_counts: { waiting: 2 },
+    })];
+    try {
+      mocks.filters.status = "WAITING";
+      render(<Tasks />);
+      expect(screen.getByRole("button", { name: "In progress: 0 tasks" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Waiting: 1 task" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getAllByText("2 waiting").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+    } finally {
+      mocks.tasks = original;
+    }
+  });
+
   it("keeps status counts in scope and switches or clears a status without resetting other filters", async () => {
     mocks.filters = { ...mocks.filters, query: "checkout", status: "BLOCKED" };
     const view = render(<Tasks />);
@@ -230,7 +249,7 @@ describe("unified task table", () => {
     expect(mocks.edit).not.toHaveBeenCalled();
   });
 
-  it("closes a delete dialog backdrop without selecting its task row", async () => {
+  it("closes a removal dialog backdrop without selecting its task row", async () => {
     render(<Tasks />);
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
     const dialog = screen.getByRole("dialog", { name: "Delete task" });
@@ -410,4 +429,38 @@ describe("below 768 px", () => {
       expect(cards.length).toBeLessThan(200);
     } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
   });
+});
+
+it("counts delivery-held work separately and filters it by the visible wait", () => {
+  const original = mocks.tasks;
+  mocks.tasks = [Object.assign({ ...original[0]!, status: "READY" }, {
+    claim_readiness: { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" },
+  })];
+  try {
+    mocks.filters.status = "WAITING_ON_DELIVERY";
+    render(<Tasks />);
+    expect(screen.getByRole("button", { name: "Ready: 0 tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting on delivery: 1 task" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Land source.6 on dev; refresh aq/epic").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally {
+    mocks.tasks = original;
+  }
+});
+
+it.each(["DEFINED", "IN_PROGRESS", "PAUSED", "READY"].flatMap((status) => ["", "24h"].map((window) => [status, window] as const)))
+  ("labels a held %s table row from canonical batch membership (window %s)", (status, window) => {
+  const original = mocks.tasks;
+  mocks.filters.window = window;
+  mocks.activityData = windowResponse([activityItem({ status })]);
+  mocks.tasks = [Object.assign({ ...original[0]!, status }, { held_batch: {
+    batch_id: "batch", state: "reviewing", structure_revision: 2,
+    source: "spec:approved", lineage: { lineage_kind: "none" },
+  } })];
+  try {
+    render(<Tasks />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally { mocks.tasks = original; }
 });

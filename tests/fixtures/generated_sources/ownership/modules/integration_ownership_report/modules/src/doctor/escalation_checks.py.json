@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+  }
+}
