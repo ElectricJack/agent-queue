@@ -26,6 +26,7 @@ from src.database.tables import (
     tasks,
 )
 from src.database.queries.blocked_state import obsolete_marker
+from src.database.queries.ingest_hold import not_ingest_held
 from src.models import TaskStatus
 
 
@@ -39,6 +40,20 @@ _ACTIVE_BATCH_LIFECYCLES = (
     "promoting",
     "cleanup_pending",
 )
+
+
+def legacy_batch_row():
+    """Predicate naming the ``integration_batches`` rows the old engine owns.
+
+    A non-null ``target_ref`` is the Git-first train's additive input/intent
+    shape (see ``tables.py``); the legacy rows are the ones
+    ``uq_integration_batches_active_project`` makes mutually exclusive per
+    project.  The train alone advances its own rows, so after a rollback to
+    ``integration.git_first: shadow`` nothing visits them again: a leftover
+    train batch must neither read as busy to the legacy engine nor hold its
+    members out of the legacy frontier.
+    """
+    return integration_batches.c.target_ref.is_(None)
 
 
 def _root_delivery_receipt_conditions(repository_id: str, default_branch):
@@ -145,6 +160,7 @@ class IntegrationTrainQueriesMixin:
             .where(
                 integration_batch_members.c.task_id == tasks.c.id,
                 integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES),
+                legacy_batch_row(),
             )
         )
         delivered_to_root = exists(
@@ -214,6 +230,8 @@ class IntegrationTrainQueriesMixin:
                 tasks.c.pr_url.is_not(None),
                 func.trim(tasks.c.pr_url) != "",
                 ~held,
+                # A held ingestion container is never a train root.
+                not_ingest_held(),
                 ~unresolved_gate,
                 ~active_membership,
                 ~delivered_to_root,
