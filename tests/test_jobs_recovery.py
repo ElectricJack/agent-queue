@@ -3,14 +3,17 @@
 import time
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import update
+
+from src.commands.job_commands import JobCommandsMixin
 from src.config import AppConfig
 from src.database.tables import jobs
 from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.policy import next_admission
 from src.jobs.service import JobService
-from src.commands.job_commands import JobCommandsMixin
-from tests.test_jobs_queries import values, db as jobs_db
+from tests.test_jobs_queries import db as jobs_db
+from tests.test_jobs_queries import values
 
 db = jobs_db
 
@@ -44,6 +47,53 @@ async def test_completion_adopted_with_flag_off_and_result_rebuilt(db, tmp_path)
     assert (await db.get_job(job["id"]))["result"] == adopted["result"]
 
 
+@pytest.mark.parametrize("exit_code,expected_state", [(0, "succeeded"), (7, "failed")])
+async def test_completion_written_during_process_observation_is_adopted(
+    db, tmp_path, monkeypatch, exit_code, expected_state
+):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    directory = job_directory(tmp_path / "data", job["id"])
+    identity = {"job_id": job["id"], "nonce": job["runner_nonce"]}
+    atomic_json(directory / "intent.json", identity)
+
+    async def finish_before_liveness_returns(nonce):
+        assert nonce == job["runner_nonce"]
+        atomic_json(directory / "completion.json", {**identity, "exit_code": exit_code})
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", finish_before_liveness_returns)
+    await svc.reconcile(job)
+
+    adopted = await db.get_job(job["id"])
+    assert adopted["state"] == expected_state
+    assert adopted["result"]["exit_code"] == exit_code
+    assert not await db.workspace_has_job_pin("w")
+    assert read_json(directory / "result.json") == adopted["result"]
+
+
+@pytest.mark.parametrize("field", ["job_id", "nonce"])
+async def test_late_completion_with_foreign_identity_cannot_pass(db, tmp_path, monkeypatch, field):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    directory = job_directory(tmp_path / "data", job["id"])
+    identity = {"job_id": job["id"], "nonce": job["runner_nonce"]}
+    atomic_json(directory / "intent.json", identity)
+
+    async def finish_before_liveness_returns(_):
+        atomic_json(directory / "completion.json", {**identity, "exit_code": 0, field: "foreign"})
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", finish_before_liveness_returns)
+    await svc.reconcile(job)
+
+    observed = await db.get_job(job["id"])
+    assert observed["state"] == "lost"
+    assert observed["result"]["exit_code"] is None
+
+
 async def test_ambiguous_spawn_lost_retains_pin_until_receipt(db, tmp_path):
     svc = service(db, tmp_path)
     job = await db.submit_job(values())
@@ -63,6 +113,39 @@ async def test_ambiguous_spawn_lost_retains_pin_until_receipt(db, tmp_path):
     await svc.reconcile(lost)
     assert not await db.workspace_has_job_pin("w")
     assert (await db.get_job(job["id"]))["state"] == "lost"  # terminal results are immutable
+
+
+@pytest.mark.parametrize("foreign_field", [None, "nonce", "job_id"])
+async def test_completion_between_receipt_read_and_process_scan_is_fenced(
+    db, tmp_path, monkeypatch, foreign_field
+):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
+    directory = job_directory(tmp_path / "data", job["id"])
+    atomic_json(directory / "intent.json", {
+        "job_id": job["id"], "nonce": job["runner_nonce"],
+    })
+
+    async def runner_exits_after_receipts_were_read(_):
+        # The detached runner fsyncs completion before exiting. Reconciliation
+        # must observe that receipt after it proves the process has gone.
+        completion = {
+            "job_id": job["id"], "nonce": job["runner_nonce"], "exit_code": 0,
+        }
+        if foreign_field:
+            completion[foreign_field] = "another-job"
+        atomic_json(directory / "completion.json", completion)
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", runner_exits_after_receipts_were_read)
+    await svc.reconcile(job)
+    adopted = await db.get_job(job["id"])
+    assert adopted["state"] == ("lost" if foreign_field else "succeeded")
+    if not foreign_field:
+        assert adopted["result"]["exit_code"] == 0
+    assert read_json(directory / "result.json") == adopted["result"]
+    assert not await db.workspace_has_job_pin("w")
 
 
 async def test_unreadable_process_identity_quarantines_job(db, tmp_path, monkeypatch):
@@ -157,6 +240,33 @@ def test_admission_aged_order_and_exclusive_frontier():
     assert next_admission([integration, old], 1300, 4, 2) == old
 
 
+@pytest.mark.parametrize("full_state", ["starting", "running", "cancelling"])
+def test_full_suite_allows_two_focused_jobs_and_queues_second_suite(full_state):
+    def row(name, state="queued", weight=1, scope="focused", submitted=100):
+        return {
+            "id": name, "state": state, "job_class": "shared", "weight": weight,
+            "priority_band": 2, "submitted_at": submitted, "owner_id": name,
+            "contract": {"test_scope": scope},
+        }
+
+    full = row("full", full_state, weight=4, scope="full")
+    second = row("second", weight=4, scope="full")
+    first = row("foreign-focused-1", submitted=101)
+    later = row("foreign-focused-2", submitted=102)
+    rows = [full, second, first, later]
+    assert next_admission(rows, 200, 6, 2) == first
+    first["state"] = "running"
+    assert next_admission(rows, 200, 6, 2) == later
+    later["state"] = "running"
+    assert next_admission(rows, 200, 6, 2) is None
+    full["state"] = "succeeded"
+    assert next_admission(rows, 200, 6, 2) == second
+    # A waiting first full suite keeps its position as existing work drains.
+    full["state"] = "queued"
+    first["weight"] = 3
+    assert next_admission(rows, 200, 6, 2) is None
+
+
 async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, tmp_path):
     svc = service(db, tmp_path)
     job = await db.submit_job(values())
@@ -174,6 +284,7 @@ async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, t
 async def test_service_launch_and_adoption_preserve_canonical_result(db, tmp_path, monkeypatch):
     import asyncio
     import sys
+
     from src.jobs.policy import Preset
 
     svc = service(db, tmp_path)

@@ -26,6 +26,7 @@ def _scope(
     scheme: str = "http",
     headers: list[tuple[bytes, bytes]] | None = None,
     subprotocols: list[str] | None = None,
+    method: str = "GET",
 ) -> dict:
     raw: list[tuple[bytes, bytes]] = []
     if host is not None:
@@ -38,6 +39,7 @@ def _scope(
         "path": path,
         "raw_path": path.encode(),
         "scheme": scheme,
+        "method": method,
         "headers": raw,
         "client": client,
     }
@@ -182,10 +184,42 @@ def test_a_lan_peer_reaches_local_operator_routes():
     assert _error(_lan_gate(), _lan_scope("/ws/events", kind="websocket")) is None
 
 
-@pytest.mark.parametrize("kind", ["websocket", "http"])
-def test_a_lan_peer_is_refused_terminals(kind):
-    for path in ("/ws/terminal/sess-1", "/ws/terminal", "/ws/terminal/sess-1/input"):
-        assert _error(_lan_gate(), _lan_scope(path, kind=kind)) == "403 loopback_only"
+
+
+@pytest.mark.parametrize("origin", ["http://192.168.1.5:8082", "https://aq.example.com:443"])
+def test_a_trusted_origin_restores_lan_terminal_websockets(origin):
+    gate = _gate(
+        host="0.0.0.0",
+        trusted_origins=("http://192.168.1.5:8082", "https://aq.example.com"),
+    )
+    scope = _lan_scope(
+        "/ws/terminal/sess-1", kind="websocket", origin=origin,
+        subprotocols=["aq-terminal-v1"],
+    )
+    assert _error(gate, scope) is None
+
+
+
+
+
+
+
+
+
+
+def test_lan_probe_can_name_a_trusted_tls_origin_behind_a_proxy():
+    gate = _gate(host="0.0.0.0", trusted_origins=("https://aq.example.com",))
+    scope = _scope("/ws/terminal/s", host="aq.example.com", client=LAN_PEER)
+    scope.update(method="GET", query_string=b"browser_origin=https%3A%2F%2Faq.example.com")
+    assert _error(gate, scope) is None
+    scope["headers"].append((b"origin", b"http://evil.example"))
+    assert _error(gate, scope) == "403 origin_not_allowed"
+
+
+
+
+
+
 
 
 def test_a_lan_peer_is_refused_bearer_tokens():
@@ -208,11 +242,21 @@ def test_a_loopback_peer_keeps_terminals_and_bearer_tokens():
     assert _error(gate, _scope("/ws/terminal/s", kind="websocket", client=("::1", 1))) is None
 
 
-def test_an_unknown_peer_is_not_loopback():
-    """No address (a Unix socket, an in-process transport) proves nothing."""
-    gate = _gate()
-    assert _error(gate, _scope("/ws/terminal/s", client=None)) == "403 loopback_only"
-    assert _error(gate, _scope("/ws/terminal/s", client=("localhost", 1))) == "403 loopback_only"
+
+
+def test_pull_request_approval_requires_local_or_trusted_tailnet_browser():
+    origin = "https://jack.tailnet.ts.net"
+    gate = _gate(trusted_origins=(origin,))
+    path = "/api/reviews/pull-requests/task-1/approve"
+    common = {"host": "jack.tailnet.ts.net", "origin": origin,
+              "scheme": "https", "method": "POST"}
+    assert _error(gate, _scope(path, client=LOOPBACK_PEER, **common)) is None
+    assert _error(gate, _scope(path, client=("100.101.102.103", 1), **common)) is None
+    assert gate.operator_viewer(_scope(path, client=("100.101.102.103", 1), **common))
+    assert not gate.operator_viewer(_scope(path, client=("192.168.1.9", 1), **common))
+    assert _error(gate, _scope(path, client=("192.168.1.9", 1), **common)) == "403 operator_only"
+    no_origin = {key: value for key, value in common.items() if key != "origin"}
+    assert _error(gate, _scope(path, client=("100.101.102.103", 1), **no_origin)) == "403 operator_only"
 
 
 def test_the_gates_run_in_order_host_then_origin_then_peer():

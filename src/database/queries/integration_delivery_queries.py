@@ -11,17 +11,15 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
     integration_promotion_intents,
+    integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
-    integration_repair_operations,
     projects,
     task_branch_origins,
     task_delivery_receipts,
-    task_integration_checkpoints,
     tasks,
 )
 from src.integration.outbox import enqueue_integration_event
-
 
 _FROZEN_INTENT_FIELDS = (
     "domain_key",
@@ -202,6 +200,14 @@ class IntegrationDeliveryQueriesMixin:
             return None
         return result
 
+    async def get_integration_review_evidence(self, evidence_id: str) -> dict | None:
+        statement = select(integration_review_evidence).where(
+            integration_review_evidence.c.id == evidence_id
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
     async def get_task_branch_origin_for_promotion(
         self, task_id: str, repository_id: str
     ) -> dict | None:
@@ -223,10 +229,22 @@ class IntegrationDeliveryQueriesMixin:
             raise ValueError("promotion intent missing: " + ", ".join(sorted(missing)))
 
         async with self.immediate() as conn:
+            # Cancellation holds this row through its pending-intent check
+            # and fence release. Recheck here because prepare validates its
+            # authority before entering this reservation transaction.
+            operation_state = await conn.scalar(
+                select(integration_repair_operations.c.state).where(
+                    integration_repair_operations.c.id == values["operation_key"],
+                    integration_repair_operations.c.target_kind == "parent",
+                ).with_for_update()
+            )
             existing = await self._promotion_intent_by_domain(conn, values["domain_key"])
             if existing is not None:
                 self._assert_same_intent(existing, values)
                 return existing
+
+            if operation_state in {"cancelled", "completed"}:
+                raise ValueError("parent collection is no longer active")
 
             target = await self._unresolved_target_intent(
                 conn, values["repository_id"], values["target_branch"]
@@ -554,6 +572,8 @@ class IntegrationDeliveryQueriesMixin:
             row = await self._locked_intent(conn, intent_id)
             if row["state"] == "conflict":
                 raise ValueError("conflicted promotion cannot become prepared")
+            if row["state"] == "superseded":
+                raise ValueError("superseded promotion cannot become prepared")
             if row["prepared_sha"] is not None and (
                 row["prepared_sha"] != prepared_sha or row["recovery_ref"] != recovery_ref
             ):
@@ -581,6 +601,8 @@ class IntegrationDeliveryQueriesMixin:
     ) -> dict:
         async with self.immediate() as conn:
             row = await self._locked_intent(conn, intent_id)
+            if row["state"] == "superseded":
+                raise ValueError("superseded promotion cannot become a conflict")
             if row["prepared_sha"] is not None or row["state"] == "committed":
                 raise ValueError("prepared promotion cannot become a conflict")
             await conn.execute(
@@ -599,6 +621,8 @@ class IntegrationDeliveryQueriesMixin:
     ) -> None:
         async with self.immediate() as conn:
             row = await self._locked_intent(conn, intent_id)
+            if row["state"] == "superseded":
+                raise ValueError("superseded promotion cannot be pushed")
             if row["state"] == "committed":
                 return
             if row["prepared_sha"] is None:
@@ -608,202 +632,6 @@ class IntegrationDeliveryQueriesMixin:
                 .where(integration_promotion_intents.c.id == intent_id)
                 .values(state="pushed", remote_evidence=evidence, updated_at=time.time())
             )
-
-    async def finalize_integration_promotion(
-        self, intent_id: str, remote_evidence: dict[str, Any]
-    ) -> dict:
-        """Insert receipt plus delivery/cleanup events in one transaction."""
-        async with self.immediate() as conn:
-            intent = await self._locked_intent(conn, intent_id)
-            if intent.get("intent_kind", "child") != "child":
-                raise ValueError("root intent requires the root-only finalizer")
-            resolution = intent["resolution_head_sha"] is not None
-            if not resolution and intent["prepared_sha"] is None:
-                raise ValueError("unprepared promotion cannot be finalized")
-            if resolution and intent["state"] not in {"resolution_reserved", "committed"}:
-                raise ValueError("unreserved conflict resolution cannot be finalized")
-            existing = (
-                (
-                    await conn.execute(
-                        select(task_delivery_receipts).where(
-                            task_delivery_receipts.c.id == intent["receipt_id"]
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-            committed_at = intent["committed_at"] or time.time()
-            hierarchy_mode = (
-                await conn.execute(
-                    select(projects.c.hierarchical_integration_mode).where(
-                        projects.c.id == intent["project_id"]
-                    )
-                )
-            ).scalar_one_or_none()
-            parent_episode = None
-            parent_operation_id = None
-            if intent["target_task_id"]:
-                parent_episode = (
-                    await conn.execute(
-                        select(task_integration_checkpoints.c.episode_id).where(
-                            task_integration_checkpoints.c.task_id == intent["target_task_id"]
-                        )
-                    )
-                ).scalar_one_or_none()
-            if (
-                existing is None
-                and intent["target_task_id"]
-                and hierarchy_mode in {"hierarchy", "train"}
-            ):
-                if parent_episode is None:
-                    raise ValueError("hierarchical parent has no current collection episode")
-                parent_operation_id = (
-                    await conn.execute(
-                        select(integration_repair_operations.c.id).where(
-                            integration_repair_operations.c.parent_task_id
-                            == intent["target_task_id"],
-                            integration_repair_operations.c.episode_id == parent_episode,
-                            integration_repair_operations.c.state.in_(
-                                ("active", "escalated", "human_required")
-                            ),
-                        )
-                    )
-                ).scalar_one_or_none()
-                expected_operation_id = (
-                    intent["resolution_operation_id"]
-                    if resolution
-                    else intent["fence_owner_id"]
-                )
-                if parent_operation_id != expected_operation_id:
-                    raise ValueError(
-                        "promotion collector is not the current parent operation"
-                    )
-            elif existing is not None:
-                parent_episode = existing["parent_episode_id"]
-                parent_operation_id = existing["parent_operation_id"]
-            review_snapshot = {
-                "review": intent["review_evidence"],
-                "authors": intent["authors"],
-                "provenance": intent["provenance"],
-                "commit": intent["commit_metadata"],
-            }
-            resolution_evidence = None
-            if resolution:
-                resolution_evidence = {
-                    "kind": "conflict_resolution",
-                    "original_source_base": intent["source_base"],
-                    "original_source_head": intent["source_head"],
-                    "original_source_tree": intent["review_evidence"]["reviewed_tree_sha"],
-                    "original_expected_target": intent["expected_target"],
-                    "resolved_head_sha": intent["resolution_head_sha"],
-                    "resolved_tree_sha": intent["resolution_tree_sha"],
-                    "repair_commit_shas": intent["resolution_commit_shas"],
-                    "authoring": {
-                        "operation_id": intent["resolution_operation_id"],
-                        "stage_ordinal": intent["resolution_stage_ordinal"],
-                        "repair_task_id": intent["resolution_task_id"],
-                        "repair_session_id": intent["resolution_session_id"],
-                        "repair_session_instance_token": intent[
-                            "resolution_session_instance_token"
-                        ],
-                        "repair_workspace_id": intent["resolution_workspace_id"],
-                        "fence": {
-                            "repository_id": intent["repository_id"],
-                            "branch": intent["target_branch"],
-                            "owner_id": intent["resolution_fence_owner_id"],
-                            "token": intent["resolution_fence_token"],
-                        },
-                    },
-                    "push_authority": intent["resolution_push_evidence"],
-                    "remote_proof": remote_evidence,
-                }
-            receipt = {
-                "id": intent["receipt_id"],
-                "domain_key": intent["domain_key"],
-                "source_task_id": intent["source_task_id"],
-                "target_task_id": intent["target_task_id"],
-                "repository_id": intent["repository_id"],
-                "target_branch": intent["target_branch"],
-                "reviewed_head_sha": intent["source_head"],
-                "reviewed_tree_sha": intent["review_evidence"]["reviewed_tree_sha"],
-                "before_sha": intent["expected_target"],
-                "squash_sha": None if resolution else intent["prepared_sha"],
-                "after_sha": (
-                    intent["resolution_head_sha"] if resolution else intent["prepared_sha"]
-                ),
-                "review_evidence": review_snapshot,
-                "resolution_evidence": resolution_evidence,
-                "parent_operation_id": parent_operation_id,
-                "parent_episode_id": parent_episode if parent_operation_id else None,
-                "disposition": "code",
-                "created_at": committed_at,
-            }
-            if existing is None:
-                await conn.execute(insert(task_delivery_receipts).values(**receipt))
-            elif {key: existing[key] for key in receipt} != receipt:
-                raise ValueError("delivery receipt identity changed")
-
-            if (
-                intent["target_task_id"]
-                and parent_episode is not None
-                and hierarchy_mode in {"hierarchy", "train"}
-            ):
-                from src.integration.parent_completion import ParentCompletion
-
-                try:
-                    await ParentCompletion(self).mark_ready_on(
-                        conn, intent["target_task_id"]
-                    )
-                except Exception as exc:
-                    # Parent targets must have a coherent active episode.
-                    # Do not commit a receipt that cannot update its owning
-                    # readiness projection.
-                    raise ValueError(f"parent readiness projection failed: {exc}") from exc
-
-            payload = {
-                "project_id": intent["project_id"],
-                "operation_id": (
-                    intent["resolution_operation_id"]
-                    if resolution
-                    else intent["fence_owner_id"]
-                ),
-                "promotion_intent_id": intent["id"],
-                "receipt_id": intent["receipt_id"],
-                "source_task_id": intent["source_task_id"],
-                "target_task_id": intent["target_task_id"],
-                "repository_id": intent["repository_id"],
-                "target_branch": intent["target_branch"],
-            }
-            await enqueue_integration_event(
-                conn,
-                event_id=f"delivery-{intent['receipt_id']}",
-                dedup_key=f"delivery.applied:{intent['domain_key']}",
-                project_id=intent["project_id"],
-                event_type="delivery.applied",
-                payload=payload,
-                available_at=committed_at,
-            )
-            await enqueue_integration_event(
-                conn,
-                event_id=f"cleanup-{intent['receipt_id']}",
-                dedup_key=f"integration.cleanup_pending:{intent['domain_key']}",
-                project_id=intent["project_id"],
-                event_type="integration.cleanup_pending",
-                payload=payload,
-                available_at=committed_at,
-            )
-            await conn.execute(
-                update(integration_promotion_intents)
-                .where(integration_promotion_intents.c.id == intent_id)
-                .values(
-                    state="committed",
-                    remote_evidence=remote_evidence,
-                    committed_at=committed_at,
-                    updated_at=committed_at,
-                )
-            )
-            return receipt
 
     async def list_integration_delivery_receipts(
         self,

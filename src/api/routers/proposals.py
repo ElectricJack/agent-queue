@@ -27,6 +27,11 @@ def build_proposals_router(*, db) -> APIRouter:
             "source": row["source"],
             "tasks": row["payload"].get("tasks", []),
             "edges": row["payload"].get("edges", []),
+            "edits": row["payload"].get("edits", []),
+            "remove_edges": row["payload"].get("remove_edges", []),
+            "comments": row["payload"].get("comments", []),
+            "diff": row["payload"].get("diff"),
+            "receipt": row["payload"].get("receipt"),
             "status": row["status"],
         }
 
@@ -59,6 +64,11 @@ def _build_default_router() -> APIRouter:
             "source": row["source"],
             "tasks": row["payload"].get("tasks", []),
             "edges": row["payload"].get("edges", []),
+            "edits": row["payload"].get("edits", []),
+            "remove_edges": row["payload"].get("remove_edges", []),
+            "comments": row["payload"].get("comments", []),
+            "diff": row["payload"].get("diff"),
+            "receipt": row["payload"].get("receipt"),
             "status": row["status"],
         }
 

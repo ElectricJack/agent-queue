@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4` |
+| Contract fingerprint | `sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5` |
 
 ## Parameters
 
@@ -23,6 +23,9 @@
 | `dedup_key` | `string` | yes | — | Deduplication key |
 | `title` | `string` | yes | — | Title |
 | `project_id` | `string \| null` | no | `null` | Project |
+| `repo_id` | `string \| null` | no | `null` | — |
+| `task_type` | `string \| null` | no | `null` | — |
+| `integration_mode` | `string \| null` | no | `null` | — |
 | `description` | `string \| null` | no | `null` | Description |
 | `priority` | `integer \| null` | no | `null` | Priority |
 | `profile_id` | `string \| null` | no | `null` | Agent profile |
@@ -73,9 +76,14 @@ different events about the same subject, converge on one task. A task that
 already reached a terminal status (`COMPLETED`, `FAILED`) is ignored, so the key
 becomes reusable for the next round of the same work.
 
-`profile_id` and `intelligence_class` are *create-time* intent only. An existing
-task is returned untouched, so re-running the step never re-routes work that is
-already in flight.
+`intelligence_class` is a *create-time* hint to the project's router, never a
+route: the new task is stored `unrouted` and the router routes it. A
+`profile_id` is refused with `code: routing.choice_forbidden`, like every other
+routing choice, unless a `SERVICE` or `PLAYBOOK` principal names a role profile
+(`triage`, `spec-ingest`, `reviewer`, `final-reviewer`), which files a
+`route_source: role` task that runs the role's own class. An existing task is
+returned untouched, so re-running the step never re-routes work that is already
+in flight.
 
 ## When a playbook uses it
 
@@ -84,10 +92,11 @@ pattern:
 
 - [`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md),
   rule `spec-ingest-on-approve`: one ingest task per approved spec file, keyed
-  `spec-ingest:{event.spec_path}`, pinned to the `spec-ingest` profile with an
-  `standard-high` class hint. As a role task, it keeps `route_source='role'`
-  and uses the `spec-ingest` profile's `default_class` for execution. It needs
-  no routing decision when `ensure_task` suppresses `task.created`.
+  `spec-ingest:{event.spec_path}`, filed on the `spec-ingest` role profile with
+  a `standard-high` class hint. It is born with `route_source: role` and uses
+  the role profile's `default_class` for execution, falling back to the class
+  hint only if that profile has no default. It needs no routing decision when
+  `ensure_task` suppresses `task.created`.
 - [`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md),
   rule `keep-main-green` step 2: the repair task for a red default branch, keyed
   `ci-baseline:<signature>:<n>` by
@@ -121,8 +130,11 @@ to retry it.
    ([`src/commands/task_commands.py:4641`](../../../src/commands/task_commands.py)):
    - Requires `project_id` (falling back to the handler's active project),
      `dedup_key` and `title`.
-   - **Triage special case.** `profile_id: triage` with `dedup_key:
-     triage-open` is delegated to `ensure_triage_task`
+   - **Routing refusal.** Any routing choice — a `profile_id` other than a
+     role creator's role profile, a `pin`, a `provider_intent`, … — is refused
+     with `routing.choice_forbidden` before anything is read or written.
+   - **Triage special case.** `profile_id: triage` (a role profile) with
+     `dedup_key: triage-open` is delegated to `ensure_triage_task`
      ([`src/database/queries/triage_queries.py`](../../../src/database/queries/triage_queries.py)),
      which also restarts a spent triage task; a `created` or `restarted` result
      emits `task.updated` on the graph channel.
@@ -137,7 +149,10 @@ to retry it.
      writes, no events.
    - **The creation.** Otherwise it builds a `create_task` payload with
      `_suppress_created_event: True` (control-plane bookkeeping must not
-     re-trigger the pipeline against itself), forwards `parent_id` / `root` / `reason` /
+     re-trigger the pipeline against itself). Role tasks need no routing
+     decision; the cascade still emits `task.route_needed` for non-role tasks
+     independently of `task.created`. It forwards `parent_id` / `root` /
+     `reason` /
      `discovered_from` by *presence* rather than truthiness so an explicit
      `parent_id: null` still means "file at the root", forwards
      `parent_key` / `parent_title` the same way, and delegates to
@@ -175,7 +190,7 @@ daemon that missed the bus message.
 | Outcome | Cause |
 |---|---|
 | `reused` (success) | A live non-terminal task already holds the key. |
-| `rejected` | Missing `project_id` / `dedup_key` / `title`; a `review:task:` key naming another pipeline review; `initial_status` on a non-`playbook-run:` key or with a value outside the allowed four; an invalid `intelligence_class` for the pinned profile; or any refusal `create_task` itself raises (unknown project/profile, `hierarchy.*`, a capability-narrowed delegation). |
+| `rejected` | `code: routing.choice_forbidden` for a routing choice (any `profile_id` but a role creator's role profile, a `pin`, a `provider_intent`, …). Missing `project_id` / `dedup_key` / `title`; a `review:task:` key naming another pipeline review; `initial_status` on a non-`playbook-run:` key or with a value outside the allowed four; an unknown `intelligence_class`, or a role profile that cannot run its class; or any refusal `create_task` itself raises (unknown project or role profile, `hierarchy.*`, a capability-narrowed delegation). |
 | `unauthorized` | The capability gate refused `ensure_task` for the step's principal. |
 | `contract_violation` | The handler's dict did not satisfy `EnsureTaskValue`, or the step has no transition for the returned outcome and no `runtime_error` edge. |
 | `input_resolution_failed` | The resolved inputs failed `EnsureTaskArgs` — most often a `dedup_key` that resolved to a non-string. |
@@ -190,8 +205,9 @@ transition.
 `retry_safe: yes` means the engine may retry the step; the key makes the retry
 converge. To diagnose, `aq task show <id>` prints the row (its `dedup_key`
 included) and `aq task explain --task-id <id>` says why an ensured task is not running.
-For a non-role task, check whether it has been routed; a role task already has
-its route when it is created.
+For an unrouted non-role task, it reports the router's answer (`awaiting_route`,
+`route_held`, `route_no_candidates`, `route_failed`, `router_not_ready` or
+`router_unbound`). A role task already has its route when it is created.
 
 ## Example step
 
