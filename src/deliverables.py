@@ -105,7 +105,25 @@ def review_submit_guidance(task_id: str, items: list[dict[str, Any]]) -> str:
         "document in your checkout, do not commit it, and run "
         f"`aq review submit --task-id {task_id} --file <draft.md> --kind {kind} "
         '--title "<title>"`; put the review id in your close summary. '
+        "After submission, move the local draft outside the source checkout so "
+        "the unchanged source branch can close without a PR or source CI. "
         f"Only when the task produced no document, close with {waiver}."
+    )
+
+
+def review_revision_guidance(response: dict[str, Any]) -> str:
+    """Explain the publication contract of a task answering review feedback."""
+    review_id = response["review_id"]
+    return (
+        f"This task must publish a revision of `{review_id}` newer than revision "
+        f"{response['revision']} before a passing close. Read "
+        f"`aq review show --review-id {review_id} --comments`, revise a local draft, "
+        "and do not edit the vault mirror or its frontmatter directly. Publish with "
+        f"`aq review submit --review-id {review_id} --file <draft.md> "
+        '--changes "<comment dispositions and evidence>"`, adding `--resolves cmt-...` '
+        "for each addressed comment. Editing a file alone does not publish a revision. "
+        "Record the new revision number and content hash in the close summary. "
+        "Do not wait for approval; publication does not approve the review."
     )
 
 
