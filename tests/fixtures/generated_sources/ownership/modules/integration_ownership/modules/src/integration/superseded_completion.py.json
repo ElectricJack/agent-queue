@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/superseded_completion.py::SupersededCompletion.run::3269b48f6c87f0167f0f8b51b4cd513461dce8207576390f7135309e684c4cfd": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 170,
+      "owner": "SupersededCompletion.run",
+      "owner_fingerprint": "a54b809a67a712b729839e394c1cb94422ef5c15d34a52509ba5d1f7775283ab",
+      "reason": "Appends an integration_subject_journal action containing policy artifact, subject version/phase, head, generation and record_decision proof; this is legacy integration lifecycle storage and must retire at cutover."
+    }
+  }
+}

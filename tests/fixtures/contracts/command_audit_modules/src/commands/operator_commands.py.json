@@ -1,0 +1,79 @@
+{
+  "operator_execute": {
+    "argument_reads_diagnostic_only": [
+      "command"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_operator_dispatch": "sha256:e36c6ff9287ceb7b13c7ee37f9278d944be846be2a845715631c7d45a0eb0504"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/operator_commands.py:OperatorCommandsMixin._cmd_operator_execute",
+    "resource_gates": [
+      "live_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._operator_dispatch(request.command, arguments, task, session, decision_id=request.decision_id, preflight_id=request.preflight_id)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal(str(exc))"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c086e89151264bdf3fda0c903174f05c8139e75c6343672b1b4850bd4c311d03",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "operator_preflight": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/operator_commands.py:OperatorCommandsMixin._cmd_operator_preflight",
+    "resource_gates": [
+      "live_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'preflight_id': preflight_id, **report}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('preflight could not record its task comment')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('preflight audit did not return a durable event id')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal(str(exc))"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7c3bbc3b30940833011d4d30be5d318dcf15398370ec64e89ae91c17c26d593b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}
