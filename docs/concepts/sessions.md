@@ -260,9 +260,12 @@ runs a fixed sequence, each step isolated so one failure does not skip the rest:
 4. **Exits** — a dead process with an open task becomes a typed verdict.
 5. **Abandoned claim loop** — recycle a worker that stopped claiming.
 6. **Orphans** — reconcile row-versus-task disagreement, in both directions.
-7. **Stall ladder** — nudge, then restart, then quarantine.
-8. **Named convergence** — start what is wanted, sleep what is idle.
-9. **Backstop** — `agents.stuck_timeout_seconds` as the last net.
+7. **Idle stop intent** — stop a session that has nothing left to do after
+   `sessions.idle_stop_grace_seconds` (60 s), so a harness that never exits
+   on its own still gives its pool slot and worktree back.
+8. **Stall ladder** — nudge, then restart, then quarantine.
+9. **Named convergence** — start what is wanted, sleep what is idle.
+10. **Backstop** — `agents.stuck_timeout_seconds` as the last net.
 
 The single rule that governs all of it: **unknown is not dead.** If a provider
 cannot enumerate its sessions it raises
@@ -279,6 +282,25 @@ probe is the expensive mistake this design exists to avoid.
 > probe that answers `False` when it cannot tell. The `subprocess` provider
 > does not implement it at all, so on that provider the honest answer is always
 > "cannot confirm".
+
+### A finished session that will not leave
+
+The worker protocol asks an agent to leave when its task is closed or its claim
+budget is spent, and the harness is supposed to exit; step 7 then classifies the
+death like any other. Some harnesses do not: an OpenCode worker's turn ends and
+its pane stays, so the session keeps its pool slot, its agent and its worktree
+until somebody runs `aq session kill`. On 2026-10-03 two verifiers sat in
+exactly that state for 18 and 26 minutes.
+
+The step's **shape** is the safety proof and never consults a clock: a session
+inside a claim, holding an open task, or blocked on an agent question is left
+alone, and so is one the daemon is still writing under a task's control lock.
+Its **clock** cannot be `sessions.last_activity`, because tmux's
+`window_activity` advances on *any* output and an always-painting TUI keeps it
+fresh — which is also why step 5 never saw those workers, since they counted as
+idle *supply*. So the grace runs from the first tick the finished shape was
+observed, keyed by instance token; `aq doctor --check
+sessions.stop_intent_pending` reports anything that outlives several of them.
 
 ### Exit verdicts
 

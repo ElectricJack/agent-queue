@@ -17,6 +17,7 @@ from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src import collaboration as policy
+from src.waits.sources import insert_message_with_source_event
 from src.agent_waits import TERMINAL_TASK_STATUSES
 from src.collaboration import CollaborationError
 from src.database.queries.message_queries import _new_message_id
@@ -179,7 +180,7 @@ class CollaborationQueriesMixin:
                             for task_id in ids
                         ],
                     )
-                    await conn.execute(
+                    await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             [
@@ -332,6 +333,11 @@ class CollaborationQueriesMixin:
                 del member["assigned_agent_id"], member["archived_id"]
                 result["members"].append(member)
             return result
+
+    async def get_collaboration_thread_project(self, thread_id) -> str | None:
+        """The owning project, for callers without a project scope (the operator)."""
+        async with self._engine.connect() as conn:
+            return await conn.scalar(select(threads.c.project_id).where(threads.c.id == thread_id))
 
     async def list_collaboration_threads(
         self,
@@ -601,7 +607,7 @@ class CollaborationQueriesMixin:
                     message_id = (
                         canonical_id if index == 0 else f"{canonical_id}:{_new_message_id()}"
                     )
-                    await conn.execute(
+                    await insert_message_with_source_event(conn,
                         insert(messages)
                         .values(
                             id=message_id,
@@ -705,7 +711,7 @@ class CollaborationQueriesMixin:
                     if member["state"] != "removed"
                 ]
                 if deliveries:
-                    await owned.execute(
+                    await insert_message_with_source_event(owned,
                         pg_insert(messages)
                         .values(deliveries)
                         .on_conflict_do_nothing(index_elements=[messages.c.id])
