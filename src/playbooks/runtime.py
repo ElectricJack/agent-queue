@@ -12,6 +12,7 @@ from typing import Any
 from src.commands.principal import ExecutionPrincipal
 from src.integration.outbox import (
     DestinationArtifactUnavailable,
+    NoIntegrationEventConsumer,
     advance_acceptance_cursor,
     freeze_destination_manifest,
     load_acceptance_state,
@@ -23,10 +24,13 @@ from src.playbooks.required import (
     retain_required_route_needed_event,
 )
 from src.playbooks.run_state import ArtifactVerificationFailed
+from src.playbooks.recovery import RestartReconciler
 from src.playbooks.services import (
     INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
+    PROMOTION_POLICY_EVENTS,
     IntegrationRouteTarget,
     build_v2_engine,
+    is_integration_route_event,
     resolve_integration_route,
 )
 from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
@@ -99,11 +103,16 @@ class V2PlaybookRuntime:
         llm: Any,
         bus: Any,
         required_playbook_status: dict[str, Any] | None = None,
+        process_started_at: float | None = None,
     ) -> None:
         self._config = config
         self._db = db
         self._bus = bus
         self._engine = build_v2_engine(config=config, db=db, handler=handler, llm=llm, bus=bus)
+        self.restart_reconciler = RestartReconciler(
+            self._engine, db, ExecutionPrincipal.service("playbook-restart-recovery"),
+            process_started_at=time.time() if process_started_at is None else process_started_at,
+        )
         self._store = ArtifactStore(
             config.compiled_root,
             max_artifact_bytes=config.playbooks.v2_max_artifact_bytes,
@@ -113,6 +122,7 @@ class V2PlaybookRuntime:
         self._triggers: tuple[str, ...] = ()
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
         self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
+        self._integration_catalog_loaded = False
         self._unsubscribe = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._integration_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -199,6 +209,7 @@ class V2PlaybookRuntime:
         self._required_inactive_ids = self._required_inactive_from(runtime_rows)
         self._integration_destinations = tuple(integration_destinations)
         self._integration_activation_addresses = tuple(activation_addresses)
+        self._integration_catalog_loaded = True
         self._ensure_integration_reconciler()
         self._integration_wakeup.set()
 
@@ -253,11 +264,22 @@ class V2PlaybookRuntime:
         return len(self._triggers)
 
     def _on_event(self, event: dict[str, Any]) -> None:
+        if event.get("_event_type") == "integration.publication_verified":
+            # Its outbox durably accepts playbook destinations separately;
+            # the bus copy wakes observation and external deployment owners.
+            return
         payload = dict(event)
-        payload.setdefault("_received_at", time.time())
+        # The live publisher cannot choose its own backlog age or observation
+        # time. Replay restores the trusted timestamp from the stored row.
+        payload["_received_at"] = time.time()
+        # A run triggered by an event emitted inside a project's commit
+        # identity scope must not keep that identity (git identity spec §4).
+        from src.git.manager import detached_commit_context
+
         task = asyncio.create_task(
             self._dispatch(payload),
             name=f"playbook-v2:{payload.get('_event_type', 'event')}",
+            context=detached_commit_context(),
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -280,7 +302,12 @@ class V2PlaybookRuntime:
             logger.exception("V2 playbook dispatch failed for event=%s", event.get("_event_type"))
 
     async def accept_integration_event(
-        self, event_type: str, payload: dict[str, Any], event_id: str
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        event_id: str,
+        *,
+        prove_no_consumer: bool = False,
     ) -> bool:
         """Persist matching destinations, then replay them asynchronously.
 
@@ -288,6 +315,12 @@ class V2PlaybookRuntime:
         outbox.  It intentionally does not call :class:`EventBus`: the normal
         subscription schedules a background task and cannot say whether a run
         or pending row committed.
+
+        False means "not yet": incomplete fanout, an artifact lost before its
+        pin, an unready activation or an unavailable frozen route all return
+        it, so it is always retryable.  With ``prove_no_consumer`` the runtime
+        instead raises :class:`NoIntegrationEventConsumer` when it can show
+        that no subscription matches (``_no_integration_consumer``).
         """
         state = await load_acceptance_state(self._db, event_id)
         event = dict(payload)
@@ -311,6 +344,10 @@ class V2PlaybookRuntime:
                 ),
             )
             if not destinations:
+                if prove_no_consumer:
+                    evidence = await self._no_integration_consumer(event_type, hydrated)
+                    if evidence is not None:
+                        raise NoIntegrationEventConsumer(evidence)
                 return False
             manifest = [
                 {
@@ -362,6 +399,65 @@ class V2PlaybookRuntime:
         self._ensure_integration_reconciler()
         self._integration_wakeup.set()
         return state.cursor == len(state.manifest)
+
+    async def _no_integration_consumer(
+        self, event_type: str, hydrated: dict[str, Any]
+    ) -> str | None:
+        """Why no subscription can match this event, or None when that is unproven.
+
+        Called only after an empty selection with no frozen manifest, so no
+        fanout was captured.  The proof also needs a loaded catalog that is
+        not shutting down, and every enabled activation in the event's scope, reread from the
+        database, ready and loaded at that artifact with no rule selecting the
+        event.  A selecting rule that the lifecycle fence or merge-sweep
+        suppression filtered out is still a subscription. Ordinary operation
+        events without their frozen route cannot prove an unsubscribe;
+        promotion notifications can prove none through the activation checks.
+        """
+        if not self._integration_catalog_loaded or self._integration_shutting_down:
+            return None
+        if is_integration_route_event(event_type) and event_type not in PROMOTION_POLICY_EVENTS:
+            # An empty selection here means the frozen route is unavailable.
+            return None
+        project_id = hydrated.get("project_id")
+        list_activations = getattr(self._db, "list_playbook_activations", None)
+        if not isinstance(project_id, str) or not project_id.strip() or not callable(
+            list_activations
+        ):
+            return None
+        agent_type = hydrated.get("agent_type")
+        loaded = {
+            (destination.activation_id, destination.artifact_sha256): destination
+            for destination in self._integration_destinations
+        }
+        checked = 0
+        for row in await list_activations(enabled_only=True):
+            scope = row.get("scope")
+            scope_identifier = row.get("scope_identifier") or ""
+            if scope not in {"system", "project", "agent_type"}:
+                continue
+            if scope == "project" and scope_identifier != project_id:
+                continue
+            if scope == "agent_type" and scope_identifier != agent_type:
+                continue
+            destination = loaded.get(
+                (row.get("activation_id"), row.get("active_artifact_sha256"))
+            )
+            health = getattr(row.get("health"), "value", row.get("health"))
+            if health != "ready" or destination is None:
+                # Unready, unloadable, or committed after the last refresh:
+                # its rules are unknown, so it may subscribe.
+                return None
+            if any(
+                self._engine._rule_selected(rule, event_type, hydrated)
+                for rule in destination.definition.rules
+            ):
+                return None
+            checked += 1
+        return (
+            f"no ready playbook in scope for project {project_id} subscribes to "
+            f"{event_type} ({checked} enabled in-scope activation(s) checked)"
+        )
 
     def _select_integration_destinations(
         self,
@@ -555,22 +651,31 @@ class V2PlaybookRuntime:
         pending_event_id = row["pending_event_id"]
         actor = "service:integration-outbox"
         now = time.time()
-        claim_token = await self._db.claim_pending_event_dispatch(
-            pending_event_id,
-            claimed_by=actor,
-            now=now,
-            stale_before=now - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+        # Cancellation during commit/connection cleanup must not lose a
+        # committed token and strand the event until its dispatch lease expires.
+        claim = asyncio.create_task(
+            self._db.claim_pending_event_dispatch(
+                pending_event_id,
+                claimed_by=actor,
+                now=now,
+                stale_before=now - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+            )
         )
-        if claim_token is None:
-            return
+        claim_token = None
         try:
+            claim_token = await asyncio.shield(claim)
+            if claim_token is None:
+                return
             dispatch_id = hashlib.sha256(
                 "v2-integration|{}|{}|{}".format(
                     row["event_id"], row["activation_id"], row["artifact_sha256"]
                 ).encode()
             ).hexdigest()[:12]
+            payload = dict(row["event"])
+            payload["_received_at"] = row["received_at"]
+            payload.setdefault("event_id", row["event_id"])
             result = await self._engine.dispatch_event(
-                dict(row["event"]),
+                payload,
                 ExecutionPrincipal.service("integration-outbox"),
                 playbook_ids=[row["playbook_id"]],
                 dispatch_id=dispatch_id,
@@ -587,26 +692,33 @@ class V2PlaybookRuntime:
             if not finalized:
                 raise RuntimeError("integration pending-event claim was lost before finalization")
         except asyncio.CancelledError:
-            await asyncio.shield(
-                self._db.record_pending_event_dispatch_failure(
-                    pending_event_id,
-                    claim_token=claim_token,
-                    error="CancelledError: integration runtime shutdown",
+            claim_token = await claim
+            if claim_token is not None:
+                await asyncio.shield(
+                    self._db.record_pending_event_dispatch_failure(
+                        pending_event_id,
+                        claim_token=claim_token,
+                        error="CancelledError: integration runtime shutdown",
+                    )
                 )
-            )
             raise
         except Exception as exc:
             logger.exception(
                 "V2 integration dispatch failed for pending_event=%s", pending_event_id
             )
-            await self._db.record_pending_event_dispatch_failure(
-                pending_event_id,
-                claim_token=claim_token,
-                error=f"{type(exc).__name__}: {exc}"[:2000],
-            )
+            if claim_token is not None:
+                await self._db.record_pending_event_dispatch_failure(
+                    pending_event_id,
+                    claim_token=claim_token,
+                    error=f"{type(exc).__name__}: {exc}"[:2000],
+                )
+
+    async def recover_interrupted_runs(self) -> tuple[str, ...]:
+        return await self.restart_reconciler.tick()
 
     async def shutdown(self) -> None:
         self._integration_shutting_down = True
+        await self.restart_reconciler.shutdown()
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None

@@ -64,8 +64,8 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 19 scenarios. `S1`–`S8` cover swarm composition;
-`S9`–`S15` cover the wider stateful CLI surface; `S16` runs a whole provider
+The default run executes all 20 scenarios. `S1`–`S8` cover swarm composition;
+`S9`–`S14` cover the wider stateful CLI surface; `S16` runs a whole provider
 outage against two fake providers; `S17` cooks and works a phased graph; and
 `S18` proves the reviewed supervisor failure-triage playbook against a real
 terminal worker close. `S19` uses a planner's authenticated session token to
@@ -75,23 +75,95 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
-CI covers all 19 scenarios in four parallel `e2e-cli` jobs: `claims` (S1–S3,
-S6–S7, S19), `cli` (S5, S8–S9, S12, S17), `graphs` (S10, S16b, S18), and
-`failover` (S4, S11, S13–S15, S16a). S16a covers outage detection/rerouting; S16b prepares a separate
-outage through public commands and covers recovery/undo/all-down. Both retain
-the original assertions; select `S16` to run the full serial transcript. Each job
-owns a fresh disposable world and a five-minute budget. To reproduce one
-group locally through the same acceptance test:
+S19 pauses scheduling in its disposable project before filing the checklist
+graph, writes the operator override to the fixture pool, and releases that
+pause in `finally` before claiming the child. Graph filing can dispatch the
+router immediately; its routing gate alone cannot hold the child until the
+override. Production still refuses overrides of claimed or running tasks.
+
+S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
+(the `provb` worker, the probation canary and the pinned task) retry
+`no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
+skip a READY fixture while another transaction holds its row. Each claim waits
+one second so an unlock without a `task.ready` event cannot consume the retry
+budget in a few long polls. `claim_in_progress` for an expected fixture resumes
+the same preparation on the next call. Other claim outcomes and claims or
+preparations of an unexpected task fail immediately. S2 and S3 accept only the
+remaining S1 fixtures, including when separate pytest items run them in different
+subprocesses. A timeout reports the last claim and the fixture state.
+
+CI covers all 20 scenarios as **21 individually reported pytest items** in four
+parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
+S17, S20), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S14, S16a).
+S16a covers outage detection/rerouting; S16b prepares a separate outage through
+public commands and covers recovery/undo/all-down. Select `S16` in the shell
+runner to run the original full serial transcript.
+
+Each shard uses one module-scoped disposable world. S1–S3 explicitly share state;
+selecting S2 or S3 alone prepares its missing predecessors. Other item boundaries
+remove tasks (including terminal rows) and sessions and restore swarm/provider/
+playbook switches. Failed cleanup prevents further use of that world, and fixture
+teardown always destroys its owned resources. No daemon is shared across workers.
+
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
+
+Each item has its own 540-second pytest limit. The scenario step has an
+eleven-minute deadline and a cache-miss dependency install has a separate
+twelve-minute deadline; the 26-minute job budget is their sum plus setup and
+post-job cleanup. The original hosted graph scenarios consumed 261 seconds; a
+five-minute total cancelled that passing run during cleanup. Run 36830122857
+spent 439 seconds installing from a slow PyPI and a shared ten-minute total then
+cancelled the passing `cli` group, so neither phase can spend the other's time.
+To reproduce a shard or selected scenario:
+
 
 ```bash
-aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[claims]' -m integration -s
+# One shard, matching CI:
+aq test tests/test_e2e_cli_stateful.py -k 'claims-' -m integration -s
+# One scenario, with independent setup and teardown:
+aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_scenario[graphs-S16b]' -m integration -s
+# Four parallel shards; loadgroup preserves fixture reuse:
+aq test tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -s
 ```
 
-Omit the node selector (`::…[claims]`) to run all four groups. The shell
-script still runs all scenarios serially when no IDs are supplied.
-Fixture registration/cleanup and background state inspection use the same
-daemon command handlers through the public API. Mutations and explicit CLI assertions retain
-real CLI subprocesses; polling does not pay their startup cost repeatedly.
+The shard selector includes the trailing hyphen from the scenario IDs (for
+example, `cli-S5`). Using `-k cli` also matches the module's name and selects
+every scenario instead of just the CLI shard.
+
+Pytest uses a one-second periodic scheduler backstop, a half-second config
+watcher, one-second graph sweeps and quarter-second condition polls.
+`AQ_E2E_CYCLE_SECONDS` and `AQ_E2E_CONFIG_POLL_SECONDS` override the test launcher;
+operator and tmux cadence use the production scheduling configuration defaults. Negative provider assertions
+observe two **completed** scheduler cycles rather than assume elapsed time implies
+scheduling. `src.main` daemons started manually retain the original 12-second
+observation window.
+
+Pytest preloads the full CLI once in a private Unix-socket launcher and forks a
+separate CLI process for each ordinary command. Click parsing, command routing,
+REST, per-invocation environment, output formatting and process exit codes all run.
+Claim/graph races, waits, plugin startup probes, help and version use fresh
+interpreters. This optimization is POSIX-only and opt-in through
+`AQ_E2E_CLI_SOCKET`; the standalone shell runner continues to launch fresh
+interpreters. Fixture registration, cleanup and polling use the public command API.
+
+`TIMING` JSON rows report lifecycle, CLI call counts/durations, condition waits and
+provider recovery. Set `AQ_E2E_TIMINGS_DIR` to keep per-shard JSONL files outside
+the disposable home; CI uploads these with JUnit results. Condition durations
+include their predicate cost and may overlap CLI time. The
+[measurement and lifecycle audit](../reports/2026-09-30-e2e-shared-fixtures.md)
+records comparable before/after results and the remaining startup coverage.
+
+Scenarios S5 and S18 wait for their exact fixture to be claimed, rather than
+assuming a `READY` task is available to one claim attempt. PostgreSQL's
+`SKIP LOCKED` can temporarily return `no_ready_work` while another transaction
+holds the task row. These scenarios retry that result within the convergence
+budget; other claim outcomes and a claim of a different task fail immediately.
+Timeouts report the last claim response and the fixture's current route and
+status. S18 still requires the terminal failure, completed triage playbook and
+durable supervisor notice after claiming its fixture.
 
 A clean run:
 
@@ -126,7 +198,6 @@ PASS S13 plugin extensions (...)
      disposable entry point loaded when present and was an exit-2 unknown command when absent
 PASS S14 graph + vault (...)
      layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
-PASS S15 development integration (...)
      local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
 PASS S16 provider failover (206.1s)
      prova tripped in 2 launch(es); moved …,… to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned …; all-down held everything, claim=drain_requested, critical escalation
@@ -136,7 +207,7 @@ PASS S17 phased graph (...)
 PASS S18 supervisor failure triage (...)
      task.failed completed the reviewed playbook run and queued one durable supervisor notice
 
-19/19 scenarios passed
+18/18 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails. It then prints a capability
@@ -154,6 +225,52 @@ use the operator's audited `aq task route-override` instead. This mirrors a
 completed routing decision and makes pool claims exercise the live session's
 class and model constraints.
 
+### Deliberate policy installation and project setup
+
+The separate policy acceptance runner uses the real daemon, CLI/HTTP commands
+and PostgreSQL. Choose a unique home, port and database before running the kit:
+
+```bash
+export AQ_E2E_HOME=/tmp/aq-e2e-policy-my-run
+export AQ_E2E_PORT=8199
+export E2E_DB_NAME=agent_queue_e2e_policy_my_run
+export AQ_E2E_TMUX_SOCKET=aq-e2e-policy-my-run
+scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+scripts/e2e-policy.sh
+```
+
+Use an unused port and your own suffix. The policy runner owns four marked child
+homes under `$AQ_E2E_HOME/policy-cases/`, unique derived databases and dynamically
+chosen ports. It stops only its child daemons, including after failure. The parent
+smoke daemon and operator installation are independent. Child fixtures use fake
+sessions, disable real provider probes and reject direct LLM calls before traffic
+can leave the process. An attempted call records `llm-forbidden.jsonl` and fails
+acceptance. Notifications use the local database sink.
+
+`e2e-env.sh` deliberately installs initial playbooks **before** writing its fixture
+profiles/formulas. The runner records that builder inventory and pending receipt,
+then separately prepares absent, empty, existing nonempty and failed-first-import
+startup states. Ordinary restarts invoke only `e2e-daemon.sh`; they never rerun
+the builder. This distinction catches startup ordering failures that a kit with
+preloaded fixture profiles can conceal.
+
+The scenario checks the exact six-item source/bundle inventory and five initial
+activations, inactive morning reporting, deletion of a source/bundle/whole vault
+with a retained receipt, existing-vault preservation, missing/disabled/stale
+required rows, read-only doctor checks, explicit required and installed-bundle
+repairs, and consumed first-attempt failure recovery. Project create/onboard
+exercise default/exported/none, noninteractive omission, cancellation retention,
+preview acknowledgement, pending review, approval without activation, and
+unchanged existing project configuration.
+
+The complete command transcript, exit statuses, inventories, activation rows and
+tested HEAD are written to `$AQ_E2E_HOME/policy-acceptance.json` even on failure;
+`--output PATH` selects another evidence file. Child `daemon.log` files retain
+startup diagnostics. The [policy contract](../specs/design/policy-profiles.md) and
+[receipt/repair guidance](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility)
+explain the operator behavior these checks verify.
+
 ### What the pieces are
 
 | File | What it does |
@@ -163,7 +280,7 @@ class and model constraints.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 19 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 18 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -276,7 +393,11 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
-`aq prime` a task in project `other`. *Regression it catches: a token being
+`aq prime` a task in project `other`. Before those assertions, the holder
+retries `no_ready_work` and observes fixture preparation within the convergence
+budget, then must claim the exact fixture: even a routed `READY` row can be skipped
+while another transaction locks it. A timeout reports the last claim and fixture
+state; other claim failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and
@@ -336,12 +457,11 @@ including a missing-project refusal. Vault migration is invoked only with
 `--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
 control remain explicitly untested.
 
-**S15 — development integration.** The disposable source repository commits a
-pytest check that its README is a file. Development validation runs that check
-through the managed `test` preset before publishing. The scenario verifies the
-delivery journal contains a passing job receipt and result hash for the exact
-snapshot SHA published to the remote, then checks dependency release and operator
-adoption. S17 uses the same supported validation command in its development policy.
+**S15 — retired.** The old development integration scenario depended on the
+removed adoption, provenance migration and autonomous sweep commands. It was
+retired with that engine on 2026-10-04. Current root delivery is exercised by the
+reconciler Git scenarios in `tests/test_integration_root_scenarios.py`; the
+remaining swarm scenarios retain their original numbers.
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake
@@ -395,8 +515,10 @@ command-bearing system playbooks; it still starts no model process or
 supervisor session. The scenario gives a disposable pool worker one explicit
 assignment, closes it with a hard failure, then verifies the resulting
 `task.failed` event completed the reviewed `supervisor-failure-triage` run for
-that task and created exactly one durable notice for `supervisor-e2e`. It
-deletes the terminal fixture afterward. *Regression it catches: a reviewed
+that task and created a durable notice retaining project `e2e`. The recipient
+is `supervisor-global` by default, or `supervisor-e2e` when that project has
+opted in to a project supervisor. It deletes the terminal fixture afterward.
+*Regression it catches: a reviewed
 failure-triage bundle that is not activated, does not receive terminal worker
 events, calls the wrong command, or fails to persist its supervisor incident.*
 
@@ -447,9 +569,13 @@ launch, and a canary nobody works holds that provider's launches for
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
-uvicorn is listening and never touches the database. `GET /ready` runs the
-daemon's own health provider, so its `checks.database` entry is a real query
-through the engine the daemon is using.
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
 
 The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
@@ -461,7 +587,7 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the nineteen scenarios then run against an empty database
+serving `/api/health`; the eighteen scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
 eighteen product regressions rather than one broken environment.
 
@@ -668,7 +794,7 @@ The real daemon/PostgreSQL run is explicitly marked `integration`, so a normal
 
 ```bash
 POSTGRES_TEST_DSN=<admin-dsn> aq test \
-  tests/test_e2e_cli_stateful.py -m integration -q
+  tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -q
 ```
 
 The test chooses a unique database, port and temporary home, uses fake
@@ -690,6 +816,42 @@ Assertions must go through a public surface — `aq …` with `--json`, or
 while the surface an agent actually uses is broken, which is the whole thing
 it exists to prevent.
 
+## Running the kit with the git-first protocol active
+
+The kit defaults to `integration.git_first: active`, so the reduced train is
+its delivery path. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment
+verbatim and replaces that default; callers must select `active` in their
+fragment when exercising delivery.
+
+```bash
+scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+```
+
+`--reset` drops the database, so it cannot be combined with `--register`;
+`scripts/e2e-daemon.sh start` registers the projects for you. The daemon must
+report `projection_kind: train` from `aq integration status`; if it does not,
+the selector did not take effect and the run proves nothing about the cutover.
+
+This run is a prerequisite of the operator canary in
+[the git-first cutover runbook](git-first-cutover-runbook.md), together with
+`aq test tests/test_integration*.py tests/test_config.py`. Both must be green
+before `active` is selected on a real install. A development-mode delivery here
+does not prove hosted-train operation, and vice versa: the project's actual
+configured mode is proven only by the live canary.
+
+`S20` closes an ordinary root task in `train` mode against a disposable bare
+repository, verifies its immutable completion provenance, and under `active`
+waits for the train to publish the exact source and file onto `main`. It pins
+local validation before selecting train mode, so it needs neither hosted CI nor
+an LLM. Its canonical `aq/epic/` source changes a path whose earlier target diff
+exceeds the 1 MiB command stdin limit, exercising whole-source patch streaming
+and rejecting unknown-delivery blockers before publication. The fake daemon
+substitutes GitHub credentials for remotes inside its
+marked disposable home; candidate construction, fenced pushes and Git delivery
+remain real. With `shadow`, it checks completion provenance and explicitly reports
+delivery as untested. The default and CI `cli` shard select `active` to run the full proof.
+
 ## The App-mode train proof
 
 `scripts/e2e-app-train.sh` builds on this kit's isolation to run the App-mode
@@ -704,3 +866,22 @@ adds four things:
 from `s1` on mutates the repository and refuses to run until the operator's
 approval is written to `$AQ_E2E_HOME/APPROVED`. The first run is recorded in
 [app-mode-train-2026-09-28.md](../gates/app-mode-train-2026-09-28.md).
+
+The `hotfix` step exercises a prepared one-step `dev -> main` promotion flow
+with `after.backmerge: true`. It files and routes a bugfix off `main`, completes
+the fixture worker, opens the exact-head promotion PR onto `main`, applies the
+configured human approval, then authors the backmerge's own PR onto `dev` and
+waits for Git containment. Versioned flows need the PATCH version and notes in
+the supplied file changes, for example:
+
+```bash
+bash scripts/e2e-app-train.sh run hotfix --scenario hotfix-main-dev \
+  --version 0.0.2 --copy pyproject.toml=/tmp/fixture-pyproject.toml \
+  --copy notes/0.0.2.md=/tmp/fixture-notes.md
+```
+
+The paths must match the prepared fixture's version and notes configuration.
+The step records resumable evidence in the fixture home and requires its
+existing `APPROVED` file. The isolated PostgreSQL/Git proof also runs in
+`tests/test_promotion_backmerge.py`, including both integration modes, a held
+lower-branch PR, a new frozen batch, and delivery of the hotfix source to `dev`.

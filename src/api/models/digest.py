@@ -1,6 +1,8 @@
-"""Typed API response models for hourly-digest preview and schedule health."""
+"""Typed API response models for digest preview, health and §4 authoring."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -38,6 +40,11 @@ class DigestScheduleSettings(BaseModel):
     project_ids: list[str] = []
     categories: list[str] = []
     catchup_hours: int
+    #: Phase P3 (2026-10-03 §4). Present so the panel can show the cadence the
+    #: supervisor actually writes to, and so "off" is visible rather than absent.
+    supervisor_authored: bool = False
+    cadence_minutes: int = 120
+    author_fallback_minutes: int = 10
 
 
 class DigestEscalationSettings(BaseModel):
@@ -104,7 +111,45 @@ class DigestStatusResponse(BaseModel):
     warnings: list[str] = []
 
 
+class DigestFactsResponse(BaseModel):
+    """One window's frozen evidence, as the author reads it."""
+
+    success: bool = True
+    request_id: str
+    window_id: str
+    #: ``reserved`` | ``requested`` | ``submitted`` | ``fallback`` | ``cancelled``.
+    state: str
+    deadline: float
+    seconds_remaining: float = 0.0
+    #: The bounded brief itself; counts exact, lists capped and counted.
+    facts: dict[str, Any]
+    facts_hash: str
+
+
+class DigestPostResponse(BaseModel):
+    """The rendered post the daemon will send for one window."""
+
+    success: bool = True
+    request_id: str
+    window_id: str
+    state: str
+    version: int
+    text: str = ""
+    characters: int = 0
+
+
+class DigestRequestResponse(BaseModel):
+    """How many held windows this reconciliation handed to the supervisor."""
+
+    success: bool = True
+    requested: int = 0
+    cancelled: int = 0
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "digest_preview": DigestPreviewResponse,
     "digest_status": DigestStatusResponse,
+    "digest_facts": DigestFactsResponse,
+    "digest_post": DigestPostResponse,
+    "digest_request": DigestRequestResponse,
 }

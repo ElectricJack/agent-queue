@@ -203,6 +203,28 @@ async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch)
     assert "no-class" not in orch._route_needed_emitted
 
 
+async def test_a_filing_hold_survives_manual_completion_and_reopening(handler, orch):
+    """S15's operator-owned source must never enter routing between CLI calls."""
+    result = await handler._cmd_create_task({
+        "project_id": "p", "title": "operator adoption", "labels": ["hold:e2e-adoption"],
+    })
+    task_id = result["created"]
+    assert await orch._emit_route_needed_events() == 0
+    for status in (TaskStatus.COMPLETED, TaskStatus.READY):
+        await orch.db.transition_task(task_id, status, context="adoption fixture")
+        assert await orch._emit_route_needed_events() == 0
+        assert (await orch.db.get_task(task_id)).route_source == "unrouted"
+    await handler._cmd_pause_task({"task_id": task_id})
+    assert await orch._emit_route_needed_events() == 0
+    await handler._cmd_resume_task({"task_id": task_id})
+    assert await orch._emit_route_needed_events() == 0
+
+    # The hold, rather than a disabled router or inactive project, is the fence.
+    await handler._cmd_task_set({"task_id": task_id, "labels_remove": ["hold:e2e-adoption"]})
+    assert await orch._emit_route_needed_events() == 1
+    assert orch.bus.emit.call_args.args[1]["task_id"] == task_id
+
+
 async def test_cycle_uses_the_task_row_as_the_route(orch):
     task = await _create(orch.db, "t", intelligence_class="deep-low")
     routes = await orch.assignment_routing.routes_for([task, await _create(orch.db, "bare")])

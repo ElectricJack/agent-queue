@@ -20,23 +20,28 @@ from src.database.tables import gates, task_dependencies, task_proposals, tasks
 
 
 async def insert_proposal(
-    db, *, project_id: str, source: str, payload: dict
+    db, *, project_id: str, source: str, payload: dict, conn=None, status="draft"
 ) -> str:
     """Insert a fresh draft proposal and return its ``prop-``-prefixed id."""
     proposal_id = "prop-" + uuid.uuid4().hex[:12]
     now = time.time()
-    async with db._engine.begin() as conn:
+    async def write(conn):
         await conn.execute(
             task_proposals.insert().values(
                 id=proposal_id,
                 project_id=project_id,
                 source=source,
                 payload=json.dumps(payload),
-                status="draft",
+                status=status,
                 created_at=now,
                 updated_at=now,
             )
         )
+    if conn is not None:
+        await write(conn)
+    else:
+        async with db._engine.begin() as owned:
+            await write(owned)
     return proposal_id
 
 
@@ -78,7 +83,7 @@ async def update_proposal(
 
 
 async def update_ungated_payload(
-    db, proposal_id: str, *, project_id: str, payload: dict
+    db, proposal_id: str, *, project_id: str, payload: dict, conn=None
 ) -> bool:
     """Replace a draft/ready proposal's payload unless a human gate awaits it.
 
@@ -95,8 +100,8 @@ async def update_ungated_payload(
             gates.c.await_id == proposal_id,
         )
     )
-    async with db._engine.begin() as conn:
-        result = await conn.execute(
+    async def write(conn):
+        return await conn.execute(
             update(task_proposals)
             .where(
                 and_(
@@ -107,6 +112,11 @@ async def update_ungated_payload(
             )
             .values(payload=json.dumps(payload), status="ready", updated_at=time.time())
         )
+    if conn is not None:
+        result = await write(conn)
+    else:
+        async with db._engine.begin() as owned:
+            result = await write(owned)
     return result.rowcount > 0
 
 

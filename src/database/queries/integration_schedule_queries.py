@@ -11,6 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from src.database.tables import project_integration_schedules
 
 INTEGRATION_LEASE_SECONDS = 300
+# Renew while this much lease remains. Promotion and candidate mutation refuse a
+# lease with under 135s left (their claim horizon), and integration ticks run tens
+# of seconds apart, so renewal must leave the claim horizon plus a tick margin.
+INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS = 135
+INTEGRATION_LEASE_TICK_MARGIN_SECONDS = 65
+INTEGRATION_LEASE_RENEW_WITHIN_SECONDS = (
+    INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS + INTEGRATION_LEASE_TICK_MARGIN_SECONDS
+)
 
 
 class IntegrationScheduleQueriesMixin:

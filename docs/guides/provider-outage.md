@@ -110,7 +110,7 @@ What each state means and what normally ends it:
 |---|---|---|---|
 | `available` | — | Healthy. | — |
 | `degraded` | `usage_high`, `model_scope_exhausted`, `suspect_usage`, `suspect_auth`, `probe_not_authenticated`, `rate_limit_exit`, `launch_failures_unattributed`, `recovering` | Still launched against, but **not a failover target**. Usually one signal awaiting corroboration, or usage at or above `provider_failover.usage.degraded_percent` (85 %). `recovering` is probation. | The signal clears, or it trips. |
-| `exhausted` | `usage_exhausted`, `usage_dialog`, `rate_limited`, `llm_quota`, `canary_failed` | Out of usage: a usage window at or above `usage.exhausted_percent` (99 %), two launches dying on the usage-limit dialog, or two sessions exiting on a rate limit inside `launch.window_seconds`. | The reset time passing (plus `recovery.reset_grace_seconds`), a fresh usage reading below the degraded threshold, or a successful call. |
+| `exhausted` | `usage_exhausted`, `usage_dialog`, `rate_limited`, `llm_quota`, `canary_failed` | Out of usage: a usage window at or above `usage.exhausted_percent` (99 %), two launches dying on the usage-limit dialog, or two sessions exiting on a rate limit inside `launch.window_seconds`. | The reset time passing (plus `recovery.reset_grace_seconds`), a fresh usage reading below the degraded threshold, or a successful call. While a fresh account-wide reading still stands at or above `usage.exhausted_percent`, only that reading's reset, a fresher lower reading or its going stale ends it: neither a session's call nor the clock does, and a session adopted across a daemon restart is never counted as a launch. |
 | `unauthenticated` | `login_required`, `probe_not_authenticated`, `llm_auth_rejected` | The CLI is logged out: a launch died on its login dialog and the login probe agrees, two launches in a row died on it, or the probe said *not signed in* twice. | A login probe answering *signed in* — every `recovery.auth_probe_interval_seconds` (120 s), or now with `aq provider recheck`. |
 | `failing` | `launch_failures`, `canary_failed` | `launch.generic_failures_to_trip` (5) launches in a row died during startup for a reason AQ cannot name, across two projects or in one where another provider launched fine. | The backoff passing (300 s, doubling on each failed canary up to 3600 s), or a successful call. |
 | `disabled` | `operator_disabled` | An operator took it out of service. | The override expiring, or `set-state --state auto`. |
@@ -149,6 +149,9 @@ Under `provider_failover.mode: enforce` (the default):
    comment, `rerouted_from`, a `task_reroutes` row). What it will not move, it
    holds with a reason. See the
    [fallback rule](../concepts/scheduling.md#the-fallback-rule).
+   Stopped `BLOCKED` tasks are also eligible once their writer is gone. A move
+   preserves their status, stop marker, retries and graph blockers; restart the
+   task explicitly when it should run again.
 5. **Unrouted tasks wait for the router.** There is no project default to
    fall back to. The router leaves out candidates on a provider that cannot
    launch; when every candidate is down it holds the task unrouted
@@ -182,6 +185,7 @@ returns exactly the plan the sweep would apply — `moved`, `held` (with
 | AQ thinks it is down but it is not | [Force it available](#a-false-alarm). |
 | A pinned task must run now | [Force-move it](#move-a-task-by-hand) among its route candidates; an override has none to move to, so `aq task route` sends it back to the router. |
 | Tasks paused before failover existed are stuck on a dead provider | [Include them in a sweep](#move-tasks-that-were-paused-before-failover). |
+| A stopped `BLOCKED` task needs a new route | `aq task route --task-id <id>` sends it back to the router. A successful `aq task stop` confirms its session has terminated before releasing ownership. If stop reports unproven termination, follow its recovery instructions first. Rerouting keeps it stopped; use `aq task restart <id>` when ready to run it. |
 | A move was wrong | [Undo it](#undo-a-re-route). |
 
 ### Log in again

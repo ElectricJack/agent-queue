@@ -3,9 +3,22 @@ import {
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
+  supervisorEnabledPayload,
 } from "../Config";
 
 describe("Config.tsx form helpers", () => {
+  it("supervisorEnabledPayload sends the switch only when it differs from the server", () => {
+    expect(supervisorEnabledPayload({ supervisor_enabled: false }, { supervisor_enabled: false }))
+      .toEqual({});
+    expect(supervisorEnabledPayload({}, { supervisor_enabled: false })).toEqual({});
+    expect(supervisorEnabledPayload({ supervisor_enabled: true }, { supervisor_enabled: true }))
+      .toEqual({});
+    expect(supervisorEnabledPayload({ supervisor_enabled: null }, { supervisor_enabled: true }))
+      .toEqual({ supervisor_enabled: true });
+    expect(supervisorEnabledPayload({ supervisor_enabled: true }, { supervisor_enabled: false }))
+      .toEqual({ supervisor_enabled: false });
+  });
+
   it("parseOptionalInt parses, trims, and nulls on empty/invalid", () => {
     expect(parseOptionalInt(" 4 ")).toBe(4);
     expect(parseOptionalInt("")).toBeNull();
@@ -25,9 +38,55 @@ describe("Config.tsx form helpers", () => {
       max_concurrent_agents: "",
       credit_weight: "",
       budget_limit: "",
+      supervisor_enabled: false,
+      git_identity_override: false,
+      git_identity_name: "",
+      git_identity_email: "",
     });
     expect(projectToForm({ max_concurrent_agents: 3, credit_weight: 1.5 }).max_concurrent_agents).toBe(
       "3",
     );
+  });
+
+  it("projectToForm marks a project override and prefills an inheriting project", () => {
+    const installation = { name: "Ops Bot", email: "ops@example.com" };
+    const fallback = { name: "Agent Queue", email: "agent-queue@localhost" };
+    expect(
+      projectToForm({
+        git_identity_name: "Jane Doe",
+        git_identity_email: "jane@example.com",
+        git_identity: {
+          name: "Jane Doe",
+          email: "jane@example.com",
+          source: "project",
+          configured: true,
+          installation,
+          project_override: { name: "Jane Doe", email: "jane@example.com" },
+          fallback,
+        },
+      }),
+    ).toMatchObject({
+      git_identity_override: true,
+      git_identity_name: "Jane Doe",
+      git_identity_email: "jane@example.com",
+    });
+    expect(
+      projectToForm({
+        git_identity_name: null,
+        git_identity_email: null,
+        git_identity: {
+          ...installation,
+          source: "installation",
+          configured: true,
+          installation,
+          project_override: null,
+          fallback,
+        },
+      }),
+    ).toMatchObject({
+      git_identity_override: false,
+      git_identity_name: "Ops Bot",
+      git_identity_email: "ops@example.com",
+    });
   });
 });
