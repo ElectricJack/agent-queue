@@ -121,3 +121,24 @@ class ApiSessionTokenQueriesMixin:
                 )
             )
             return int(result.rowcount or 0)
+
+    async def uncredentialed_supervisor_sessions(self, *, now: float) -> list[dict]:
+        """Find current named launches whose credentials expired, even after pruning."""
+        token, session = api_session_tokens.c, sessions.c
+        valid = select(token.token_hash).where(
+            token.session_id == session.id,
+            token.session_instance_token == session.instance_token,
+            token.project_id.is_not_distinct_from(session.project_id),
+            token.elevated.is_(True), token.task_id.is_(None),
+            token.revoked_at.is_(None), token.expires_at > now,
+        ).exists()
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(select(
+                session.id, session.name, session.project_id, session.instance_token,
+            ).where(
+                session.profile_id == "supervisor", session.lifecycle == "named",
+                session.state == "running", session.desired_state == "running",
+                session.ended_at.is_(None), session.started_at < now - 60,
+                ~valid,
+            ))).mappings().all()
+            return [dict(row) for row in rows]
