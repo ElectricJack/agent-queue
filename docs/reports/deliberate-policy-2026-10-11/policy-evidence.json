@@ -1,0 +1,2663 @@
+{
+  "tested_head": "0583582235367ba84a8c9e254e96857ccadba656",
+  "passed": true,
+  "raw_evidence": {
+    "path": "/tmp/aq-e2e-calm-vault-68-3/policy-acceptance.json",
+    "bytes": 794519,
+    "sha256": "30a38bc04cd420750f62235c54f96ad8c1158924f99d5f7c5dac81f31a30b6f9"
+  },
+  "tested_files": {
+    "scripts/e2e-policy.sh": "68fec2c9aaadc884cae20c7efaa403e33d19112a8f005bf8ddf0fea3be68a94c",
+    "scripts/e2e/policy_acceptance.py": "ff48fb510dc121a26e016a33f2a3a483dad1a1507503df47993f56d080add989",
+    "scripts/e2e/daemon.py": "767c4866bbb76af785effa204e7c91b9a0239c8f13b67b609380fbe4965e6bdd",
+    "src/orchestrator/core.py": "31e1d3bc7cc6ebae13e6759fb33c896c4d695227110189ccc0c6aeb2ff251d7b",
+    "tests/test_orchestrator.py": "7030febb7e733056a58a96c55c447083c4b43f88a91fb3886b15a4d14bd878a9",
+    "tests/test_script_modes.py": "da59b5865104447f215009d101cd9b03541ce8159de355d812dbd56cc6c57ab7",
+    "tests/selection_catalogue.json": "39ef98da00823e0fd8b06939da22fb2b60ad02d50620c553af04b086da0b9b1a"
+  },
+  "events": [
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-env.sh",
+        "--reset"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "036ce7c002daa7998f6087e0207aed94828bdd8df9dce40ca346a216a79337e6",
+      "stderr_sha256": "5970107f973f809227a732b9e0fe537ad1c511761785b6547b8f92ede490e64e"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "builder-first-install",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": true
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "case": "absent",
+      "event": "startup-input",
+      "vault": "absent",
+      "receipt": "absent"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "a8f6be545ecce542f1879dd30fb6552e3100d550b3dacc1811f951b4d8065697",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "first-start-complete",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "playbook",
+        "activation-health"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "2732ec83533335ab3be084ca7c4ef9ac12b1c359b6604eedda57c4197a62e5f3",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observed_health": [
+        {
+          "playbook_id": "default-pipeline",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739641.3672607,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa",
+          "source_path": "system/playbooks/default-pipeline.md",
+          "source_sha256": "sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "supervisor-failure-triage",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739641.2034814,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:5952c8dd787e58fef74dfc2262c650dfccec1dc21f221dc0b23344c2b9be2f20",
+          "source_path": "system/playbooks/supervisor-failure-triage.md",
+          "source_sha256": "sha256:5952c8dd787e58fef74dfc2262c650dfccec1dc21f221dc0b23344c2b9be2f20",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "provider-failover",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739641.0432982,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:d62f4ab216823ede9c2e6471f06415d226f8fa5038fe281242d6218b0ba76769",
+          "source_path": "system/playbooks/provider-failover.md",
+          "source_sha256": "sha256:d62f4ab216823ede9c2e6471f06415d226f8fa5038fe281242d6218b0ba76769",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "provider-usage-probe",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739640.9158535,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+          "source_path": "system/playbooks/provider-usage-probe.md",
+          "source_sha256": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "default-assignment-routing",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739640.808324,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:fccab6e2ce043db741be958047bab207cda8c8343d6cce56c7ce044788b545e0",
+          "source_path": "system/playbooks/default-assignment-routing.md",
+          "source_sha256": "sha256:fccab6e2ce043db741be958047bab207cda8c8343d6cce56c7ce044788b545e0",
+          "source_drift": false
+        }
+      ]
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_export",
+      "args": {
+        "project_id": "e2e",
+        "path": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/exported.aqpolicy"
+      },
+      "response_sha256": "59570fca3b0b0c687d6f8d05a6d8d6a6f01856ddc3512301a36adafc266d5384",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_export",
+      "args": {
+        "project_id": "e2e",
+        "path": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/exported.aqpolicy",
+        "expected_checksum": "sha256:9e96fad9cef0ae626fc33e4a741149c41ad59309853c59f600078fcdc055507d"
+      },
+      "response_sha256": "8b51640d94405507511090ede872355fce41bd26f7cd831d9806c78849e8b8b5",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_diff",
+      "args": {
+        "project_id": "e2e",
+        "builtin": "default"
+      },
+      "response_sha256": "6505509c20d7f5316bf550a9c2a5226c13efa41434eada71882258ef8a236a85",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "project",
+        "create",
+        "--name",
+        "policy-create-default",
+        "--from-policy",
+        "default"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "7c42ff393756ac57099f02b3ac8b93d05e216290517fe52a67b0ed5a2542a480",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "ct (pending configuration)\ntemplate\n  template:project:spec.default \u2014 new \u2192 project (copy)\n  template:project:plan.default \u2014 new \u2192 project (copy)\nImport the selected policy items? [y/N]: Imported 5 item(s); 2 pending review, 1 pending configuration.\n"
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "review_decide",
+      "args": {
+        "review_id": "rev-azure-impact",
+        "revision": 1,
+        "decision": "approve"
+      },
+      "response_sha256": "03193d25a0da1e91e1b5503a5f894bbe101352e7456fd495b80c4a7330824fd7",
+      "ok": true,
+      "success": true,
+      "playbook": {
+        "playbook_id": "policy-create-default.default-pipeline",
+        "artifact_sha256": "sha256:84d5a1a66b5cdc9b0ef67dc6660fee9074c768c05fc5d7e1921e04d14eeb0a5e",
+        "activate_on_approval": false,
+        "stored": true,
+        "activated": false,
+        "error": null,
+        "next_step": "aq playbook activate --playbook-id policy-create-default.default-pipeline --artifact-sha256 sha256:84d5a1a66b5cdc9b0ef67dc6660fee9074c768c05fc5d7e1921e04d14eeb0a5e"
+      }
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "review_decide",
+      "args": {
+        "review_id": "rev-fleet-forge",
+        "revision": 1,
+        "decision": "approve"
+      },
+      "response_sha256": "784fb3d60f4b3dd67eca9bf6e782b4e87337f4c4ce6f93da0eed6a4a36aa12c7",
+      "ok": true,
+      "success": true,
+      "playbook": {
+        "playbook_id": "policy-create-default.supervisor-failure-triage",
+        "artifact_sha256": "sha256:2a73a2b358b54fcbc138d4db5d92c43066dcd11c3ef756e55dce14cd8db7ef28",
+        "activate_on_approval": false,
+        "stored": true,
+        "activated": false,
+        "error": null,
+        "next_step": "aq playbook activate --playbook-id policy-create-default.supervisor-failure-triage --artifact-sha256 sha256:2a73a2b358b54fcbc138d4db5d92c43066dcd11c3ef756e55dce14cd8db7ef28"
+      }
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_diff",
+      "args": {
+        "project_id": "e2e",
+        "path": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/exported.aqpolicy"
+      },
+      "response_sha256": "9d528c0bc3d5eafef695d1870bf620a9f35ac7497fd2065fa3f7e82603c67b57",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "project",
+        "create",
+        "--name",
+        "policy-create-exported",
+        "--from-policy",
+        "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/exported.aqpolicy"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "180c6bff711d7001920bf4217f699aa819c72ea350ce45e7f25ed222f82169ea",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "book:system:supervisor-failure-triage \u2014 new \u2192 skip (pending review)\nrouting\n  routing:project:preferences \u2014 new \u2192 project (pending configuration)\nImport the selected policy items? [y/N]: Imported 1 item(s); 0 pending review, 1 pending configuration.\n"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "project",
+        "create",
+        "--name",
+        "policy-create-none",
+        "--from-policy",
+        "none"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "b7cc337427526bbb6b868118dc6ba6149edeb9091a5c051280178702ca2ae94b",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "{\"schema_version\": 1, \"data\": {\"created\": \"policy-create-none\", \"name\": \"policy-create-none\", \"assignment_playbook_id\": \"default-assignment-routing\"}}\n"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "project",
+        "create",
+        "--name",
+        "policy-create-omitted"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "2a9389ec30a87d0288d09b80ec45e2eccb34faf3175e4580bcf5d5005efcf901",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "{\"schema_version\": 1, \"data\": {\"created\": \"policy-create-omitted\", \"name\": \"policy-create-omitted\", \"assignment_playbook_id\": \"default-assignment-routing\"}}\n"
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_diff",
+      "args": {
+        "project_id": "e2e",
+        "builtin": "default"
+      },
+      "response_sha256": "6505509c20d7f5316bf550a9c2a5226c13efa41434eada71882258ef8a236a85",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "project",
+        "create",
+        "--name",
+        "policy-create-cancel",
+        "--from-policy",
+        "default"
+      ],
+      "exit_status": 1,
+      "stdout_sha256": "1a1561577ed699714d26cbb4313225f0bcfe58d11d6b52b7667847ebf20a5f70",
+      "stderr_sha256": "8439c76551d687dbf18ba801d9f8f92a20ae6651275871cb25e4e731daaca72d",
+      "output_tail": "ing review)\nrouting\n  routing:project:preferences \u2014 new \u2192 project (pending configuration)\ntemplate\n  template:project:spec.default \u2014 new \u2192 project (copy)\n  template:project:plan.default \u2014 new \u2192 project (copy)\nImport the selected policy items? [y/N]: "
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_diff",
+      "args": {
+        "project_id": "e2e",
+        "builtin": "default"
+      },
+      "response_sha256": "6505509c20d7f5316bf550a9c2a5226c13efa41434eada71882258ef8a236a85",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "project",
+        "onboard",
+        "--project-name",
+        "policy-onboard-default",
+        "--project-id",
+        "policy-onboard-default",
+        "--root-id",
+        "e2e-onboarding",
+        "--relative-path",
+        "policy-onboard-default",
+        "--source-mode",
+        "init",
+        "--no-create-github",
+        "--from-policy",
+        "default"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "a2ab86f93d76023be5cde483439834803045bd4791bced54777fe3e41622bb14",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "ct (pending configuration)\ntemplate\n  template:project:spec.default \u2014 new \u2192 project (copy)\n  template:project:plan.default \u2014 new \u2192 project (copy)\nImport the selected policy items? [y/N]: Imported 5 item(s); 2 pending review, 1 pending configuration.\n"
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "review_decide",
+      "args": {
+        "review_id": "rev-steady-cascade",
+        "revision": 1,
+        "decision": "approve"
+      },
+      "response_sha256": "49e5daaf8c91df41483689490d33eed400ac3898b28d0e87a46389b8671a769e",
+      "ok": true,
+      "success": true,
+      "playbook": {
+        "playbook_id": "policy-onboard-default.default-pipeline",
+        "artifact_sha256": "sha256:f58eb34397f83e9e00128334915a5332836db4d283372f771d23908701dc11b4",
+        "activate_on_approval": false,
+        "stored": true,
+        "activated": false,
+        "error": null,
+        "next_step": "aq playbook activate --playbook-id policy-onboard-default.default-pipeline --artifact-sha256 sha256:f58eb34397f83e9e00128334915a5332836db4d283372f771d23908701dc11b4"
+      }
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "review_decide",
+      "args": {
+        "review_id": "rev-agile-pinnacle",
+        "revision": 1,
+        "decision": "approve"
+      },
+      "response_sha256": "1bfb88f003dab2c7aa6a9abb0b2ba232f5f5a29e6e5a5ae44225aed4db65eaf9",
+      "ok": true,
+      "success": true,
+      "playbook": {
+        "playbook_id": "policy-onboard-default.supervisor-failure-triage",
+        "artifact_sha256": "sha256:0500bc6ffbea256cf1fa34daddf8834a33990a923cf3268e8f56e4e81dc47cd0",
+        "activate_on_approval": false,
+        "stored": true,
+        "activated": false,
+        "error": null,
+        "next_step": "aq playbook activate --playbook-id policy-onboard-default.supervisor-failure-triage --artifact-sha256 sha256:0500bc6ffbea256cf1fa34daddf8834a33990a923cf3268e8f56e4e81dc47cd0"
+      }
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_diff",
+      "args": {
+        "project_id": "e2e",
+        "path": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/exported.aqpolicy"
+      },
+      "response_sha256": "9d528c0bc3d5eafef695d1870bf620a9f35ac7497fd2065fa3f7e82603c67b57",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "project",
+        "onboard",
+        "--project-name",
+        "policy-onboard-exported",
+        "--project-id",
+        "policy-onboard-exported",
+        "--root-id",
+        "e2e-onboarding",
+        "--relative-path",
+        "policy-onboard-exported",
+        "--source-mode",
+        "init",
+        "--no-create-github",
+        "--from-policy",
+        "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/exported.aqpolicy"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "47571e9d5595ad13094441c1e046e3a5eecb627927549e303d9eb9fc700ffba8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "book:system:supervisor-failure-triage \u2014 new \u2192 skip (pending review)\nrouting\n  routing:project:preferences \u2014 new \u2192 project (pending configuration)\nImport the selected policy items? [y/N]: Imported 1 item(s); 0 pending review, 1 pending configuration.\n"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "project",
+        "onboard",
+        "--project-name",
+        "policy-onboard-none",
+        "--project-id",
+        "policy-onboard-none",
+        "--root-id",
+        "e2e-onboarding",
+        "--relative-path",
+        "policy-onboard-none",
+        "--source-mode",
+        "init",
+        "--no-create-github",
+        "--from-policy",
+        "none"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "a867aa65e1f2d4867184fe6bff9691adde7e5daaa3a7726c01d193aa087957f8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/onboarding/policy-onboard-none\", \"default_branch\": \"main\", \"remote_url\": null, \"actions\": [\"repository_initialized\", \"readme_committed\", \"project_created\", \"workspace_registered\", \"vault_initialized\"]}}\n"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "project",
+        "onboard",
+        "--project-name",
+        "policy-onboard-omitted",
+        "--project-id",
+        "policy-onboard-omitted",
+        "--root-id",
+        "e2e-onboarding",
+        "--relative-path",
+        "policy-onboard-omitted",
+        "--source-mode",
+        "init",
+        "--no-create-github"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "47e4576efd806134cc23e2ec5a58e85d480c62d664bb4aed2dbb7d1fa634e6c2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_tail": "/aq-e2e-calm-vault-68-3/policy-cases/absent/onboarding/policy-onboard-omitted\", \"default_branch\": \"main\", \"remote_url\": null, \"actions\": [\"repository_initialized\", \"readme_committed\", \"project_created\", \"workspace_registered\", \"vault_initialized\"]}}\n"
+    },
+    {
+      "case": "absent",
+      "event": "http-command",
+      "command": "policy_diff",
+      "args": {
+        "project_id": "e2e",
+        "builtin": "default"
+      },
+      "response_sha256": "6505509c20d7f5316bf550a9c2a5226c13efa41434eada71882258ef8a236a85",
+      "ok": true,
+      "success": true
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "project",
+        "onboard",
+        "--project-name",
+        "policy-onboard-cancel",
+        "--project-id",
+        "policy-onboard-cancel",
+        "--root-id",
+        "e2e-onboarding",
+        "--relative-path",
+        "policy-onboard-cancel",
+        "--source-mode",
+        "init",
+        "--no-create-github",
+        "--from-policy",
+        "default"
+      ],
+      "exit_status": 1,
+      "stdout_sha256": "063f398397657dcb5b61b9a12fef97cabc4560adb9467297366297e2192a8ac8",
+      "stderr_sha256": "8439c76551d687dbf18ba801d9f8f92a20ae6651275871cb25e4e731daaca72d",
+      "output_tail": "ing review)\nrouting\n  routing:project:preferences \u2014 new \u2192 project (pending configuration)\ntemplate\n  template:project:spec.default \u2014 new \u2192 project (copy)\n  template:project:plan.default \u2014 new \u2192 project (copy)\nImport the selected policy items? [y/N]: "
+    },
+    {
+      "case": "absent",
+      "event": "existing-projects-preserved",
+      "before": [
+        {
+          "id": "e2e",
+          "name": "e2e",
+          "credit_weight": 1.0,
+          "max_concurrent_agents": 2,
+          "status": "ACTIVE",
+          "total_tokens_used": 0,
+          "budget_limit": null,
+          "workspace_path": null,
+          "discord_channel_id": null,
+          "discord_control_channel_id": null,
+          "repo_url": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/repo.git",
+          "repo_default_branch": "main",
+          "promotion_flow": null,
+          "default_branch_cutover": null,
+          "preferred_provider": null,
+          "assignment_playbook_id": "default-assignment-routing",
+          "integration_mode": null,
+          "hierarchical_integration_mode": "disabled",
+          "integration_repository_id": null,
+          "hierarchical_integration_policy": "null",
+          "hierarchical_integration_desired_mode": "disabled",
+          "hierarchical_integration_draining": false,
+          "hierarchical_integration_generation": 0,
+          "review_delegate_to": null,
+          "git_identity_name": null,
+          "git_identity_email": null,
+          "created_at": 1791739645.8387382
+        },
+        {
+          "id": "other",
+          "name": "other",
+          "credit_weight": 1.0,
+          "max_concurrent_agents": 2,
+          "status": "ACTIVE",
+          "total_tokens_used": 0,
+          "budget_limit": null,
+          "workspace_path": null,
+          "discord_channel_id": null,
+          "discord_control_channel_id": null,
+          "repo_url": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/repo-other.git",
+          "repo_default_branch": "main",
+          "promotion_flow": null,
+          "default_branch_cutover": null,
+          "preferred_provider": null,
+          "assignment_playbook_id": "default-assignment-routing",
+          "integration_mode": null,
+          "hierarchical_integration_mode": "disabled",
+          "integration_repository_id": null,
+          "hierarchical_integration_policy": "null",
+          "hierarchical_integration_desired_mode": "disabled",
+          "hierarchical_integration_draining": false,
+          "hierarchical_integration_generation": 0,
+          "review_delegate_to": null,
+          "git_identity_name": null,
+          "git_identity_email": null,
+          "created_at": 1791739646.3291829
+        }
+      ],
+      "after": [
+        {
+          "id": "e2e",
+          "name": "e2e",
+          "credit_weight": 1.0,
+          "max_concurrent_agents": 2,
+          "status": "ACTIVE",
+          "total_tokens_used": 0,
+          "budget_limit": null,
+          "workspace_path": null,
+          "discord_channel_id": null,
+          "discord_control_channel_id": null,
+          "repo_url": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/repo.git",
+          "repo_default_branch": "main",
+          "promotion_flow": null,
+          "default_branch_cutover": null,
+          "preferred_provider": null,
+          "assignment_playbook_id": "default-assignment-routing",
+          "integration_mode": null,
+          "hierarchical_integration_mode": "disabled",
+          "integration_repository_id": null,
+          "hierarchical_integration_policy": "null",
+          "hierarchical_integration_desired_mode": "disabled",
+          "hierarchical_integration_draining": false,
+          "hierarchical_integration_generation": 0,
+          "review_delegate_to": null,
+          "git_identity_name": null,
+          "git_identity_email": null,
+          "created_at": 1791739645.8387382
+        },
+        {
+          "id": "other",
+          "name": "other",
+          "credit_weight": 1.0,
+          "max_concurrent_agents": 2,
+          "status": "ACTIVE",
+          "total_tokens_used": 0,
+          "budget_limit": null,
+          "workspace_path": null,
+          "discord_channel_id": null,
+          "discord_control_channel_id": null,
+          "repo_url": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent/repo-other.git",
+          "repo_default_branch": "main",
+          "promotion_flow": null,
+          "default_branch_cutover": null,
+          "preferred_provider": null,
+          "assignment_playbook_id": "default-assignment-routing",
+          "integration_mode": null,
+          "hierarchical_integration_mode": "disabled",
+          "integration_repository_id": null,
+          "hierarchical_integration_policy": "null",
+          "hierarchical_integration_desired_mode": "disabled",
+          "hierarchical_integration_draining": false,
+          "hierarchical_integration_generation": 0,
+          "review_delegate_to": null,
+          "git_identity_name": null,
+          "git_identity_email": null,
+          "created_at": 1791739646.3291829
+        }
+      ],
+      "files_before": {},
+      "activations_after": [
+        {
+          "activation_id": "3befa53e-a135-4917-b30b-8135447f9a07",
+          "playbook_id": "default-assignment-routing",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739640.808324,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739640.808324
+        },
+        {
+          "activation_id": "9df25eeb-43aa-4b63-ac08-0db2a1079298",
+          "playbook_id": "supervisor-failure-triage",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739641.2034814,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739641.2034814
+        },
+        {
+          "activation_id": "a7ddcad7-3129-4527-b9db-9a914748f3a8",
+          "playbook_id": "default-pipeline",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739641.3672607,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739641.3672607
+        },
+        {
+          "activation_id": "acfa4929-a71b-4320-b7ee-00a17eb5e38d",
+          "playbook_id": "provider-failover",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739641.0432982,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739641.0432982
+        },
+        {
+          "activation_id": "c56c962d-a682-4313-bd4e-765fb632cbbd",
+          "playbook_id": "provider-usage-probe",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739640.9158535,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739640.9158535
+        }
+      ]
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "project-setup-complete",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "restart-baseline",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "ddbfb5881b2457e61ffe0aa39a6b9edf3a644236598ae17234fe03227e37b9a0",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "source-deleted-before",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "bbed3c03a069a4db80368683b857675b9067b501aea34926fc6b0464dd498d53",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "20026b2445f3b1e4628668f0e4f1f7c80bf0921e2a9b6462c6b3a485c60f4aeb",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "source-deleted-after",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "bbed3c03a069a4db80368683b857675b9067b501aea34926fc6b0464dd498d53",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "dbb352a825e5af0c81665dcd05e64e6211a56f49c7b09df6584fea1fc974deb8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "bundle-deleted-before",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "6a9a41648295b5e30d3c962ea0435103e08f1892b701d9a3e2ed66a13fcf1644",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "12d98d0d215a8a31769fd057641bbdc91451da522d9dbb396549d23c94465303",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "bundle-deleted-after",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "6a9a41648295b5e30d3c962ea0435103e08f1892b701d9a3e2ed66a13fcf1644",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "51bd56c9cddc0c27b356033af006f29bcf574fad572171b6c91f01edefbbd6bc",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "vault-deleted-before",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [],
+      "sources_ref": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "bundle_files_ref": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "80c161e7531f390f4646fed627a87546fce27c603ac6438d7bb58eb04ea3bc0e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "vault-deleted-after",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [],
+      "sources_ref": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "bundle_files_ref": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "activations_ref": "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "a56822cb4975c0b99ececd5edbbd52dee36fc9cc7daff55961df9cdb24bfabcb",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "missing-disabled-stale-before-restart",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "d628ee2c7bcead5f49941409943d576e15040a43108da532de798f637f7b17ab",
+      "bundle_files_ref": "32c25869cfdf807d17b7c6ef6505be6709065cf4a1d12ae0b1a5525118b7fb26",
+      "activations_ref": "6a5c1ea62e5f8f8cf6c00ee5106c0e22119532a376ffe7c1a160c1aff34e4a1a"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "863af59189f2b8e93cae39f4694436d0544d7240ffdadb4ebefc591901b08624",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "playbook",
+        "activation-health"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "8051d6adb5066198845d867e30f30d7892133cf84b9ca48c31f322147ead48d1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observed_health": [
+        {
+          "playbook_id": "default-pipeline",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": false,
+          "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+          "health": "disabled",
+          "reasons": [],
+          "activated_at": 1791739641.3672607,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa",
+          "source_path": "system/playbooks/default-pipeline.md",
+          "source_sha256": "sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "provider-usage-probe",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": false,
+          "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+          "health": "disabled",
+          "reasons": [],
+          "activated_at": 1791739640.9158535,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+          "source_path": "system/playbooks/provider-usage-probe.md",
+          "source_sha256": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "default-assignment-routing",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:2e318d88ff2e15fbc37235913b65e00ab2b0755875836cccea6a876cfa97072e",
+          "health": "stale_contract",
+          "reasons": [
+            {
+              "code": "profile_capabilities_changed",
+              "message": "Capability profile changed",
+              "subject": "playbook-compiler",
+              "expected_fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "actual_fingerprint": "sha256:04b54202e2fda1b8beb2a542f489e460395f1b613fd449bca90a6a0642f37080"
+            }
+          ],
+          "activated_at": 1791739640.808324,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:fccab6e2ce043db741be958047bab207cda8c8343d6cce56c7ce044788b545e0",
+          "source_error": "no vault source declares playbook id 'default-assignment-routing'",
+          "source_drift": null
+        }
+      ]
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.required"
+      ],
+      "exit_status": 2,
+      "stdout_sha256": "9d44bf6de0f94f0f82b43cb37b970b3ed41021f77a4ccc06f099a8262021d65f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "doctor",
+      "identifier": "playbooks.required",
+      "fix": false,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.required",
+              "severity": "error",
+              "detail": "Required system playbooks unavailable: default-assignment-routing, provider-usage-probe, provider-failover. Run aq doctor --check playbooks.required --fix to install/activate shipped policy.",
+              "fixable": true,
+              "fix_applied": false,
+              "duration_ms": 43,
+              "data": {
+                "required": {
+                  "default-assignment-routing": {
+                    "ok": false,
+                    "diagnostic": "required-playbook-inactive: default-assignment-routing: activation is stale_contract",
+                    "fix_command": "aq doctor --check playbooks.required --fix"
+                  },
+                  "provider-usage-probe": {
+                    "ok": false,
+                    "diagnostic": "required-playbook-inactive: provider-usage-probe: activation is disabled",
+                    "fix_command": "aq doctor --check playbooks.required --fix"
+                  },
+                  "provider-failover": {
+                    "ok": false,
+                    "diagnostic": "required-playbook-inactive: provider-failover: activation is missing",
+                    "fix_command": "aq doctor --check playbooks.required --fix"
+                  }
+                }
+              }
+            }
+          ],
+          "summary": {
+            "ok": 0,
+            "info": 0,
+            "warn": 0,
+            "error": 1,
+            "fixes_applied": 0
+          },
+          "exit_code": 2,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "playbooks.required-read-only",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "d628ee2c7bcead5f49941409943d576e15040a43108da532de798f637f7b17ab",
+      "bundle_files_ref": "32c25869cfdf807d17b7c6ef6505be6709065cf4a1d12ae0b1a5525118b7fb26",
+      "activations_ref": "6a5c1ea62e5f8f8cf6c00ee5106c0e22119532a376ffe7c1a160c1aff34e4a1a"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.reviewed_bundles"
+      ],
+      "exit_status": 1,
+      "stdout_sha256": "2ed0fefa3b229866cae893125f77b18e97f54f2ed79d8dfa0931975f7dd88c4c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "doctor",
+      "identifier": "playbooks.reviewed_bundles",
+      "fix": false,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.reviewed_bundles",
+              "severity": "warn",
+              "detail": "1 shipped reviewed bundle(s) differ from their vault copies (default-pipeline); an import reads the vault copy, so a stale one can leave its activation at stale_contract. Run aq doctor --check playbooks.reviewed_bundles --fix to refresh installed copies",
+              "fixable": true,
+              "fix_applied": false,
+              "duration_ms": 4,
+              "data": {
+                "checked": 5,
+                "count": 1,
+                "drift": [
+                  {
+                    "playbook_id": "default-pipeline",
+                    "problem": "drifted",
+                    "files": [
+                      "artifact.sha256"
+                    ],
+                    "installed_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    "shipped_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce"
+                  }
+                ]
+              }
+            }
+          ],
+          "summary": {
+            "ok": 0,
+            "info": 0,
+            "warn": 1,
+            "error": 0,
+            "fixes_applied": 0
+          },
+          "exit_code": 1,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "playbooks.reviewed_bundles-read-only",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "d628ee2c7bcead5f49941409943d576e15040a43108da532de798f637f7b17ab",
+      "bundle_files_ref": "32c25869cfdf807d17b7c6ef6505be6709065cf4a1d12ae0b1a5525118b7fb26",
+      "activations_ref": "6a5c1ea62e5f8f8cf6c00ee5106c0e22119532a376ffe7c1a160c1aff34e4a1a"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.required",
+        "--fix"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "2a47fde4fdb22108bba53219e2e7f7d8f9d3e756cf5965efb9630f0783425847",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "doctor",
+      "identifier": "playbooks.required",
+      "fix": true,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.required",
+              "severity": "ok",
+              "detail": "Required system playbooks are active",
+              "fixable": true,
+              "fix_applied": true,
+              "duration_ms": 71,
+              "data": {
+                "required": {
+                  "default-assignment-routing": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3"
+                  },
+                  "provider-usage-probe": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485"
+                  },
+                  "provider-failover": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1"
+                  }
+                }
+              }
+            }
+          ],
+          "summary": {
+            "ok": 1,
+            "info": 0,
+            "warn": 0,
+            "error": 0,
+            "fixes_applied": 1
+          },
+          "exit_code": 0,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "required-repair",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "d628ee2c7bcead5f49941409943d576e15040a43108da532de798f637f7b17ab",
+      "bundle_files_ref": "32c25869cfdf807d17b7c6ef6505be6709065cf4a1d12ae0b1a5525118b7fb26",
+      "activations_ref": "0d5a626deffce7f91cdfa80ed524ddafb60cd3d446f00085364553c29ef91543"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.reviewed_bundles",
+        "--fix"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "f5041db96c737b7b15e6da7d0245cd8eb895e2c3cb67ee4fdc269e5defd8b8b0",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "doctor",
+      "identifier": "playbooks.reviewed_bundles",
+      "fix": true,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.reviewed_bundles",
+              "severity": "ok",
+              "detail": "5 shipped reviewed bundle(s) match their vault copies",
+              "fixable": true,
+              "fix_applied": true,
+              "duration_ms": 4,
+              "data": {
+                "checked": 5
+              }
+            }
+          ],
+          "summary": {
+            "ok": 1,
+            "info": 0,
+            "warn": 0,
+            "error": 0,
+            "fixes_applied": 1
+          },
+          "exit_code": 0,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "reviewed-bundle-repair",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:39045",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "default-pipeline.bak-1791739738",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "d628ee2c7bcead5f49941409943d576e15040a43108da532de798f637f7b17ab",
+      "bundle_files_ref": "60099e7ae030b673d4419bdf476664efc9c0c174bb280712ff75d6f17cc8f4d9",
+      "activations_ref": "0d5a626deffce7f91cdfa80ed524ddafb60cd3d446f00085364553c29ef91543"
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.required"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "2ad1f753b95cfe632208d02860779abcc3d4af565c62da2eff00a459b21880d4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "absent",
+      "event": "doctor",
+      "identifier": "playbooks.required",
+      "fix": false,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.required",
+              "severity": "ok",
+              "detail": "Required system playbooks are active",
+              "fixable": true,
+              "fix_applied": false,
+              "duration_ms": 96,
+              "data": {
+                "required": {
+                  "default-assignment-routing": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3"
+                  },
+                  "provider-usage-probe": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485"
+                  },
+                  "provider-failover": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1"
+                  }
+                }
+              }
+            }
+          ],
+          "summary": {
+            "ok": 1,
+            "info": 0,
+            "warn": 0,
+            "error": 0,
+            "fixes_applied": 0
+          },
+          "exit_code": 0,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "absent",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "5a42cd63da1f87da91b4d61d31f389d3e71dbf0a42b0ba35bd0c2695566af75e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "empty",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-env.sh",
+        "--reset"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "591fed60f46e9c5c6e2cdd5a65aa5990c17773f1ea63fae24149bddf748bbff4",
+      "stderr_sha256": "5970107f973f809227a732b9e0fe537ad1c511761785b6547b8f92ede490e64e"
+    },
+    {
+      "case": "empty",
+      "event": "snapshot",
+      "label": "builder-first-install",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/empty",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_empty",
+      "url": "http://127.0.0.1:43821",
+      "receipt": {
+        "version": 1,
+        "activation_pending": true
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "case": "empty",
+      "event": "startup-input",
+      "vault": "empty",
+      "receipt": "absent"
+    },
+    {
+      "case": "empty",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "e4d8530d7a9d7ada379ddfbe4a92ea64ce776504eff270f3e477aa2c2130d033",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "empty",
+      "event": "snapshot",
+      "label": "first-start-complete",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/empty",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_empty",
+      "url": "http://127.0.0.1:43821",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "8f3b790ab1309ea6787019fad5d32a38c63ce60d2c8f08907e55f6b41f2492a0"
+    },
+    {
+      "case": "empty",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "playbook",
+        "activation-health"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "eb9207b3ab26dfbdbaea6a1608e14b9f548a22131bd234e301594b87942ec4a0",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observed_health": [
+        {
+          "playbook_id": "default-pipeline",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739759.8268707,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa",
+          "source_path": "system/playbooks/default-pipeline.md",
+          "source_sha256": "sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "supervisor-failure-triage",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739759.580253,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:5952c8dd787e58fef74dfc2262c650dfccec1dc21f221dc0b23344c2b9be2f20",
+          "source_path": "system/playbooks/supervisor-failure-triage.md",
+          "source_sha256": "sha256:5952c8dd787e58fef74dfc2262c650dfccec1dc21f221dc0b23344c2b9be2f20",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "provider-failover",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739759.3606503,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:d62f4ab216823ede9c2e6471f06415d226f8fa5038fe281242d6218b0ba76769",
+          "source_path": "system/playbooks/provider-failover.md",
+          "source_sha256": "sha256:d62f4ab216823ede9c2e6471f06415d226f8fa5038fe281242d6218b0ba76769",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "provider-usage-probe",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739759.1940773,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+          "source_path": "system/playbooks/provider-usage-probe.md",
+          "source_sha256": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+          "source_drift": false
+        },
+        {
+          "playbook_id": "default-assignment-routing",
+          "scope": "system",
+          "scope_identifier": "",
+          "enabled": true,
+          "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+          "health": "ready",
+          "reasons": [],
+          "activated_at": 1791739759.0692089,
+          "activated_by": "service:required-playbook-reconciler",
+          "pending_event_count": 0,
+          "running_count": 0,
+          "active_source_sha256": "sha256:fccab6e2ce043db741be958047bab207cda8c8343d6cce56c7ce044788b545e0",
+          "source_path": "system/playbooks/default-assignment-routing.md",
+          "source_sha256": "sha256:fccab6e2ce043db741be958047bab207cda8c8343d6cce56c7ce044788b545e0",
+          "source_drift": false
+        }
+      ]
+    },
+    {
+      "case": "empty",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "77ea7362eb99a0559de92056a45c6820e9fc9bfb3122780502c9a31bd5f2a4fd",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "existing",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-env.sh",
+        "--reset"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "7e07566a98e7e76db0207855c989be468291db02e1785bfb1a5d2f57540a09b5",
+      "stderr_sha256": "5970107f973f809227a732b9e0fe537ad1c511761785b6547b8f92ede490e64e"
+    },
+    {
+      "case": "existing",
+      "event": "snapshot",
+      "label": "builder-first-install",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/existing",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_existing",
+      "url": "http://127.0.0.1:59955",
+      "receipt": {
+        "version": 1,
+        "activation_pending": true
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "case": "existing",
+      "event": "snapshot",
+      "label": "existing-nonempty-no-receipt",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/existing",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_existing",
+      "url": "http://127.0.0.1:59955",
+      "receipt": null,
+      "bundles": [
+        "morning-report"
+      ],
+      "sources_ref": "743fd752da9984737b902b9725b6cb85ce2c00a4327c7b49cfb3873c90bbff63",
+      "bundle_files_ref": "f91be137f599408a5fb7024e73a7a5f3debbeb2f849d9efd33e804076bff63ab",
+      "activations_ref": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "case": "existing",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "e34ae09d2ddb7a8cb6d94d4b72238ef16da946b0923b18ba30a0c730626dad01",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "existing",
+      "event": "snapshot",
+      "label": "existing-after-start",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/existing",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_existing",
+      "url": "http://127.0.0.1:59955",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "morning-report"
+      ],
+      "sources_ref": "743fd752da9984737b902b9725b6cb85ce2c00a4327c7b49cfb3873c90bbff63",
+      "bundle_files_ref": "f91be137f599408a5fb7024e73a7a5f3debbeb2f849d9efd33e804076bff63ab",
+      "activations_ref": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "case": "existing",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "d44386b327567143dc47837f91c4c3abf845728e409bb226568455e17bdbd6d1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-env.sh",
+        "--reset"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "c25b6212fbdecd42f7c76d9c86c4f8ae3390e403eaa266e6003b2085203547c1",
+      "stderr_sha256": "5970107f973f809227a732b9e0fe537ad1c511761785b6547b8f92ede490e64e"
+    },
+    {
+      "case": "failed",
+      "event": "snapshot",
+      "label": "builder-first-install",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/failed",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_failed",
+      "url": "http://127.0.0.1:50373",
+      "receipt": {
+        "version": 1,
+        "activation_pending": true
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "231c6ba6f0107cbb0a54b5325c5bed899bd39062fec911dc94920d5723d035c2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "failed",
+      "event": "snapshot",
+      "label": "consumed-first-attempt-failure",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/failed",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_failed",
+      "url": "http://127.0.0.1:50373",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "e82d7573c49f4af18e7ad6bb001ac5452bd1050c732f6cba2cd7b717bcbf4bde",
+      "activations_ref": "0ab2f4f21371184d663a53dcfb5b736ae82ede7458644c3b049278002aa511a0"
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "717e642a1ceeb6ed8e4efc9b3c86af1cf4923755bec3129b29b5d8635ff784f1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "start"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "fe54ed4ee5702d72a2a4484399e36973eaefee58b244dd5987c8c3528818f81a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.required"
+      ],
+      "exit_status": 2,
+      "stdout_sha256": "c2ac7f25860addcd97c3b39e3dd6292bfd43674787b63b54d96f4000cd78b4c1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "failed",
+      "event": "doctor",
+      "identifier": "playbooks.required",
+      "fix": false,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.required",
+              "severity": "error",
+              "detail": "Required system playbooks unavailable: default-assignment-routing. Run aq doctor --check playbooks.required --fix to install/activate shipped policy.",
+              "fixable": true,
+              "fix_applied": false,
+              "duration_ms": 43,
+              "data": {
+                "required": {
+                  "default-assignment-routing": {
+                    "ok": false,
+                    "diagnostic": "required-playbook-inactive: default-assignment-routing: activation is missing",
+                    "fix_command": "aq doctor --check playbooks.required --fix"
+                  },
+                  "provider-usage-probe": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485"
+                  },
+                  "provider-failover": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1"
+                  }
+                }
+              }
+            }
+          ],
+          "summary": {
+            "ok": 0,
+            "info": 0,
+            "warn": 0,
+            "error": 1,
+            "fixes_applied": 0
+          },
+          "exit_code": 2,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "/home/jkern/dev/agent-queue2/.venv/bin/python3",
+        "scripts/e2e/aq.py",
+        "--json",
+        "doctor",
+        "--check",
+        "playbooks.required",
+        "--fix"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "bb4811ed4ab363e9eefa3e7c53d8947d5cc217b617c5624462fbca4acdb48394",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "failed",
+      "event": "doctor",
+      "identifier": "playbooks.required",
+      "fix": true,
+      "result": {
+        "schema_version": 1,
+        "data": {
+          "checks": [
+            {
+              "id": "playbooks.required",
+              "severity": "ok",
+              "detail": "Required system playbooks are active",
+              "fixable": true,
+              "fix_applied": true,
+              "duration_ms": 101,
+              "data": {
+                "required": {
+                  "default-assignment-routing": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3"
+                  },
+                  "provider-usage-probe": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485"
+                  },
+                  "provider-failover": {
+                    "ok": true,
+                    "artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1"
+                  }
+                }
+              }
+            }
+          ],
+          "summary": {
+            "ok": 1,
+            "info": 0,
+            "warn": 0,
+            "error": 0,
+            "fixes_applied": 1
+          },
+          "exit_code": 0,
+          "success": true
+        }
+      }
+    },
+    {
+      "case": "failed",
+      "event": "snapshot",
+      "label": "consumed-failure-explicit-repair",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/failed",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_failed",
+      "url": "http://127.0.0.1:50373",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "sources_ref": "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167",
+      "bundle_files_ref": "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8",
+      "activations_ref": "c7e35c172c83f2461017571a3313bcebd7735df0e455eae84191f366787e0d0a"
+    },
+    {
+      "case": "failed",
+      "event": "command",
+      "argv": [
+        "scripts/e2e-daemon.sh",
+        "stop"
+      ],
+      "exit_status": 0,
+      "stdout_sha256": "89990186ed027c55122d4e198bfb5d92be0015f0a0585cbbb13d0ec0221790d2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "area_validation": {
+    "job_id": "e29d7a0a-0923-47e5-bfca-1f1c695d3ab2",
+    "preset": "test",
+    "input_ref": "0583582235367ba84a8c9e254e96857ccadba656",
+    "state": "succeeded",
+    "exit_code": 0,
+    "outcome": "passed",
+    "summary": {
+      "passed": 427
+    },
+    "failing_tests": [],
+    "result_hash": "32280d026407f9168025e7057c1c18752f1ab48e1790c1c98eaf74a6d59622a2",
+    "run_seconds": 126.49766826629639
+  },
+  "baseline": {
+    "path": "/home/jkern/.agent-queue/vault/projects/agent-queue/notes/full-suite-baseline-2026-09-22.md",
+    "head": "35d9605e",
+    "default_failures": 45,
+    "encountered_failures": []
+  },
+  "smoke_validation": {
+    "home": "/tmp/aq-e2e-calm-vault-68-3-final-smoke",
+    "port": 53990,
+    "database": "agent_queue_e2e_calm_vault_68_3_final_smoke",
+    "environment_command": "source /tmp/calm-vault-68.3-final-smoke.env; scripts/e2e-env.sh --reset",
+    "environment_exit_status": 0,
+    "smoke_command": "scripts/e2e-smoke.sh",
+    "smoke_exit_status": 0,
+    "passed": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8",
+      "S9",
+      "S10",
+      "S11",
+      "S12",
+      "S13",
+      "S14",
+      "S15",
+      "S16",
+      "S17",
+      "S18",
+      "S19",
+      "S20"
+    ],
+    "log_sha256": "ad92375ccb43d085c11dc0aa4ac5fdf45a8484618414a8d83ce91fef298dbad8",
+    "s20_limit": "Delivery explicitly untested because git_first is inactive; source provenance passed."
+  },
+  "inventory_sets": {
+    "c453bfae3ad2643be53afc643cfc5645c0e06730b50c6b6974353f9a78e02167": {
+      "default-assignment-routing.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "morning-report.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+      "provider-failover.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "872a44f43b57038798f205b16710f6e6204e9ae6ac47e6b73a7f630670fb00e8": {
+      "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+      "default-assignment-routing/artifact.sha256": "8559b48a377ea22c055bf681e6d5f8fadd7b1c530d4074677cd8ed1092b1919a",
+      "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+      "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+      "default-pipeline/artifact.sha256": "f045aeecb9a6880c0459610a8eb8e4ef25436449614d6c36da3bba821c862d01",
+      "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+      "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "morning-report/artifact.json": "16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2",
+      "morning-report/artifact.sha256": "e595c784328321b064fda72afa8c5b3016c2994e0e22474a7340e6d7b9551fe6",
+      "morning-report/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "morning-report/manifest.md": "91c6bd8fa3a9dbafe3772800c8a07945be0196c38b1dd1ea44dc24696d1e1045",
+      "morning-report/source.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+      "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+      "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+      "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+      "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+      "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+      "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+      "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+      "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+      "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+      "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+      "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "bbed3c03a069a4db80368683b857675b9067b501aea34926fc6b0464dd498d53": {
+      "default-assignment-routing.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "morning-report.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+      "provider-failover.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "supervisor-failure-triage.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "6a9a41648295b5e30d3c962ea0435103e08f1892b701d9a3e2ed66a13fcf1644": {
+      "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+      "default-assignment-routing/artifact.sha256": "8559b48a377ea22c055bf681e6d5f8fadd7b1c530d4074677cd8ed1092b1919a",
+      "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+      "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+      "default-pipeline/artifact.sha256": "f045aeecb9a6880c0459610a8eb8e4ef25436449614d6c36da3bba821c862d01",
+      "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+      "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+      "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+      "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+      "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+      "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+      "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+      "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+      "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+      "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+      "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+      "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a": {},
+    "d628ee2c7bcead5f49941409943d576e15040a43108da532de798f637f7b17ab": {
+      "default-assignment-routing.md": "547fabbdbd317365a7a340b925e5268024be9abf5024839656b6be23bc90defd",
+      "default-pipeline.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "morning-report.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+      "provider-failover.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "32c25869cfdf807d17b7c6ef6505be6709065cf4a1d12ae0b1a5525118b7fb26": {
+      "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+      "default-assignment-routing/artifact.sha256": "8559b48a377ea22c055bf681e6d5f8fadd7b1c530d4074677cd8ed1092b1919a",
+      "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+      "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+      "default-pipeline/artifact.sha256": "e191bc1aec7e9a1d2e95a24550e97dd2dd947b6d99ca244d85cae37f8d82c61b",
+      "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+      "default-pipeline/operator-note.txt": "c774b84521be6448e85c095f9306b53d1ed2700dd5fe6d26ccd29de8c5fb3a94",
+      "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+      "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+      "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+      "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+      "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+      "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+      "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+      "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+      "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+      "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+      "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "60099e7ae030b673d4419bdf476664efc9c0c174bb280712ff75d6f17cc8f4d9": {
+      "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+      "default-assignment-routing/artifact.sha256": "8559b48a377ea22c055bf681e6d5f8fadd7b1c530d4074677cd8ed1092b1919a",
+      "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+      "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+      "default-pipeline/artifact.sha256": "f045aeecb9a6880c0459610a8eb8e4ef25436449614d6c36da3bba821c862d01",
+      "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+      "default-pipeline/operator-note.txt": "c774b84521be6448e85c095f9306b53d1ed2700dd5fe6d26ccd29de8c5fb3a94",
+      "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "default-pipeline.bak-1791739738/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+      "default-pipeline.bak-1791739738/artifact.sha256": "e191bc1aec7e9a1d2e95a24550e97dd2dd947b6d99ca244d85cae37f8d82c61b",
+      "default-pipeline.bak-1791739738/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-pipeline.bak-1791739738/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+      "default-pipeline.bak-1791739738/operator-note.txt": "c774b84521be6448e85c095f9306b53d1ed2700dd5fe6d26ccd29de8c5fb3a94",
+      "default-pipeline.bak-1791739738/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+      "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+      "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+      "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+      "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+      "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+      "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+      "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+      "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+      "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+      "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    },
+    "743fd752da9984737b902b9725b6cb85ce2c00a4327c7b49cfb3873c90bbff63": {
+      "operator.md": "7bd49330edbaaf8a4f9080561d527a526b27c49732341cd6f08f959cdf887c4b"
+    },
+    "f91be137f599408a5fb7024e73a7a5f3debbeb2f849d9efd33e804076bff63ab": {
+      "morning-report/artifact.json": "16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2",
+      "morning-report/artifact.sha256": "e191bc1aec7e9a1d2e95a24550e97dd2dd947b6d99ca244d85cae37f8d82c61b",
+      "morning-report/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "morning-report/manifest.md": "91c6bd8fa3a9dbafe3772800c8a07945be0196c38b1dd1ea44dc24696d1e1045",
+      "morning-report/source.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f"
+    },
+    "e82d7573c49f4af18e7ad6bb001ac5452bd1050c732f6cba2cd7b717bcbf4bde": {
+      "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+      "default-assignment-routing/artifact.sha256": "e191bc1aec7e9a1d2e95a24550e97dd2dd947b6d99ca244d85cae37f8d82c61b",
+      "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+      "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+      "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+      "default-pipeline/artifact.sha256": "f045aeecb9a6880c0459610a8eb8e4ef25436449614d6c36da3bba821c862d01",
+      "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+      "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+      "morning-report/artifact.json": "16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2",
+      "morning-report/artifact.sha256": "e595c784328321b064fda72afa8c5b3016c2994e0e22474a7340e6d7b9551fe6",
+      "morning-report/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "morning-report/manifest.md": "91c6bd8fa3a9dbafe3772800c8a07945be0196c38b1dd1ea44dc24696d1e1045",
+      "morning-report/source.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+      "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+      "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+      "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+      "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+      "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+      "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+      "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+      "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+      "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+      "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+      "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+      "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+      "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    }
+  },
+  "activation_sets": {
+    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945": [],
+    "c42862bbad01ed802ef3476da6f9083957231940d1e109cd701f19e075b3b6ed": [
+      {
+        "activation_id": "3befa53e-a135-4917-b30b-8135447f9a07",
+        "playbook_id": "default-assignment-routing",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739640.808324,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739640.808324
+      },
+      {
+        "activation_id": "9df25eeb-43aa-4b63-ac08-0db2a1079298",
+        "playbook_id": "supervisor-failure-triage",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739641.2034814,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739641.2034814
+      },
+      {
+        "activation_id": "a7ddcad7-3129-4527-b9db-9a914748f3a8",
+        "playbook_id": "default-pipeline",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739641.3672607,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739641.3672607
+      },
+      {
+        "activation_id": "acfa4929-a71b-4320-b7ee-00a17eb5e38d",
+        "playbook_id": "provider-failover",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739641.0432982,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739641.0432982
+      },
+      {
+        "activation_id": "c56c962d-a682-4313-bd4e-765fb632cbbd",
+        "playbook_id": "provider-usage-probe",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739640.9158535,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739640.9158535
+      }
+    ],
+    "6a5c1ea62e5f8f8cf6c00ee5106c0e22119532a376ffe7c1a160c1aff34e4a1a": [
+      {
+        "activation_id": "3befa53e-a135-4917-b30b-8135447f9a07",
+        "playbook_id": "default-assignment-routing",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:2e318d88ff2e15fbc37235913b65e00ab2b0755875836cccea6a876cfa97072e",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739640.808324,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739640.808324
+      },
+      {
+        "activation_id": "a7ddcad7-3129-4527-b9db-9a914748f3a8",
+        "playbook_id": "default-pipeline",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "enabled": false,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739641.3672607,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739641.3672607
+      },
+      {
+        "activation_id": "c56c962d-a682-4313-bd4e-765fb632cbbd",
+        "playbook_id": "provider-usage-probe",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "enabled": false,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739640.9158535,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739640.9158535
+      }
+    ],
+    "0d5a626deffce7f91cdfa80ed524ddafb60cd3d446f00085364553c29ef91543": [
+      {
+        "activation_id": "22ce5f83-b098-439d-ad79-453f1c4aaa54",
+        "playbook_id": "provider-failover",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739737.2365828,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739737.2365828
+      },
+      {
+        "activation_id": "3befa53e-a135-4917-b30b-8135447f9a07",
+        "playbook_id": "default-assignment-routing",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739736.8655832,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739736.8655832
+      },
+      {
+        "activation_id": "a7ddcad7-3129-4527-b9db-9a914748f3a8",
+        "playbook_id": "default-pipeline",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "enabled": false,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739641.3672607,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739641.3672607
+      },
+      {
+        "activation_id": "c56c962d-a682-4313-bd4e-765fb632cbbd",
+        "playbook_id": "provider-usage-probe",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739737.052672,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739737.052672
+      }
+    ],
+    "8f3b790ab1309ea6787019fad5d32a38c63ce60d2c8f08907e55f6b41f2492a0": [
+      {
+        "activation_id": "211221b3-2908-41da-9105-7212306c7026",
+        "playbook_id": "provider-usage-probe",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739759.1940773,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739759.1940773
+      },
+      {
+        "activation_id": "3696ba73-fbc5-42e3-8076-71fb4a9f14a8",
+        "playbook_id": "default-pipeline",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739759.8268707,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739759.8268707
+      },
+      {
+        "activation_id": "b9d5968b-23f7-4db4-97fa-15e3e4eef957",
+        "playbook_id": "provider-failover",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739759.3606503,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739759.3606503
+      },
+      {
+        "activation_id": "c62fa949-1cef-415e-b60a-d42281d2e7fa",
+        "playbook_id": "supervisor-failure-triage",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739759.580253,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739759.580253
+      },
+      {
+        "activation_id": "d4067d9c-ff35-4ce0-9a7c-554e6c3f4813",
+        "playbook_id": "default-assignment-routing",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739759.0692089,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739759.0692089
+      }
+    ],
+    "0ab2f4f21371184d663a53dcfb5b736ae82ede7458644c3b049278002aa511a0": [
+      {
+        "activation_id": "1fd88f68-22e8-413c-b51b-52421175656f",
+        "playbook_id": "provider-failover",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739803.11784,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739803.11784
+      },
+      {
+        "activation_id": "384cb4a7-db4f-44b9-8f5e-e8dfbe440556",
+        "playbook_id": "provider-usage-probe",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739802.9743772,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739802.9743772
+      },
+      {
+        "activation_id": "78b88842-7031-4dc4-bb6a-e73ec2f8db82",
+        "playbook_id": "default-pipeline",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739803.4187868,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739803.4187868
+      },
+      {
+        "activation_id": "90774393-c319-437e-a198-82afe8f78d0e",
+        "playbook_id": "supervisor-failure-triage",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739803.2548997,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739803.2548997
+      }
+    ],
+    "c7e35c172c83f2461017571a3313bcebd7735df0e455eae84191f366787e0d0a": [
+      {
+        "activation_id": "1fd88f68-22e8-413c-b51b-52421175656f",
+        "playbook_id": "provider-failover",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739803.11784,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739803.11784
+      },
+      {
+        "activation_id": "384cb4a7-db4f-44b9-8f5e-e8dfbe440556",
+        "playbook_id": "provider-usage-probe",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739802.9743772,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739802.9743772
+      },
+      {
+        "activation_id": "78b88842-7031-4dc4-bb6a-e73ec2f8db82",
+        "playbook_id": "default-pipeline",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739803.4187868,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739803.4187868
+      },
+      {
+        "activation_id": "90774393-c319-437e-a198-82afe8f78d0e",
+        "playbook_id": "supervisor-failure-triage",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739803.2548997,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739803.2548997
+      },
+      {
+        "activation_id": "9b111601-21b6-4f70-834e-0111ebd6ccfb",
+        "playbook_id": "default-assignment-routing",
+        "scope": "system",
+        "scope_identifier": "",
+        "active_artifact_sha256": "sha256:69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+        "enabled": true,
+        "health": "ready",
+        "reasons": "[]",
+        "activated_at": 1791739824.0776172,
+        "activated_by": "service:required-playbook-reconciler",
+        "updated_at": 1791739824.0776172
+      }
+    ]
+  }
+}

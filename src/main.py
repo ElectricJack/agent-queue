@@ -103,6 +103,22 @@ async def _scheduler_wake_or_shutdown(wake: asyncio.Event, shutdown: asyncio.Eve
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _run_pool_watchdog(orch: Orchestrator, shutdown: asyncio.Event) -> None:
+    """Keep pool progress observable when an unrelated cascade step is blocked."""
+    from src.orchestrator.pools import POOL_WATCHDOG_INTERVAL
+
+    while not shutdown.is_set():
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=POOL_WATCHDOG_INTERVAL)
+            return
+        except TimeoutError:
+            pass
+        try:
+            await orch._check_pool_progress()
+        except Exception:
+            logger.exception("Pool progress watchdog failed; retrying on the next interval")
+
+
 async def _run_scheduler_cycles(
     orch: Orchestrator, shutdown_event: asyncio.Event, *, interval: float | None = None,
 ) -> None:
@@ -116,6 +132,10 @@ async def _run_scheduler_cycles(
     unsubscribes = [bus.subscribe(event, lambda _data: wake.set())
                     for event in SCHEDULER_WAKE_EVENTS] if bus is not None else []
     loop = asyncio.get_running_loop()
+    watchdog = (
+        asyncio.create_task(_run_pool_watchdog(orch, shutdown_event), name="pool-watchdog")
+        if callable(getattr(orch, "_check_pool_progress", None)) else None
+    )
     try:
         while not shutdown_event.is_set():
             wake.clear()
@@ -154,6 +174,9 @@ async def _run_scheduler_cycles(
             except asyncio.TimeoutError:
                 pass
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
         for unsubscribe in unsubscribes:
             unsubscribe()
 
@@ -238,6 +261,7 @@ async def run(
     # A daemon launched by an interactive Claude Code or Codex session must
     # not retain that session's control variables.  Remove them before setup,
     # config loading, or constructing any child-launching subsystem.
+    inherited_aq_keys = sorted(key for key in os.environ if key.startswith("AQ_"))
     stripped_harness_markers = strip_harness_session_markers(os.environ)
     # The daemon owns the schema: this is what lets ``run_schema_setup``
     # migrate the production database.  ``AQ_DB_SCOPE=worker`` in the
@@ -256,8 +280,18 @@ async def run(
             "Stripped inherited harness session marker(s) at daemon startup: %s",
             ", ".join(stripped_harness_markers),
         )
+    if inherited_aq_keys:
+        logger.warning(
+            "Inherited AQ_* variable(s) at daemon startup: %s. "
+            "Worker launches discard inherited AQ_* and inject fresh session values; "
+            "restart the daemon from a clean operator environment.",
+            ", ".join(inherited_aq_keys),
+        )
 
     config = load_config(config_path, profile=profile)
+    from src.task_templates import bind_task_templates
+
+    bind_task_templates(config.data_dir)
     logger.info(
         "Starting with env=%s, profile=%s",
         config.env,
@@ -488,13 +522,18 @@ async def run(
             ).run(),
             name="aq-review-notifier",
         )
+        from src.wait_runtime.service import WaitService
+
+        orch.wait_service = WaitService(orch)
+        wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")
         try:
             if freeze_startup_heap:
                 _freeze_startup_heap()
             await _run_scheduler_cycles(orch, shutdown_event)
         finally:
             review_notifier_task.cancel()
-            await asyncio.gather(review_notifier_task, return_exceptions=True)
+            wait_service_task.cancel()
+            await asyncio.gather(review_notifier_task, wait_service_task, return_exceptions=True)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
     # (~3s) inside the task so it never blocks orchestrator startup.
@@ -594,6 +633,15 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     else:
         required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
     checks["required_playbooks"] = required_playbooks
+
+    # Routing needs protected storage even when every activation is healthy.
+    # Inspect the loaded key ring, rather than a newly configured environment.
+    from src.playbooks.private_values import private_value_key_health
+
+    checks["playbook_private_value_key"] = private_value_key_health(
+        orch.config.playbooks,
+        service=orch.db.playbook_private_values() if orch.config.playbooks.enabled else None,
+    )
 
     # Agent status
     try:

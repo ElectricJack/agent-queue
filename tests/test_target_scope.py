@@ -505,8 +505,9 @@ _FOREIGN_TARGETS = [
     ("integration_reopen_collection", {"task_id": "foreign", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-other"}),
     ("integration_release", {"batch_id": "batch-other"}),
-    ("integration_recover_candidate_member", {"reservation_id": "res-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
+    ("integration_restore_task_origin", {"task_id": "foreign"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-foreign"}),
     ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-other", "gate_id": "gate-p"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-other"}),
@@ -518,8 +519,8 @@ _OWN_TARGETS = [
     ("integration_reopen_collection", {"task_id": "own", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-p"}),
     ("integration_release", {"batch_id": "batch-p"}),
-    ("integration_recover_candidate_member", {"reservation_id": "res-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-own"}),
     ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-p"}),
 ]
@@ -622,6 +623,10 @@ async def test_an_owned_ask_does_not_admit_an_unowned_input(asks_db):
     ("integration_abort_batch", {"batch_id": "batch-p", "dry_run": False,
                                  "reason": "duplicate"}, "aborted", "abort_batch"),
     ("integration_retire_origin", {"task_id": "own"}, "preview", "retire_origin"),
+    ("integration_reverify_epic", {"task_id": "own"}, "preview", "reverify_epic"),
+    ("integration_reverify_epic", {"task_id": "own", "dry_run": False,
+                                   "expected_head_sha": "a" * 40, "reason": "retry"},
+     "visited", "reverify_epic"),
     ("integration_retire_origin", {"task_id": "own", "origin_id": "origin-own",
                                    "dry_run": False, "reason": "delivered"},
      "retired", "retire_origin"),
@@ -645,11 +650,14 @@ async def test_supervisor_train_controls_dispatch_through_the_contract(
     assert result["success"], result
     control.assert_awaited_once()
     assert control.call_args.kwargs["operator_id"] == f"supervisor session:{SUPERVISOR}"
+    if method == "reverify_epic":
+        assert control.call_args.kwargs["expected_project_id"] == "p"
 
 
 @pytest.mark.parametrize("command,args", [
     ("integration_abort_batch", {"batch_id": "batch-p"}),
     ("integration_retire_origin", {"task_id": "own"}),
+    ("integration_reverify_epic", {"task_id": "own"}),
 ])
 async def test_plain_session_cannot_reach_train_controls(db, command, args):
     assert check_command_scope(command, dict(args), _scope("p", elevated=False)) is not None
@@ -702,9 +710,9 @@ def test_the_derivation_is_not_vacuously_small():
 
 
 def test_extra_forbid_is_untouched_on_every_contract():
-    """The mechanism is target resolution, never a looser model."""
-    for name in CONTRACTS.names():
-        model = CONTRACTS.get(name).contract.execution.args_model
+    """Target resolution never loosens an existing typed dispatch model."""
+    for name, contract in CONTRACTS.typed_contracts().items():
+        model = contract.execution.args_model
         assert issubclass(model, CommandArgs)
         assert model.model_config.get("extra") == "forbid", name
 
@@ -983,9 +991,6 @@ async def test_a_session_with_null_project_is_refused(db):
 
 
 @pytest.mark.parametrize(
-    "command", ["integration_reconcile_promotion", "integration_push_conflict_resolution"]
-)
-@pytest.mark.parametrize(
     ("intent_id", "expected_error"),
     [
         ("intent-p", None),
@@ -996,9 +1001,10 @@ async def test_a_session_with_null_project_is_refused(db):
     ],
 )
 async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
-    db, command, intent_id, expected_error
+    db, intent_id, expected_error
 ):
-    error = await check_request_scope(command, {"intent_id": intent_id}, _scope("p"), db=db)
+    command = "historical_intent_read"
+    error = await target_scope_error(command, {"intent_id": intent_id}, "p", db=db)
 
     assert error == (None if expected_error is None else f"out of scope: {command} {expected_error}")
 
@@ -1213,3 +1219,13 @@ def test_the_local_operator_bypasses_both_gates():
 
     assert check_command_scope("integration_reserve_owner", args, RequestScope(kind="local")) is None
     assert args == {}
+
+
+@pytest.mark.parametrize(("reservation_id", "foreign"), [("res-p", False), ("res-other", True)])
+async def test_historical_candidate_reservation_resolver_preserves_ownership(db, reservation_id, foreign):
+    error = await target_scope_error(
+        "historical_reservation_read", {"reservation_id": reservation_id}, "p", db=db
+    )
+    assert (error is not None) == foreign
+    if foreign:
+        assert "another project" in error

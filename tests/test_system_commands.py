@@ -107,6 +107,51 @@ class TestUpdateAndRestart:
         assert result["commit"] == "b" * 40
         assert (tmp_path / "update.log").exists()
 
+    async def test_tracked_branch_launch_is_detached_and_scrubbed(self, handler, monkeypatch, tmp_path):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdatePlan
+
+        handler.config.data_dir = str(tmp_path)
+        handler.config.deploy.track_branch = "dev"
+        monkeypatch.setenv("UNRELATED_SECRET", "must-not-reach-updater")
+        monkeypatch.setattr(update, "plan_update", lambda checkout, **kwargs: UpdatePlan(
+            checkout, "dev", "origin/dev", "a" * 40, "b" * 40, False,
+        ))
+        launch = AsyncMock(return_value=MagicMock(pid=42, wait=AsyncMock(return_value=0)))
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        handler.orchestrator._emit_text_notify = AsyncMock()
+        result = await handler._cmd_update_and_restart({"automatic": True})
+        assert result["success"] and result["selector"] == "origin/dev"
+        assert launch.call_args.args[-1] == "--automatic"
+        assert launch.call_args.kwargs["start_new_session"] is True
+        assert "UNRELATED_SECRET" not in launch.call_args.kwargs["env"]
+        assert (tmp_path / "update.log").stat().st_mode & 0o777 == 0o600
+
+    async def test_tracking_holds_failed_target_and_respects_update_lock(
+        self, handler, monkeypatch, tmp_path,
+    ):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.deploy_history import record_deploy
+        from src.install.update import UpdatePlan
+
+        handler.config.data_dir = str(tmp_path)
+        handler.config.deploy.track_branch = "dev"
+        monkeypatch.setattr(update, "plan_update", lambda checkout, **kwargs: UpdatePlan(
+            checkout, "dev", "origin/dev", "a" * 40, "b" * 40, False,
+        ))
+        record_deploy(tmp_path, "rolled_back", target="b" * 40, automatic=True)
+        launch = AsyncMock()
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        result = await handler._cmd_update_and_restart({"automatic": True})
+        assert result["error"] == "deployment_failed"
+        launch.assert_not_awaited()
+        (tmp_path / "update.lock").touch()
+        result = await handler._cmd_update_and_restart({"automatic": True})
+        assert result["status"] == "updating"
+        launch.assert_not_awaited()
+
     async def test_does_not_launch_or_restart_when_release_preflight_refuses(
         self, handler, monkeypatch
     ):
@@ -148,69 +193,43 @@ class TestUpdateAndRestart:
         assert result["status"] == "up_to_date"
         launch.assert_not_awaited()
 
-    @pytest.mark.parametrize("pull_output", ["Already up to date.", "Local commits retained."])
-    async def test_without_selector_preserves_pull_and_restart(
-        self, handler, monkeypatch, pull_output
+    @pytest.mark.parametrize("was_paused", [False, True])
+    @pytest.mark.parametrize("args", [{}, {"wait_for_tasks": True}, {"automatic": True}])
+    async def test_unconfigured_update_refuses_without_mutation(
+        self, handler, monkeypatch, args, was_paused
     ):
         from src.commands import system_commands
         from src.install import update
 
-        monkeypatch.setattr(
-            update, "plan_update", lambda *a, **k: pytest.fail("selector is opt-in")
-        )
-        run = AsyncMock(side_effect=[(0, pull_output, ""), (0, "", ""), (0, "", "")])
-        monkeypatch.setattr(system_commands, "_run_subprocess", run)
+        planning = MagicMock(side_effect=AssertionError("unconfigured update planned"))
+        monkeypatch.setattr(update, "plan_update", planning)
+        launch = AsyncMock()
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
         kill = MagicMock()
         monkeypatch.setattr(system_commands.os, "kill", kill)
-        handler.orchestrator._emit_text_notify = AsyncMock()
-        result = await handler._cmd_update_and_restart({})
-        assert result["status"] == "updating" and result["pull_output"] == pull_output
-        assert run.await_args_list[0].args == ("git", "pull", "--ff-only")
-        assert run.await_count == 3
-        assert handler.orchestrator._restart_requested
-        kill.assert_called_once()
-
-    @pytest.mark.parametrize(
-        "stage,error", [(0, "git pull"), (1, "pip install"), (2, "TypeScript client")]
-    )
-    async def test_legacy_update_failures_do_not_restart_or_pause(
-        self, handler, monkeypatch, stage, error
-    ):
-        from src.commands import system_commands
-
-        run = AsyncMock(side_effect=[(0, "", "")] * stage + [(1, "", "fixture failure")])
-        monkeypatch.setattr(system_commands, "_run_subprocess", run)
-        kill = MagicMock()
-        monkeypatch.setattr(system_commands.os, "kill", kill)
-        result = await handler._cmd_update_and_restart({"wait_for_tasks": True})
-        assert error in result["error"]
-        assert not handler.orchestrator._paused
-        kill.assert_not_called()
-
-    @pytest.mark.parametrize("failure", ["wait", "cancel", "signal"])
-    @pytest.mark.parametrize("was_paused", [False, True])
-    async def test_interrupted_legacy_update_restores_prior_scheduling(
-        self, handler, monkeypatch, failure, was_paused
-    ):
-        from src.commands import system_commands
-
-        monkeypatch.setattr(system_commands, "_run_subprocess", AsyncMock(return_value=(0, "", "")))
         orch = handler.orchestrator
         orch._paused = was_paused
         orch._running_tasks = {"fixture": object()}
-        orch._emit_text_notify = AsyncMock()
         orch.wait_for_running_tasks = AsyncMock()
-        exception = asyncio.CancelledError if failure == "cancel" else RuntimeError
-        kill = MagicMock()
-        if failure == "signal":
-            kill.side_effect = exception("fixture signal failure")
+        orch._emit_text_notify = AsyncMock()
+
+        result = await handler._cmd_update_and_restart(args)
+
+        assert result["success"] is False
+        if args.get("automatic"):
+            assert result["error"] == "automatic branch deployment is disabled"
         else:
-            orch.wait_for_running_tasks.side_effect = exception("fixture wait failure")
-        monkeypatch.setattr(system_commands.os, "kill", kill)
-        with pytest.raises(exception):
-            await handler._cmd_update_and_restart({"wait_for_tasks": True})
+            assert result["error"] == "deployment_not_configured"
+            assert "deploy.tag_glob" in result["remediation"]
+            assert "deploy.track_branch" in result["remediation"]
+            assert "aq update" in result["remediation"]
         assert orch._paused is was_paused
-        assert orch._restart_requested is False
+        assert not orch._restart_requested
+        planning.assert_not_called()
+        launch.assert_not_awaited()
+        kill.assert_not_called()
+        orch.wait_for_running_tasks.assert_not_awaited()
+        orch._emit_text_notify.assert_not_awaited()
 
     @pytest.mark.parametrize("exit_code", [0, 10, 20, -15])
     @pytest.mark.parametrize("was_paused", [False, True])
@@ -298,15 +317,78 @@ class TestUpdateAndRestart:
         assert all(response[key] == value for key, value in receipt.items())
 
 
+async def test_tracked_deployment_recovery_hold_refuses_without_fetch_or_launch(handler, monkeypatch):
+    from src.install import update
+    from src.install.deploy_history import record_deploy
+
+    handler.config.deploy.track_branch = "dev"
+    record_deploy(Path(handler.config.data_dir), "recovery_required", target="old-failed-target")
+    monkeypatch.setattr(update, "plan_update", lambda *a, **kw: pytest.fail("held check fetched"))
+    result = await handler._cmd_update_and_restart({"automatic": True})
+    assert not result["success"] and result["error"] == "migration_recovery_required"
+
+
 class TestRunCommand:
     async def test_missing_working_dir_returns_error(self, handler):
         result = await handler.execute("run_command", {"command": "echo hi"})
-        assert result == {"error": "working_dir is required"}
+        assert result == {"success": False, "error": "working_dir is required"}
 
     async def test_missing_command_returns_error(self, handler):
         result = await handler.execute("run_command", {"working_dir": "/tmp"})
-        assert result == {"error": "command is required"}
+        assert result == {"success": False, "error": "command is required"}
 
     async def test_missing_both_returns_error(self, handler):
         result = await handler.execute("run_command", {})
-        assert result == {"error": "command is required"}
+        assert result == {"success": False, "error": "command is required"}
+
+
+async def test_operational_retention_uses_private_worker_pool(handler):
+    from src.api.models.system import OperationalRetentionResponse
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    with principal_context(ExecutionPrincipal.service("retention-test")):
+        result = await handler.execute("operational_retention", {"dry_run": True, "batch_size": 1})
+    assert result["success"], result
+    assert result["dry_run"]
+    assert "token_ledger" in result["counts"]
+    assert "transcript_usage_calls" not in result["counts"]
+    assert not (Path(handler.config.data_dir) / "backups").exists()
+    assert OperationalRetentionResponse.model_validate(result).model_dump(exclude_none=True) == result
+
+
+@pytest.mark.parametrize("batch_size", [True, 0, 1001, "1", 1.5])
+async def test_operational_retention_rejects_invalid_batch_size(handler, batch_size):
+    from src.api.models.system import OperationalRetentionResponse
+
+    result = await handler._cmd_operational_retention({"batch_size": batch_size})
+    assert result == {"success": False, "error": "batch_size must be between 1 and 1000"}
+    assert OperationalRetentionResponse.model_validate(result).model_dump(exclude_none=True) == result
+
+
+async def test_retention_request_cancel_does_not_overlap_worker(handler, monkeypatch):
+    import threading
+    from src.api.models.system import OperationalRetentionResponse
+    from src.database import operational_retention
+
+    entered, release = threading.Event(), threading.Event()
+
+    def worker(*args, **kwargs):
+        entered.set()
+        release.wait(10)
+        return {"events": 0}
+
+    monkeypatch.setattr(operational_retention, "run_worker", worker)
+    request = asyncio.create_task(handler._cmd_operational_retention({}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        result = await handler._cmd_operational_retention({})
+        assert result == {"success": True, "outcome": "already_running"}
+        assert OperationalRetentionResponse.model_validate(result).model_dump(
+            exclude_none=True
+        ) == result
+    finally:
+        release.set()
+        await handler.orchestrator._operational_retention_task
