@@ -179,6 +179,26 @@ statements production builds rather than a reconstruction — and asserts:
 It is plan-shape rather than wall-clock, so it takes the `perf` marker but not
 `perf_strict`.
 
+The bulk seed is followed by `ANALYZE tasks, task_dependencies` before taking
+plans. The measurement uses statistics for its own queue, independently of
+autovacuum timing. Leased test databases clear both relation and column
+statistics between fixtures, including column distributions left by an earlier
+`ANALYZE`; clearing relation statistics alone does not isolate query plans.
+Statistics setup remains outside the explained statements, and neither the
+sort prohibition nor the 64-buffer budget is relaxed.
+
+### Recovery-attempt ordering (2026-10-19)
+
+Recovery holds fence the latest attempt for the task's current project and
+creation generation, ordered by `started_at DESC, id DESC`. The ID breaks ties
+deterministically. This correlated lookup must also remain index ordered:
+`idx_task_session_attempts_recovery` covers
+`task_id, project_id, started_at, id` and supplies both descending keys via a
+backward scan. The existing task/timestamp index remains for history reads
+that do not constrain the project. Revision `a00000000101` adds the recovery
+index to existing installations; fresh baselines include it through metadata.
+The no-sort assertion and 64-buffer budget apply unchanged.
+
 ## 6. Follow-ups this leaves open
 
 * The two `task_metadata` sub-plans in the frontier predicate (container flag,

@@ -27,12 +27,17 @@ On 2026-09-26 finished and obsolete work lingered open for 10-13 hours:
 a container in BLOCKED or PAUSED, with the usual §7 conditions (container flag,
 no live session, no non-COMPLETED child, not a childless held-open container,
 not owned by a hierarchy/train collection episode), **at least one child**, and
-**every non-container child delivered**. Delivery is the development
-publisher's receipt (`_development_delivery_pending(child,
-include_foreign_repos=True)` is false): a delivered or adopted batch to the
-default branch lists the child's latest completion source. Outside development
-mode, or for a branchless child, there is nothing to deliver. A container child
-proved its own children's delivery when it settled.
+**every non-container child delivered**. Delivery is git's answer, not a
+receipt (amended 2026-09-27, `fresh-ember.6`): SQL selects the graph candidates
+and names the children in development delivery scope
+(`development_delivery_scope`, foreign repositories included);
+`DeliveryObserver` then fetches an isolated store outside any transaction and
+the shared `delivery_truth` evaluator must find each such child's latest
+completion contained in the configured target. Settlement rechecks each child's
+identity and the target inside its transaction; anything unverified is
+unknown and holds the container. Outside development mode, or for a
+branchless child that recorded no artifact, there is nothing to deliver. A
+container child proved its own children's delivery when it settled.
 
 `_settle_stale_container` re-checks the status under the row lock. It skips a
 pause whose session cleanup is pending. Otherwise it deletes the
@@ -44,10 +49,14 @@ The leg runs in three places:
 
 - **Event path:** a child's completion seeds its parent, and the parent's own
   completion recurses upward, so a stale grandparent settles through an
-  IN_PROGRESS parent.
+  IN_PROGRESS parent.  The event path runs inside another write and cannot
+  ask git, so it settles only a container with no child that needs delivery
+  proof.
 - **Backstop sweep** (`reconcile_stale_containers`, every
   `container_sweep_interval_seconds`): a delivery landing after the last
-  completion has no event.
+  completion has no event.  It observes the candidates' delivery-scope
+  children in git, settles, and repeats while a settled container makes its
+  stale parent a candidate.
 - **Daemon start** (`Orchestrator.initialize`, after `_recover_stale_state`):
   restarts are what strand these containers.
 

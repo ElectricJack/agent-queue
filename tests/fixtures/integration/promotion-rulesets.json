@@ -1,0 +1,122 @@
+[
+  {
+    "name": "Train-only dev",
+    "target": "branch",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/heads/dev"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": false,
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "Agent Queue Integration Attestation",
+              "integration_id": 5075923
+            }
+          ]
+        }
+      },
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      }
+    ],
+    "bypass_actors": []
+  },
+  {
+    "name": "Promotion-only main",
+    "target": "branch",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/heads/main"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": false,
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "Agent Queue Promotion Attestation (release)",
+              "integration_id": 5075923
+            }
+          ]
+        }
+      },
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      }
+    ],
+    "bypass_actors": []
+  },
+  {
+    "name": "Promotion-tag creation (release)",
+    "target": "tag",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/tags/v*"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "creation"
+      }
+    ],
+    "bypass_actors": [
+      {
+        "actor_id": 5075923,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      }
+    ]
+  },
+  {
+    "name": "Promotion-tag immutability (release)",
+    "target": "tag",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/tags/v*"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "update"
+      },
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      }
+    ],
+    "bypass_actors": []
+  }
+]
