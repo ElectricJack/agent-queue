@@ -77,6 +77,8 @@ worker template.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
+    "integration_batch_fix",
     "wait_explain",
     "wait_checkpoint",
     "wait_ack",

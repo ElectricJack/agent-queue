@@ -5,6 +5,7 @@ bounded and refuse before writing if the component exceeds the budget.
 Resource cycles terminate; priorities are derived from bases, never stale caches.
 """
 
+import asyncio
 import heapq
 import time
 import uuid
@@ -19,10 +20,27 @@ from src.waits.conditions import WaitError
 
 GRAPH_LOCK = 0x41515747524150
 MAX_COMPONENT_NODES = 10_000
+# Every waiter pins a pooled connection. An unbounded wait let one slow holder
+# queue the whole pool behind it (2026-10-22 wedges), so waiting is refused.
+GRAPH_LOCK_TIMEOUT = 20.0
 
 
-async def lock_graph(conn):
-    await conn.execute(select(func.pg_advisory_xact_lock(GRAPH_LOCK)))
+async def lock_graph(conn, *, timeout=None):
+    """Take the transaction-scoped graph fence, or refuse with ``wait.graph_busy``.
+
+    Polls the non-blocking form so a refused waiter leaves its transaction
+    usable and hands its connection back promptly instead of convoying.
+    """
+    timeout = GRAPH_LOCK_TIMEOUT if timeout is None else timeout
+    deadline = time.monotonic() + timeout
+    delay = 0.005
+    while not await conn.scalar(select(func.pg_try_advisory_xact_lock(GRAPH_LOCK))):
+        if time.monotonic() >= deadline:
+            raise WaitError(
+                "wait.graph_busy", f"wait graph lock not acquired within {timeout:.0f}s; retry"
+            )
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 0.25)
 
 
 async def _walk(conn, roots, *, reverse=False):

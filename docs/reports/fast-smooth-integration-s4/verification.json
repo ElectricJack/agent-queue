@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "task_id": "stark-willow-95.18",
+  "date": "2026-10-21",
+  "prepared_source_base": "3e60b49c6ec251d91862e31f6eb3c16a61e3dd44",
+  "publication_commit": "recorded by the guarded push and task completion/comment receipt; no self-referential SHA",
+  "test_sha256": "794158cb81e500e796d4a6e44ad65477309d8f485a497e543c26475c18837b90",
+  "scope": "real Git + disposable PostgreSQL; controlled CI; no LLM; no live cutover",
+  "live_activation_ready": false,
+  "acceptance_gaps": [
+    "Approved revision2 section14 Red batch: prepared service has no per-group parallel branch allocator/four-fixer cap, coverage-declaration cancellation or group merge-back/one-CI path; exact sources and named covered subcases in acceptance-matrix.json",
+    "Inherited owned-line/category failures and inventory findings remain with existing integrated repair/Azure restoration owners",
+    "Live source, writer/storage/CI/product-health inventory and 24-hour/seven-day rollout observations remain operator-owned unresolved fields"
+  ],
+  "test_environment": {
+    "POSTGRES_TEST_DSN": "postgresql+asyncpg://agent_queue_test:REDACTED@localhost:5534/postgres",
+    "database_scope": "fixture-created disposable databases",
+    "worker_sentinels_preserved": true,
+    "test_workers": "aq test inherited default cap: 6; never raised",
+    "default_marker_deselect": "not perf and not migration and not slow and not tmux and not integration"
+  },
+  "swarm_environment": {
+    "AQ_E2E_HOME": "/tmp/aq-s4-validation-95-18/swarm",
+    "AQ_E2E_PORT": 18118,
+    "AQ_E2E_TMUX_SOCKET": "aq-e2e-s4-95-18",
+    "E2E_DB_NAME": "agent_queue_e2e_s4_95_18",
+    "test_daemon_stopped_after_run": true
+  },
+  "checks": [
+    {
+      "name": "swarm",
+      "result": "pass",
+      "command": "scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh",
+      "log_path": "/tmp/aq-s4-validation-95-18/swarm.log",
+      "log_sha256": "bce7be867940d94d6112cd2f419ae928d928254b212bcf5daaa8ec98a28f00ba",
+      "notes": "20 of 20 disposable daemon scenarios passed; controlled providers, no real LLM or external messaging.",
+      "exit_code": 0,
+      "scenarios_passed": 20
+    },
+    {
+      "name": "canaries",
+      "result": "pass",
+      "command": "aq test tests/test_fast_smooth_integration_e2e.py --junitxml=/tmp/aq-s4-validation-95-18/canaries.xml",
+      "log_path": "/tmp/aq-s4-validation-95-18/canaries.log",
+      "log_sha256": "7b0f455385c31b0c089c3042ce3159dc5c108c456ba6d955823728c843dcc21a",
+      "notes": "4 passed; final configured-dev split fixture and author-conflict restart included.",
+      "exit_code": 0,
+      "canary_test_sha256_at_run": "6a21e8303d5a40eae41ce0a647805f6fc5054b71646480d8da3ce473d18bed75"
+    },
+    {
+      "name": "focused-final",
+      "result": "pass",
+      "command": "aq test tests/test_fast_smooth_integration_e2e.py tests/test_task_close_completion_recovery.py tests/test_task_close_accepted_tail.py --junitxml=/tmp/aq-s4-validation-95-18/focused.xml",
+      "log_path": "/tmp/aq-s4-validation-95-18/focused-final.log",
+      "log_sha256": "faa581224308f82d3c742124b72d23fe2c555d88512141e981ead7f6f2a959bf",
+      "notes": "44 passed; before final split fixture changed from main to configured dev. Final module rerun separately.",
+      "exit_code": 0,
+      "canary_test_revision_note": "Earlier canary source; exact canary file hash at this invocation was not captured. Final six-case canary and repair-adjacent runs separately bind the final test SHA."
+    },
+    {
+      "name": "area",
+      "result": "fail",
+      "command": "aq test tests/test_fast_smooth_integration_e2e.py tests/test_epic_train_end_to_end.py tests/test_integration_train_sources.py tests/test_integration_train.py tests/test_integration_batches.py tests/test_integration_git_truth.py tests/test_integration_stacked_branches.py tests/test_integration_close_merge.py tests/test_integration_fixers.py tests/test_integration_failure_groups.py tests/test_integration_workspaces.py tests/test_integration_models.py tests/test_integration_delivery_watchdog.py tests/test_delivery_latency.py tests/test_integration_containment_cutover.py tests/test_project_relocation.py tests/test_delivery_receipt_retirement.py tests/test_integration_size.py tests/test_agent_queue_train_policy.py tests/test_default_playbook_v2_artifacts.py tests/test_selection_catalogue.py",
+      "log_path": "/tmp/aq-s4-validation-95-18/area.log",
+      "log_sha256": "e6ca8e06c94a1ed807c4e629f381b64bebba62fc6bbffa78d166b0444aa7178d",
+      "notes": "Collected 1456 tests before the fourth canary and final dev fixture were added; final canary checks are separate.",
+      "exit_code": 1,
+      "passed": 1454,
+      "failed": 2,
+      "seconds": 1286.73,
+      "failures": [
+        {
+          "nodeid": "tests/test_integration_size.py::test_integration_size_and_table_budget",
+          "reason": "owned total: 159,571 exceeds 156,792 in transition"
+        },
+        {
+          "nodeid": "tests/test_integration_size.py::test_replacement_adds_no_new_integration_storage_category",
+          "reason": "integration_close_attempts is not a baseline category; approved disposition has not yet been bound in this ratchet"
+        }
+      ],
+      "canary_test_revision_note": "Earlier canary source; exact canary file hash at this invocation was not captured. Final six-case canary and repair-adjacent runs separately bind the final test SHA."
+    },
+    {
+      "name": "canaries-junit",
+      "path": "/tmp/aq-s4-validation-95-18/canaries.xml",
+      "sha256": "5709ea2a0a35fa17ed1484c18d5f5d6072220028ca4fca2cdc3e89a54285a352"
+    },
+    {
+      "name": "focused-junit",
+      "path": "/tmp/aq-s4-validation-95-18/focused.xml",
+      "sha256": "b30fbe1a675987dc25991e7dfef68bc117c6f1f977d4a163e294ca216e24f02d"
+    },
+    {
+      "name": "rev2-canaries",
+      "command": "aq test tests/test_fast_smooth_integration_e2e.py --junitxml=/tmp/aq-s4-validation-95-18/rev2-canaries.xml",
+      "result": "pass",
+      "exit_code": 0,
+      "passed": 6,
+      "seconds": 18.3,
+      "log_path": "/tmp/aq-s4-validation-95-18/rev2-canaries.log",
+      "log_sha256": "aea8451ff1b69dc1a02abba66b0ce134dd67ff7d8c95d0324ec088c52702456d",
+      "junit_path": "/tmp/aq-s4-validation-95-18/rev2-canaries.xml",
+      "junit_sha256": "c36fd231ac4543b19aebd6f6e218c8c00a72f4cb381cac93be8b14de7c803853",
+      "test_sha256": "794158cb81e500e796d4a6e44ad65477309d8f485a497e543c26475c18837b90"
+    },
+    {
+      "name": "rev2-repair",
+      "command": "aq test tests/test_fast_smooth_integration_e2e.py tests/test_integration_fixers.py tests/test_integration_failure_groups.py --junitxml=/tmp/aq-s4-validation-95-18/rev2-repair.xml",
+      "result": "pass",
+      "exit_code": 0,
+      "passed": 70,
+      "seconds": 36.78,
+      "log_path": "/tmp/aq-s4-validation-95-18/rev2-repair.log",
+      "log_sha256": "e2fc2ce029042bfae51992e26cf128eac5190caaa7485028df78532f0348cd89",
+      "junit_path": "/tmp/aq-s4-validation-95-18/rev2-repair.xml",
+      "junit_sha256": "1598b7623d5307acbbafda1bd644e69da38994037d00601bbe4c438936c3479c",
+      "test_sha256": "794158cb81e500e796d4a6e44ad65477309d8f485a497e543c26475c18837b90"
+    },
+    {
+      "name": "rev2-snapshots",
+      "command": "aq test tests/test_integration_service.py -k 'ci_source_is_unset_by_default_without_changing_frozen_snapshots or ci_hosted_requirement_defaults_preserve_existing_snapshot_shape' --junitxml=/tmp/aq-s4-validation-95-18/rev2-snapshots.xml",
+      "result": "pass",
+      "exit_code": 0,
+      "passed": 2,
+      "seconds": 7.02,
+      "log_path": "/tmp/aq-s4-validation-95-18/rev2-snapshots.log",
+      "log_sha256": "40a916e8cb5023047a731e348b41576156addae3f1e55fb0cef12bdddf11bbce",
+      "junit_path": "/tmp/aq-s4-validation-95-18/rev2-snapshots.xml",
+      "junit_sha256": "9bf0a0d7edd59d7e9ef61f5d058293bbb2f2847c8183f541579ff9cc2b364493",
+      "test_sha256": "794158cb81e500e796d4a6e44ad65477309d8f485a497e543c26475c18837b90"
+    }
+  ],
+  "static_checks": [
+    {
+      "command": "ruff check tests/test_fast_smooth_integration_e2e.py",
+      "result": "pass"
+    },
+    {
+      "command": "python scripts/generate-selection-catalogue.py",
+      "result": "pass",
+      "detail": "985 modules in 96 areas"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    },
+    {
+      "command": "JSON parse, relative-link existence, fixture hash and unresolved inventory validation",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --cached --check",
+      "result": "pass"
+    }
+  ],
+  "baseline_comparison": {
+    "reference": "operator-vault:projects/agent-queue/notes/full-suite-baseline-2026-09-22.md",
+    "revision": "35d9605e",
+    "recorded_failure_count": 45,
+    "interpretation": "Report these exact integrated-source ratchet failures to the existing repair/restoration owners; do not weaken or skip tests and do not treat the recorded 45-failure baseline as authority for them.",
+    "matches_recorded_baseline": false,
+    "introduced_by_this_task": false,
+    "evidence": "Both failing ownership inputs are inherited from the prepared source measured in ownership-ledger.json. This task changes tests/catalogue and documentation only; no source, migration, ownership baseline, category rule, cap or allowance was edited."
+  },
+  "initial_attempts": [
+    {
+      "result": "refused before collection",
+      "reason": "POSTGRES_TEST_DSN was not set; used documented disposable test service on the next invocation"
+    },
+    {
+      "result": "2 fixture errors, 1 pass",
+      "reason": "corrected project field and full sibling push ref in the new test; superseded by passing checks"
+    }
+  ],
+  "process_stalls": {
+    "new_canaries": [],
+    "live_frontier": "unmeasured; require operator shared demand and wait inventory"
+  },
+  "raw_log_retention": "worker-local /tmp paths; hashes and summaries retained here; these logs are not production CI attestations",
+  "swarm_source_canary": {
+    "task_id": "solid-cascade",
+    "source_oid": "6e736d04d87b7224cce0f5dbb9daf7d2c7f3357d",
+    "target_ref": "refs/heads/main",
+    "target_oid": "2ca32c4871ba933e0d72db702f4404597d749882",
+    "scope": "disposable daemon S20; not live dev acceptance"
+  },
+  "approved_specification": {
+    "review_id": "rev-fair-lantern",
+    "revision": 2,
+    "sha256": "4518d9296649ddc2f0192ff73dd682864fb938e3d9687069282b4f6b0a86453f",
+    "verified_snapshot": "/tmp/aq-approved-fast-smooth-rev2.md",
+    "snapshot_retention": "worker-local; SHA pins native approved review revision, not current divergent vault file",
+    "source_key": "validation",
+    "governing_sections": [
+      11,
+      12,
+      14
+    ],
+    "acceptance_rows": 12,
+    "supervisor_disposition": "msg-6ea46b7503da4e408cbff30726d9ff4b",
+    "wait_reply": "msg-168f1f67262e443bb39249c768d3f22e",
+    "vault_state": "diverged",
+    "proposed_revision_3": "document-only / in_review; review reconciliation belongs to global/human owner"
+  },
+  "acceptance_matrix": "acceptance-matrix.json",
+  "scope_correction": {
+    "prior_report_commit": "9036e8e18f909458e5e607f8514266bae02b1ecc",
+    "prior_matrix": "18 rows mixed approved revision2 and unapproved revision3",
+    "current_matrix": "12 approved revision2 rows, separate unapproved proposal list; no source-policy prerequisites inferred from revision3",
+    "supervisor_direction": "msg-6ea46b7503da4e408cbff30726d9ff4b",
+    "no_further_authorization_wait": true,
+    "validation_task_outcome": "bounded validation/report delivered; approved Red batch semantic gap explicitly unmet; no whole-epic/source-CI/landing/live certification"
+  }
+}

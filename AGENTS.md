@@ -58,8 +58,10 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   (`src/profiles/capability_sync.py`; frontmatter `capability_sync: false` opts out).
 - **Reviewed playbook bundles** (`tests/fixtures/playbooks/v2/<id>/`): after editing, run
   `scripts/rebuild-reviewed-playbook-artifacts.py`, update the `manifest.md` digests, and
-  copy the bundle to `src/prompts/reviewed_playbooks/<id>/` — the only path an install
-  imports from.
+  review the recorded inputs in `tests/fixtures/generated_sources/playbooks/<id>/`.
+  The authoring command refreshes the fixture and shipped copies; assembly uses
+  `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
+  `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
 - **Import the `.aq/claim.json` helpers from `src/claim_file.py`**, never from
   `src.commands.claim_commands`, or `src.sessions` and `src.commands` form an import cycle.
 - **`openapi.json` and both API clients are generated.** After any change to
