@@ -1,4 +1,4 @@
-"""Source, artifact and contract checks for the shipped ``blocked-task-escalation`` playbook."""
+"""Audit checks for the retired, reviewed ``blocked-task-escalation`` playbook."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from src.playbooks.definition import (
 from src.playbooks.expressions import ResolutionScope, resolve_value
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/blocked-task-escalation")
-SHIPPED = Path("src/prompts/default_playbooks/blocked-task-escalation.md")
+SHIPPED = Path("src/prompts/reviewed_playbooks/blocked-task-escalation/source.md")
 RULE = "escalate-blocked-task"
 NOTIFY = f"{RULE}--notify_supervisor"
 SUCCESSES = ("queued", "existing", "not_actionable", "retired")
