@@ -110,7 +110,7 @@ class AskDeliveryQueriesMixin:
             )
             .limit(1)
         )
-        if busy:
+        if busy and values["mode"] not in {"transferring", "delivery_disabled"}:
             raise AskError("ask.delivery_unknown", "Reconcile outstanding writes before transfer")
         values = {
             **values,
