@@ -16,13 +16,27 @@ would report a completely different account.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from src.commands.contracts import CONTRACTS
+from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.database.queries.provider_usage_queries import probe_health_key
+from src.playbooks.definition import load_definition_json
+from src.playbooks.engine import PlaybookEngine
+from src.playbooks.executors.base import EngineServices
+from src.profiles.capabilities import CapabilityPolicy
 from src.providers import probe as probe_module
+from tests._private_values_helper import private_value_service
+from tests.playbook_v2_engine_helpers import (
+    InMemoryArtifactStore,
+    RecordingRunRepository,
+    StubActivations,
+    artifact_ref_for,
+)
 
 # The verified body of ``claude -p "/usage" --output-format json`` on
 # claude 2.1.263, including the "what's contributing" block that follows the
@@ -69,8 +83,10 @@ class FakeProcess:
         self.returncode = returncode
         self._hang = hang
         self.killed = False
+        self.started = asyncio.Event()
 
     async def communicate(self) -> tuple[bytes, bytes]:
+        self.started.set()
         if self._hang:
             await asyncio.Event().wait()
         return self._stdout, self._stderr
@@ -167,18 +183,31 @@ async def test_the_configured_binary_is_what_runs(handler, spawned) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_a_timeout_fails_and_writes_nothing(handler, spawned, monkeypatch) -> None:
+async def test_a_timeout_is_unavailable_and_writes_nothing(handler, spawned, monkeypatch) -> None:
     hung = FakeProcess(hang=True)
     spawned["box"]["process"] = hung
     monkeypatch.setattr(probe_module, "DEFAULT_TIMEOUT_SECONDS", 0.05)
 
     result = await handler.execute("provider_usage_probe", {})
 
-    assert result["success"] is False
-    assert result["reason"] == probe_module.TIMEOUT
-    assert "did not answer" in result["error"]
+    assert result["success"] is True
+    assert result["outcome"] == probe_module.UNAVAILABLE
+    assert "did not answer" in result["detail"]
+    health = await handler.db.read_probe_health("claude")
+    assert health["detail"] == result["detail"]
     assert await _snapshot_rows(handler) == []
     assert hung.killed, "an abandoned probe must be reaped, not left a zombie"
+
+
+async def test_cancelling_a_probe_reaps_its_subprocess(spawned) -> None:
+    hung = FakeProcess(hang=True)
+    spawned["box"]["process"] = hung
+    task = asyncio.create_task(probe_module.probe_claude_usage())
+    await asyncio.wait_for(hung.started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert hung.killed
 
 
 async def test_a_non_zero_exit_fails_and_writes_nothing(handler, spawned) -> None:
@@ -371,6 +400,30 @@ async def test_a_failed_probe_maps_onto_rejected(contracted, spawned) -> None:
     result = await registration.invoke(ProviderUsageProbeArgs(), None)
 
     assert result.outcome == "rejected"
+    # The playbook executor round-trips the value before taking an outcome
+    # edge; a model_construct bypass must not turn rejection into a fault.
+    validated = registration.contract.execution.result_model.model_validate(
+        result.value.model_dump()
+    )
+    assert validated.outcome == "rejected"
+    assert validated.provider == "claude"
+    from types import SimpleNamespace
+
+    from src.playbooks.definition import CommandStep
+    from src.playbooks.executors.command import _consume
+
+    step = CommandStep.model_validate({
+        "rule": "probe", "title": "Probe",
+        "source": {"path": "probe.md", "start_line": 1, "end_line": 1},
+        "command": "provider_usage_probe", "transitions": {"rejected": "failed"},
+        "save_result_as": "probe_result",
+    })
+    consumed = _consume(
+        result, registration, step, SimpleNamespace(run_id="probe-run", private_inputs=False),
+        resolved_inputs={}, key="probe-key",
+    )
+    assert consumed.outcome == "rejected"
+    assert consumed.value["provider"] == "claude"
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +459,7 @@ def test_the_providers_section_is_reachable_from_yaml(tmp_path) -> None:
         yaml.safe_dump(
             {
                 "data_dir": str(tmp_path / "d"),
-                "database": {"url": f"sqlite:///{tmp_path / 'aq.db'}"},
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "discord": {"bot_token": "t", "guild_id": "1"},
                 "providers": {
                     "claude": {"binary": "/opt/claude", "usage_probe_enabled": False},
@@ -421,3 +474,113 @@ def test_the_providers_section_is_reachable_from_yaml(tmp_path) -> None:
     assert config.providers.codex_stale_after_seconds == 60
     # Unset keys keep their code default rather than being zeroed.
     assert config.providers.claude.stale_after_seconds == 1500
+
+
+# The pre-port recording stays frozen; rebuilding the shipped bundle must not
+# regenerate the comparison graph or its independently authored expectations.
+SCENARIO_ROOT = Path(__file__).parent / "fixtures/playbooks/scenarios/provider-usage-probe"
+SCENARIOS = json.loads((SCENARIO_ROOT / "scenarios.json").read_text())
+PORTED_ARTIFACT = Path(__file__).parent / "fixtures/playbooks/v2/provider-usage-probe/artifact.json"
+
+
+def test_probe_port_preserves_graph_and_declares_only_its_command():
+    before_bytes = (SCENARIO_ROOT / "before.artifact.json").read_bytes()
+    assert hashlib.sha256(before_bytes).hexdigest() == (
+        "bb0225c06d98c578213f46b8f3ffb0650e3910a8626fc0bde8f73eb643647ff7"
+    )
+    before = json.loads(before_bytes)
+    after = json.loads(PORTED_ARTIFACT.read_text())
+    # Source locations move with the declaration; executable policy must not.
+    for body in (before, after):
+        for node in [*body["rules"], *body["steps"].values()]:
+            node.pop("source")
+    assert after["rules"] == before["rules"]
+    assert after["steps"] == before["steps"]
+    assert after["trusted_execution"] == {
+        "required_capabilities": ["provider_usage_probe"],
+    }
+    assert after["compiled_against"] == before["compiled_against"]
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS["scenarios"], ids=lambda row: row["id"])
+@pytest.mark.parametrize("version", ["before", "ported"])
+async def test_probe_port_scenarios_use_real_command_and_engine(
+    contracted, spawned, monkeypatch, scenario, version,
+):
+    handler = contracted
+    # Seed a last good reading, then demonstrate that every non-reading path
+    # preserves it. Substitute the subprocess boundary, except for the explicit
+    # missing-adapter scenario which exercises the reserved runtime-error edge.
+    await handler.execute("provider_usage_probe", {"provider": "claude"})
+    before_rows = await _snapshot_rows(handler)
+    spawned["launches"].clear()
+    output = scenario.get("stdout", VERIFIED_ENVELOPE)
+    if isinstance(output, dict):
+        output = json.dumps(output)
+    process = FakeProcess(
+        stdout=output.encode(), stderr=b"probe diagnostic",
+        returncode=scenario.get("returncode", 0), hang=scenario.get("hang", False),
+    )
+    spawned["box"]["process"] = process
+    if scenario.get("raises") == "missing":
+        spawned["box"]["raises"] = FileNotFoundError("claude")
+    elif scenario.get("raises") == "runtime":
+        spawned["box"]["raises"] = RuntimeError("unexpected probe failure")
+    handler.config.providers.claude.usage_probe_enabled = not scenario.get("disabled", False)
+    monkeypatch.setattr(probe_module, "DEFAULT_TIMEOUT_SECONDS", 0.05)
+
+    path = SCENARIO_ROOT / "before.artifact.json" if version == "before" else PORTED_ARTIFACT
+    artifact = load_definition_json(path.read_text())
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS, clock=lambda: 1_000.0,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler, db=handler.db,
+            private_values=private_value_service(handler.db),
+        ),
+        runs=runs, waits=runs,
+        activations=StubActivations([artifact_ref_for(artifact)]),
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["provider_usage_probe"]),
+    )
+    if scenario.get("adapter_unavailable"):
+        from src.commands.contracts.builtin import set_handler_provider
+
+        set_handler_provider(None)
+    result = await engine.dispatch_event(SCENARIOS["event"], principal)
+    assert result.rules_selected == ("probe-claude-usage",)
+    snapshot, = runs.snapshots.values()
+    assert snapshot.lifecycle.value == scenario["terminal"], (
+        snapshot.error_code, snapshot.error,
+    )
+    probe_receipts = [
+        r for r in runs.receipts
+        if r.step_id == "probe-claude-usage--probe" and r.completed_at is not None
+    ]
+    assert len(probe_receipts) == 1, "a tick must never retry the probe"
+    assert probe_receipts[0].selected_transition == (
+        f"probe-claude-usage::probe-claude-usage--probe::{scenario['outcome']}"
+    )
+    no_launch = scenario.get("disabled") or scenario.get("adapter_unavailable")
+    assert len(spawned["launches"]) == (0 if no_launch else 1)
+    if scenario.get("hang"):
+        assert process.killed
+    if scenario["outcome"] != "probed":
+        assert await _snapshot_rows(handler) == before_rows
+    else:
+        # An unchanged reading stays deduplicated across ticks.
+        rows = await _snapshot_rows(handler)
+        assert {row["id"] for row in rows} == {row["id"] for row in before_rows}
+
+    # Duplicate delivery must not run a second command, and another timer
+    # must not select this rule.
+    launches = len(spawned["launches"])
+    await engine.dispatch_event(SCENARIOS["event"], principal)
+    unmatched = await engine.dispatch_event(
+        SCENARIOS["event"] | {"event_type": "timer.5m", "event_id": "other-tick"}, principal,
+    )
+    assert not unmatched.rules_selected
+    assert len(spawned["launches"]) == launches

@@ -17,7 +17,7 @@ from src.config import (
 
 def _write(tmp_path, mapping: dict) -> str:
     mapping.setdefault("discord", {"bot_token": "tok", "guild_id": "123"})
-    mapping.setdefault("database_path", str(tmp_path / "test.db"))
+    mapping.setdefault("database", {"url": "postgresql+asyncpg://localhost/aq_test"})
     p = tmp_path / "config.yaml"
     p.write_text(yaml.dump(mapping))
     return str(p)

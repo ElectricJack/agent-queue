@@ -4,6 +4,8 @@ name: Provider usage probe
 version: 1
 scope: system
 enabled: true
+required_capabilities:
+  - provider_usage_probe
 triggers:
   - timer.10m
 ---
@@ -43,9 +45,9 @@ There is no guard beyond the trigger. The rule performs one step and then ends.
 
 The rule has no retry: the next tick is ten minutes away and is a better
 retry than any the run could schedule. A failed step ends the run with a
-`failed` terminal so the run overlay shows what broke — a timeout, a non-zero
+`failed` terminal so the run overlay shows what broke — a non-zero
 exit, a body that was not the JSON envelope we asked for — and the next tick
-starts a fresh run.
+starts a fresh run. A timeout reports `unavailable` successfully, like a missing CLI.
 
 Nothing about a failure touches stored state. The last good snapshot survives
 every failure mode, and the API and the dashboard card label it stale from
@@ -61,3 +63,23 @@ noise nobody can act on.
 Each probe leaves a zero-turn session file under `~/.claude/projects/`. The
 transcript watcher only reads transcripts belonging to live session rows, so
 those files are inert; they are not suppressed and do not need to be.
+
+## Reusable building blocks
+
+The reusable boundary is the typed `provider_usage_probe` command and its
+declared business outcomes. The source explicitly requires only that command's
+capability; this declaration records the dependency and grants no authority.
+Keep the `usage` binding as the command's typed result, without inventing a
+generic result wrapper or testing a guessed success field.
+
+The command deliberately retains process execution, subscription authentication,
+parsing, snapshot deduplication and probe-health storage. A script step would
+duplicate that mechanism and change its configured binary, environment and
+failure semantics. There is no ad-hoc agent or shell step to replace here.
+
+No collection scan needs foreach or snapshot pages. No notification episode
+needs playbook state or notify, so omit `state_schema_version` and `scripts`.
+Provider usage snapshots remain domain data owned by the command. Diagnostic
+policy stays with the existing doctor check; adding a doctor scan or alert on
+every tick would change this probe's behavior. Preserve the ten-minute trigger,
+all seven outcome edges and the absence of an in-run retry.
