@@ -215,6 +215,10 @@ async def register_wait(
         source_watermark = await read_source_watermark()
     if type(source_watermark) is not int or source_watermark < 0:
         raise ValueError("source watermark must be a nonnegative committed sequence bound")
+    from src.waits.loops import prepare_progress
+
+    await prepare_progress(conn, [{"owner_kind": scope.owner_kind, "owner_id": scope.owner_id,
+                                  "project_id": scope.project_id, "session_id": scope.session_id}])
     await lock_graph(conn)  # REGISTRATION_LOCK is the graph fence; waiting is bounded
     scope = await verify_owner(conn, scope, lock_owner=False)
     cond = registry.normalise(condition)

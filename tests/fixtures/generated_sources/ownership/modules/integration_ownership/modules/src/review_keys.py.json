@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/review_keys.py::FIDELITY_REVIEWER_PROFILE_ID": "Names the fidelity-reviewer role for ingestion structure reviews, explicitly separate from code-diff or landing verification.",
+    "src/review_keys.py::REVIEW_PROFILE_IDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/review_keys.py::fidelity_review_dedup_key": "Formats the ingestion batch reviewer dedup key from its batch id; it is reviewer assignment identity rather than integration completion identity.",
+    "src/review_keys.py::is_review_completion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/review_keys.py::review_task_dedup_key": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/review_keys.py::reviewed_task_id": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
