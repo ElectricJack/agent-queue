@@ -163,8 +163,11 @@ the owned continuation, rather than the branch currently checked out in the reus
 slot. A saved branch label may differ when the checkpoint explicitly identifies the
 same task and its project identity matches; legacy snapshots without a task identity
 retain the branch-label check. The checkpoint HEAD must be proved reachable
-from the owned branch tip or its proved continuation commit. If the local owned ref
-is absent, use its exact origin ref after an authorized fresh fetch; a checkpoint
+from the owned branch tip or its proved continuation commit. A checkpoint captured
+on the exact owned branch may instead hold newer commits descending from that
+proved task history. Compare the eligible saved HEAD, local owned ref and its exact
+origin ref after an authorized fresh fetch, even when both refs exist;
+keep the newest head related by ancestry, never an older local checkpoint. A checkpoint
 equal to that tip or the base is valid even with no task commits. Related local progress
 is retained, and the saved index and worktree layers are reconciled separately on
 that continuation before any reset. Child preparation uses the child's owned tip
@@ -173,6 +176,27 @@ and conflicting snapshot contents refuse without changing the checkout or snapsh
 An ownership/ancestry refusal names the saved HEAD and snapshot commit, saved branch,
 owned branch and observed tip, proved continuation, and slot HEAD. The slot HEAD is
 diagnostic evidence, never the authority for checkpoint reachability.
+
+Immediately before restoring an owned pause plan, refuse a reset whose target does
+not contain the observed origin tip. Successful authorized worker publication advances
+the task's working checkpoint SHA and generation when the tip changes, invalidating
+prior verification while preserving the immutable filing origin. Repeating the same
+publication is idempotent; delegates and active parent episodes retain their separate
+checkpoint authority.
+
+A manual pause captures only the task's own checkout. A shared slot with no recorded
+task branch is held to `aq/<task_id>`, so a slot still on another task's branch refuses
+the pause instead of saving that checkout. A checkpoint that names a branch other than
+the task's own and carries no other proof (legacy captures with no task identity, or
+a recorded branch that no longer matches) is foreign: preparation discards it before
+any Git change and prepares normally. The discard deletes the metadata under a
+compare-and-delete fence and appends `task_context(type=manual_pause_checkpoint_discarded)`
+with the actor, the reason and the whole checkpoint; the pause ref keeps the work. A
+checkpoint from another task or project still refuses, and so does a retained-stop
+checkpoint, because it proves release. An explicitly supplied stale plan is never
+discarded. Operators and supervisors discard a checkpoint with
+`aq task discard-pause-checkpoint --task-id <id> --reason <why>`, which writes the
+same audit record. Never delete the metadata row by hand.
 
 Stack preparation compares an existing local child tip with the freshly observed
 published child tip in the observation store. Equal tips use the published tip;
@@ -199,6 +223,15 @@ The slot is the session `work_dir` (delivery owned by the session-runtime spec).
 - Merged `aq/*` branches are pruned locally in the base; remote pruning per `prune_remote_branches` policy.
 
 **Salvage pushes; it does not merely keep a local branch.** "The branch survives independently of the worktree" was only ever true for a branch the remote also has. On 2026-09-03 a worker committed five commits (~5.8k lines) in a slot, never pushed, and closed `blocked`; the close was accepted, the slot moved on, and three re-runs of the same task each started from `main`, could not find the work or its prerequisites, and closed `blocked` again. So before any reset — `restore_slot_after_task` *and* `reset_slot_for_task` — `WorktreeSlotManager.salvage_unpushed` pushes every commit no remote branch carries to `aq/<task_id>`, or to `aq/<task_id>-wip` when that name already holds commits this HEAD does not descend from (never `--force`, never a discard), and records `unmerged_branch` / `unmerged_commit` on the task. The same rule runs on the close itself: a close whose outcome is not `pass` preserves the commits first and, when the push fails while the closing session is still live, the **close is refused** and the task stays IN_PROGRESS under the same claim so the agent can push by hand. A repository with no remote reports the local branch and SHA rather than an error — there is nowhere to push, and the record is what a human needs.
+
+An unknown preservation result also refuses a live failure-close with an assigned
+workspace, before any task transition, completion record, token revocation, claim
+release or slot reset. Git inspection errors, including unproved process cleanup,
+must retain the exact checkout and current claim with actionable diagnostics; they
+are never evidence of clean or published work. Confirmed absence of a workspace
+does not require Git proof. A failed remote probe is unknown, distinct from a
+confirmed repository with no remote. Repair delegates continue through their
+operation-owned bounded recovery protocol and human gates.
 
 One consequence is deliberate: because a failed attempt is now published, `_retry_reset_ref` keeps it (a published tip the start point does not contain wins over the start point), so a retry lands on its predecessor's work instead of silently below it.
 
