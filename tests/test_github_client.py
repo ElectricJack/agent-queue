@@ -14,6 +14,7 @@ from src.git.github import GitHubAccess, GitHubClient, MAX_HEADER_BYTES
 from src.git.github_app import AppTokenCandidate
 from src.git.github_auth import GitHubAuth
 from src.git.github_cli import GhRunner
+from src.git.github_activity import github_component
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -202,6 +203,10 @@ async def test_integration_status_exposes_rolling_github_endpoint_counts(tmp_pat
                new=AsyncMock(return_value={"project_id": "p"})):
         result = await handler._cmd_integration_status({"project_id": "p", "control_only": control_only})
     assert result["github"] == {
+        "component_window_seconds": 3600,
+        "api_calls_per_hour": {"unattributed": 3},
+        "gh_commands_per_hour": {"unattributed": 0},
+        "primary_quota": None,
         "scope": "daemon", "window_seconds": 60, "retry_at": None,
         "api_calls_per_minute": {"GET repos/acme/widgets": 2, "GET user": 1},
         "gh_commands_per_minute": {},
@@ -1079,28 +1084,28 @@ async def test_ordinary_merge_pins_head_and_rejects_foreign_pr(credential_identi
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubAccessError):
         await client.merge_pull_request(
-            "https://github.com/other/repo/pull/7", method="squash",
+            "https://github.com/other/repo/pull/7", method="merge",
             expected_head_oid="a" * 40,
         )
     assert not runner.calls
 
     result = await client.merge_pull_request(
-        "https://github.com/acme/widgets/pull/7", method="squash",
+        "https://github.com/acme/widgets/pull/7", method="merge",
         expected_head_oid="a" * 40,
     )
     assert result == sha
     assert runner.calls[0]["repository"] == REPOSITORY
     assert runner.calls[0]["args"] == [
-        "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
+        "pr", "merge", "7", "--merge", "--match-head-commit", "a" * 40,
         "--delete-branch",
     ]
 
 
-def _ordinary_pull(*, head_sha="a" * 40, base="main", merged=False):
+def _ordinary_pull(*, head_sha="a" * 40, base="main", merged=False, closed=False):
     return {
         "number": 7,
         "html_url": "https://github.com/acme/widgets/pull/7",
-        "state": "closed" if merged else "open",
+        "state": "closed" if merged or closed else "open",
         "merged_at": "2026-09-22T00:00:00Z" if merged else None,
         "merge_commit_sha": "b" * 40 if merged else None,
         "head": {
@@ -1126,6 +1131,193 @@ async def test_ordinary_create_reuses_exact_existing_pr_before_write(credential_
     assert creation.created is False
     assert len(runner.calls) == 2
     assert all(call["args"][0] == "api" for call in runner.calls)
+
+
+async def test_ordinary_create_reopens_closed_unmerged_pr_and_preserves_its_history(
+    credential_identity,
+):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull(closed=True)]),
+        _response(200, _ordinary_pull()),
+        _response(200, [_ordinary_pull()]),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/7"
+    assert creation.created is False
+    reopen = runner.calls[2]
+    assert reopen["args"][:4] == ["api", "--include", "--method", "PATCH"]
+    assert reopen["args"][-3:] == ["repositories/303/pulls/7", "--input", "-"]
+    assert json.loads(reopen["stdin"]) == {"state": "open"}
+    assert all(call["repository"] == REPOSITORY for call in runner.calls)
+    assert len(runner.calls) == 4
+
+
+async def test_ordinary_reopen_reconciles_uncertain_failure_without_replay(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull(closed=True)]),
+        FakeResult(1, b"", "request timed out"),
+        _response(200, [_ordinary_pull()]),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url.endswith("/pull/7") and creation.created is False
+    assert len(runner.calls) == 4
+    assert sum("PATCH" in call["args"] for call in runner.calls) == 1
+
+
+async def test_ordinary_reopen_preserves_rejection_if_pr_is_still_closed(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull(closed=True)]),
+        _response(403, {"message": "Forbidden"}, returncode=1),
+        _response(200, [_ordinary_pull(closed=True)]),
+    ])
+    with pytest.raises(GitHubAccessError) as caught:
+        await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+            title="Fix", body="Body", base="main", head="feature"
+        )
+    assert caught.value.category == "permission"
+    assert len(runner.calls) == 4
+    assert sum("PATCH" in call["args"] for call in runner.calls) == 1
+
+
+@pytest.mark.parametrize("pull", [
+    {**_ordinary_pull(closed=True), "html_url": "https://github.com/foreign/repo/pull/7"},
+    {**_ordinary_pull(closed=True), "head": {
+        "ref": "feature", "sha": "a" * 40,
+        "repo": {"id": 404, "full_name": "foreign/repo"},
+    }},
+])
+async def test_ordinary_reopen_refuses_conflicting_identity_before_write(credential_identity, pull):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [pull]),
+    ])
+    with pytest.raises(GitHubAccessError, match="existing PR head did not match"):
+        await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+            title="Fix", body="Body", base="main", head="feature"
+        )
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.parametrize("pulls", [
+    [_ordinary_pull(closed=True)],
+    [_ordinary_pull(head_sha="c" * 40)],
+    [{**_ordinary_pull(), "number": 8, "html_url": "https://github.com/acme/widgets/pull/8"}],
+    [],
+])
+async def test_ordinary_reopen_requires_confirmation_of_the_same_pr(credential_identity, pulls):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull(closed=True)]),
+        _response(200, _ordinary_pull()),
+        _response(200, pulls),
+    ])
+    with pytest.raises(GitHubAccessError):
+        await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+            title="Fix", body="Body", base="main", head="feature"
+        )
+    assert len(runner.calls) == 4
+    assert sum("PATCH" in call["args"] for call in runner.calls) == 1
+
+
+async def test_ordinary_create_reuses_merged_pr_without_reopening_it(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull(merged=True)]),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url.endswith("/pull/7") and creation.created is False
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.parametrize("pulls", [
+    [_ordinary_pull(), _ordinary_pull()],
+    [_ordinary_pull(closed=True), _ordinary_pull(merged=True)],
+])
+async def test_ordinary_create_keeps_duplicate_request_refusal(credential_identity, pulls):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, pulls),
+    ])
+    with pytest.raises(GitHubAccessError, match="multiple existing requests"):
+        await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+            title="Fix", body="Body", base="main", head="feature"
+        )
+    assert len(runner.calls) == 2
+
+
+def _shipped_pull(number, head_sha, **kwargs):
+    return {
+        **_ordinary_pull(head_sha=head_sha, **kwargs),
+        "number": number, "html_url": f"https://github.com/acme/widgets/pull/{number}",
+    }
+
+
+@pytest.mark.parametrize("history", [
+    # fair-impact-52: a branch whose earlier PRs #21 and #23 already merged.
+    [_shipped_pull(21, "c" * 40, merged=True), _shipped_pull(23, "d" * 40, merged=True)],
+    [_shipped_pull(21, "c" * 40, merged=True)],
+    [_shipped_pull(21, "c" * 40, closed=True)],
+    [_shipped_pull(21, "a" * 40, base="release", merged=True)],
+])
+async def test_ordinary_create_ignores_earlier_merged_or_closed_prs_of_the_head(
+    credential_identity, history,
+):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, history),
+        FakeResult(0, b"https://github.com/acme/widgets/pull/31\n"),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is True
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+    assert all("PATCH" not in call["args"] for call in runner.calls)
+
+
+async def test_ordinary_create_reuses_the_open_pr_beside_merged_history(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [
+            _shipped_pull(21, "c" * 40, merged=True),
+            _shipped_pull(23, "d" * 40, merged=True),
+            _shipped_pull(31, "a" * 40),
+        ]),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is False
+    assert len(runner.calls) == 2
+
+
+async def test_ordinary_create_does_not_reopen_during_uncertain_create_reconciliation(
+    credential_identity,
+):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, []),
+        FakeResult(1, b"", "request timed out"),
+        _response(200, [_ordinary_pull(closed=True)]),
+    ])
+    with pytest.raises(GitHubAccessError):
+        await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+            title="Fix", body="Body", base="main", head="feature"
+        )
+    assert len(runner.calls) == 4
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+    assert all("PATCH" not in call["args"] for call in runner.calls)
 
 
 @pytest.mark.asyncio
@@ -1193,7 +1385,7 @@ async def test_ordinary_merge_reports_confirmed_cleanup_failure(credential_ident
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubMergeReconciled) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.sha == "b" * 40
@@ -1214,7 +1406,7 @@ async def test_ordinary_merge_reconciles_when_cleanup_already_finished(credentia
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubMergeReconciled) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.outcome == "merged_reconciled"
@@ -1233,7 +1425,7 @@ async def test_ordinary_merge_does_not_assume_hidden_head_was_deleted(credential
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubMergeReconciled) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.outcome == "merged_cleanup_unknown"
@@ -1248,7 +1440,7 @@ async def test_ordinary_merge_does_not_replay_confirmed_rejection(credential_ide
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubAccessError) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.category == "credentials"
@@ -1310,6 +1502,19 @@ async def test_rerequesting_a_check_suite_is_a_repository_bound_write():
     for suite_id in (0, -1, True, "4242", "4242/rerequest/../../other"):
         with pytest.raises(ValueError, match="invalid check suite ID"):
             await client.rerequest_check_suite(suite_id)
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_rerun_job_uses_the_exact_repository_job_endpoint():
+    runner = FakeRunner(GitHubCredentialIdentity.existing_login(), [_response(201, b"")])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    await client.rerun_job(119866786990)
+    assert runner.calls[0]["args"][-1] == "repos/acme/widgets/actions/jobs/119866786990/rerun"
+    assert runner.calls[0]["args"][:4] == ["api", "--include", "--method", "POST"]
+    for job_id in (0, -1, True, "1", "1/../../runs/2"):
+        with pytest.raises(ValueError, match="invalid Actions job ID"):
+            await client.rerun_job(job_id)
     assert len(runner.calls) == 1
 
 
@@ -1383,7 +1588,7 @@ async def test_app_credential_failure_before_merge_is_not_an_uncertain_write():
 
     with pytest.raises(GitHubAccessError, match="App token unavailable") as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.category == "credentials"
@@ -1406,9 +1611,70 @@ async def test_rate_limited_cli_failure_logs_scrubbed_stderr(tmp_path, caplog):
     result = await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY, check=False)
 
     assert result.returncode == 1
-    assert "gh rate_limited; repository=acme/widgets" in caplog.text
-    assert "secondary rate limit" in caplog.text
+    assert "GitHub rate-limit backoff started" in caplog.text
+    assert "'limit_kind': 'secondary'" in caplog.text
     assert "opaque-secret" not in caplog.text
+
+
+async def test_rate_limit_trigger_once_per_episode_with_headers_and_component(tmp_path, caplog):
+    now = [1000.0]
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(403, {}, headers={
+                                  "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1100",
+                                  "Retry-After": "80",
+                              }, returncode=1), now)
+    runner = access.runner
+    with github_component("review_poll", background=True):
+        with pytest.raises(GitHubAccessError):
+            await runner.run(["api", "repos/acme/widgets/pulls/7?token=private"],
+                             repository=REPOSITORY)
+    for _ in range(3):
+        with github_component("pr_cleanup", background=True), pytest.raises(GitHubAccessError):
+            await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    records = [r.github_rate_limit for r in caplog.records if hasattr(r, "github_rate_limit")]
+    assert records == [{
+        "endpoint": "GET repos/{owner}/{repo}/pulls/{id}", "component": "review_poll",
+        "status": 403, "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1100",
+        "retry-after": "80", "limit_kind": "primary", "retry_at": 1100,
+    }]
+    assert "private" not in caplog.text
+    now[0] = 1100
+    (tmp_path / "calls").unlink()
+    with pytest.raises(GitHubAccessError):
+        await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    assert len([r for r in caplog.records if hasattr(r, "github_rate_limit")]) == 2
+
+
+async def test_background_reserve_shared_but_foreground_keeps_its_quota(tmp_path):
+    now = [1000.0]
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(200, {}, headers={
+                                  "X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "499",
+                                  "X-RateLimit-Reset": "1100",
+                              }), now)
+    runner = access.runner
+    with github_component("review_poll", background=True):
+        await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    for name in ("review_poll", "pr_cleanup"):
+        with github_component(name, background=True), pytest.raises(GitHubAccessError) as error:
+            await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+        assert error.value.retry_at == 1100
+    assert (tmp_path / "calls").read_text() == "1"
+    with github_component("worker_create_pr"):
+        await runner.run(["pr", "view", "7"], repository=REPOSITORY)
+    activity = runner.activity()
+    assert activity["retry_at"] is None
+    assert activity["primary_quota"]["remaining"] == 499
+    assert activity["api_calls_per_hour"] == {"review_poll": 1, "worker_create_pr": 0}
+    assert activity["gh_commands_per_hour"] == {"review_poll": 0, "worker_create_pr": 1}
+    now[0] = 1100
+    with github_component("pr_cleanup", background=True):
+        await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    assert runner.activity()["primary_quota"] is None
+    assert runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets": 1}
+    assert runner.activity()["api_calls_per_hour"]["review_poll"] == 1
+    now[0] = 4700
+    assert runner.activity()["api_calls_per_hour"] == {}
 
 
 async def test_authenticated_user_requires_human_credentials_and_fixed_endpoint():
