@@ -49,10 +49,7 @@ A PR into a feature branch has not delivered to the default branch.
 ## Stay visible while you work
 
 Before minutes of quiet foreground work, run `aq task heartbeat {task_id}`; renew during
-long work. For supported long work, register one durable wait and end the turn instead
-(managed tests: `aq test --aq-detach --aq-wait --aq-idempotency-key KEY TEST_ARGS` when job
-admission is enabled). AQ owns the wait lifecycle and delivers the outcome; resume
-with `aq wait show WAIT_ID --consume --json` and act on the recorded result.
+long work. {long_work_guidance}
 Never manage the operator daemon.
 
 ## Save findings before closing or handing off

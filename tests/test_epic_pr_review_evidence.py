@@ -30,12 +30,14 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_observer import DeliveryObserver
+from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+from src.integration.git_truth import GitTruth
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.repository_git import RepositoryGit
 from src.integration.reviews import ReviewEvidenceProducer
 from src.integration.source_ci import RUNNER_NOT_ACQUIRED
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, TaskType
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, TaskType
 from tests.db_fixtures import lease_dsn
 from src.integration.models import IntegrationBoundaryPolicy, RequiredCheckSet, RepairPolicy, PlaybookRoute
 from src.integration.models import ArtifactSnapshot
@@ -241,8 +243,15 @@ async def _retain_completion(case, *, close_id, commits):
     store = GitProvenance(
         GitManager(), str(case["work"]), repository_url=case["remote"]
     )
+    checkpoint = await case["db"].get_integration_checkpoint("e1")
+    identity = "parent:verification-e1"
+    if checkpoint["current_verification_id"] is None:
+        identity = close_id
+        await case["db"].save_task_completion(TaskCompletion(
+            id=close_id, task_id="e1", outcome="pass", commits=[case["first"]], completed_at=2.0,
+        ))
     source = CompletedSource(
-        CompletionIdentity("p", "repo", "e1", "parent:verification-e1"),
+        CompletionIdentity("p", "repo", "e1", identity),
         case["first"],
     )
     await store.write_completion(source)
@@ -310,13 +319,19 @@ async def _legacy_repair(case, observation, repair_id="source-repair-0"):
     return repair_id
 
 
-async def _leaf_source(case):
+async def _leaf_source(case, *, retain=True):
     """Use the same real source branch with a childless completion checkpoint."""
     async with case["db"].immediate() as conn:
         await conn.execute(delete(tasks).where(tasks.c.id == "c1"))
         await conn.execute(update(task_integration_checkpoints).where(
             task_integration_checkpoints.c.task_id == "e1",
         ).values(episode_id=None, current_verification_id=None))
+    if retain:
+        await _retain_completion(case, close_id="close-e1", commits=[case["first"]])
+    case["db"].set_prerequisite_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=case["work"].parent / "prerequisite-observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
 
 
 async def _red_observation(case):
@@ -445,23 +460,23 @@ async def test_source_covered_by_an_explicit_adoption_is_not_repaired(case, tmp_
     assert filing.await_count == 0
 
 
-async def test_a_source_git_cannot_place_is_still_repaired(case, tmp_path):
-    await _leaf_source(case)
+async def test_a_source_without_retained_completion_cannot_reopen(case, tmp_path):
+    await _leaf_source(case, retain=False)
     handler, filing = await _source_handler(case, tmp_path)
     case["db"].set_delivery_observer(DeliveryObserver(
         case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
     _source, observation = await _red_observation(case)
     # A real branch, no completion generation retained: nothing stands in for
     # this generation's final artifact, so delivery stays unknown.
-    result = await handler._cmd_observe_integration_source_ci(observation)
-    assert result["outcome"] == "reopened", result
+    with pytest.raises(HierarchyError, match="delivery_unknown"):
+        await handler._cmd_observe_integration_source_ci(observation)
+    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
     assert filing.await_count == 0
     assert (await _observed_proof(case))["state"] == "undelivered"
 
 
 async def test_a_genuinely_undelivered_source_is_still_repaired(case, tmp_path):
     await _leaf_source(case)
-    await _retain_completion(case, close_id="close-e1", commits=[case["first"]])
     case["db"].set_delivery_observer(DeliveryObserver(
         case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
     handler, filing = await _source_handler(case, tmp_path)
@@ -474,17 +489,19 @@ async def test_a_genuinely_undelivered_source_is_still_repaired(case, tmp_path):
     assert await _withheld(case, tmp_path) == {}
 
 
-async def test_unknown_delivery_evidence_still_reopens_original(case, tmp_path):
+async def test_unknown_delivery_evidence_preserves_original_completion(case, tmp_path):
     await _leaf_source(case)
     class _Broken:
         async def observe(self, task_ids, *, max_age=0.0):
             raise OSError("no route to host")
 
     handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_prerequisite_observer(None)
     case["db"].set_delivery_observer(_Broken())
     _source, observation = await _red_observation(case)
     result = await handler._cmd_observe_integration_source_ci(observation)
-    assert result["outcome"] == "reopened", result
+    assert result["success"] is False and result["outcome"] == "delivery_unknown", result
+    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
     assert filing.await_count == 0
     assert (await _observed_proof(case))["state"] == "unknown"
 
