@@ -44,6 +44,11 @@ identity recheck still refuses any outcome that went stale while it waited. A
 slow recovery therefore never spends a visit's deadline or keeps other roots
 from batching.
 
+Only the visit starting a recovery spends that bounded wait; subsequent visits
+return its pending state immediately. Admission blockers double their retry
+delay up to ten minutes. Unknown mergeability gets one short 15-second retry
+for GitHub's initial computation, then uses that same exponential backoff.
+
 Source-CI recovery can reopen successive changed heads on the original branch
 without a lineage attempt cap, including historical source-CI delegates. Root PR
 recovery uses the configured root primary attempt limit (zero means unlimited).
