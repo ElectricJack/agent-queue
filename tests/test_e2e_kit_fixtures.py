@@ -1468,8 +1468,9 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
 
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
-    # filing under the fake provider; S20 proves ordinary train delivery.
-    assert set(by_key) == {f"S{number}" for number in range(1, 21)}
+    # filing under the fake provider; S20 proves ordinary train delivery;
+    # S21 proves held ingestion, assigned fidelity review and release replay.
+    assert set(by_key) == {f"S{number}" for number in range(1, 22)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
@@ -1482,6 +1483,7 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
     assert by_key["S20"].families == ("integration/train/provenance",)
+    assert by_key["S21"].families == ("ingestion/recovery/fidelity",)
 
 
 def test_ci_scenario_groups_cover_every_scenario_once():
@@ -1518,6 +1520,10 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
             raise failure
 
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {
+        "assignment_playbook_id": "project-router",
+    })
+    monkeypatch.setattr(smoke, "observe_scheduler_cycles", lambda _: calls.append(("cycle",)))
     monkeypatch.setattr(smoke, "_s16", manual_sweep)
     monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
     monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
@@ -1530,9 +1536,12 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
         assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--no-enabled"),
+        ("cycle",),
         ("manual sweep",),
         ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--enabled"),
         ("readiness",),
     ]
 

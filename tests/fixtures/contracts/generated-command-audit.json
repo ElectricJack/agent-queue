@@ -1541,7 +1541,7 @@
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'max_attempts must be at least 1'}"
+        "return": "{'success': False, 'error': 'max_attempts must be non-negative'}"
       },
       {
         "protocol": "delegated_producer",
@@ -1552,12 +1552,14 @@
         "return": "result"
       }
     ],
+    "review_notes": "Zero max_attempts, including the omitted default, disables escalation; positive values retain the finite attempt cap. Negative values return explicit false with the non-negative validation error. Both successful observation branches retain the delegated result protocol.",
     "schema_quality": "typed",
-    "source_digest": "sha256:bca8a8faf81f0b503ac48dd5a47ea2c25d7d9969eaeff960fb6c6414f5ff1c65",
+    "source_digest": "sha256:e294e37df4421cb13e871a655221e72bdd3842cf51b95d8a21a95b0adffe8f44",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_ci_baseline_status.py"
     ]
   },
   "ci_completed_status": {
@@ -3540,7 +3542,7 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
     "schema_quality": "declared",
-    "source_digest": "sha256:b53bc62fa7a75070d9843624793bd0386ac7afe64154c41491a4b24729c8a24a",
+    "source_digest": "sha256:d705a3bb26d9c083fd86b841fde56282f4ccf53b1c0b551fafb5236b209b58cf",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -4510,7 +4512,7 @@
       },
       {
         "protocol": "delegated_producer: dictionary expansion retains producer outcome",
-        "return": "{**_error('ask.context_missing', 'Review the request effects and pass its expected version; use prepare first'), 'ask_id': ask['id'], 'ask_url': f'/asks/{ask['id']}', 'expected': {k: ask[k] for k in ('decision_generation', 'source_fingerprint', 'feedback_version')}}"
+        "return": "{**_error('ask.context_missing', 'Review the request effects and pass its expected version; use prepare first'), 'ask_id': ask['id'], 'ask_url': f'/focus/asks/{ask['id']}', 'expected': {k: ask[k] for k in ('decision_generation', 'source_fingerprint', 'feedback_version')}}"
       },
       {
         "protocol": "delegated_producer",
@@ -4521,13 +4523,14 @@
         "return": "{'success': True, 'ask_id': ask['id'], 'preview': preview, 'expected': args['expected']}"
       }
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed canonical /focus/asks compatibility URL; outcome protocol, resource gates and typed contract unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:aaf6e3674fca77288f06c50c526901506ae563994c58d0b8e908eb367a3a7e1c",
+    "source_digest": "sha256:a06e77eb4ed436ca45caa9a3e61bbea29ca38c6f1b1fdd52dfdd74b28529e51a",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_escalation_commands.py::test_apply_reply_resolves_only_bound_human_gate_once"
     ]
   },
   "escalation_create": {
@@ -4548,7 +4551,7 @@
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_create_escalation": "sha256:e5ec830fbd973f539bd34d950ab1f6ce3971c32b596d6bf9ec9b507533e32a14"
+      "_create_escalation": "sha256:fa28dd69290b28bfb85618eb4b767df15e015ec0681be05ed325ee8c574a21df"
     },
     "input_schema_source": "typed_contract",
     "mode": "typed",
@@ -4565,13 +4568,15 @@
         "return": "await self._create_escalation(args)"
       }
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Transaction reuse repair (bold-flare-41): reviewed _create_escalation project/task reads on the caller-owned connection; authorization, validation, conflict errors and explicit success envelopes retain their existing return contracts.",
     "schema_quality": "typed",
     "source_digest": "sha256:f1010169b15e1bccc491ea92431c80837b508570a68082f525112fd22cf19538",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_escalation_commands.py",
+      "tests/test_wait_decisions.py"
     ]
   },
   "escalation_get": {
@@ -4957,9 +4962,9 @@
         "return": "measurement"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev ff25a7d71 only appends the available next action to integration blocker detail; return branches and task resource gates are unchanged. Unified admission projects Git prerequisite and frontier reasons; all producer exits retain explicit boolean or delegated outcomes, and original-principal resource gates are unchanged.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev ff25a7d71 only appends the available next action to integration blocker detail; return branches and task resource gates are unchanged. Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged. Merge repair: retain dev manual-pause Resume proofs, stale repair refusal and worker integration policy. Restart guards the hold before Resume and defers supersession through Resume until the audited restart READY transaction. Unified admission projects Git prerequisite and frontier reasons; all producer exits retain explicit boolean or delegated outcomes, and original-principal resource gates are unchanged. Active-only Git-first fallback selects the train projection; reviewed return branches and original-principal resource gates remain unchanged.",
     "schema_quality": "declared",
-    "source_digest": "sha256:c5c39ed60afab0615188016969b429f1486eeccad9f7d67974545cf1f347008b",
+    "source_digest": "sha256:b4f795d95ecbeac3c15a3b5e8703e477be685db1ce8693da9ac5909fcffe7aa1",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -4970,7 +4975,8 @@
       "tests/test_delivery_consumers.py",
       "tests/test_explain.py",
       "tests/test_doctor_observations.py",
-      "tests/test_integration_train_sources.py::test_aborted_batch_names_each_withheld_source_instead_of_idling"
+      "tests/test_integration_train_sources.py::test_aborted_batch_names_each_withheld_source_instead_of_idling",
+      "tests/test_supervisor_recovery.py"
     ]
   },
   "export_portable_config": {
@@ -8042,15 +8048,17 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "_failure(outcome, str(exc))"
+        "return": "failure"
       }
     ],
+    "review_notes": " Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:87c10e75f304163ebdc234330cfa3d84c156844a278041b64c374a55cb41f36f",
+    "source_digest": "sha256:9435192a88cf014cc30352ae6defa0493a94479a8260b54282caf164957638d7",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_hierarchy.py"
     ]
   },
   "integration_off": {
@@ -8646,7 +8654,7 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:e9768b3f2ff9aee1aeab5a51436a1feffb6b62bf6d55c8623b7e33e28bf70430",
+    "source_digest": "sha256:ee01383461ba57a4f106cc8f2ec93b5062f85e6dd2095fb0dacbdc2beeb5b740",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -8654,7 +8662,10 @@
       "tests/test_integration_child_delivery.py::test_source_adoption_command_forwards_explicit_opt_in",
       "tests/test_integration_child_delivery.py::test_git_first_redrive_adopts_missing_source_without_claiming_delivery",
       "tests/test_integration_child_delivery.py::test_source_adoption_refuses_unproven_or_live_bindings",
-      "tests/test_command_descriptors.py::test_dev_redrive_contract_only_adds_explicit_source_adoption"
+      "tests/test_command_descriptors.py::test_dev_redrive_contract_only_adds_explicit_source_adoption",
+      "tests/test_command_descriptors.py::test_obsolete_child_contract_only_adds_pinned_disposition",
+      "tests/test_cli_integration.py::test_redrive_child_obsolete_disposition_forwards_pinned_proof",
+      "tests/test_integration_train_sources.py::test_train_surfaces_obsolete_child_without_claiming_delivery"
     ]
   },
   "integration_redrive_root": {
@@ -9597,8 +9608,9 @@
         "return": "{'outcome': 'not_found', 'project_id': project_id} if status is None else {'outcome': 'status', **status}"
       }
     ],
+    "review_notes": " Active-only Git-first status retains project resource gates and the delegated status projection; no return-protocol change.",
     "schema_quality": "typed",
-    "source_digest": "sha256:3d76dac9bdda5ce17b1e63f98829ae2329e0b09f85869a10891642858ab164b0",
+    "source_digest": "sha256:5e06fa9110057c03e949b508abd79e39dbb8727b2698e4645a95090801498338",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -9670,9 +9682,9 @@
         "return": "_failure('unavailable', 'the integration train is not active')"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Repair assembly audit: the added best-effort watchdog scan delegates observation and landing-agent handoff; exceptions are logged and existing explicit-boolean command exits remain unchanged.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Repair assembly audit: the added best-effort watchdog scan delegates observation and landing-agent handoff; exceptions are logged and existing explicit-boolean command exits remain unchanged. Root-origin recovery audit: the watchdog now receives the hierarchy service so landing-task filing reserves an eligible origin atomically; the system-scope gate and explicit-boolean return branches remain unchanged.",
     "schema_quality": "declared",
-    "source_digest": "sha256:5bd21e57460448c72211016a171f4748e87df94bc1b1aa2b27f5b044a4f00314",
+    "source_digest": "sha256:a69821b49164958b74abd18e161a0bfad6ce8fec005de52dfdb61b481cabb332",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -11121,7 +11133,7 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
     "schema_quality": "declared",
-    "source_digest": "sha256:afe46ac41a7313c81143e9339d7b6dafbd66b6e34eb389d27600f3d5c8e4afba",
+    "source_digest": "sha256:e2276d1950a62ac2f95d1bd37aa8089843e815fc6a908007ba718a057e48d10b",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -12386,7 +12398,7 @@
     "principal_requirement": "original_principal",
     "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_checkpoint_read",
     "resource_gates": [
-      "held_session"
+      "held_session_or_project_playbook_invocation"
     ],
     "result_policy": "retained typed adapter",
     "retry_safe": true,
@@ -12409,11 +12421,15 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:59bce4ce214e4061fc2703d4ecf093b29d73bbf65a444fb29d2cc3aac430f0c5",
+    "source_digest": "sha256:fe3d1ec9528edf65eb9cc39fb0c5ac0ccc40774a504a880ecc4ee12aeb25f004",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_object_loop_playbook.py::test_project_playbook_reads_only_its_project_checkpoint",
+      "tests/test_object_loop_playbook.py::test_playbook_checkpoint_read_refuses_unbound_or_borrowed_authority",
+      "tests/test_object_loop_playbook.py::test_checkpoint_exception_does_not_widen_other_held_commands",
+      "tests/test_object_loop.py::test_object_evidence_refuses_stale_or_unrelated_held_work"
     ]
   },
   "object_loop_inputs": {
@@ -12730,7 +12746,7 @@
       "_create_task": "sha256:caca98873262b9e7d5f51f9ebfa510b564073e3059a6eb8ca605eec3cc0839fd",
       "_create_worker_filed_task": "sha256:58b9772134578c8bf9b19aca0971d99edc35f2a80d84a29ad175e1d06071d520",
       "_parent_key_mode_refusal": "sha256:a34b5501df67e04e39fc4105a4c5294c5bc52048c734f1e2610630aa6610745b",
-      "_record_integration_source_ci": "sha256:de67d9d8413c183fb456f6d2466134a370ba3306a79d55e4bc42a2c728ac119b",
+      "_record_integration_source_ci": "sha256:5c6667783b8adc9a8fd262ac65e4437a1824cb00575e4c73f3f5ec6091d65099",
       "_record_source_delivery": "sha256:a3d4afee87a1de363e29002fe47d7a3259ab3f560447ca3f1bd107154d57a879",
       "_resolve_standing_parent": "sha256:92133e10ae0459f385ad0d63551b187c1d9d6d4527f081586a2883e438b0b72b",
       "_review_for_gating": "sha256:8ff69f62996fd66f774c5c489d87dde10e42aa055fdeab3fa92e7e67251d56d7"
@@ -12754,7 +12770,7 @@
         "return": "await self._record_integration_source_ci(observation)"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Unlimited source-CI recovery delegates to _reopen_source_ci for each changed head; the renamed delegate preserves exact-head duplicate refusal, the bound-writer guard and explicit success/failure envelopes. Reviewed all _record_integration_source_ci exits and the delegated reopening path against the source-CI recovery tests.",
     "schema_quality": "opaque",
     "source_digest": "sha256:a8fb94b70615cefb465235e9a399bc6b4760ac82c4827e00ac46dc92fc67bbfa",
     "tests": [
@@ -12798,6 +12814,47 @@
       "tests/test_github_access_workflow.py",
       "tests/test_project_onboarding_contract.py",
       "tests/test_project_onboarding_service.py"
+    ]
+  },
+  "operational_retention": {
+    "argument_reads_diagnostic_only": [
+      "batch_size",
+      "dry_run"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_operational_retention",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'counts': counts, 'dry_run': bool(args.get('dry_run', False))}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'already_running'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'batch_size must be between 1 and 1000'}"
+      }
+    ],
+    "review_notes": "System-scoped archive-first mutation. Completed passes return per-table counts and dry_run; overlap is an explicit successful acknowledgement without a second worker; invalid batch size returns false before starting a worker. Exceptions propagate, never become inferred success. Cancellation shields the single pending worker.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c5900cf6111a27dd547867f03ca90e961d9458e3055abd1a5d6aa319ac77947d",
+    "tests": [
+      "tests/test_system_commands.py::test_operational_retention_uses_private_worker_pool",
+      "tests/test_system_commands.py::test_retention_request_cancel_does_not_overlap_worker",
+      "tests/test_system_commands.py::test_operational_retention_rejects_invalid_batch_size",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "operator_execute": {
@@ -15066,6 +15123,36 @@
       "tests/test_policy_profiles.py"
     ]
   },
+  "pool_delete": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/ops_commands.py:OpsCommandsMixin._cmd_pool_delete",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await delete_pool(self, args)"
+      }
+    ],
+    "review_notes": "The handler delegates to delete_pool, which returns explicit success=false for invalid IDs, depth and non-pool targets; successful retirement/deletion returns success=true with warnings for unconfirmed stops or file cleanup. Database failures propagate as command errors. Missing retired rows permit idempotent cleanup retries. No task completion is inferred from deletion.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2e3abe3ec9858bd92fc02e1f90d0792b69f437ec826669a820ae5cbab1e2f077",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_pool_admin.py::test_delete_pool_removes_configuration_and_respects_vault_depth",
+      "tests/test_pool_admin.py::test_delete_pool_warns_on_unconfirmed_stop_and_preserves_held_resources",
+      "tests/test_pool_admin.py::test_delete_pool_validates_global_id_before_side_effects"
+    ]
+  },
   "pool_rename": {
     "argument_reads_diagnostic_only": [],
     "denial_reason": null,
@@ -17032,6 +17119,54 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "rebind_workspace": {
+    "argument_reads_diagnostic_only": [
+      "session_id",
+      "task_id",
+      "workspace_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_rebind_workspace",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False (_session_project_scope_error)",
+        "return": "session belongs to a different project scope"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "missing workspace_id, task_id or session_id"
+      },
+      {
+        "protocol": "explicit_boolean: False (src.workspace_ownership.rebind_workspace)",
+        "return": "missing or incoherent session/task/agent/workspace/claim, or conflicting ownership"
+      },
+      {
+        "protocol": "explicit_boolean: True (src.workspace_ownership.rebind_workspace)",
+        "return": "restored exact active claim binding"
+      }
+    ],
+    "review_notes": "Handler rejects foreign project sessions before argument validation and returns success=false for missing required identities. Delegates unchanged boolean outcomes from src.workspace_ownership.rebind_workspace. Reviewed all exits: every identity, assignment, path, epoch, metadata, phase or ownership mismatch returns success=false; coherent restoration returns success=true. Original-principal resource gates resolve workspace, task and session. Only the workspace lock row is repaired; marker/session/task/enabled state is preserved.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:223f45cc39002861248c3186c0c7ec6f29226f4ae7d06524f26008ef54e79295",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_commands.py::TestWorkspaceOwnershipControls",
+      "tests/test_command_scope_matrix.py::test_a_project_supervisor_cannot_reach_another_projects_session"
+    ]
+  },
   "reconcile_agent_cron": {
     "argument_reads_diagnostic_only": [
       "now"
@@ -17354,6 +17489,8 @@
   },
   "release_workspace": {
     "argument_reads_diagnostic_only": [
+      "force",
+      "task_id",
       "workspace_id"
     ],
     "denial_reason": null,
@@ -17371,25 +17508,22 @@
     "retry_safe": false,
     "return_branches": [
       {
-        "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': f\"Workspace '{workspace_id}' not found\"}"
+        "protocol": "explicit_boolean: False (src.workspace_ownership.release_workspace)",
+        "return": "workspace missing, protected ownership, inexact force task, or job pin"
       },
       {
-        "protocol": "explicit_boolean: True",
-        "return": "{'success': True, 'workspace_id': workspace_id, 'status': 'already_unlocked'}"
-      },
-      {
-        "protocol": "explicit_boolean: True",
-        "return": "{'success': True, 'workspace_id': workspace_id, 'released_from_agent': ws.locked_by_agent_id, 'released_from_task': ws.locked_by_task_id}"
+        "protocol": "explicit_boolean: True (src.workspace_ownership.release_workspace)",
+        "return": "released lock row with preserved independent ownership"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "review_notes": "Delegates unchanged boolean outcomes from src.workspace_ownership.release_workspace. Reviewed all exits: missing workspace, protected ownership, mismatched/taskless force and job pins refuse with success=false; successful row-only release returns success=true. Original-principal project/resource gates apply; independent markers and integration attachments survive forced release.",
     "schema_quality": "declared",
-    "source_digest": "sha256:8c65240bf8bc5960abfc4731b289a01e1541d0231c26583278b86b9659ef3fef",
+    "source_digest": "sha256:f6dfdaf1942f576a19e97309edf7df8765f8f2c840e505a96fc5dd61e4d617b0",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_commands.py::TestWorkspaceOwnershipControls"
     ]
   },
   "reload_config": {
@@ -17852,20 +17986,29 @@
         "return": "{'success': False, 'error': f'hierarchy.{exc.code}: {exc.detail}', 'code': f'hierarchy.{exc.code}'}"
       },
       {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': exc.code, 'outcome': exc.code, 'error': f'{exc.code}: {exc.detail}', **exc.context}"
+      },
+      {
         "protocol": "delegated_producer",
         "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'unauthorized', 'error': 'caller cannot mutate this hierarchy'}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged.",
     "schema_quality": "declared",
-    "source_digest": "sha256:7f7ee75d1c4a6bce6d4b4f5e5bae5d7e0f3ed110394c9c9376b46fa9fc0a3161",
+    "source_digest": "sha256:820fe9d8b7695f96424d7a183dd8aa345fdd272b1ca2dab753c1c87945f7d045",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_claim_commands.py",
       "tests/test_hierarchy_commands.py",
-      "tests/test_worker_filing.py"
+      "tests/test_worker_filing.py",
+      "tests/test_integration_hierarchy.py"
     ]
   },
   "report_brief": {
@@ -18120,7 +18263,7 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "_error('report.invalid', 'report exceeds 1,200 characters after rendering')"
+        "return": "_error('report.invalid', f'report exceeds {MAX_CHARS:,} characters after rendering')"
       },
       {
         "protocol": "delegated_producer",
@@ -18135,12 +18278,14 @@
         "return": "{'success': True, 'request_id': request_id, 'window_id': row['owner_ref'], 'state': changed['state'], 'version': changed['version']}"
       }
     ],
+    "review_notes": "Reviewed MAX_CHARS-derived rendered-budget error text; outcome protocol, resource gates and typed contract unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:ae3f2f6f8b5e9253501f7d7067ae2063a373568346fb88ac37955c92c79ba2dc",
+    "source_digest": "sha256:d6dd8b58dfa2882dda204e8cd8b27314976a28c8036f63c127c4011a17897914",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_report_requests.py::test_submission_budget_includes_footer_and_marker"
     ]
   },
   "restart_daemon": {
@@ -18177,13 +18322,16 @@
   },
   "restart_task": {
     "argument_reads_diagnostic_only": [
+      "override_hold",
+      "reason",
       "task_id"
     ],
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_restart_repair_delegate": "sha256:f0c30ea3c6ca7bed8d1af73e47146c5c9ba72c5e7f1f991c79453cfd996589d0",
-      "_resume_manual_pause": "sha256:958cb46da30cffae4298885876977074284101353b6ed67a19868b6eddd13f76"
+      "_restart_repair_delegate": "sha256:36da9e3baf68fa15433b6caf181834518d2975156216297a369d1006fca9f8f8",
+      "_restart_task": "sha256:087b04ca01149f13072bdd76bc587cce290967406d090f8ae73350fff8fea70f",
+      "_resume_manual_pause": "sha256:95debb0dfedd5f648a0018e8e4fb3f2ff37ce9d1558fbadf128774bc5d47654b"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -18197,45 +18345,29 @@
     "retry_safe": false,
     "return_branches": [
       {
-        "protocol": "delegated_producer",
-        "return": "refused"
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'override_hold must be a boolean'}"
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': f\"Task '{args['task_id']}' not found\"}"
-      },
-      {
-        "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'Task is currently in progress. Stop it first.'}"
-      },
-      {
-        "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': stale, 'error_code': 'stale_repair'}"
-      },
-      {
-        "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': str(exc), 'error_code': exc.code}"
+        "return": "{'success': False, 'error': 'override_hold requires a reason of 1 to 4000 characters'}"
       },
       {
         "protocol": "delegated_producer",
-        "return": "await self._restart_repair_delegate(task)"
+        "return": "await TaskCommandsMixin._restart_task(self, args, hold_override)"
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': f'Cannot restart integration task: {reservation['reason']}. For a stopped writer, preview aq integration release-owner --task-id {task.id} --dry-run; apply only after its provider-backed proof succeeds, then retry restart.'}"
+        "return": "{'success': False, 'error': refusal}"
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'Task changed during cold restart; retry.'}"
-      },
-      {
-        "protocol": "explicit_boolean: True",
-        "return": "{'success': True, 'restarted': args['task_id'], 'title': task.title, 'previous_status': old_status}"
+        "return": "{'success': False, 'error_code': 'task_recovery.held', 'error': str(exc), 'recovery_hold': exc.incident}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Manual pause restart delegates to Resume before taking the restart lock; the helper returns None only to continue restart, and any returned refusal retains Resume's explicit boolean success protocol and original scope/termination proofs. Stop failures retain the manual pause and recovery incident; successful readmission supersedes the incident through the existing transition path.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged. Merge repair: retain dev manual-pause Resume proofs, stale repair refusal and worker integration policy. Restart guards the hold before Resume and defers supersession through Resume until the audited restart READY transaction.",
     "schema_quality": "declared",
-    "source_digest": "sha256:822c3a1e2f4be60e863f1fa56f2ddfe9d74d6d903ae201fabe35feecaa7f2fe5",
+    "source_digest": "sha256:9559903767857486338a36b1b734038600d6f8129122977717a438dd1ff32c36",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -18246,8 +18378,8 @@
       "tests/test_integration_repair_rollover.py",
       "tests/test_routing_router.py",
       "tests/test_wait_hibernation.py",
-      "tests/test_task_controls.py",
-      "tests/test_supervisor_recovery.py"
+      "tests/test_supervisor_recovery.py",
+      "tests/test_task_controls.py"
     ]
   },
   "resume_playbook": {
@@ -18328,12 +18460,13 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
     "schema_quality": "declared",
-    "source_digest": "sha256:1c49fc28c3b932af31c3455452e027b83cff2614caa0d59b834265f1201f2b5e",
+    "source_digest": "sha256:07a8f0b57c1d309434296d08027062cba6c1ea5a95cc1bdd37bb219a0dc0ae3f",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_project_constraint_enforcement.py"
+      "tests/test_project_constraint_enforcement.py",
+      "tests/test_project_supervisors.py"
     ]
   },
   "resume_task": {
@@ -18380,9 +18513,9 @@
         "return": "stopped"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Merge repair: the internal restart-only Resume path defers recovery supersession until the audited restart READY transaction; ordinary Resume retains its existing behavior and resource gates.",
     "schema_quality": "declared",
-    "source_digest": "sha256:efacbe51887f05c54ac4101576fe6311956259d55eaffc5b10b7ad838a95c6aa",
+    "source_digest": "sha256:93a0d163ec3c1e02db40410a55d44abfedf4fe1636eedc27f6d61977afd3a934",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -20243,18 +20376,23 @@
       },
       {
         "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"project '{session.project_id}' is paused; resume the project with `aq project resume {session.project_id}` to restart its supervisor\", 'session_id': session.id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
         "return": "{'success': False, 'error': f\"project '{session.project_id}' has its supervisor disabled; enable it with `aq project set {session.project_id} supervisor-enabled true`\", 'session_id': session.id}"
       }
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
     "schema_quality": "declared",
-    "source_digest": "sha256:07902fdaa6cdff0bee3a86ffe5cdf4845b35c2a2368954f58f788442d874e39e",
+    "source_digest": "sha256:0b1c6bf6cf411dd5a3b0279c369e05b10551221f9af09127cad71c27c51608f3",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_agent_cron.py",
-      "tests/test_session_commands.py"
+      "tests/test_session_commands.py",
+      "tests/test_project_supervisors.py"
     ]
   },
   "set_default_branch": {
@@ -20758,6 +20896,33 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "spec_ingest_legacy_adopt": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_spec_ingest_legacy_adopt",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "Delegates to adopt_legacy: explicit success boolean; operator-only authority, immutable source approval and unresolved human gates remain enforced.",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer: adopt_legacy preserves explicit success boolean",
+        "return": "await adopt_legacy(self, args)"
+      }
+    ],
+    "schema_quality": "declared",
+    "source_digest": "sha256:02f127a834f48f07eaba636fe7771fcdf537f011fc5fbc4047f04c5cbde39efd",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "spec_ingest_legacy_inventory": {
@@ -21461,7 +21626,7 @@
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_change_set_failure": "sha256:1ab0076765ff4e55c9b709c73c3734df4415a566889ebd6b721886c232920772"
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -21483,7 +21648,7 @@
         "return": "{'success': False, 'error': 'project_id and source are required'}"
       },
       {
-        "protocol": "delegated_producer: dictionary expansion retains producer outcome",
+        "protocol": "delegated_producer",
         "return": "{**committed, 'diff': payload['diff']}"
       },
       {
@@ -21511,9 +21676,9 @@
         "return": "{'success': True, 'committed': True, 'already_committed': True, **existing['receipt']}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag.",
     "schema_quality": "declared",
-    "source_digest": "sha256:9b7df21759628001bd84d8ab1a79d47b76b18321a24c0f3bff4162952bdc6975",
+    "source_digest": "sha256:4cffa4e392d1cde6ec81833558f9561ff4f8876388162b0ff13a3d4ca3901b6b",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -21521,6 +21686,172 @@
       "tests/test_integration_hierarchy.py",
       "tests/test_session_commands.py",
       "tests/test_task_batch_commands.py"
+    ]
+  },
+  "task_batch_release": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_release",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Batch belongs to another project')"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**failure, 'error_code': failure.get('code', 'release_failed')}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Only ingestion policy or the project supervisor may release a batch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await batches.release(conn, batch_id, expected_revision=request.expected_revision, expected_digest=request.expected_digest, actor=actor, release_receipt=None)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_held', 'Batch is not held')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('source_diverged', 'Source approval is missing')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('source_diverged', 'Approved source identity changed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "stale"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('membership', 'Active membership and held tasks differ')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**batches._error(report.hard[0].code, report.hard[0].detail), **report.to_dict()}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('fidelity_review_required', 'Current reviewer must attest the exact revision and digest')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('incomplete_review', 'Every section, reverse coverage and walkthrough requires a passing verdict')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('needs_scope', 'Batch has an unresolved scope question')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('source_diverged', str(exc))"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:0af3561610b58feae2a62bb7723665d2a3999884a003af7cb9cb18f8ca7dd135",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "task_batch_retire": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_retire",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'batch_id': batch_id, 'state': 'retired', 'already_retired': False}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Batch belongs to another project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('invalid_arguments', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error(exc.code, exc.detail)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**failure, 'error_code': failure.get('code', 'retirement_failed')}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Only ingestion policy or the project supervisor may retire a batch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('stale_revision', 'Batch revision changed')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'batch_id': batch_id, 'state': 'retired', 'already_retired': True}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_held', 'Only unreleased batches may retire')"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:516e5e0b4f15e35de9ca1d8e6dae8c6075ebcdb82157eea8a1e0dd0d1186f4f7",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "task_batch_review_record": {
@@ -21602,7 +21933,7 @@
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_change_set_failure": "sha256:1ab0076765ff4e55c9b709c73c3734df4415a566889ebd6b721886c232920772"
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -21640,13 +21971,14 @@
         "return": "self._change_set_failure(exc, 'task_batch_update')"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag.",
     "schema_quality": "declared",
-    "source_digest": "sha256:004d571c9cd2b0951d13ac18ddd9e06fa256cc8cd626d253f735944ab4eff78a",
+    "source_digest": "sha256:c93f0f9e9aab904b979a6b8c6950f573d16b6ffb74f833cc995feeda6ed78ef0",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_batch_commands.py"
     ]
   },
   "task_batch_validate": {
@@ -21765,7 +22097,7 @@
       "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:6722ada280e9abcccb852ee3e7a4d751780a958ec24dbad4bfcaa0f1fdb3cc79",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -21816,7 +22148,7 @@
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
       "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:6722ada280e9abcccb852ee3e7a4d751780a958ec24dbad4bfcaa0f1fdb3cc79",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -22498,7 +22830,7 @@
     "effect": "destructive",
     "helper_producers": {
       "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
-      "_route_state_refusal": "sha256:eeda1ce435abf9e3a6b66f93df26e9cc92ec2bcf0ad786c728076bdf7cc66693"
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -22655,7 +22987,7 @@
     "effect": "destructive",
     "helper_producers": {
       "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
-      "_route_state_refusal": "sha256:eeda1ce435abf9e3a6b66f93df26e9cc92ec2bcf0ad786c728076bdf7cc66693"
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -22981,6 +23313,49 @@
       "tests/test_delivery_consumers.py",
       "tests/test_integration_operator_decisions.py",
       "tests/test_surface_commands.py"
+    ]
+  },
+  "task_split": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_split_commands.py:TaskSplitCommandsMixin._cmd_task_split",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'split.not_found', 'error': 'source task not found'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'unauthorized', 'error': 'caller cannot split this task'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'split.invalid', 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': exc.code, 'error': exc.detail, **exc.context}"
+      }
+    ],
+    "review_notes": " Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:706cec7dd4656f2d08fd62edd27a24434de90ff9b61ad7c7548a5aaa1c8c8449",
+    "tests": [
+      "tests/test_task_split.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "task_subtask_add": {
@@ -23577,9 +23952,6 @@
     ],
     "denial_reason": "Daemon lifecycle commands are forbidden in playbooks.",
     "effect": "destructive",
-    "helper_producers": {
-      "_update_and_restart_legacy": "sha256:56dbd00e826e21d9152b16c760bafb7b6c41814ec2dbf5d4107fdbf1c1e99134"
-    },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
     "principal_requirement": "original_principal",
@@ -23595,8 +23967,8 @@
         "return": "{'success': False, 'error': 'automatic branch deployment is disabled'}"
       },
       {
-        "protocol": "delegated_producer",
-        "return": "await self._update_and_restart_legacy(args)"
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'deployment_not_configured', 'remediation': 'Configure deploy.tag_glob and deploy.target for releases, or deploy.track_branch for branch tracking. Alternatively, run `aq update` as the operator from your own terminal for a guarded branch update.'}"
       },
       {
         "protocol": "explicit_boolean: False",
@@ -23627,9 +23999,9 @@
         "return": "{'success': True, 'status': 'updating', 'pid': process.pid, 'message': 'Operator updater started; read update.log for the outcome', 'selector': plan.upstream, 'commit': plan.target, 'log': str(log), 'reason': reason, 'waited_for_tasks': wait_for_tasks and running_count > 0}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "review_notes": "All return branches carry explicit boolean success. An unconfigured daemon update refuses with operator/configuration remediation before planning, subprocesses, scheduling changes or restart. Configured updates retain migration recovery and failed-target holds and launch the detached guarded updater. Removed the implicit legacy producer; standalone operator aq update remains guarded.",
     "schema_quality": "declared",
-    "source_digest": "sha256:5fa666c48c69ddb165f96d9eaadb28fc7dc5822c03df506b5712317da2fc8fc5",
+    "source_digest": "sha256:e92c640b839645c4fe1befc2b9ced546628a27c652020578dba4b995f30dd545",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

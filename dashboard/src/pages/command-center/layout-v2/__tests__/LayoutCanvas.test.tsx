@@ -86,8 +86,10 @@ const tiles = vi.hoisted(() => ({
   paramsByProject: {} as Record<string, unknown>,
 }));
 const extents = vi.hoisted(() => ({ pending: false, loading: false }));
+let layoutReady = false;
 vi.mock("../useLayoutTiles", () => ({
-  useLayoutTiles: (projectId: string, params: unknown, rect: unknown) => {
+  useLayoutTiles: (projectId: string, params: unknown, rect: unknown, ready: boolean) => {
+    layoutReady = ready;
     tiles.params = params;
     tiles.paramsSeen.push(params);
     tiles.paramsByProject[projectId] = params;
@@ -728,7 +730,8 @@ describe("LayoutCanvas", () => {
     tiles.refetchVisible.mockClear();
     extents.pending = false;
     view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(tiles.refetchVisible).toHaveBeenCalled();
+    expect(layoutReady).toBe(true);
+    expect(tiles.refetchVisible).not.toHaveBeenCalled();
   });
 
   it("starts tiles before extent arrives and keeps that request when extent resolves", () => {

@@ -1,4 +1,7 @@
 {
+  "generic_dependencies": {
+    "src/asks/ingestion.py::approved_packet": "Generic immutable specification/plan approval validation and feedback evidence, shared by ingestion dispatch and replay. It grants no integration branch, code publication or ref replay authority; release and publication callers remain independently charged."
+  },
   "storage_sinks": {
     "src/asks/ingestion.py::dispatch::a4bd4fa14cba00a4c04093b1d29646ee56e0b4a57163e7b4979ac91c97e90ab9": {
       "call": "log_event",
