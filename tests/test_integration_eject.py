@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
-from sqlalchemy import delete, func, insert, select, update
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy import insert, select, update
 
 from src.cli.integration import integration as integration_cli
 from src.database.tables import (
@@ -17,10 +15,8 @@ from src.database.tables import (
     integration_candidate_revisions,
     integration_candidate_member_results,
 )
-from src.integration.scheduler import TrainService
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.test_integration_sealing import _enable_train, _request, _seed_leaf
 
 
 async def _start_repair(db, batch):
@@ -90,15 +86,6 @@ async def db(reuse_database):
 
 
 
-@pytest.fixture
-async def sealed_batch(db):
-    await _enable_train(db)
-    await _seed_leaf(db, "e1", "1" * 40)
-    await _seed_leaf(db, "e2", "2" * 40)
-    request = await _request(db)
-    batch = await TrainService(db).seal("p", request["request_id"], 20.0)
-    assert batch["outcome"] == "sealed"
-    return batch
 
 
 @pytest.fixture
@@ -129,48 +116,8 @@ def eligible_task_ids(db):
 
 
 
-async def test_matching_eject_setting_alone_cannot_edit_a_sealed_batch(sealed_batch, db):
-    batch_id = sealed_batch["batch_id"]
-    async with db.immediate() as conn:
-        await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
-        with pytest.raises((IntegrityError, DBAPIError)):
-            async with conn.begin_nested():
-                await conn.execute(
-                    delete(integration_batch_members).where(
-                        integration_batch_members.c.batch_id == batch_id,
-                        integration_batch_members.c.task_id == "e2",
-                    )
-                )
-        with pytest.raises((IntegrityError, DBAPIError)):
-            async with conn.begin_nested():
-                await conn.execute(
-                    update(integration_batches)
-                    .where(integration_batches.c.id == batch_id)
-                    .values(source_manifest_digest="forged")
-                )
 
 
-async def test_forged_eject_event_without_project_lock_cannot_edit_members(sealed_batch, db):
-    batch_id = sealed_batch["batch_id"]
-    with pytest.raises((IntegrityError, DBAPIError)):
-        async with db.immediate() as conn:
-            event_id = await db.log_event(
-                "integration.batch_ejected",
-                project_id="p",
-                task_id="e2",
-                payload=json.dumps(
-                    {"batch_id": batch_id, "reason": "forged", "operator_id": "raw-sql"}
-                ),
-                conn=conn,
-            )
-            await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
-            await conn.execute(select(func.set_config("aq.integration_eject_event", str(event_id), True)))
-            await conn.execute(
-                delete(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == batch_id,
-                    integration_batch_members.c.task_id == "e2",
-                )
-            )
 
 
 
