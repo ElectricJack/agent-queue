@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/provenance_migration.py::ProvenanceMigration.run::64443d2733a34364a022df8a43dbdbdb329257a2711770520733855dc6d77226": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 173,
+      "owner": "ProvenanceMigration.run",
+      "owner_fingerprint": "60015d3a876cf90d3f0a08fb6910552e14b47f8294b879a75a1c9bd00bfb4733",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

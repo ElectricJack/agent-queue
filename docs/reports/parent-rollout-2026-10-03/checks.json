@@ -1,0 +1,26 @@
+{
+  "task_id": "amber-meadow-15.5",
+  "environment": "disposable PostgreSQL on localhost:5534 and local bare Git",
+  "source_base": "5c962782ca17a69fe1bfe04269848f052988c65d",
+  "checks": {
+    "focused": {
+      "tests": 26,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "pytest_summary": "26 passed, 10 warnings in 78.70s (0:01:18)",
+      "log_sha256": "9647077edf8782c1ff02e83f5809c131d314b971d6d9af3e6b588688dac607e9",
+      "junit_sha256": "47f9faf31efa22edae8b977b18aa091128e39eb4cba6dea1924b1905c509e3be"
+    },
+    "area": {
+      "tests": 190,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "pytest_summary": "190 passed, 10 warnings in 163.13s (0:02:43)",
+      "log_sha256": "061b2e9c7d8ba74442c43c6ae0a772a479ebd146b4b9c15a4c10975c2380bf56",
+      "junit_sha256": "af20ecda88623011f4c3914ac45d0aa13797bb4ecaf19357378ce3347ad81465"
+    }
+  },
+  "production_gates": "pending; both flags OFF; no observed or waived shadow week"
+}
