@@ -65,6 +65,7 @@ that wants splitting.
 | [Development setup](setup.md) | First checkout: Python, PostgreSQL, editable installs, Node, pre-commit. |
 | [Repository map](repo-map.md) | You know what you want to change but not where it lives. |
 | [Testing](testing.md) | Before you run anything. Test layout, markers, `aq test`, the PostgreSQL fixtures. |
+| [Testing the installer](installer-testing.md) | You are changing `aq install`, or signing off a platform. What is faked, and what still needs a real machine. |
 | [Code generation](codegen.md) | You changed the API surface, the playbook model, the CLI, or the frontend client. |
 | [Local checks](checks.md) | You are about to push and want the shortest sufficient check list. |
 | [Scripts](scripts.md) | You found a file in `scripts/` and want to know whether to trust it. |
@@ -106,7 +107,7 @@ find the focused test file when the name is not obvious.
 | `aq test: waiting 12s for 1 of 2 test slot(s)` | The box is busy, not broken. | Wait. Exit code 75 means no slot came free; retry. |
 | `aq test: no such test path: …` | A typo in a path, refused before a slot is taken. | Fix the path — nothing ran. |
 | `schema behind code; ask the operator to upgrade` | You are inside a worktree slot and something tried to migrate the daemon's database. | Report it. Do not migrate. See [setup](setup.md#never-migrate-the-operators-database). |
-| `stale artefact(s): …module-ownership.json` | You added or removed a tracked file. | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` |
+| `stale artefact(s): …module-ownership.json` | The foundation-owned coverage manifest is behind the tree. Only `--check-artefacts` reports it. | Nothing, unless you own the overhaul's foundation/acceptance shard. See [the map](../documentation-map.md#who-runs-which-half). |
 
 ## Related pages
 

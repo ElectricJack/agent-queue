@@ -44,6 +44,7 @@ README.md                             GitHub landing page
 docs/
   README.md                           documentation home and reading order
   documentation-map.md                this page
+  release-notes.md                    what changed for an existing install, newest first
   tutorials/                          Start here → First task
     install.md
     first-task.md
@@ -69,6 +70,9 @@ docs/
     glossary.md
     configuration.md
     cli/                              command groups, contracts, agent tools
+    playbook-commands/                one page per contracted playbook command
+      README.md                       the generated index over every command
+      <command_name>.md               generated contract facts + hand-written prose
     api/                              REST, WebSocket, generated clients
     database/                         tables, query modules, migrations
     modules/                          the module catalog, one shard per ticket
@@ -78,6 +82,7 @@ docs/
     README.md
     setup.md
     testing.md
+    installer-testing.md
     repo-map.md
     scripts.md
     ci.md
@@ -101,7 +106,7 @@ machine-readable form of this table is
 
 | Ticket | Owns these pages | Module coverage shard |
 |---|---|---|
-| `foundation` | `docs/README.md`, `docs/documentation-map.md`, `docs/reference/glossary.md`, `docs/contributing/documentation-style.md`, `docs/reference/modules/README.md`, the overhaul's planning files | — |
+| `foundation` | `docs/documentation-map.md`, `docs/reference/glossary.md`, `docs/contributing/documentation-style.md`, `docs/release-notes.md`, the overhaul's planning files | — |
 | `quickstart` | `docs/tutorials/install.md`, `docs/tutorials/first-task.md`, `docs/tutorials/README.md` | — |
 | `readme` | `README.md` (repository root) | — |
 | `architecture` | `docs/concepts/architecture.md` | `docs/reference/modules/architecture.md` |
@@ -111,20 +116,23 @@ machine-readable form of this table is
 | `sessions` | `docs/concepts/sessions.md` | `docs/reference/modules/sessions.md` |
 | `workspaces` | `docs/concepts/projects-and-workspaces.md`, `docs/guides/project-onboarding.md` | `docs/reference/modules/workspaces.md` |
 | `integration` | `docs/concepts/integration.md`, `docs/guides/development-integration.md` | `docs/reference/modules/integration.md` |
+| `vivid-stone-39.6` → `vivid-stone-39.5` | Draft then finalize `docs/guides/promotion-flow.md`, `docs/guides/releases.md`, `docs/specs/design/promotion-flow.md`; update factory policy, train controls and repository map in place | Existing integration/contributing shards; no new manifest |
 | `playbooks` | `docs/concepts/playbooks.md` | `docs/reference/modules/playbooks.md` |
 | `cli` | `docs/reference/cli/**` | `docs/reference/modules/cli.md` |
 | `api` | `docs/reference/api/**` | `docs/reference/modules/api.md` |
 | `dashboard` | `docs/guides/dashboard.md` | `docs/reference/modules/dashboard.md` |
 | `database` | `docs/reference/database/**` | `docs/reference/modules/database.md` |
+| `knowledge-records` | `docs/guides/knowledge-records.md`, `docs/guides/knowledge-deprecation.md`, `docs/guides/knowledge-migration-restore.md` | Core record history, compatibility telemetry and operator deprecation/restore evidence |
 | `vault` | `docs/concepts/configuration-and-vault.md`, `docs/reference/configuration.md` | `docs/reference/modules/vault.md` |
-| `providers` | `docs/concepts/providers.md` | `docs/reference/modules/providers.md` |
+| `providers` | `docs/concepts/providers.md`, `docs/guides/provider-outage.md` | `docs/reference/modules/providers.md` |
 | `plugins` | `docs/guides/plugins-and-mcp.md` | `docs/reference/modules/plugins.md` |
 | `communications` | `docs/concepts/messaging.md`, `docs/guides/escalations.md` | `docs/reference/modules/communications.md` |
 | `operations` | `docs/guides/operations.md` | `docs/reference/modules/operations.md` |
 | `contributing` | `docs/contributing/**` except `documentation-style.md` | `docs/reference/modules/contributing.md` |
 | `reference` | `docs/reference/README.md`, generated reference indexes, the documentation checks | — |
+| `playbook-commands` | [`docs/reference/playbook-commands/**`](reference/playbook-commands/README.md) — one page per contracted command, half generated from the command registry | — |
 | `legacy` | `docs/history/README.md`, dispositions and link repairs across existing `docs/` | — |
-| `acceptance` | final assembly of every shared index listed below | — |
+| `acceptance` | final assembly of every shared index listed below, plus the final coverage report | — |
 
 ### Shared indexes
 
@@ -173,28 +181,45 @@ component page and one category:
 
 | Category | Count | Documentation obligation |
 |---|---|---|
-| `production` | 791 | A named row in the owning shard's catalog. |
+| `production` | 790 | A named row in the owning shard's catalog. |
 | `generated` | 1447 | Resource-family coverage plus a regeneration command. |
 | `prompt` | 49 | Explained where its behaviour is explained, as shipped content. |
-| `supporting` | 80 | Purpose, inputs, side effects and invocation, in a contributing page. |
-| `documentation` | 445 | A disposition recorded by the `legacy` ticket. |
-| `test` | 908 | Covered as a layout and a set of markers, not file by file. |
+| `supporting` | 83 | Purpose, inputs, side effects and invocation, in a contributing page. |
+| `documentation` | 503 | A disposition recorded by the `legacy` ticket. |
+| `test` | 916 | Covered as a layout and a set of markers, not file by file. |
 
 Counts are from the manifest at its recorded `source_commit`; regenerate rather
 than trusting the numbers above if the tree has moved.
 
-Regenerate and check the manifest with:
+### Who runs which half
+
+The script has two halves, and they have different owners:
 
 ```bash
-python3 docs/plans/documentation-overhaul/refresh_inventory.py          # rewrite
-python3 docs/plans/documentation-overhaul/refresh_inventory.py --check  # verify
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
-`--check` fails when a tracked path matches no ownership rule, or when the
-committed JSON no longer matches the tree. That failure is the answer to "did
+**Coverage.** Every author runs this before pushing. It fails only when a
+tracked path matches no ownership rule. That failure is the answer to "did
 somebody add a module nobody documents": add a rule to `RULES` in that script
-naming the owning shard, then regenerate. There is deliberately no catch-all
-rule — an unmatched path is an error, not a default assignment.
+naming the owning shard. There is deliberately no catch-all rule — an unmatched
+path is an error, not a default assignment.
+
+```bash
+python3 docs/plans/documentation-overhaul/refresh_inventory.py                    # rewrite
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check-artefacts  # gate
+```
+
+**Freshness.** The two JSON artefacts are foundation-owned — *nobody else edits
+those files while the overhaul is in flight* — so a ticket never regenerates
+them. Twenty in-flight tickets each rewriting a 3,700-entry JSON on their own
+branch would every one of them conflict at delivery. Instead the foundation /
+acceptance shard regenerates on a cadence, and `--check-artefacts` is the gate
+that says the cadence has slipped.
+
+`--check` still *tells* you when the artefacts are behind: it prints the paths
+that drifted and the shard each was assigned to, and exits 0. Seeing your new
+page in that list is confirmation it classified, not something to fix.
 
 The `reference` ticket may absorb this script into the wider documentation
 check it owns; until it does, this is the check.
@@ -213,6 +238,13 @@ result in a ledger. Two things follow for everyone else:
   page and let the ledger mark the old one.
 * Do not link a historical page as though it were instructions. Link it as
   background, with the date it describes.
+
+A design record can also run *ahead* of the code. None is open at present: the
+most recent, [the dashboard server and API-only daemon](specs/dashboard-server.md)
+(2026-09-20), has been implemented, and the
+[dashboard guide](guides/dashboard.md) and
+[architecture](concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server)
+describe what ships.
 
 Known contradictions between existing pages and current behaviour are already
 recorded in

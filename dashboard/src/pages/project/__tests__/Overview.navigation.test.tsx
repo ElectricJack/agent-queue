@@ -6,7 +6,17 @@ import ProjectOverview from "../Overview";
 
 vi.mock("../../../api/hooks", () => ({
   useProject: () => ({ data: { id: "p1", name: "Project one" } }),
-  useTasks: () => ({ data: [{ id: "failed", status: "FAILED" }, ...Array.from({ length: 9 }, (_, i) => ({ id: `task-${i}`, title: `Task ${i}`, status: "READY" }))] }),
+  useTasks: () => ({
+    data: {
+      display_mode: "active",
+      tasks: [{ id: "failed", status: "FAILED" }, ...Array.from({ length: 9 }, (_, i) => ({ id: `task-${i}`, title: `Task ${i}`, status: "READY" }))],
+      total: 10,
+      hidden_completed: 0,
+      filtered: false,
+    },
+    isPending: false,
+    isError: false,
+  }),
   useAgents: () => ({ data: [] }),
   useWorkspaces: () => ({ data: [{ id: "w1" }, { id: "w2" }] }),
 }));

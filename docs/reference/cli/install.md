@@ -1,0 +1,888 @@
+# `aq install`
+
+`aq install` prepares a machine to run AQ. It is the one common installer
+interface: platform, packaging, database and provider adapters contribute
+*steps* to it rather than shipping installers of their own, so a human and a
+script see the same sequence, the same failure reports and the same exit codes
+on every supported host.
+
+GitHub CLI (`gh`) is a separate prerequisite for GitHub onboarding and
+AQ-owned GitHub operations in both existing-login and GitHub App modes. The
+installer does not install or require it; when it is present and signed in,
+the wizard only reads the account's public facts to suggest a [Git commit
+identity](#git-commit-identity-configgit-identity). Install it on the daemon
+host before using those features; [GitHub configuration](../configuration.md#github-credentials)
+explains the two alternative credential setups.
+
+It can run without a running daemon. The engine runs in-process; individual
+steps can download packages, probe PostgreSQL and HTTP endpoints, or guide
+provider authentication.
+
+It is also the whole newcomer path, not only its first half: prerequisites,
+PostgreSQL, the agent CLIs and their logins, the configuration, the daemon and
+the dashboard URL are one run with one resume record.
+
+> **Status.** The engine, platform matrix, built-in prerequisite, PostgreSQL,
+> optional agent CLI and onboarding steps, plus the WSL2 and **macOS**
+> bootstraps, ship today. `aq install --list-steps` always prints what this
+> build actually knows how to do **on the host you run it on** — the registry
+> is composed for the detected host, so a Mac lists the `macos.*` steps and a
+> WSL2 host does not.
+
+## Usage
+
+```bash
+aq install                      # the wizard: agents, projects folder, one "Go ahead?"
+aq install --advanced           # full control: every choice, and approve each step
+aq install --yes                # take every default without being asked
+aq install --dry-run            # report the plan, run only read-only checks
+aq install --non-interactive --yes --json   # unattended, machine-readable
+aq install --list-steps         # what this build can do, in run order
+aq install --with provider.codex            # select one optional agent CLI
+aq install --with postgres-managed          # let AQ install and run PostgreSQL
+aq install --repair             # reconcile this installation against the host
+aq install --upgrade            # repair, and record the version transition
+aq install --git-name "Ada Lovelace" --git-email ada@example.com   # commit identity, unattended
+```
+
+To remove an installation, see [`aq uninstall`](uninstall.md).
+
+## The wizard
+
+On a terminal, `aq install` asks only what a person has to decide, shows what
+it is about to do, and asks once before doing it:
+
+```text
+Setting up AQ on this machine. Press Enter to accept each default.
+  (already installed)
+  Use Claude Code? [Y/n]:
+  (not installed here; AQ would install it with the provider's own installer)
+  Use Codex CLI? [y/N]:
+  Use Gemini CLI? [y/N]:
+  (AQ creates and works on projects inside this folder)
+  Where do your code projects live? [~/Shared/AI]:
+
+  (looking up your GitHub account with gh...)
+  Git commit identity — AQ's commits in your projects use this name and email
+  (a project can override it in its settings).
+  Suggestions:
+    1. Ada Lovelace <ada@example.com>
+       GitHub @ada: public profile email; name from your GitHub profile
+    2. Ada Lovelace <1234567+ada@users.noreply.github.com>
+       GitHub @ada: GitHub noreply address (keeps your email private); name from your GitHub profile
+  Use 1-2, e to enter your own, or s to set it up later [1]:
+
+AQ will:
+  • Coding agents: Claude Code
+  • Database: use the PostgreSQL server already running on this machine
+  • Settings tuned for this machine (10 cores, 32 GiB)
+  • Start AQ in the background, build the dashboard and open it in your browser
+  • Projects folder: ~/Shared/AI
+  • Commit as: Ada Lovelace <ada@example.com>
+Go ahead? [Y/n]:
+```
+
+| Choice | Asked? | How it is decided |
+| --- | --- | --- |
+| Use Claude Code / Codex / Gemini? | **yes** | defaults to the ones already installed (a read-only `PATH` and `--version` probe). At least one is required: a machine with no coding agent cannot run a task, so the questions are asked again. |
+| Use graft (recommended)? | **yes** | graft is a per-repo code graph whose MCP tools and hooks cut file reads. Defaults to yes when graft is installed, or when it is missing and `npm` is on PATH to install it; otherwise no. See [graft](#graft-graftcli-graftrepos). |
+| Where do your code projects live? | **yes**, unless a project root is already configured | defaults to the folder the install was started from when it is a normal folder under your home, else `~/Projects`. The home folder itself, the filesystem root and AQ's own directories are refused. Recorded by `config.project-root`, which creates the folder if needed. |
+| Which Git identity should AQ commit as? | **yes**, unless one is already configured or `--git-name`/`--git-email` gave it | suggested from the authenticated `gh` account for github.com and the global git config, each labelled with where it came from (see [Git commit identity](#git-commit-identity-configgit-identity)). Enter confirms the first suggestion, a number picks another, `e` edits it, `s` sets it up later. An invalid name or email is asked again. Recorded by `config.git-identity`. |
+| Install and run a local PostgreSQL server? | only under `--advanced` | installed when nothing answers on the configured host and port, reused when a server does. |
+| Start the AQ daemon? | only under `--advanced` | yes — it runs every task, and the dashboard server beside it serves the dashboard. |
+| Deliver digests and escalations to Discord? | only under `--advanced` | no; nothing else depends on it. Add it later with `--with discord`. |
+
+Answering "Go ahead?" approves the whole plan, so the steps then run without a
+prompt each. `--advanced` asks every choice and keeps the per-step approval
+prompts. `--yes` takes every default without asking anything (and records no
+projects folder, and no Git identity: a suggestion is never saved without a
+person confirming it). The questions are skipped entirely when the selection has
+already been made — `--with`, `--config`, or `--json` (a script parsing stdout
+is driving consent, not being onboarded) — and an unattended run never asks
+anything; its mutating steps need `--approve`/`--yes`.
+
+| Option | Meaning |
+| --- | --- |
+| `--interactive` / `--non-interactive` | Prompt for consent, or never read a terminal. Defaults to interactive on a TTY, unattended otherwise. |
+| `--dry-run` | Print the plan and run the read-only checks. Mutating steps are reported as `would_run` and are not executed; no resume record is written. |
+| `--json` | Print exactly one JSON object on stdout (see below). Implies unattended unless `--interactive` is given. |
+| `--config PATH` | Unattended install input file, YAML or JSON (see below). |
+| `--with CAPABILITY` | Select an optional capability. Repeatable. |
+| `--approve STEP` | Authorise one mutating step in an unattended run. Repeatable. |
+| `--yes` / `-y` | Authorise every mutating step. |
+| `--resume` / `--no-resume` | Continue from the resume record (default), or ignore it for this run without deleting it. |
+| `--fresh` | Start a new resume record. The existing one is left on disk. |
+| `--restart-from STEP` | Redo `STEP` and the steps that depend on it. Nothing else is re-executed. |
+| `--state-file PATH` | Where the resume record lives. Defaults to `~/.agent-queue/install-state.json`. |
+| `--list-steps` | Print the registered steps and exit. |
+| `--git-name NAME` / `--git-email EMAIL` | The Git identity AQ's commits use, given together; recorded by `config.git-identity` with `source: manual`. They answer the wizard's identity question, win over `settings.git_identity` in the input file, and **replace** an identity already configured (an explicit flag is the operator choosing; the wizard never overwrites one). An invalid or half-given pair exits `11` before anything runs. |
+| `--advanced` | Full control: ask every choice (database, daemon, Discord) and approve each step. Without it `aq install` asks only which coding agents to use and where your projects live, then one "Go ahead?". |
+
+## Agent CLI providers
+
+Agent CLIs are optional. Select one or more with `--with`; leave a provider
+unselected to record it as skipped without blocking AQ installation. A selected
+provider is first detected on `PATH`, including its `--version` result. A
+working existing executable is reused; otherwise the installer asks for
+consent (or requires `--approve` in unattended mode) before using the
+provider's documented installer. It never reads, writes, or exports provider
+credentials.
+
+| Capability | CLI | Installation route |
+| --- | --- | --- |
+| `provider.claude` | Claude Code | Claude's native macOS/Linux/WSL installer |
+| `provider.codex` | Codex CLI | Codex's standalone macOS/Linux installer |
+| `provider.gemini` | Gemini CLI | `npm install -g @google/gemini-cli` |
+
+For example, `aq install --with provider.claude --with provider.codex` selects
+two harnesses. `aq install --list-steps` includes the exact step ids for use
+with `--approve` and `--restart-from`. Installing a CLI does not log it in;
+that is the separate step described in
+[Provider authentication](#provider-authentication).
+
+## Provider authentication
+
+Selecting a provider selects two steps, because *installed* and
+*authenticated* are two different conditions: `provider.<name>-cli` puts the
+executable on `PATH`, and `provider.<name>-login` reports whether that
+executable can actually talk to its provider.
+
+**AQ never logs you in.** It types no password, captures no token and drives no
+browser. When a selected harness is not authenticated, the login step reports
+`needs_user` (exit code `10`) and names the provider's own login command; you
+run it, then rerun `aq install` — rerunning is the whole retry mechanism.
+
+The login step does **not** stop the rest of the run (see [advisory and
+non-halting steps](#advisory-and-non-halting-steps)): signing in happens in your
+browser and nothing later in the install depends on it, so the same run still
+writes the configuration, starts the daemon and builds the dashboard. You come
+back to a working machine with one thing left to do. The outcome is still
+`needs_user`, the sign-in is still the named next action, and the rerun after you
+sign in is what activates the harness's worker profiles and their pools.
+
+Both probes run the executable at the path the lookup **resolved**, not by its
+bare name. A CLI its own installer put in `~/.local/bin` is on the *next* login
+shell's `PATH` and not necessarily on this process's, and asking for `claude` by
+name there reported an installed, signed-in harness as missing or
+unauthenticated.
+
+Readiness is observed without reading credential material, in this order:
+
+1. The provider's own status command, if it documents one. Only its **exit
+   status** is used; its output is never captured.
+2. The **names** of provider-supported environment variables that are set —
+   never their values.
+3. The **existence** of the provider's credential file — never its contents.
+
+| Capability | Login command | Status probe | Headless credential |
+| --- | --- | --- | --- |
+| `provider.claude` | `claude auth login` (or `/login` in a session) | `claude auth status` | `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or `ANTHROPIC_API_KEY` |
+| `provider.codex` | `codex login` | `codex login status` | `codex login --device-auth`, or `printenv OPENAI_API_KEY \| codex login --with-api-key` |
+| `provider.gemini` | `gemini`, then `/auth` | *(none documented; store + environment)* | `GEMINI_API_KEY`, or `GOOGLE_GENAI_USE_VERTEXAI=true` with `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`, or `GOOGLE_APPLICATION_CREDENTIALS` |
+
+Credentials stay in the provider's own protected store — the macOS Keychain or
+`~/.claude/.credentials.json`, `$CODEX_HOME/auth.json`,
+`~/.gemini/oauth_creds.json`. AQ never creates, reads, moves or deletes one, so
+a credential is never an installer-owned resource and uninstall never offers to
+remove it.
+
+An unattended run (`--non-interactive`) may not open a browser or read a
+terminal, so it reports `needs_user` with the provider's documented
+environment-credential or device-code route instead of choosing an
+authentication method for you. Supply the credential in the environment before
+invoking it, or complete the login once in an interactive shell on that host.
+
+The login step's `detail` carries the distinction and nothing else:
+
+```json
+{"step_id": "provider.codex-login", "state": "succeeded",
+ "summary": "Codex CLI is authenticated (api-key via OPENAI_API_KEY)",
+ "detail": {"installed": true, "authenticated": true, "auth_method": "api-key",
+            "credential_source": "OPENAI_API_KEY", "credential_store": "environment",
+            "checked": ["codex login status", "OPENAI_API_KEY"],
+            "missing_environment": []}}
+```
+
+`credential_source` is a variable name, a store label or a command — never
+credential material. The resume record refuses to persist anything
+secret-shaped, so a leak fails the write rather than reaching the disk.
+
+## Configuration, the daemon and the dashboard
+
+The last steps are what turn an equipped machine into a running one. They
+are ordered after `postgres.connection`, so a daemon can never be started
+before the credential that lets it reach its database was written.
+
+| Step | Mutating | Capability | What it does |
+| --- | --- | --- | --- |
+| `config.defaults` | yes | — | Creates `~/.agent-queue/config.yaml` when it is absent and adds resource-aware defaults derived from this box's cores and memory (the same values `aq system config tune --apply` writes). A section you have already written is **kept**, and a numbered backup is taken only when something is actually written. It also selects the session provider: because `prereq.tmux` has already required tmux, this step writes `sessions.provider: tmux` when tmux is on PATH, so an installed box can attach, peek and nudge its agents and re-adopt them after a restart — a `sessions.provider` you have already chosen is kept like any other. Rationale for every value: [default tuning](../../guides/default-tuning.md). |
+| `config.project-root` | no | — | Adds the projects folder the wizard asked for to `project_roots` (id from the folder name, URL-safe), creating the folder when it does not exist. Existing roots are kept; with no folder chosen (`--yes`, unattended) it changes nothing. A dry run writes nothing. |
+| `config.git-identity` | no | — | Advisory. Writes `git_identity: {name, email, source}` when the wizard's question was answered or `--git-name`/`--git-email` (or `settings.git_identity`) gave one, with a numbered backup only when it writes. Otherwise it changes nothing and reports the configured identity, or that AQ commits as `Agent Queue <agent-queue@localhost>` until `aq system config git-identity` sets one. It runs no `gh` or `git` command itself, and it never stops or fails a run. See [Git commit identity](#git-commit-identity-configgit-identity). |
+| `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
+| `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
+| `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. `aq start` uses the PostgreSQL the configuration names; it reaches for the checkout's `docker-compose.yml` only when nothing is listening there and that file exists, so an installed native server needs no Docker. |
+| `daemon.autostart` | yes | `autostart` | Optional and off by default. Installs the auto-restart watchdog with the best mechanism the host offers — a launchd agent on macOS, a systemd user unit (`Restart=on-failure`) where a systemd user manager answers and linger is on or can be enabled, otherwise `@reboot` and every-2-minutes entries in a marked crontab block (WSL) — exactly as `aq service install` does; see [Auto-restart](#auto-restart-daemonautostart). Never halts the run. `aq uninstall` removes it. |
+| `dashboard.build` | yes | — | From a source checkout: installs the dashboard's Node.js packages and builds and stages the same verified bundle a release ships (`scripts/build_release_artifact.py`). It starts and restarts no process. Builds with a pinned Node.js LTS it downloads from nodejs.org into `~/.agent-queue/toolchain/` and checks against a SHA-256 recorded in `src/install/node_toolchain.py` — never the machine's own Node, so nvm, Homebrew or Ubuntu's older `nodejs` cannot break the build. Full output goes to `~/.agent-queue/dashboard-build.log`, and a failure quotes the compiler's own error lines. Rebuilds only when the checkout changed, so a rerun after an update rebuilds and a rerun with nothing new does nothing; a bundle built for the daemon's old `/dashboard` mount is always rebuilt. A release install has nothing to build. |
+| `dashboard.serve` | yes | `daemon` | Runs `aq dashboard start` and waits until the dashboard server answers `/__aq/health` with this install's verified bundle and `GET /` with `200`. A dashboard server already serving that bundle is left alone; one still serving an older build (after a rebuild) is restarted. With `dashboard.server.enabled: false` it starts nothing. A port held by another program, or a server that exits during startup, fails the step with the server's own last log lines and names `aq dashboard status` and `~/.agent-queue/dashboard-server.log`. |
+| `daemon.dashboard` | no | — | Reports the dashboard server's URL and whether it answers, or the one command that fixes it when it does not. Never blocks a run. |
+| `dashboard.open` | no | — | Opens the dashboard server's URL in the browser (`open` on macOS, `wslview` or `explorer.exe` on WSL) the first time an interactive install reaches it. An unattended run never opens a browser, and a rerun never opens another window. |
+
+### Git commit identity (`config.git-identity`)
+
+Every commit AQ creates is attributed to one installation default
+(`git_identity:` in `config.yaml`) unless a project overrides it in its
+settings; until one is chosen AQ commits as the documented fallback
+`Agent Queue <agent-queue@localhost>`. The wizard asks for it once, on a fresh
+interactive install, and only while none is configured.
+
+Its suggestions come from read-only probes, each with a short timeout and no
+terminal:
+
+| Suggestion | Where it comes from | Label |
+| --- | --- | --- |
+| Public profile email | `gh api user` for the active account on github.com | `GitHub @<login>: public profile email` |
+| Verified address | `gh api user/emails`, asked only when the profile email is private and only answered when the token already has the scope; a refusal is skipped silently — the installer never runs `gh auth refresh` or asks for a scope | `GitHub @<login>: verified primary email` (or `verified email`) |
+| Noreply address | `<id>+<login>@users.noreply.github.com`, from the numeric id and login `gh api user` returned | `GitHub @<login>: GitHub noreply address (keeps your email private)` |
+| Global git config | `git config --global user.name` / `user.email`, after the GitHub suggestions; its name also stands in for a GitHub profile with no name | `global git config (user.name / user.email)` |
+
+No address is ever invented: anything that fails AQ's identity validation is
+dropped, and the confirmed suggestion's provenance is recorded as `source`
+(`gh:<login>`, `git-config`, or `manual` for an edited or typed identity). When
+`gh` is not installed, not signed in, offline or slow, the wizard says so in one
+line and offers manual entry; pressing Enter leaves it unset and the install
+carries on.
+
+An unattended run never guesses: without `--git-name`/`--git-email` or
+`settings.git_identity` it records nothing and says so in a note (also in the
+JSON `messages`):
+
+```text
+Git identity: not configured — AQ commits as Agent Queue <agent-queue@localhost> until you run `aq system config git-identity`
+```
+
+`aq system config git-identity` is the interactive "set up later" path on an
+existing install: it shows the current default, offers the same suggestions
+and saves the one you confirm; `--name/--email`, `--clear` and `--show` do the
+same without prompting.
+
+### Discord is optional
+
+AQ is operated from the CLI and the dashboard. Discord receives an hourly
+activity digest and one escalation thread per human decision — nothing creates,
+reviews or controls a task there. An install that never selects it records
+`config.discord` as `skipped` and finishes `ready`, and the configuration it
+writes says `messaging_platform: none`.
+
+Selecting it (`--with discord`, or answering yes under `--advanced`) needs two
+non-secret settings and one secret you place yourself:
+
+```yaml
+version: 1
+capabilities: [discord]
+settings:
+  discord:
+    channel_id: "123456789012345678"   # Copy ID, with Developer Mode on
+    guild_id: "876543210987654321"
+    credential_variable: DISCORD_BOT_TOKEN   # optional; this is the default
+```
+
+Both ids are numeric Discord IDs (17-20 digits), not names — a channel name
+where an id belongs is reported by the step rather than by the daemon at its
+next start. The bot token is never asked for, printed, or written by the
+installer. Put it in `~/.agent-queue/.env` as `DISCORD_BOT_TOKEN=…` (mode
+`0600`); `config.yaml` only ever refers to `${DISCORD_BOT_TOKEN}`. Until it is
+there, the step reports `needs_user` (exit `10`) and says exactly where to put
+it. Add Discord later at any time by rerunning with `--with discord`.
+
+### Auto-restart (`daemon.autostart`)
+
+Without it nothing brings the daemon back after a reboot or a crash. Select it
+with `--with autostart`, under `--advanced`, or later with `aq service install`
+(the same code; `aq service status`, `aq service uninstall`). Optional settings:
+
+```yaml
+version: 1
+capabilities: [autostart]
+settings:
+  autostart:
+    mechanism: auto      # or systemd, launchd, cron
+    interval: 120        # seconds between checks; cron rounds up to whole minutes
+```
+
+The service runs a watchdog (`python -m src.install.watchdog`), never the
+daemon itself. It starts the daemon through `aq start` in a clean environment
+when two checks in a row find it down, after waiting up to three minutes for
+PostgreSQL, and never while `~/.agent-queue/daemon.stopped` exists — the marker
+`aq stop`, `aq restart`, `aq update` and the daemon's `shutdown` command write
+and `aq start` removes — or while `aq start` / `aq update` hold their locks. Its
+start is `aq start --unless-stopped`, which respects that marker instead of
+removing it and exits `16` when one is recorded — also one recorded while it was
+starting — or when an `aq update` began meanwhile. Failed starts back off up to 30 minutes; five in a row against a
+reachable database stop it until a reboot, a manual start or
+`aq service check --reset`, while a database outage is waited out. At most five
+automatic starts happen per hour. It logs every decision to
+`~/.agent-queue/logs/aq-service.log`, and `aq doctor --check daemon.autostart`
+reports whether it is installed, enabled and checking in. A host with no
+mechanism at all (no systemd user manager and no `crontab`) records the step as
+`needs_user` with what to install. The full behaviour is in
+[Install AQ](../../tutorials/install.md#keep-aq-running-after-a-reboot-or-a-crash).
+
+## graft (`graft.cli`, `graft.repos`)
+
+graft (`@nanonets/graft` on npm) builds a code graph of one repository and
+gives Claude Code MCP tools and hooks that answer from it, so an agent reads
+fewer files. It is optional and recommended: the wizard offers it, and
+`--with graft` selects it. Both steps are **advisory** — a graft step that fails
+is reported with its remediation and never changes the outcome or exit code.
+
+| Step | Mutating | Capability | What it does |
+| --- | --- | --- | --- |
+| `graft.cli` | yes | `graft` | Runs `graft --version`. A graft already on PATH is reused whatever its version and **never upgraded or downgraded**; a version outside the cleared `0.18.x` series is reported as drift. A missing graft is installed with `npm install -g @nanonets/graft@0.18.x` (npm must be on PATH; a root-owned global prefix needs `npm config set prefix ~/.local`). Then runs `graft telemetry disable` unless `~/.graft/telemetry.json` already records it off. Graft wiring found outside any repository — graft hooks in `~/.claude/settings.json`, a graft MCP server in `~/.claude.json`, `~/.codex/config.toml`, `~/.codex/hooks.json`, the OpenCode or Gemini configuration — is reported as drift and never edited. `aq uninstall` reports an npm package AQ installed; it never removes it. |
+| `graft.repos` | yes | `graft` | Runs after `daemon.start` and asks the daemon for every project's workspaces. In each **main checkout** — a project's base workspace (a non-slot row whose kind runs in worktree mode) that is a git repository — graft has not wired yet, runs `graft init --no-global --no-statusline --no-agents`: repository files only, Claude Code wiring only (`--no-agents` keeps graft's section out of `AGENTS.md`, which worker slots read). Then makes sure `graft/` is ignored and sets `env.DO_NOT_TRACK="1"` in the checkout's `.claude/settings.local.json`, which Claude Code hands to graft's hooks and MCP server. Worker slots, linked git worktrees, job snapshots and anything inside the vault are never touched. |
+
+The installer never installs a shim an npm upgrade would replace and never
+writes machine-wide configuration. Its own writes are local to the machine:
+`DO_NOT_TRACK` goes in the git-ignored `.claude/settings.local.json`, and a
+path nothing ignores yet is added to the repository's `.git/info/exclude`,
+never to a tracked `.gitignore` (`graft init` itself appends `/graft/` there;
+committing that is the project's own delivery). Worker sessions keep graft off
+through their launch environment — `GRAFT_NO_SEED=1`, `GRAFT_NO_REFRESH=1` and
+`DO_NOT_TRACK=1` (see [terminals and claims](../terminals-and-claims.md)).
+
+A rerun reports instead of re-wiring. A checkout graft already wired (its
+`.claude/helpers/graft-hooks.cjs`, its wiring stamp, graft hooks in
+`.claude/settings.json` or a graft server in `.mcp.json`) is never initialised
+again; a wiring stamp that records `global: true` or graft's statusLine is
+reported as drift in `onboarding.drift`. A project registered since the last
+run is set up on the next `aq install`.
+
+### Where AQ stores your data
+
+`config.check` reports these, and so does the closing summary — they are
+computed from the resolved configuration rather than repeated in prose, on
+every run including a rerun, a `--repair` and an `--upgrade`:
+
+| What | Where |
+| --- | --- |
+| Configuration | `~/.agent-queue/config.yaml` — edit with `aq system config edit` |
+| Secrets | `~/.agent-queue/.env`, mode `0600` — the values `${VAR}` references resolve to |
+| Vault | `~/.agent-queue/vault/` — playbooks, agent profiles, memory and facts, as markdown |
+| Worktrees | `workspace_dir` from the configuration — each worker's isolated checkout |
+| Daemon log | `~/.agent-queue/daemon.log` — `aq logs` reads it |
+| Resume record | `~/.agent-queue/install-state.json` — what this command completed and owns |
+| Tasks, projects, sessions, results | PostgreSQL, reported without its password |
+
+### Opening the dashboard
+
+The daemon is API-only: it serves no page, and answers `/dashboard` with a `307`
+redirect to the dashboard server (a `404` JSON pointer when the dashboard server
+is disabled). The dashboard is served by the **dashboard
+server**, a separate process that serves the verified bundle and proxies the
+daemon's API, at `http://127.0.0.1:8082/` by default (`dashboard.server.host`
+and `port`). `aq start`, `aq stop` and `aq restart` manage it with the daemon;
+`aq dashboard status` reports it. A release install ships the bundle built; a
+source checkout gets the same verified bundle from `dashboard.build`, and
+`dashboard.serve` starts the dashboard server on it. An interactive install then
+opens it (`dashboard.open`). Nobody has to run a Vite dev server: that remains a
+contributor tool for editing the dashboard (`npm -w dashboard run dev`).
+
+An install made before the dashboard server existed — its bundle built for the
+daemon's `/dashboard` mount — moves across on a plain rerun of `aq install`:
+`dashboard.build` rebuilds the bundle and `dashboard.serve` starts the
+dashboard server on it. No browser window is opened a second time.
+
+## Exit codes
+
+Scripts branch on these. A code may be added in a future release, but an
+existing code is never reassigned.
+
+| Code | Outcome | Meaning |
+| --- | --- | --- |
+| `0` | `ready` | Every selected step is satisfied. |
+| `10` | `needs_user` | A human action is required — a browser login, a device code, or an approval an unattended run does not have. Nothing failed. |
+| `11` | `invalid_input` | A flag, an input file, or the existing resume record cannot be used. Nothing was changed. |
+| `12` | `unsupported_host` | The host is not in the supported-platform matrix. Nothing was changed. |
+| `20` | `failed` | A step failed. The step and its remediation are named in the result. |
+
+### Advisory and non-halting steps
+
+Most steps are something later ones need, so a step that does not succeed stops
+the run. Two kinds are deliberately different, because halting cost more than it
+protected:
+
+* **Non-halting** (`halts: false`): the run continues past it and the outcome
+  still counts it. The provider login steps are these — an unauthenticated
+  harness is reported as `needs_user` (exit `10`) while the configuration, the
+  daemon and the dashboard, which do not depend on it, are still done.
+* **Advisory** (`advisory: true`): the run continues *and* the outcome ignores
+  it, so an install whose only unfinished business is advisory exits `0`.
+  `postgres.boot` is one, since the database it is about is already
+  reachable and only its behaviour after a restart is unsettled;
+  `config.git-identity` is another, since AQ commits as its fallback identity
+  until one is chosen.
+
+Both appear in the step list and in the resume record exactly like any other
+step, with their own state and remediation; neither is ever the `blocking_step`,
+and `advisory` in the JSON result lists the advisory step ids. Nothing may
+`depends_on` a step of either kind — a dependent would be claiming the guarantee
+the step withholds — and the registry refuses to order such a plan.
+
+## Machine-readable output
+
+`--json` prints one object:
+
+```json
+{
+  "schema_version": 1,
+  "outcome": "needs_user",
+  "exit_code": 10,
+  "installer_version": "0.1.0",
+  "target_version": "0.1.0",
+  "dry_run": false,
+  "interactive": false,
+  "platform": {
+    "system": "linux", "arch": "x86_64", "wsl": true, "wsl_version": 2,
+    "distro_id": "ubuntu", "distro_version": "24.04",
+    "host_path": "windows-wsl2", "tier": "supported", "installable": true,
+    "reasons": [], "remediation": null, "notes": []
+  },
+  "capabilities": [],
+  "plan": [
+    {"step_id": "prereq.data-dir", "title": "Prepare the AQ data directory",
+     "action": "run", "reason": "not yet satisfied", "mutating": true, "capability": null}
+  ],
+  "steps": [
+    {"step_id": "prereq.data-dir", "state": "needs_user",
+     "summary": "unattended run has no approval for the mutating step 'prereq.data-dir'",
+     "detail": {}, "remediation": "Rerun with `--approve prereq.data-dir` …",
+     "retryable": true, "resources": [], "duration_ms": 3}
+  ],
+  "resources": [
+    {"kind": "directory", "id": "/home/you/.agent-queue", "owned": true, "reused": false, "detail": {}}
+  ],
+  "state_path": "/home/you/.agent-queue/install-state.json",
+  "blocking_step": "prereq.data-dir",
+  "next_action": "Rerun with `--approve prereq.data-dir` …",
+  "messages": []
+}
+```
+
+* **`outcome`** and **`exit_code`** always agree; branch on either.
+* **`steps[].state`** is one of `succeeded`, `skipped`, `needs_user`, `failed`.
+* **`blocking_step`** is the id of the first step that stopped the run, or
+  `null`. Everything after it reports `skipped` with a `not reached` summary.
+* **`steps[].remediation`** is present on every `failed` and `needs_user` step
+  and says what to do; **`next_action`** repeats the first one.
+* **`plan[].action`** is `run`, `revalidate`, `would_run`, `skip_not_selected`,
+  `skip_completed` or `blocked`.
+* **`resources`** is what the installer owns (`owned: true`) or found and
+  reused (`owned: false`). It is what repair and uninstall act on.
+
+The same object carries the closing summary under `onboarding` — the human
+view and a script are told the same things:
+
+```json
+{
+  "onboarding": {
+    "ready": true,
+    "headline": "AQ is installed and ready.",
+    "locations": [
+      {"label": "Configuration", "path": "/home/you/.agent-queue/config.yaml",
+       "note": "settings, tuned for this machine; edit with `aq system config edit`"}
+    ],
+    "dashboard": {"url": "http://127.0.0.1:8082/", "reachable": true,
+                  "source": "dashboard-server", "hint": ""},
+    "readiness": {
+      "ready": true,
+      "checks": [
+        {"id": "database", "status": "ready", "detail": "AQ connected to its PostgreSQL database in this install run."},
+        {"id": "daemon", "status": "ready", "detail": "The daemon answered its health endpoint."},
+        {"id": "dashboard", "status": "ready", "detail": "The dashboard is reachable."},
+        {"id": "agent_authentication", "status": "ready", "detail": "An installed harness authenticated without exposing a credential."},
+        {"id": "profile_routing", "status": "ready", "detail": "An authenticated worker profile is active."},
+        {"id": "workspace_prerequisites", "status": "ready", "detail": "Git, tmux, and the worktree location were verified."},
+        {"id": "project_root", "status": "needs_attention", "detail": "No project root is configured, ...",
+         "remediation": "Add one under Settings → Project Roots in the dashboard, ..."}
+      ]
+    },
+    "skipped": ["Discord delivery for digests and escalations — not selected; add it with `aq install --with discord`"],
+    "next_steps": ["Open the dashboard at http://127.0.0.1:8082/."],
+    "drift": []
+  }
+}
+```
+
+* **`onboarding.ready`** agrees with `outcome == "ready"`.
+* **`onboarding.readiness`** is the separate admission check for the first
+  live task. Its database, daemon, dashboard, agent-authentication,
+  profile-routing, workspace-prerequisite and project-root checks are all
+  observed; an install that deliberately skipped every provider can still have
+  `onboarding.ready: true` but `onboarding.readiness.ready: false`.
+* **`project_root`** answers readiness condition 6's second half — "configured
+  project roots are readable and writable where project creation needs them" —
+  from the `project_roots` the `config.check` step read out of the loaded
+  configuration. The installer never writes one: default tuning derives values
+  from cores and memory alone and owns no filesystem path, and the contract
+  keeps project selection out of the installation wizard. A fresh machine
+  therefore reports `needs_attention` here with the Settings → Project Roots
+  remediation, which is also what the closing `next_steps` names.
+* **`onboarding.skipped`** lists the *optional* things this run did not do and
+  how to add each one. A skipped capability is a finished install, not a partial
+  one; an unselected graft appears here once, with `aq install --with graft`.
+* **`onboarding.drift`** lists what a step found different from the setup AQ
+  would make and reported without changing it — graft wiring outside any
+  repository, a graft version outside the cleared series, a wiring stamp that
+  would re-wire globally. The human view prints the same lines under **Drift
+  (reported, not changed)**. Drift never changes the outcome or exit code.
+* **`onboarding.dashboard.source`** is `dashboard-server` (the dashboard
+  server answers at `url`; `reachable` says whether its page did), `unbuilt` (no
+  bundle is installed: a source checkout whose `dashboard.build` has not
+  completed — rerun the install), `stopped` (a bundle is installed but no
+  dashboard server runs — `aq dashboard start`), `port-conflict` (another
+  program answers on `dashboard.server.port`), `disabled`
+  (`dashboard.server.enabled: false` — serve it yourself with
+  `aq dashboard serve`) or `misconfigured` (`dashboard.server` does not load;
+  `url` is empty and `hint` names the problem). The daemon's URL is never
+  reported: it serves no page.
+
+`aq install --list-steps --json` prints `{"schema_version": 1, "steps": [...]}`
+with each step's `id`, `title`, `description`, `depends_on`, `capability`,
+`mutating`, `owner` and `input_schema_version`.
+
+## Windows (WSL2, Ubuntu)
+
+WSL has a platform adapter too, and like the macOS one it runs before the generic
+prerequisite checks: it installs what the engine then verifies.
+
+| Step | What it does | When it stops |
+| --- | --- | --- |
+| `wsl.packages` | *Mutating.* `apt-get install`s the prerequisites that are missing (`git`, `tmux`), refreshing the package lists first. Anything already on `PATH` is left alone, and what it installed is recorded as an `apt-package` resource. | `needs_user` when `sudo` would prompt for a password (with `sudo -v` and the apt command to run yourself — the installer never types a password). `failed` with apt's own message and the command to rerun by hand; also `failed` when apt reports success but the command is still not on `PATH`. |
+
+tmux is not optional: every agent harness runs inside a tmux session, and
+`config.defaults` writes `sessions.provider: tmux` only once `prereq.tmux`
+passes. Before this adapter existed, a fresh Ubuntu stopped at `prereq.tmux`
+telling you to run apt yourself. Node is deliberately *not* installed here:
+Ubuntu's is too old for the dashboard, so `dashboard.build` downloads its own
+pinned toolchain.
+
+## macOS
+
+On macOS the registry gains the platform adapter's steps, which run before the
+generic prerequisite checks — the adapter installs what the engine then
+verifies.
+
+| Step | What it does | When it stops |
+| --- | --- | --- |
+| `macos.architecture` | Confirms the shell is native. Reads `sysctl.proc_translated` and `hw.optional.arm64`, so an x86_64 shell on Apple-Silicon hardware is caught even when `uname -m` says `x86_64`. | `failed` under Rosetta, naming `arch -arm64` and the Get Info toggle. AQ does not support a Rosetta-based installation. |
+| `macos.developer-tools` | Checks the Xcode Command Line Tools with `xcode-select -p`. | `needs_user` when absent (`xcode-select --install` opens a dialog a human has to accept) or when the selected developer directory is missing (`sudo xcode-select --reset`). |
+| `macos.homebrew` | Finds Homebrew at its **real** prefix: `HOMEBREW_PREFIX`, then `PATH`, then `/opt/homebrew` (Apple Silicon) and `/usr/local` (Intel). Records the prefix and version. | `needs_user` with Homebrew's official install command when it is absent — that installer asks for an administrator password, which `aq install` never types. `failed` when the only Homebrew is the Intel build on an Apple-Silicon Mac, or when the prefix is not writable by this user (with Homebrew's `chown` repair). |
+| `macos.shell-path` | *Mutating.* Appends one marked block containing Homebrew's documented `eval "$(<prefix>/bin/brew shellenv)"` line to the login file of the invoking user's shell (`~/.zprofile`, `~/.bash_profile`, `~/.profile`). | `needs_user` for a shell it does not edit (fish, tcsh), quoting the line to add rather than guessing that shell's syntax. Skipped when consent is declined. |
+| `macos.packages` | *Mutating.* `brew install`s the prerequisites that are missing (`tmux`, `git`). Anything already on `PATH` is left alone. | `failed` with the formula, the tail of Homebrew's output and the command to rerun by hand. |
+| `macos.launch-services` | Checks that the invoking user's `launchd` domain is reachable, which is what `brew services` needs to install a service that starts at login. | `skipped` — not failed — in a session without one (a plain SSH login), explaining that a service will run now but not at login. |
+| `macos.python-runtime` | Refuses to continue when the installer is running on `/usr/bin/python3`. | `failed`, not retryable, pointing at `brew install python@3.12`. AQ never modifies the macOS system Python: it is externally managed and macOS updates replace it. |
+
+Consequences worth knowing:
+
+* Nothing here enters a password or drives a GUI. Homebrew's installer and
+  `xcode-select --install` are human checkpoints that the run resumes past.
+* A formula this run installed lives in `<prefix>/bin`, which is on the *next*
+  shell's `PATH`. `prereq.git` and `prereq.tmux` look inside the Homebrew
+  prefix as well as on `PATH`, so one run both installs and verifies.
+* Apple Silicon is the supported tier and Intel is the compatibility tier; the
+  adapter never assumes `/opt/homebrew`, and `macos.architecture` names which
+  one it observed.
+* A Mac that already has Homebrew, the Command Line Tools and tmux runs the
+  same steps and installs nothing — every macOS step is either read-only or
+  guarded by its own verifier.
+
+## Rerunning, resuming and repair
+
+Rerunning `aq install` is the normal recovery path, and it is safe:
+
+* A step that a previous run completed is **revalidated** through its
+  read-only check rather than re-executed, so a rerun does not reinstall a
+  package or recreate a directory.
+* If the observable condition is gone — the directory was deleted, the package
+  was removed — the step runs again.
+* A step that is itself read-only — `config.check` and `daemon.dashboard` —
+  revalidates by observing the host again and reports what it found, so a
+  rerun's summary and JSON say exactly what a first install said. It is the
+  *current* answer, not a replay: edit `workspace_dir` and the next run's
+  "Where AQ stores your data" names the directory you edited it to.
+* Resources are recorded by `(kind, id)`, so repeating a step cannot grow the
+  owned-resource list.
+* The run stops at the first step that fails or needs a human, and the next run
+  picks up there.
+* `--restart-from STEP` redoes exactly `STEP` and its dependents. Unrelated
+  completed steps are left alone. It never deletes a recorded resource:
+  removing something is an explicit uninstall action, not a side effect.
+* The Git identity is never asked again once one is configured, and a rerun,
+  `--repair` or `--upgrade` never changes it. Only an explicit
+  `--git-name`/`--git-email` (or `settings.git_identity`) replaces it.
+* Selecting an optional capability on a later run installs it. `aq install
+  --with provider.codex` runs the Codex step even though an earlier run
+  recorded it as `skipped` — a skip that was only "you did not ask for this"
+  is not a decision the record holds you to.
+
+### `--repair`
+
+`--repair` is a rerun that does not take the record's word for it. A step whose
+observable condition can be checked is still revalidated — that is the cheapest
+possible repair — but a step with **no read-only verifier** is re-executed
+instead of being carried forward. Use it when the host has drifted in a way the
+record cannot see.
+
+A repair is still bound by every other rule: it reuses the recorded resources
+rather than creating new ones, it removes nothing, and it asks for consent
+before a mutating step exactly as an install does. It also carries the
+capabilities the record selected forward, so a repair reconciles the
+installation you have rather than quietly narrowing it; an explicit `--with`
+still wins.
+
+`--repair` and `--fresh` are mutually exclusive: `--fresh` starts a new record,
+which is the opposite of reconciling the existing one.
+
+### `--upgrade`
+
+`--upgrade` repairs, and additionally records the version transition **durably**:
+
+```json
+"upgrade": {"from_version": "1.0.0", "to_version": "1.1.0",
+            "state": "in_progress", "started_at": "2026-09-09T09:00:00+00:00",
+            "finished_at": null, "attempts": 1}
+```
+
+The record is written *before* the first step runs and marked `completed` only
+when the run reaches `ready`. So an installer that is killed halfway leaves an
+`in_progress` record behind, and the next run — of **any** mode, including a
+plain `aq install` — finds it, says so in `messages`, and resumes from the first
+unsatisfied step. Nothing is rolled back: the contract resumes over the
+resources named in the ownership record rather than unwinding them.
+
+`--upgrade` to a *different* target supersedes an abandoned transition and says
+which one it replaced. A plain rerun with a different target reports the
+pending transition and leaves it alone.
+
+### A record from another installer version
+
+A resume record written by a different installer version is refused by a plain
+rerun — the message names both versions and the two ways forward. `--repair`
+and `--upgrade` *are* the explicit repair plan the contract asks for: they adopt
+the record, keep every owned resource (forgetting them is what would make the
+next run create a second copy), re-verify every step and re-stamp the version.
+`--fresh` remains the "start over beside the old one" option, and it deletes
+nothing either.
+
+## The resume record
+
+`~/.agent-queue/install-state.json` (mode `0600`, written atomically) holds the
+installer version, the target version, the observed platform facts, the
+selected capabilities, each step's terminal state, and the identifiers of every
+owned or reused resource.
+
+It **never** holds a credential. The writer redacts secret-shaped keys and
+values and then re-checks the payload; a step that tried to persist a token,
+password or credentialed DSN fails the write instead of leaking it to disk.
+
+A record written by a different installer version is reported, not deleted:
+rerun with `--restart-from <step>` to redo part of the install, or `--fresh`
+to start a new record beside the old one.
+
+## Unattended input file
+
+```yaml
+version: 1
+capabilities: [provider.codex]
+approve: ["prereq.data-dir"]     # or ["*"] for every mutating step
+settings:
+  some-adapter-option: value
+  git_identity:                  # optional; recorded by config.git-identity
+    name: Ada Lovelace
+    email: ada@example.com
+```
+
+Unknown top-level keys, a non-list `capabilities`/`approve`, an unknown
+capability name and an unknown step id are all rejected with exit code `11`
+before anything runs — an unattended installer that silently ignored a
+misspelled key would install the wrong thing. The same goes for
+`settings.git_identity`: an unknown key (only `name`, `email` and `source` are
+recognised), a name without an email, or a value AQ's identity validation
+refuses exits `11`. Command-line flags are merged with the file and win where
+they overlap.
+
+An unattended run never prompts, never opens a browser and never invents an
+approval: a mutating step with no approval stops the run as `needs_user`
+(exit `10`) naming the flag that would authorise it.
+
+## PostgreSQL
+
+AQ needs one PostgreSQL database. `aq install` will either **use a server you
+already run** or, when you ask it to, **install and run a local one**. It never
+does the second without being asked: a server, a role and a database are things
+other software may already depend on.
+
+| Step | Mutating | What it does |
+| --- | --- | --- |
+| `postgres.package` | yes | Installs PostgreSQL with the platform's package manager — `apt-get install -y postgresql` on Ubuntu, `brew install postgresql@17` on macOS. Requires `--with postgres-managed`. |
+| `postgres.service` | yes | Starts the server and waits for it to accept connections. Requires `--with postgres-managed`. |
+| `postgres.server` | no | Confirms a PostgreSQL server answers on the configured host and port, and that it is PostgreSQL 14 or newer. |
+| `postgres.role` | yes | Creates the `agent_queue` login role with a generated password, if it does not already exist. |
+| `postgres.database` | yes | Creates the empty UTF-8 `agent_queue` database owned by that role, if it does not already exist. |
+| `postgres.rotate` | yes | Replaces the role's password. Requires `--with postgres-rotate`; see [recovery](#recovering-from-a-credential-or-connection-problem). |
+| `postgres.credentials` | yes | Writes the password to `~/.agent-queue/.env` (mode `0600`) and points `config.yaml` at it as `${AQ_DB_PASSWORD}`. |
+| `postgres.connection` | no | Connects as the AQ role and reports the server version. |
+| `postgres.boot` | yes | Makes the managed server start again after a restart. Requires `--with postgres-managed`. |
+
+Two capabilities select the optional behaviour:
+
+* `--with postgres-managed` — AQ may install, start and enable a local
+  PostgreSQL server. Without it the installer only ever *uses* a server that is
+  already reachable, which is what makes an unattended install against a
+  managed or remote database safe by default.
+* `--with postgres-rotate` — replace the AQ role's password on this run.
+
+### What is never touched
+
+* An **existing role** of the configured name keeps its password. The installer
+  does not reset a credential it did not create, because on a shared server
+  that role may be in use. It is recorded `reused`, with `owned: false`.
+* An **existing database** of the configured name is used as it is — never
+  dropped, re-owned or re-encoded.
+* **Unrelated roles and databases** are never read, altered or removed.
+* The **schema** is not the installer's. `postgres.connection` stops at "the
+  database is reachable and empty"; creating and migrating tables is the
+  daemon's or the operator's step (`aq db upgrade`), and no installer path runs
+  Alembic. See [migrations](../../guides/migrations.md).
+
+### Where the password lives
+
+The generated password is written to `~/.agent-queue/.env` as
+`AQ_DB_PASSWORD=…` with mode `0600`, and `config.yaml` refers to it:
+
+```yaml
+database:
+  url: postgresql+asyncpg://agent_queue:${AQ_DB_PASSWORD}@localhost:5432/agent_queue
+```
+
+The password is never written to `config.yaml`, the `--json` result, the resume
+record, or a command line — statements go to `psql` on standard input so they
+are not visible in `ps`. If `config.yaml` already exists, a numbered backup
+(`config.yaml.bak`, `config.yaml.bak.1`, …) is taken before it is changed, and
+every key the installer does not own is preserved.
+
+### Settings
+
+All of these live under `settings.postgres` in the `--config` input file. An
+unrecognised key is rejected by name before anything runs.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `postgres.host` | `localhost` | Server host. |
+| `postgres.port` | `5432` | Server port. |
+| `postgres.database` | `agent_queue` | Database name. Lower-case SQL identifier. |
+| `postgres.role` | `agent_queue` | Login role name. Lower-case SQL identifier. |
+| `postgres.password_env` | `AQ_DB_PASSWORD` | Environment variable `config.yaml` refers to. |
+| `postgres.admin_url` | — | Administrator connection for an existing server, used instead of the local superuser route. |
+| `postgres.admin_user` | platform default | Local administrator identity (`postgres` on Ubuntu, the invoking user on Homebrew). |
+| `postgres.service_manager` | `auto` | `auto`, `systemd`, `sysv`, `brew` or `none`. `none` leaves the server's lifecycle alone. |
+| `postgres.version` | platform default | Major version for a managed install (`16`, `17`…). |
+| `postgres.connect_timeout` | `5` | Seconds to wait for a connection. |
+| `postgres.startup_timeout` | `60` | Seconds to wait for a freshly started server. |
+
+```yaml
+version: 1
+settings:
+  postgres:
+    host: db.internal
+    port: 5432
+    admin_url: postgresql://postgres@db.internal:5432/postgres
+approve: ["postgres.role", "postgres.database", "postgres.credentials"]
+```
+
+An unattended **first** run still needs an approval for each mutating step it
+reaches, including against a server that already has the role and the database
+— an unattended installer that provisioned a database nobody approved would be
+exactly the implicit mutation the contract forbids. Later reruns need no
+approval: a completed step is revalidated, not repeated.
+
+### Restarting the machine
+
+`postgres.boot` is the last step, so restart-persistence is never what blocks
+provisioning:
+
+* **systemd** (Ubuntu with systemd, macOS is covered below): `systemctl enable
+  postgresql`, verified with `systemctl is-enabled`.
+* **macOS/Homebrew**: `brew services start postgresql@NN`, which registers a
+  launchd agent that starts the server at login.
+* **WSL2 without systemd**: nothing can enable a service at boot, so the step
+  reports `needs_user` and gives the fix. It is an **advisory** step (see
+  [below](#advisory-and-non-halting-steps)), so the run carries on to the
+  configuration, the daemon and the dashboard and the overall outcome ignores it
+  — the database is already reachable, and only its behaviour after a restart is
+  unsettled. Add
+
+  ```ini
+  [boot]
+  systemd=true
+  ```
+
+  to `/etc/wsl.conf`, run `wsl --shutdown` from Windows, reopen the
+  distribution and rerun `aq install`.
+
+After a restart, `aq install` is also the check: it starts the managed service
+if it is not running, reconnects as the AQ role and reports what it found,
+without changing anything that is already correct.
+
+### Recovering from a credential or connection problem
+
+Every failure names the step and the fix. The common ones:
+
+| What you see | What to do |
+| --- | --- |
+| `no PostgreSQL server is reachable at localhost:5432` | Rerun with `--with postgres-managed` to install one, or set `postgres.host` / `postgres.port` / `postgres.admin_url` to the server you already run. |
+| `something that is not PostgreSQL is already listening` | Find the listener (`ss -ltnp 'sport = :5432'`, or `lsof -nP -iTCP:5432 -sTCP:LISTEN` on macOS) and stop it, or set `postgres.port`. |
+| `the role agent_queue already exists and was left unchanged`, then `no password is available` | The role predates AQ. Put its password in `~/.agent-queue/.env` as `AQ_DB_PASSWORD=…`, or run `aq install --with postgres-rotate` to replace it. |
+| `the server rejected the stored password` | Same two routes: correct `AQ_DB_PASSWORD`, or `aq install --with postgres-rotate`. |
+| `the database agent_queue does not exist` | `aq install --restart-from postgres.database`. |
+| `no PostgreSQL administrator connection is available` | Run `sudo -v` and rerun, run the installer as the `postgres` user, or set `postgres.admin_url`. |
+| `is older than the supported PostgreSQL 14` | Upgrade the server, or point AQ at a newer one. |
+
+Rotation changes the password on the server and then stores it, in that order
+and in adjacent steps: if storing fails, the run says so and says that the
+database is unreachable until a new password is stored.
+
+## Supported hosts
+
+| Host | Baseline | Tier |
+| --- | --- | --- |
+| Windows via WSL2 | Windows 10 2004 / build 19041+ or Windows 11, WSL2, Ubuntu 24.04 LTS, x86_64 or arm64 | supported |
+| macOS, Apple Silicon | macOS 14 (Sonoma) or newer | supported |
+| macOS, Intel | macOS 14 (Sonoma) or newer | compatibility |
+| Anything else | — | refused with the observed facts, before any change |
+
+An unsupported host exits `12` and changes nothing. The full matrix, including
+its explicit boundaries, is [the installation and onboarding
+contract](../../plans/install-onboarding/contract.md).
+
+## Playbook private-value key provisioning
+
+When `playbooks.enabled` is explicitly true and neither private-value key
+setting exists, `config.defaults` generates a fresh 32-byte key. It stores
+base64 key material in the config directory's mode-0600 `.env` before writing
+`playbooks.private_value_active_key_id` and `private_value_key_env` in config.
+The environment variable has an `AQ_PLAYBOOK_PRIVATE_VALUE_KEY_` prefix and a
+unique identifier. Install state does not contain the key material.
+
+Rerunning install preserves configured keys. It does not rotate a key or
+replace a missing historical key: `config.check` reports invalid key storage,
+and `aq doctor --check playbooks.private_value_key` diagnoses it after startup.
+Preserve the referenced `.env` material with your private-value recovery data.
+
+## Related pages
+
+* [CLI reference](README.md) — the whole `aq` surface.
+* [`aq uninstall`](uninstall.md) — removing what this command owns.
+* [Operations guide](../../guides/operations.md) — `aq doctor` and recovery
+  once AQ is installed.
+* [Install tutorial](../../tutorials/install.md) — the current
+  development-checkout setup path.

@@ -4,6 +4,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# --- Prompting ---
+#
+# Every question here has a safe default, so a run with no terminal answers it
+# rather than dying.  `read` returns non-zero at end of input, and under
+# `set -e` that aborted the whole script with a bare exit 1 and no message:
+# `curl … | bash`, `nohup ./setup.sh &`, a non-tty ssh command and CI all hit
+# it, always at the first question and always after real work had been done.
+#
+#   ask "Add it to ~/.zshrc?" Y   -> the default when there is nobody to ask
+ask() {
+    local prompt="$1" default="${2:-Y}" answer=""
+    local suffix="[Y/n]"
+    [[ "$default" =~ ^[Yy]$ ]] || suffix="[y/N]"
+    if [[ -t 0 ]]; then
+        read -rp "$prompt $suffix " answer || answer=""
+    else
+        echo "$prompt $suffix $default (no terminal; using the default)"
+    fi
+    [[ "${answer:-$default}" =~ ^[Yy]$ ]]
+}
+
 # --- Detect Python 3.12+ ---
 PYTHON=""
 for candidate in python3.13 python3.12 python3 python; do
@@ -75,11 +96,15 @@ source .venv/bin/activate
 echo "Installing typed API client (packages/aq-client)..."
 pip install -e packages/aq-client --quiet
 
-echo "Installing agent-queue and dependencies (dev + cli + gemini)..."
-# gemini = google-genai for the default Supervisor profile
-# cli    = prompt-toolkit + agent-queue-api-client for the `aq` CLI
-# dev    = pytest, ruff, pre-commit
-pip install -e ".[dev,cli,gemini]" --quiet
+echo "Installing agent-queue and dependencies (dev + cli + llm)..."
+# llm = anthropic + google-genai + openai, the SDKs behind the direct LLM path
+#       (src/llm: playbook nodes and transitions, plugin invoke_llm, vault
+#       summaries).  All three are installed so any `llm.provider` works and
+#       the wizard's connectivity check can run; coding agents do not use
+#       these -- they are tmux sessions wrapping the claude/codex/gemini CLIs.
+# cli = prompt-toolkit + agent-queue-api-client for the `aq` CLI
+# dev = pytest, ruff, pre-commit
+pip install -e ".[dev,cli,llm]" --quiet
 
 # --- Dashboard / TypeScript workspace deps (Node.js) ---
 if ! command -v npm &>/dev/null; then
@@ -87,13 +112,11 @@ if ! command -v npm &>/dev/null; then
     echo "npm is not installed. The web dashboard needs Node.js."
     OS="$(uname -s)"
     if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
-        read -rp "Install Node.js via Homebrew? [Y/n] " ans
-        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Install Node.js via Homebrew?" Y; then
             brew install node
         fi
     elif [[ "$OS" == "Linux" ]] && command -v apt-get &>/dev/null; then
-        read -rp "Install Node.js via apt? [Y/n] " ans
-        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Install Node.js via apt?" Y; then
             sudo apt-get install -y nodejs npm
         fi
     fi
@@ -112,33 +135,11 @@ if command -v npm &>/dev/null; then
     echo "Generating typed API client (@aq/ts-client)..."
     npm -w @aq/ts-client run generate --silent
     echo "  ✓ @aq/ts-client generated"
-
-    # acpx — headless CLI client for the Agent Client Protocol (ACP).  Used
-    # by profiles whose ``runtime`` is ``acpx`` to talk to underlying agents
-    # (claude, codex, gemini, ...).  Installed globally so the daemon can
-    # find it on PATH at task dispatch time.  Skip if already installed.
-    if command -v acpx &>/dev/null; then
-        echo "  ✓ acpx already installed ($(acpx --version 2>/dev/null | head -1 || echo 'version unknown'))"
-    else
-        echo "Installing acpx (ACP CLI client) globally..."
-        if npm install -g acpx --silent 2>/dev/null; then
-            echo "  ✓ acpx installed"
-        else
-            # Permission denied (typical on Linux without user-prefix npm)
-            # — surface the manual step rather than silently failing.
-            echo "  ⚠ npm install -g acpx failed (likely permissions)."
-            echo "    Profiles using runtime: acpx will not work until installed."
-            echo "    Try one of:"
-            echo "      sudo npm install -g acpx"
-            echo "      npm config set prefix ~/.local && npm install -g acpx"
-        fi
-    fi
 else
     echo ""
     echo "[skip] npm not available; dashboard won't be available."
     echo "       Install Node.js and run 'npm install' from the repo root to enable it."
     echo "       Then run: npm -w @aq/ts-client run generate"
-    echo "       Profiles using runtime: acpx also need: npm install -g acpx"
 fi
 
 # --- Symlink CLI binaries to ~/.local/bin so they're on PATH globally ---
@@ -165,8 +166,7 @@ if ! echo ":$PATH:" | grep -q ":$LOCAL_BIN:"; then
     if [[ -n "$PATH_RC" ]] && ! grep -qF '# agent-queue setup.sh' "$PATH_RC" 2>/dev/null; then
         echo ""
         echo "$LOCAL_BIN is not on your PATH."
-        read -rp "Add it to $PATH_RC? [Y/n] " answer
-        if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Add it to $PATH_RC?" Y; then
             echo 'export PATH="$HOME/.local/bin:$PATH"  # agent-queue setup.sh' >> "$PATH_RC"
             echo "Added to $PATH_RC. Restart your shell or run: source $PATH_RC"
         else
@@ -210,8 +210,7 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
         if ! grep -qF "$SOURCE_LINE" "$RC_FILE" 2>/dev/null; then
             echo ""
             echo "Shell completion for 'aq' is available."
-            read -rp "Add tab-completion to $RC_FILE? [Y/n] " answer
-            if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+            if ask "Add tab-completion to $RC_FILE?" Y; then
                 echo "$SOURCE_LINE" >> "$RC_FILE"
                 echo "Added to $RC_FILE. Restart your shell or run: $SOURCE_LINE"
             else
@@ -224,7 +223,37 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
     fi
 fi
 
+# --- Machine setup: one entry point ---
+#
+# setup.sh is the *contributor* bootstrap: it prepares this checkout (venv,
+# dependencies, the `aq` command, shell completion).  Everything about the
+# machine itself -- prerequisites, PostgreSQL, agent CLIs and their logins,
+# configuration, the daemon and the dashboard -- belongs to `aq install`, which
+# is the one installer users are documented to run.  Do not add a second
+# installation flow here: docs/tutorials/install.md and
+# docs/reference/cli/install.md describe that one.
+#
+# `aq install` is resumable, so an interruption (or a login you finish in
+# another terminal) is recovered by running it again.
+echo ""
+echo "Setting up this machine (aq install)..."
+set +e
+.venv/bin/aq install
+status=$?
+set -e
+if [[ "$status" -ne 0 ]]; then
+    echo ""
+    echo "Setup stopped (exit $status). Nothing was lost: rerun './setup.sh' or"
+    echo "'aq install' and it continues from where it stopped."
+    echo "See docs/tutorials/install.md."
+    exit "$status"
+fi
+
 # --- Optional memory plugin ---
+#
+# aq-memory is an external plugin (Milvus-backed memory). It is not bundled and
+# has no default location: pass --with-memory with AQ_MEMORY_PATH pointing at a
+# checkout, or install it later with `aq plugin install <git-or-path>`.
 INSTALL_MEMORY=0
 NO_PROMPT=0
 for arg in "$@"; do
@@ -234,24 +263,18 @@ for arg in "$@"; do
     esac
 done
 
-if [[ "$NO_PROMPT" -eq 0 && -t 0 ]]; then
-    read -rp "Install aq-memory plugin (Milvus-backed memory)? (y/N) " yn
-    case "$yn" in
-        [Yy]*) INSTALL_MEMORY=1 ;;
-    esac
-fi
-
-if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
-    AQ_MEMORY_PATH="${AQ_MEMORY_PATH:-/mnt/d/Dev/aq/aq-memory}"
-    if [[ -d "$AQ_MEMORY_PATH" ]]; then
-        echo "Installing aq-memory from $AQ_MEMORY_PATH..."
-        aq plugin install "$AQ_MEMORY_PATH"
-    else
-        echo "aq-memory not found at $AQ_MEMORY_PATH — skipping."
-        echo "  Set AQ_MEMORY_PATH=<dir> or run: aq plugin install <git-or-path>"
+if [[ "$NO_PROMPT" -eq 0 && -t 0 && -n "${AQ_MEMORY_PATH:-}" ]]; then
+    if ask "Install aq-memory plugin from $AQ_MEMORY_PATH?" N; then
+        INSTALL_MEMORY=1
     fi
 fi
 
-# --- Run setup wizard ---
-echo ""
-.venv/bin/python src/setup_wizard.py
+if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
+    if [[ -n "${AQ_MEMORY_PATH:-}" && -d "$AQ_MEMORY_PATH" ]]; then
+        echo "Installing aq-memory from $AQ_MEMORY_PATH..."
+        aq plugin install "$AQ_MEMORY_PATH"
+    else
+        echo "aq-memory was requested but AQ_MEMORY_PATH names no directory -- skipping."
+        echo "  Set AQ_MEMORY_PATH=<dir> or run: aq plugin install <git-or-path>"
+    fi
+fi

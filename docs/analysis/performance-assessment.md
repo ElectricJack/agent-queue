@@ -1,5 +1,11 @@
 # Performance Assessment: Is a Partial Rust Rewrite the Right Lever?
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Date:** 2026-08-20 · **Branch:** `main` @ `a9ce6905` · **Scope:** read-only analysis + synthetic benchmarks
 **Machine:** Windows 11, Python 3.12.4, SQLAlchemy 2.0.49, aiosqlite 0.22.1, SQLite WAL
 
