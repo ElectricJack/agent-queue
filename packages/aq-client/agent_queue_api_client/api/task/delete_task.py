@@ -65,9 +65,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
 ) -> Response[DeleteTaskResponse | HierarchyRefusalResponse]:
-    """Delete a task. Cannot delete a task that is currently in progress.
+    """Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
-     Delete a task. Cannot delete a task that is currently in progress.
+     Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
     Args:
         body (DeleteTaskRequest):
@@ -96,9 +100,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
 ) -> DeleteTaskResponse | HierarchyRefusalResponse | None:
-    """Delete a task. Cannot delete a task that is currently in progress.
+    """Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
-     Delete a task. Cannot delete a task that is currently in progress.
+     Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
     Args:
         body (DeleteTaskRequest):
@@ -122,9 +130,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
 ) -> Response[DeleteTaskResponse | HierarchyRefusalResponse]:
-    """Delete a task. Cannot delete a task that is currently in progress.
+    """Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
-     Delete a task. Cannot delete a task that is currently in progress.
+     Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
     Args:
         body (DeleteTaskRequest):
@@ -151,9 +163,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
 ) -> DeleteTaskResponse | HierarchyRefusalResponse | None:
-    """Delete a task. Cannot delete a task that is currently in progress.
+    """Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
-     Delete a task. Cannot delete a task that is currently in progress.
+     Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope
+    and keep/delete branches. Selected running work always stops. State holds become warnings; history
+    survives in the audit. Cleanup failures are reported individually. Reasons are optional.
 
     Args:
         body (DeleteTaskRequest):

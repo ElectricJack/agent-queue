@@ -1,19 +1,61 @@
 # Portable policy profiles (v1)
 
+## Deliberate installation and project setup
+
+Daemon restart does not install, refresh, retire or reactivate playbooks. Existing
+vault sources, reviewed bundles and activation choices belong to the operator.
+An absent or empty vault is a first installation: install only routing,
+provider failover, the usage probe, the default pipeline, failure triage and the
+morning report. Morning reporting remains opt-in. Project defaults are currently
+implemented by project creation and installer graft, not a separate playbook;
+those mechanisms remain unchanged. Agent-type playbooks are not startup defaults.
+
+A receipt outside the vault records this installation and its one-shot activation
+attempt. It prevents deletion of even the entire vault from being mistaken for a
+new installation. The first activation attempt consumes the receipt before import;
+an interruption or invalid bundle requires explicit repair, never repeated seeding.
+Existing nonempty vaults need no migration and receive no automatic activations.
+Required-playbook reconciliation reads health on ordinary startup. Doctor reports
+missing required system activations with an explicit repair command. Reviewed-bundle
+refresh and activation repair happen only when the operator requests doctor `--fix`.
+
+The built-in `default` policy is an ordinary `aq.policy.v1` bundle assembled from
+shipped reviewed project playbooks and portable settings. CLI creation/onboarding
+offers `default`, an exported profile path, or `none`; interactive omission asks,
+while JSON/noninteractive omission means none. The dashboard asks the same choice
+at review, then opens the existing per-item import dialog. Choosing a profile does
+not skip preview, scope selection (project/global/skip), overwrite checks, review,
+or activation. Cancelling the import retains the newly created project. No policy
+is retroactively applied to existing projects.
+
 Policy profiles copy non-personal project policy once without continuing
 inheritance. The local operator exports a
 project through `policy_export`, previews exact files, and acknowledges the
 preview checksum before writing a directory or `.aqpolicy` zip.
 
-Only six typed adapters participate: reviewed playbook source and compiled
+Typed adapters participate: reviewed playbook source and compiled
 artifact; agent profile settings and project overrides; promotion flow; CI check
 and test-selection policy; routing preferences; and spec, plan and formula
-templates. Adapters read fixed policy locations and explicit fields. They never
+templates; versioned integration settings; intelligence classes, pool settings and project/repository settings.
+Adapters read fixed policy locations and explicit fields. They never
 walk arbitrary vault content, serialize operator config, copy memory/history,
-account bindings, secrets, GitHub credentials, provider availability or pool sizes.
+account bindings, secrets, GitHub credentials or observed provider availability.
+Class definitions and configured pool enabled/min/max/min-per-project/claim limits
+accompany routing and profile dependencies. Pool values come from the database,
+including overrides newer than the vault file. Derived workers carry their
+template/class/harness identity and pool policy, never a flattened profile.
+Classes and pools have global runtime scope; project placement retains a draft.
+Global placement validates classes and profiles together before any file write,
+reconstructs derived stubs and synchronizes their configured pool state.
+Project settings include routing bindings, scheduling/budget/review/integration
+policy and repository URL/default-branch bindings. Personal Git identities,
+Discord/account bindings, repository trust identities, paths and runtime counters
+are excluded. Project settings imports remain pending configuration, subject to
+the existing authorized project and integration commands.
 Enabled system playbooks and referenced profile templates accompany project policy with
 system-origin labels. Required playbook dependencies must have reviewed artifacts.
-Derived worker rungs are regenerated locally rather than exported or overwritten.
+Derived worker profile bodies are regenerated locally from their exported
+identity and configured pool policy.
 
 Legacy compiled artifacts may lack retained Markdown. Startup backfills missing
 source files once per artifact using only digest-matching sources from the fixed
@@ -52,6 +94,32 @@ active promotion configuration or repository trust anchors.
 No signatures or continuing synchronization are part of v1. Copying identical
 items is idempotent. Write failures compensate touched files; review failures are
 reported with retained draft locations so the operator can retry normal review.
+
+Integration settings are independently selectable. Export captures configured
+review/delivery modes, the required engine selector, train policy (including
+cadence, repair and admission), repository binding and promotion flow. Repository
+ids, branches, required check sets and producers are placeholders; target project
+bindings provide defaults. Source activation/artifact identities and task-specific
+admission grants are never transferred. Existing target routes are retained;
+missing routes must be configured through the normal reviewed activation workflow.
+The installation engine selector is a prerequisite, never an imported global change.
+Global placement saves a template. Project placement applies active settings through
+the supported project configuration path shared with cutover: engine validation,
+PolicyActivation generation fencing and repository barriers, plus promotion trust
+validation and create-only target preparation. Preview fingerprints include live
+settings and generation; changed settings require a new preview and overwrite consent.
+No playbook is fabricated or activated by this operation. An absent integration
+policy leaves the target's reviewed policy in place. Configuration refusals
+occur before writing other selected files; later file/review failures report any
+already-configured integration item. Reapplying identical settings is a no-op.
+
+Exported playbook sources and artifacts replace installation, vault, home and
+workspace roots with target-install placeholders. Unrecognized absolute machine
+paths get explicit placeholders without source defaults. Imports require values
+only for selected items, so skipping integration settings or a playbook also skips
+its unresolved placeholders. Startup source seeding excludes the retired
+supervisor-digest, supervisor-hourly-report and blocked-task-escalation ids; existing
+operator files and historical reviewed bundles are retained.
 
 Profiles remain global. Project placement stores agent settings outside the retired
 project profile layouts and never creates runtime overrides. Configure the copied

@@ -47,14 +47,20 @@ locates the added modules and marks later deletion as planned.
 ## Implementation boundaries
 
 The new train and release flow use retained Git readers, ownership guards and
-shared contracts. Legacy publishers and subject runtimes remain available only
-for legacy operation and recovery; active train startup does not construct them.
-Shared definitions have one retained owner, with compatibility imports for old
-callers until retirement.
+shared contracts. Legacy publishers and subject runtimes are retired. Historical recovery,
+archival and cleanup consumers retain their fenced records; active startup
+constructs the train and retained maintenance.
+The retired parent-action dispatch has no command handler or transport schema.
+Shared and project parent/root bundles retain their authored policy tables and
+recovery rules; legacy candidate-building and publication event rules are removed
+from sources, recordings and shipped copies together. Profile grants and CLI
+references must resolve only to retained commands.
+Shared definitions have retained owners in `development_policy.py`,
+`repository_git.py` and the train contracts.
 
 Delivery availability is checked against the selected runtime, rather than the
 presence of legacy publisher objects. An active train serves `train`, `hierarchy`
-and `development`; legacy subject delivery requires active reconciler visits.
+and `development`.
 `disabled` and `observe` deliberately have no writer. A delivering project whose
 selected engine is unavailable, or whose designated repository is missing or
 belongs to another project, is reported by `integration.delivery_engine` and the
@@ -73,8 +79,10 @@ selection are described in the [release guide](../../guides/releases.md).
 
 Live activation configures the default branch and reviewed project policies;
 release requests still require their configured exact-head approval. The first
-live release and cross-project rollout are tracked separately. Legacy retirement
-remains pending operator testing and the observation gate.
+live release and cross-project rollout are tracked separately. Operator authorization
+for the C1/C2 cleanup supersedes the former observation hold; table retirement
+still requires proof that no active or retained safety consumer needs the table.
+See the [remaining-consumer audit](../../reports/2026-10-12-legacy-consumer-retirement.md).
 
 Continuous steps also observe their source on each train visit. An enabled,
 reviewed project activation receives a durable `promotion.source_settled` event
@@ -91,6 +99,16 @@ The active Git-first service dispatches the five `promotion.*` policy event
 types through the durable outbox. Legacy integration events remain undelivered
 in that mode, so enabling promotion policy never reactivates a legacy writer.
 Both the outbox page and its scan boundary apply the same event-type filter.
+
+`promote_repair` lets an operator or project supervisor back up and restore a
+stranded daemon-owned promotion task to `IN_PROGRESS` with no worker route.
+This route-reset exception never selects a worker profile; the mandatory-routing
+ratchet records it alongside other route resets.
+
+Concurrent train and promotion-policy check refreshes share the cache key
+`(repository_id, sha, check_name, producer_id)`. Insert attempts use distinct row
+IDs so the cache-key upsert handles their race; updates retain the stored row ID
+and continue to reject older observations and run attempts.
 
 `integration.continuous_promotion_lag` and `stall.sweep` report active continuous
 steps with source-only commits older than six hours. Age is the oldest
@@ -115,6 +133,17 @@ Candidate checks, promotion attestation, private pinned PR CI and release
 approvals continue to require their configured exact names. Enabling the
 alternative requires committing its full named check set to the designated
 default branch and running daemon code that understands source admission.
+
+Promotion source admission may retain the newest remaining check for a name
+when newer checks on the same SHA belong to a completed cancelled or skipped
+`aq/batches/` push workflow, including jobs that succeeded before cancellation.
+Every observed attempt of that batch suite must
+be cancelled or skipped; a pending, failed or malformed attempt prevents this
+exception. Cancellation without alternative evidence still refuses admission.
+The remaining checks must pass the existing exact-head, producer App, push-event
+and latest-attempt validation. Real failures and unfinished checks remain
+blocking, including those from batch branches. Candidate and attestation gates
+continue to select the newest check without this source-only exception.
 
 ## Trust-manifest bootstrap without hierarchical routes
 

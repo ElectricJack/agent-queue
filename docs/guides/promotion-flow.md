@@ -127,6 +127,13 @@ Partial canonical evidence and real failures still block the request. The
 private promotion ref, candidate checks and promotion attestation continue to
 use the step's canonical names.
 
+If a completed `aq/batches/` push run on the same commit was cancelled or
+skipped, source admission can retain green checks from another run. This
+requires alternative evidence for each affected name under the trusted App
+and a valid successful workflow attempt. Real failures, pending checks and
+cancellations without coverage still block promotion. Candidate and
+attestation gates continue to require their newest checks.
+
 Activation requires this configuration on the designated default branch and
 the updated source-admission code in the running daemon. After delivery, an
 authorized operator verifies `aq promote request --project agent-queue --step
@@ -197,6 +204,7 @@ not commands executed as part of this documentation task:
 | `aq promote request --project demo --step release --from S --version V` | Opens the private PR and an idempotent intent. Replace S with a full commit OID and V with the version at that commit. Omit `--from` to pin the current source tip. |
 | `aq promote approve REQUEST_ID --project demo` | The local human operator posts a GitHub review as their authenticated `gh` user. It does not write a second approval gate in AQ. |
 | `aq promote cancel REQUEST_ID --project demo` | The operator or requester closes an unpublished PR and aborts its intent; publication already underway or proved delivered is refused. |
+| `aq promote repair REQUEST_ID --project demo` | The operator or supervisor backs up a stranded open intent's task row as JSON under `<data_dir>/backups/promotion/`, then restores it to `IN_PROGRESS` and unrouted so the train admits it again. A healthy task returns `already_healthy` and is not written. |
 | `aq promote status --project demo --step release` | Reads intent state, cached evidence and request age. |
 | `aq promote list --project demo --step release --limit 20` | Lists recorded promotion intents from the local cache. It is not a fresh enumeration of remote release tags. |
 
@@ -210,6 +218,19 @@ The integration service observes the PR again before its fenced write. Sources:
 [src/commands/promote_commands.py](../../src/commands/promote_commands.py) and
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
 (`StepPullRequestGate`, `PromotionPublisher`).
+
+One promotion task is open per project, repository and target ref. A chained
+flow legitimately holds one intent per step target. An intent that ends without
+delivery, through `promote cancel`, `aq integration abort` or a failed
+lifecycle, fails its task. A new request on that target fails, and reports in
+`superseded_task_ids`, any task an older aborted or failed intent left
+`IN_PROGRESS`, and integration cleanup repairs the rest. `aq doctor --check
+stall.sweep` reports any such task as `stranded_promotion_task` until then.
+Sources: `fail_stranded_promotion_tasks_on` in
+[src/integration/promotion_steps.py](../../src/integration/promotion_steps.py),
+[src/integration/batches.py](../../src/integration/batches.py) (`set_intent`),
+[src/integration/cleanup.py](../../src/integration/cleanup.py) (`reconcile_aborted`) and
+[src/doctor/stall_checks.py](../../src/doctor/stall_checks.py).
 
 The candidate is S itself. The target must be an ancestor of S; the lane creates
 no merge commit. After the checks and PR gate pass, it emits the step's
@@ -297,6 +318,7 @@ deployment and restore retain their operator restrictions.
 | `promotion_not_fast_forward` | Inspect target/source ancestry; cancel and request a source that contains the target. |
 | PR gate waiting or unknown | Inspect the exact pinned PR head, required checks and reviewer identity; retry observation after a provider outage. |
 | `promotion_tag_conflict` | Inspect both tag-object OID and peeled commit; preserve the immutable tag and resolve with the operator. |
+| Intent stays `sealed`; the log says `promotion … held: promotion_intent_invalid` | The intent's task is no longer the daemon-owned `IN_PROGRESS`, unrouted row the train admits, for example after a restart reset it to `READY` and routed it. `aq doctor --check integration.promotion_stranded` names each such intent; run the `aq promote repair` command it prints. |
 | Remote warnings | Have the repository administrator reconcile rulesets and triggers, then repeat `validate --remote`. |
 
 ## Related pages
