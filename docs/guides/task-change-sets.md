@@ -108,3 +108,44 @@ semantics and complete context. Missing context leaves an owned request with
 no decision controls. Decline keeps waiters blocked; `gate_reopen` requires the
 current version and creates a new decision generation. Technical and routing
 gates retain their specialized mechanisms.
+
+
+## Scoped edits to held ingestion batches
+
+The assigned live fidelity reviewer, or a project supervisor, can update a held
+batch with `task_batch_update`. Supply `proposal_id`, `expected_revision` and
+`operations` instead of the ordinary proposal `payload`. Every task reference
+must name an active batch member (its stable member key or task id), or a new
+leaf's `tempId` in the same update. No member may have an active claim.
+
+```json
+{
+  "proposal_id": "prop-example",
+  "expected_revision": 1,
+  "operations": [
+    {"kind": "rewrite", "task_id": "api", "changes": {"acceptance": ["Verify the approved API contract"]}},
+    {"kind": "reparent", "task_id": "api", "parent_id": "core"},
+    {"kind": "rewire", "edges": [{"from": "docs", "to": "api", "reason": "Documents the API output"}]}
+  ]
+}
+```
+
+Supported kinds are `rewrite` (`changes`), `reparent` (`parent_id`), `rewire`
+(`edges` / `remove_edges`), `add_leaf` (`task`), `split` (`task_id`, `tasks`,
+`reason`), `combine` (`task_ids`, `task`, `reason`), `move_to_root`
+(`delivery_targets`), and `retire` (`task_id`, `reason`, optional
+`replacement_task_id`, `satisfied_by`, `rewire`). New leaves carry the same
+source mapping, outcome, acceptance and constraints as ingestion tasks and
+require a structural parent or explicit operational placement. Retirement
+preserves history and rewires typed dependencies through the obsolete lifecycle;
+it records no successful implementation. References outside the batch and
+profile/provider/model pins are refused.
+
+The final graph and automatic checks run in the same transaction as every write.
+A hard finding rolls everything back with `validation_failed`. Structural edits
+bump the revision, recompute the canonical digest and supersede earlier review
+receipts. Title, priority, tags and whitespace-only description edits preserve
+the revision and usable receipts. The response includes the current revision,
+digest, membership and before/after diff; `check_results.last_diff` retains that
+diff. An applied scope answer permits editing a `needs_scope` batch again;
+the update keeps the graph held for review and release.

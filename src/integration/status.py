@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import and_, exists, select
@@ -34,6 +35,7 @@ from src.integration.delivery_truth import DeliveryState
 from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
+from src.integration.repair import ordinary_repair_id
 
 TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 # What a train visit's state asks of whoever reads the status.
@@ -53,6 +55,7 @@ TRAIN_VISIT_BLOCKERS = {
 
 #: How long one task's explain waits for its completed-branch read.
 _COMPLETED_BRANCH_BUDGET_SECONDS = 5.0
+_TRAIN_GIT_BUDGET = 3.0  #: The train read's Git budget; what it has not observed is unknown.
 
 
 def _blocker(
@@ -129,9 +132,7 @@ class IntegrationStatusService:
         async with self.db._engine.connect() as conn:
             if task_id is not None:
                 row = (
-                    await conn.execute(
-                        select(tasks.c.status).where(tasks.c.id == task_id)
-                    )
+                    await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))
                 ).one_or_none()
                 if row is None:
                     return set()
@@ -277,9 +278,7 @@ class IntegrationStatusService:
             return await self._control_status_on(conn, project_id)
 
     async def _control_status_on(self, conn: AsyncConnection, project_id: str):
-        project = await self._one(
-            conn, select(projects).where(projects.c.id == project_id)
-        )
+        project = await self._one(conn, select(projects).where(projects.c.id == project_id))
         if project is None:
             return None
         rows = await self._all(
@@ -306,8 +305,7 @@ class IntegrationStatusService:
                 .limit(1),
             )
             refs = set()
-            for kind, identity in (("task", row.get("task_id")),
-                                   ("batch", row.get("batch_id"))):
+            for kind, identity in (('task', row.get('task_id')), ('batch', row.get('batch_id'))):
                 if identity:
                     refs.update(await related_on(conn, kind, identity))
             subjects.append({**row, "last_record": journal,
@@ -498,9 +496,7 @@ class IntegrationStatusService:
         )
         if owners:
             blockers.append(
-                _blocker(
-                    "active_owner", "task branch has an active owner", owners[0]["id"]
-                )
+                _blocker('active_owner', 'task branch has an active owner', owners[0]['id'])
             )
 
         readiness_operation = None
@@ -552,9 +548,7 @@ class IntegrationStatusService:
                 child_id = item["task_id"]
                 cause = item["reason"]
                 if child_status.get(child_id) not in TERMINAL_TASK_STATES:
-                    blockers.append(
-                        _blocker("open_child", "child task is not terminal", child_id)
-                    )
+                    blockers.append(_blocker('open_child', 'child task is not terminal', child_id))
                 elif cause == "origin_mismatch":
                     blockers.append(
                         _blocker(
@@ -586,9 +580,7 @@ class IntegrationStatusService:
         for item in repair:
             if item["state"] == "human_required":
                 blockers.append(
-                    _blocker(
-                        "human_hold", "repair requires a human decision", item["id"]
-                    )
+                    _blocker('human_hold', 'repair requires a human decision', item['id'])
                 )
         blockers.extend(self._repair_blockers(repair, now=self.clock()))
         return {
@@ -640,31 +632,67 @@ class IntegrationStatusService:
 
     # -- git_first: active ---------------------------------------------------
 
-    async def train_status(
-        self, project_id: str, *, observe: bool = True
-    ) -> dict[str, Any] | None:
+    async def _paused_project_candidates_on(self, conn, project) -> list[str]:
+        from src.integration.train_sources import TRAIN_MODES, _pending_tasks
+
+        if (project is None or project["status"] != "PAUSED"
+                or project["hierarchical_integration_mode"] not in TRAIN_MODES
+                or not project["integration_repository_id"]):
+            return []
+        return await _pending_tasks(
+            conn, project["id"], project["integration_repository_id"], limit=None,
+        )
+
+    async def train_status(self, project_id: str, *, observe: bool = True) -> dict[str, Any] | None:
         """The train's targets and open batches, from Git, checks, reviews and intent.
 
         ``observe=False`` is the control-only read: the durable batches, the last
         visits and their cached evidence, with no default-branch fetch and no epic
         distance, so ``epics`` is omitted rather than reported empty.
         """
-        async with self._consistent_snapshot() as conn:
-            project = await self._one(
-                conn, select(projects).where(projects.c.id == project_id)
+        # Gather Git evidence outside the consistent database snapshot. Control
+        # reads use only cached evidence and never fetch a paused project's refs.
+        async with self.db._engine.connect() as conn:
+            inputs = await self._one(conn, select(projects).where(projects.c.id == project_id))
+            candidates = await self._paused_project_candidates_on(conn, inputs)
+        delivery = None
+        if candidates and self.delivery is not None:
+            delivery = await self.delivery.observe(
+                candidates, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0),
+                cached_only=self.cached_only or not observe,
             )
+        async with self._consistent_snapshot() as conn:
+            project = await self._one(conn, select(projects).where(projects.c.id == project_id))
             if project is None:
                 return None
             batches = await self._train_batches_on(
-                conn, integration_batches.c.project_id == project_id
-            )
+                conn, integration_batches.c.project_id == project_id)
             visits = self._train_visits(project_id)
             evidence = await self._train_evidence_on(conn, visits)
             from src.operator_decisions import history_on
 
             decisions = await history_on(conn, project_id)
             promotion_flow = await self._promotion_flow_on(conn, project)
+            candidates = await self._paused_project_candidates_on(conn, project)
+            verified = await delivery.verified_on(conn, candidates) if delivery else {}
+            pending, unknown = [], []
+            for task_id in candidates:
+                proof = verified.get(task_id)
+                if proof is not None and proof.satisfied:
+                    continue
+                if proof is not None and proof.state is DeliveryState.PENDING:
+                    pending.append(task_id)
+                else:
+                    unknown.append(task_id)
         blockers: list[dict[str, Any]] = []
+        if pending or unknown:
+            blockers.append(_blocker(
+                "project_paused",
+                "project paused; the integration train skips this project; "
+                f"{len(pending)} completed sources await delivery and "
+                f"{len(unknown)} await delivery proof; inspect the pause before resuming",
+                project_id, pending=pending, unknown=unknown,
+            ))
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))
@@ -676,24 +704,36 @@ class IntegrationStatusService:
         repository = await self.db.get_repo(project["integration_repository_id"]) if (
             observe and project["integration_repository_id"]) else None
         if repository is not None:
-            default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
-            observed = await project_snapshot(self.db, TrainTarget(
-                project_id, repository.id, default))
+            root = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            observed, deadline = None, asyncio.get_running_loop().time() + _TRAIN_GIT_BUDGET
+            with suppress(TimeoutError):  # reuse a recent fetch; never wait out a slow one
+                async with asyncio.timeout_at(deadline):
+                    observed = await project_snapshot(self.db, TrainTarget(
+                        project_id, repository.id, root), read=True, cached_only=self.cached_only)
             async with self.db._engine.connect() as conn:
                 child = tasks.alias("status_epic_child")
-                ids = (await conn.execute(select(tasks.c.id).where(
+                epics_on = (await conn.execute(select(
+                    tasks.c.id, tasks.c.status, tasks.c.branch_name,
+                ).where(
                     tasks.c.project_id == project_id, tasks.c.repo_id == repository.id,
                     tasks.c.branch_name.is_not(None),
                     select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
-                ).order_by(tasks.c.id))).scalars().all()
-            for task_id in ids:
-                try:
-                    if observed is None:
-                        raise ValueError("default branch cannot be observed")
-                    _, _, _, distance = await EpicRefresh(self.db).inspect(task_id, snapshot=observed)
-                    epics.append(distance)
-                except (ValueError, GitError, OSError):
-                    epics.append({"task_id": task_id, "behind": None, "state": "unknown"})
+                ).order_by(tasks.c.id))).all()
+            retired = getattr(getattr(self.train, "targets", None), "retired_targets", ())
+            inspect = EpicRefresh(self.db).inspect
+            open_refs = {batch["target_ref"] for batch in batches}
+            for task_id, task_status, branch in epics_on:
+                ref = "refs/heads/" + branch.removeprefix("refs/heads/")
+                absent = (observed is not None and
+                          observed.for_target(ref).error == "target_ref_missing")
+                if (task_status == "COMPLETED" and ref not in open_refs and
+                        (absent or (project_id, repository.id, ref) in retired)):
+                    continue
+                distance = {"task_id": task_id, "behind": None, "state": "unknown"}
+                with suppress(ValueError, GitError, OSError, TimeoutError):
+                    async with asyncio.timeout_at(deadline):
+                        distance = (await inspect(task_id, snapshot=observed))[3]
+                epics.append(distance)
         return {
             "projection_kind": "train",
             "project_id": project_id,
@@ -730,9 +770,7 @@ class IntegrationStatusService:
             carrying = select(integration_batch_members.c.batch_id).where(
                 integration_batch_members.c.task_id == task_id
             )
-            batches = await self._train_batches_on(
-                conn, integration_batches.c.id.in_(carrying)
-            )
+            batches = await self._train_batches_on(conn, integration_batches.c.id.in_(carrying))
             ahead = []
             if not batches and row["status"] == "COMPLETED":
                 ahead = await self._open_batches_ahead_on(conn, row["project_id"], task_id)
@@ -740,7 +778,8 @@ class IntegrationStatusService:
         own = self._train_source_blockers(visits, task_id=task_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
-            blockers.extend(self._train_batch_blockers(batch, visits))
+            blockers.extend(blocker for blocker in self._train_batch_blockers(batch, visits)
+                            if blocker.get("task_id") in (None, task_id))
         for batch in [] if own else ahead:
             # One batch at a time per target: an admissible source the open batch
             # does not carry waits for it to settle, whatever holds that batch. A
@@ -822,13 +861,19 @@ class IntegrationStatusService:
 
     async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""
-        from src.integration.batches import candidate_ref, ejection_instruction
+        from src.integration.batches import (
+            candidate_ref,
+            ejection_instruction,
+            withheld_release,
+            withheld_source_blocker,
+        )
 
         table = integration_batches
         rows = await self._all(
             conn,
             select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
                    table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at,
+                   table.c.human_abort_reason,
                    ejection_instruction(table.c.id).label("ejected"))
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
@@ -840,7 +885,10 @@ class IntegrationStatusService:
         members = await self._all(
             conn,
             select(integration_batch_members.c.batch_id, integration_batch_members.c.task_id,
-                   integration_batch_members.c.source_sha)
+                   integration_batch_members.c.source_sha,
+                   withheld_release(integration_batch_members.c.batch_id,
+                                    integration_batch_members.c.task_id,
+                                    integration_batch_members.c.source_sha).label("released"))
             .where(integration_batch_members.c.batch_id.in_(ids))
             .order_by(integration_batch_members.c.batch_id,
                       integration_batch_members.c.ordinal),
@@ -860,22 +908,46 @@ class IntegrationStatusService:
 
         for row in rows:
             ejected = row.pop("ejected")
+            aborted = row["intent"] == "aborted"
+            # An aborted batch withholds each exact source until its ejection
+            # or an operator release of that source; both stay history.
+            row["members"] = [
+                {"task_id": m["task_id"], "source_sha": m["source_sha"],
+                 "disposition": ("pending" if ejected else "released" if m["released"]
+                                 else "withheld") if aborted else row["intent"]}
+                for m in members if m["batch_id"] == row["id"]
+            ]
+            withheld = [m for m in row["members"] if m["disposition"] == "withheld"]
             row["member_disposition"] = (
-                "pending" if row["intent"] == "aborted" and ejected
-                else "withheld" if row["intent"] == "aborted"
-                else row["intent"]
+                ("withheld" if withheld else "pending" if ejected else "released")
+                if aborted else row["intent"]
             )
+            target = SimpleNamespace(repository_id=row["repository_id"],
+                                     target_ref=row["target_ref"])
+            source = SimpleNamespace(batch_id=row["id"],
+                                     human_abort_reason=row["human_abort_reason"],
+                                     repair_attempt_count=row["repair_attempt_count"])
+            row["withheld"] = [
+                withheld_source_blocker(target, m["task_id"], m["source_sha"], source)
+                for m in withheld
+            ]
             row["operator_decisions"] = await history_on(
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )
             row["candidate_ref"] = candidate_ref(row["id"])
-            row["members"] = [
-                {"task_id": m["task_id"], "source_sha": m["source_sha"]}
-                for m in members if m["batch_id"] == row["id"]
-            ]
+            row["check_reconciliation"] = list((await conn.scalars(
+                select(integration_check_evidence.c.check_reconciliation).where(
+                    integration_check_evidence.c.check_reconciliation["batch_id"].as_string()
+                    == row["id"]
+                ).order_by(integration_check_evidence.c.check_name)
+            )).all())
+            # A retired BLOCKED primary remains history after a successor is
+            # allocated; only the batch's current filing can own its candidate.
             row["repairs"] = [
                 {"task_id": r["id"], "status": r["status"]}
                 for r in repairs if r["created_by_id"] == row["id"]
+                and row["repair_attempt_count"] > 0
+                and r["id"] == ordinary_repair_id(row["id"], row["repair_attempt_count"])
             ]
             visit = self._train_visits(row["project_id"]).get(
                 (row["repository_id"], row["target_ref"])
@@ -954,7 +1026,8 @@ class IntegrationStatusService:
             return [_blocker("operator_decision_hold", row["decision"], row["id"])
                     for row in holds]
         if batch["intent"] == "aborted":
-            return [_blocker("batch_aborted", "the batch was aborted; it is never rebuilt", ref)]
+            return batch.get("withheld") or [
+                _blocker("batch_aborted", "the batch was aborted; it is never rebuilt", ref)]
         if batch["intent"] == "paused":
             return [_blocker("batch_paused", "the batch is paused by operator intent", ref)]
         blockers = [
@@ -984,6 +1057,12 @@ class IntegrationStatusService:
             blockers.append(_blocker(
                 detail["blocker"], detail["reason"], ref,
                 candidate_sha=visit.get("candidate_sha"), evidence=detail,
+            ))
+        if detail.get("blocker") == "epic_refresh_checks_failed":
+            blockers.append(_blocker(
+                detail["blocker"], detail["reason"], ref,
+                candidate_sha=visit.get("candidate_sha"), evidence=detail,
+                supervisor_action=detail["supervisor_action"],
             ))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"
