@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/root_pr_recovery.py::recover_root_pr_checks::9838abf578dc8c2a386d1d4a9012e2aabe1e175732dd1d51dbe41a2ef7cfc4e9": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 182,
+      "owner": "recover_root_pr_checks",
+      "owner_fingerprint": "5386118874a8996f818815475a3d05a9bec11eb9acac8fd4a7bc38d2b4822f88",
+      "reason": "Audits integration.root_pr_checks_reopened with source SHA, completion id and retry count after guarded recovery; it is not a ref publication intent."
+    }
+  }
+}
