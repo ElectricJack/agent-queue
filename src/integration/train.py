@@ -1,31 +1,15 @@
-"""The reduced integration train: level-triggered visits over Git, checks and intent.
+"""Level-triggered Git-first visits over fetched Git, exact-head checks and durable intent.
 
-Under ``integration.git_first: active`` one :class:`IntegrationTrain` takes the
-place of the root, parent and development subject runtimes. It is a reduction
-of :class:`~src.integration.reconciler.IntegrationReconciler`, not a second
-engine: every visit derives progress from one fetched Git snapshot, the cached
-checks of the exact candidate commit and the batch's durable intent, so a
-restart or a missed notification is repaired by the next visit. There is no
-journal, generation or receipt to replay.
+Each target has one task. Ticks bound repository concurrency and admit the least
+recently started idle targets; checks refresh outside locks before the batch gate.
+Restarts and missed notifications recover on the next visit without journal replay.
 
-Each target (project, repository, target ref) is visited by its own task. A
-tick starts a visit for every target whose previous visit has finished and
-never awaits another target, so a slow check, fetch or merge on one target
-cannot stall the others. Checks are requested and refreshed outside every
-lock; the batch gate reads only the cached verdict.
-
-A red candidate is refreshed before a repair is allocated: a green observation
-ends the repair with no attempt counted. A red candidate is then measured against
-the target commit it was built on, and only a failure the target does not also
-fail reaches the repair. An epic with only pre-existing failures can instead
-receive one default-branch sync repair when that exact branch has trusted green
-checks and train-produced or attested provenance. Otherwise the candidate's own
-suites are re-requested under bounded backoff, and the
-bound ends at a named blocker instead of an endless repair chain. The allocator
-counts attempts when it files, never per visit. A merge conflict files one
-ordinary repair whose brief names the conflicting member and every member still to
-be merged, because a repaired head that lacks one of them lets the target advance
-without it.
+Red candidates refresh before allocating repair. The target baseline distinguishes
+inherited failures from new ones. Eligible epic batches may repair inherited failures,
+sync proven default-branch fixes or atomically replace the batch with pending fixes.
+Otherwise suite re-requests use bounded backoff and end at a named blocker.
+Repair attempts count allocations, not visits. Merge-conflict briefs retain every
+frozen member so a partial merge can never authorize target publication.
 """
 
 from __future__ import annotations
@@ -39,6 +23,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
+from src.task_templates import render_task_template
 from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.integration.batches import (
     Batch,
@@ -56,7 +41,8 @@ from src.integration.candidate_baseline import (
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks, HybridChecks
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.models import RepairPolicy
-from src.integration.subjects import HeadIdentity
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
+from src.integration.runtime_contracts import HeadIdentity
 from src.logging_config import log_handled
 
 logger = logging.getLogger(__name__)
@@ -70,6 +56,11 @@ RATE_LIMIT_MAX_BACKOFF_SECONDS = 900.0
 #: A promote command wakes the target at once.
 PROMOTION_WAIT_SECONDS = 30.0
 PROMOTION_MAX_WAIT_SECONDS = 300.0
+REPOSITORY_CONCURRENCY = 4
+BLOCKED_WAIT_SECONDS = 10.0
+BLOCKED_MAX_WAIT_SECONDS = 60.0
+# Events accelerate readiness; an idle lane still revisits Git after a lost event.
+IDLE_REOBSERVATION_SECONDS = 30.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -84,6 +75,7 @@ class _VisitTiming:
         self.finished: float | None = None
         self.stage = "lane_setup"
         self.stages: dict[str, float] = {}
+        self.selection = SelectionMetrics()
 
     def advance(self, stage: str) -> None:
         now = time.monotonic()
@@ -94,7 +86,8 @@ class _VisitTiming:
         now = self.finished if self.finished is not None else time.monotonic()
         stages = dict(self.stages)
         stages[self.stage] = stages.get(self.stage, 0.0) + now - self.since
-        return {"elapsed_seconds": now - self.started, "stages_seconds": stages}
+        return {"elapsed_seconds": now - self.started, "stages_seconds": stages,
+                "selection": self.selection.as_dict()}
 
 
 def _previous_state(last: TrainVisit | None) -> dict[str, str]:
@@ -202,6 +195,11 @@ class BatchSource(Protocol):
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
         """Record that the target contains the batch; idempotent."""
 
+    async def reassemble_preexisting(
+        self, target, snapshot, service, batch, frozen, *, names, source_checks,
+    ) -> dict | None:
+        """Replace a baseline-blocked batch only with admitted exact green fixes."""
+
 
 class RepairAllocator(Protocol):
     async def settle_green(self, batch_id: str, head_sha: str) -> None:
@@ -243,9 +241,8 @@ def conflict_brief(
     is still owed to the target.
 
     The repair exists to land every remaining member, not to make the starting
-    head green: a repaired head published without them lets the train
-    fast-forward the target, and those members conflict again in the next
-    batch. A raw detail dict is never an instruction, so nothing else reaches
+    head green: a repaired head without them cannot close successfully or
+    advance the target. A raw detail dict is never an instruction, so nothing else reaches
     the worker's description.
     """
     detail = dict(detail or {})
@@ -266,31 +263,24 @@ def conflict_brief(
     lines = [
         f"The batch merge conflicted while building the starting head {starting_sha}.",
         (f"Conflict scope: {conflict_scope}. " + (
-            "Resolve the conflicting member's changes while preserving the other members."
+            render_task_template("train-conflict-member-scope")
             if conflict_scope == "member" else
-            "Resolve conflicts across the whole frozen batch, considering every member."
+            render_task_template("train-conflict-batch-scope")
         )),
         (f"Conflicting member: {conflict}" + (f" (source {source})" if source else "")
          + (f"; reason: {reason}" if reason else "") + ".") if conflict
         else (f"Conflicting merge; reason: {reason or 'not reported by the merge'}."),
         "Conflicting files:" if files else "Conflicting files: not reported by the merge.",
         *(f"  - {name}" for name in files),
-        ("Already merged into the starting head (do not merge them again):" if merged
+        (render_task_template("train-conflict-carried") if merged
          else "Nothing is merged into the starting head yet."),
         *numbered(merged),
-        "Still to merge onto the starting head, in this order:" if remaining
+        render_task_template("train-conflict-remaining") if remaining
         else "Every frozen member is already merged into the starting head.",
         *numbered(remaining),
-        (f"Resolve the conflict, then merge every member listed above onto the "
-         f"starting head {starting_sha} in that order. Do not stop once the "
-         "conflict is resolved, or once the checks on the starting head are "
-         "green: a repaired head published without every remaining member lets "
-         "the train fast-forward the target without them, and they conflict "
-         "again in the next batch."),
-        (f"Generated files are regenerated, never hand-merged: resolve a conflict "
-         f"in a path carrying the merge=aq-generated attribute in .gitattributes by "
-         f"running the repository's regeneration command ({REGENERATION_COMMAND} by "
-         f"default), never by resolving its conflict markers by hand."),
+        (render_task_template("train-conflict-complete", starting_sha=starting_sha)),
+        (render_task_template("train-conflict-regenerate", regeneration_command=REGENERATION_COMMAND)),
+        render_task_template("train-conflict-verify"),
     ]
     return "\n".join(line for line in lines if line)
 
@@ -301,24 +291,21 @@ def sync_default_branch_brief(
 ) -> str:
     """Merge the verified default head without losing any frozen batch input."""
     lines = [
-        (f"The epic's pre-existing required-check failures are fixed on the verified "
-         f"default branch {decision['ref']} at {decision['sha']}."),
+        (render_task_template(
+            "train-default-sync-observation", decision_ref=decision["ref"], decision_sha=decision["sha"]
+        )),
         "Required checks passed on that exact default head:",
         *(f"  - {name}" for name in decision["checks"]),
-        (f"Fetch {decision['ref']} and merge the pinned commit {decision['sha']} into "
-         f"the candidate starting at {starting_sha}. Merge this exact commit even if "
-         "the default branch moves afterwards; do not substitute an unverified head."),
-        "Resolve conflicts while preserving every frozen member:",
+        (render_task_template(
+            "train-default-sync-merge",
+            decision_ref=decision["ref"],
+            decision_sha=decision["sha"],
+            starting_sha=starting_sha,
+        )),
         *(f"  - {member.task_id} (source {member.source_sha})" for member in members),
-        ("Keep the starting candidate and all these sources in the repaired history; "
-         "do not reset the candidate to the default branch or drop a member."),
-        (f"Generated files are regenerated, never hand-merged: resolve their sources "
-         f"and run the repository's regeneration command ({REGENERATION_COMMAND} by "
-         "default) for paths marked merge=aq-generated in .gitattributes."),
-        ("Publish the repaired candidate with the managed lease. It must pass the "
-         "unchanged trusted required checks and attestation on its own exact SHA "
-         "before the train can advance the epic. Default-branch evidence only "
-         "authorizes this merge; it does not satisfy candidate checks."),
+        (render_task_template("train-default-sync-preserve")),
+        (render_task_template("train-default-sync-regenerate", regeneration_command=REGENERATION_COMMAND)),
+        (render_task_template("train-default-sync-publish")),
     ]
     if decision.get("conflicting_files"):
         lines.append(conflict_brief({
@@ -385,6 +372,9 @@ class CandidateChecks:
             self._resolved.pop(next(iter(self._resolved)))
         return checks
 
+    def resolved(self, batch: Batch, candidate_sha: str):
+        return self._resolved.get((batch.id, candidate_sha))
+
     def passes(self, result: ChecksResult) -> bool:
         """Whether a verdict lets publication proceed."""
         return result.green or (self.advisory and result.state == ChecksState.RED)
@@ -413,11 +403,19 @@ class TrainLane:
     service: BatchService
     checks: CandidateChecks
     repair_policy: RepairPolicy | None = None
+    train_policy: Any = None
+    train_policy_enabled: bool = True
+    train_policy_reason: str | None = None
     complete_epic: Callable[[GitTruthSnapshot], Awaitable[tuple[dict[str, Any], ...]]] | None = None
     sync_default_branch: Callable[
         [Batch, GitTruthSnapshot, str, tuple[str, ...]], Awaitable[dict[str, Any] | None]
     ] | None = None
     sync_closed_epic: Callable[[GitTruthSnapshot], Awaitable[BatchSelection | None]] | None = None
+    observe_source: Callable[[GitTruthSnapshot], Awaitable[None]] | None = None
+    baseline_fix_checks: Callable[[BatchMember], Awaitable[ChecksResult | None]] | None = None
+    prepare_speculative: Callable[
+        [Batch, str, GitTruthSnapshot], Awaitable[BatchSelection | None]
+    ] | None = None
 
 
 @dataclass(frozen=True)
@@ -432,6 +430,17 @@ class BatchSelection:
 
 
 @dataclass
+class _Speculation:
+    parent_id: str
+    base: str
+    task: asyncio.Task
+    parent_attempt: int = 0
+    prepared: BatchSelection | None = None
+    sha: str | None = None
+    exact: ExactChecks | None = None
+
+
+@dataclass
 class _Lane:
     task: asyncio.Task | None = None
     last: TrainVisit | None = None
@@ -440,14 +449,18 @@ class _Lane:
     start: int = 0
     visits: int = 0
     errors: int = 0
+    #: Diagnostic only: last change in batch, candidate, target or exact-check state.
+    progress_at: float = 0.0
+    progress_identity: tuple | None = None
     #: No visit starts before this time; :meth:`IntegrationTrain.wake` clears it.
     not_before: float = 0.0
-    #: The (batch, reason) a promotion is waiting on, and how many visits in a row.
-    wait: tuple[str | None, str] | None = None
+    #: The unchanged refusal identity, and how many visits in a row.
+    wait: tuple | None = None
     waits: int = 0
     #: The in-flight visit's progress facts (stage, batch); shown before its first result.
     progress: dict | None = None
     timing: _VisitTiming | None = None
+    requested: bool = True
 
 
 @dataclass
@@ -479,52 +492,85 @@ class IntegrationTrain:
         repair: RepairAllocator,
         baseline: CandidateBaselineService | None = None,
         visit_timeout_seconds: float = 900.0,
+        repository_concurrency: int = REPOSITORY_CONCURRENCY,
+        event_driven: bool = False,
+        waits=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if visit_timeout_seconds <= 0:
             raise ValueError("visit timeout must be positive")
+        if repository_concurrency < 1:
+            raise ValueError("repository concurrency must be positive")
         self.targets, self.batches, self.lane_for = targets, batches, lane_for
         self.repair, self.clock = repair, clock
         # Without a baseline service the train cannot compare the target, so it
         # claims nothing and repairs a red candidate exactly as before.
         self.baseline = baseline or UnrecordedBaseline()
         self.visit_timeout_seconds = visit_timeout_seconds
+        self.repository_concurrency = repository_concurrency
+        self.event_driven = event_driven
+        self.waits = waits
+        self.on_wake: Callable[[], None] | None = None
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
         self._pauses: dict[tuple[str, str], _RateLimitPause] = {}
+        self._speculative: dict[tuple[str, str, str], _Speculation] = {}
         self._starts = 0
         self._tick_lock = asyncio.Lock()
 
     async def tick(
         self, now: float | None = None, *, target: TrainTarget | None = None,
     ) -> dict[str, list[str]]:
-        """Start one visit per idle target; never wait on a running one."""
+        """Bound each repository's visits; give new and longest-waiting targets a turn."""
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
-            return {"started": [], "running": [], "skipped": ["tick_in_progress"],
-                    "deferred": []}
+            return {'started': [], 'running': [], 'skipped': ['tick_in_progress'], 'deferred': []}
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
+            if target is None:
+                for key in getattr(self.targets, "retired_targets", ()):
+                    lane = self._lanes.get(key)
+                    if lane is not None and (lane.task is None or lane.task.done()):
+                        del self._lanes[key]
+            occupied: dict[str, int] = {}
+            for key, lane in self._lanes.items():
+                if lane.task is not None and not lane.task.done():
+                    occupied[key[1]] = occupied.get(key[1], 0) + 1
+            # Unvisited targets have start=0. Stable ties retain discovery order.
+            targets = sorted(targets, key=lambda t: self._lanes.get(t.key, _Lane()).start)
             for target in targets:
                 lane = self._lanes.setdefault(target.key, _Lane())
                 label = "/".join(target.key)
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
-                if lane.not_before > now or not self._admit(target.key, now):
+                if (self.event_driven and target.kind != "root"
+                        and not lane.requested and lane.last is not None
+                        and getattr(self.targets, "deferred_revisits", {}).get(
+                            target.key, float("inf")) > now
+                        and lane.last.batch_id is None
+                        and lane.last.state in {"idle", "held"}
+                        and (lane.last.detail or {}).get("reason") != "settling"):
+                    continue
+                if (lane.not_before > now
+                        or occupied.get(target.repository_id, 0) >= self.repository_concurrency
+                        or not self._admit(target.key, now)):
                     deferred.append(label)
                     continue
+                occupied[target.repository_id] = occupied.get(target.repository_id, 0) + 1
                 self._starts += 1
                 lane.started_at, lane.start = now, self._starts
+                lane.requested = False
                 lane.task = asyncio.create_task(
                     self._bounded(target, lane), name=f"integration-train:{label}"
                 )
+                lane.task.add_done_callback(lambda _done: self._notify_requested())
                 started.append(label)
-            return {"started": started, "running": running, "skipped": [],
-                    "deferred": deferred}
+            return {'started': started, 'running': running, 'skipped': [], 'deferred': deferred}
 
     async def request_visit(self, target: TrainTarget) -> TrainVisit | None:
         """Request a bounded visit through the same admission as the daemon tick."""
+        self.wake(*target.key)
         scheduled = await self.tick(target=target)
         label = "/".join(target.key)
         lane = self._lanes.get(target.key)
@@ -547,6 +593,8 @@ class IntegrationTrain:
     async def stop(self) -> None:
         tasks = [lane.task for lane in self._lanes.values()
                  if lane.task is not None and not lane.task.done()]
+        tasks += [item.task for item in self._speculative.values() if not item.task.done()]
+        self._speculative.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -570,12 +618,21 @@ class IntegrationTrain:
                 # its last known state (the timeout stays in detail/blockers).
                 row["state"] = detail["previous_state"]
             row["running"] = running
+            dispatch = detail.get("dispatch", {})
+            row["lane_state"] = dispatch.get("state", "busy" if row.get("batch_id")
+                                             and row.get("state") != "delivered" else "idle")
+            row["inflight_batch_id"] = dispatch.get("batch_id")
+            row["members"] = dispatch.get("members", [])
+            row["queued_members"] = dispatch.get("queued_members", [])
+            row["wait_ids"] = dispatch.get("wait_ids", [])
             if lane.timing is not None:
                 row["timing"] = lane.timing.as_dict()
             if running and lane.progress:
                 row["progress"] = dict(lane.progress)
                 row["visit_started_at"] = lane.started_at
             row["visits"], row["errors"] = lane.visits, lane.errors
+            if lane.progress_at:
+                row["progress_at"] = lane.progress_at
             if lane.not_before:
                 row["deferred_until"] = lane.not_before
             rows.append(row)
@@ -583,24 +640,43 @@ class IntegrationTrain:
 
     def wake(self, project_id: str, repository_id: str | None = None,
              target_ref: str | None = None) -> int:
-        """Let the matching targets' next tick start a visit; returns how many waited."""
+        """Request readiness reconciliation, retaining events received during a visit."""
         woken = 0
         for key, lane in self._lanes.items():
             if (key[0] == project_id and repository_id in (None, key[1])
-                    and target_ref in (None, key[2]) and lane.not_before):
-                lane.not_before, woken = 0.0, woken + 1
+                    and target_ref in (None, key[2])):
+                woken += bool(lane.not_before)
+                lane.not_before, lane.requested = 0.0, True
+                lane.wait, lane.waits = None, 0
         return woken
 
+    def _notify_requested(self) -> None:
+        if self.on_wake is not None and any(lane.requested for lane in self._lanes.values()):
+            self.on_wake()
+
     def _wait(self, target: TrainTarget, lane: _Lane, visit: TrainVisit) -> TrainVisit:
-        """Back off a promotion whose visit named what it is waiting for."""
+        """Delay repeated refusals, without using the result as evidence on retry."""
         reason = (visit.detail or {}).get("reason")
-        if target.kind != "promotion" or visit.state != "held" or not isinstance(reason, str):
+        if target.kind == "promotion" and visit.state == "held" and isinstance(reason, str):
+            wait = (visit.batch_id, reason)
+            initial, maximum = PROMOTION_WAIT_SECONDS, PROMOTION_MAX_WAIT_SECONDS
+            if lane.wait != wait:  # once per hold, or a refused intent idles silently
+                logger.log(logging.WARNING if reason.endswith("_invalid") else logging.INFO,
+                           "promotion %s on %s held: %s", visit.batch_id, target.target_ref,
+                           " ".join(filter(None, (reason, visit.detail.get("error")))))
+        elif visit.state == "blocked":
+            wait = (visit.batch_id, visit.target_sha, repr(visit.detail))
+            initial, maximum = BLOCKED_WAIT_SECONDS, BLOCKED_MAX_WAIT_SECONDS
+        elif target.kind == "root" and visit.state == "idle" and self.event_driven:
+            lane.not_before = self.clock() + IDLE_REOBSERVATION_SECONDS
+            lane.wait, lane.waits = None, 0
+            return visit
+        else:
             lane.not_before, lane.wait, lane.waits = 0.0, None, 0
             return visit
-        wait = (visit.batch_id, reason)
         lane.waits = lane.waits + 1 if lane.wait == wait else 1
         lane.wait = wait
-        delay = min(PROMOTION_WAIT_SECONDS * 2 ** (lane.waits - 1), PROMOTION_MAX_WAIT_SECONDS)
+        delay = min(initial * 2 ** min(lane.waits - 1, 10), maximum)
         lane.not_before = self.clock() + delay
         return replace(visit, detail={**(visit.detail or {}), "retry_at": lane.not_before})
 
@@ -611,7 +687,8 @@ class IntegrationTrain:
         timing = lane.timing = _VisitTiming()
         timing_token = _TIMING.set(timing)
         try:
-            visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
+            with selection_metrics_scope(timing.selection):
+                visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -647,7 +724,23 @@ class IntegrationTrain:
             # A visit begun after the pause got past GitHub: the limit is over.
             del self._pauses[target.key[:2]]
         lane.visits += 1
+        identity = (visit.batch_id, visit.state, visit.candidate_sha, visit.target_sha, visit.checks)
+        if visit.state != "unknown" and lane.progress_identity != identity:
+            if lane.progress_identity is not None:
+                lane.progress_at = self.clock()
+            lane.progress_identity = identity
         lane.last = self._wait(target, lane, visit)
+        if (visit.detail or {}).get("reason") in {"train_policy_wait", "train_policy_unavailable"}:
+            lane.not_before = visit.detail["retry_at"]
+        if lane.requested:
+            # A state change while this visit awaited Git/checks belongs to
+            # another observation, not the backoff of the stale one.
+            lane.not_before, lane.wait, lane.waits = 0.0, None, 0
+        if self.event_driven and (visit.state == "delivered"
+                or (visit.detail or {}).get("epic_completions")):
+            # Parent publication and a newly retained aggregate can make the
+            # next ancestor ready. Reconcile bottom-up, including the root lane.
+            self.wake(target.project_id, target.repository_id)
 
     def _admit(self, key: tuple[str, str, str], now: float) -> bool:
         """Whether the repository's rate-limit pause lets *key* start a visit."""
@@ -691,20 +784,28 @@ class IntegrationTrain:
                           observed_at=now)
 
     async def visit(self, target: TrainTarget, *, seal_now: bool = False) -> TrainVisit:
-        """Observe the target once and take at most one step toward delivery.
+        """Observe a lane, settle its batch and depart its ready successor.
 
-        ``seal_now`` bypasses cadence for this observation only. Admission and
-        publication still require their ordinary evidence.
+        ``seal_now`` remains accepted for older command callers. Admission and
+        publication always require their ordinary evidence.
         """
         from src.integration.ci import hosted_observation_scope
 
         with hosted_observation_scope():
             return await self._visit_target(target, seal_now=seal_now)
 
-    async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False) -> TrainVisit:
+    async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False,
+                            depart_next: bool = True) -> TrainVisit:
         lane = await self.lane_for(target)
+        if not lane.train_policy_enabled:
+            return TrainVisit(target, "unknown", detail={
+                "reason": lane.train_policy_reason or "train_policy_unavailable",
+                "retry_at": self.clock() + 30}, observed_at=self.clock())
         _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
+        if lane.observe_source:
+            _progress("observe_promotion_source")
+            await lane.observe_source(snapshot)
         _progress("select_batch", target_sha=snapshot.target_oid)
         opened = await self.batches.open_batch(
             target, snapshot, lane.service, **({"seal_now": True} if seal_now else {}),
@@ -712,15 +813,23 @@ class IntegrationTrain:
         if (target.kind == "epic" and opened.batch is None
                 and not opened.blockers and lane.sync_closed_epic):
             opened = await lane.sync_closed_epic(snapshot) or opened
+        await self._adopt_speculative(target, lane, snapshot, opened)
         if opened.batch is None:
             state = ("unknown" if any(b["code"] == "unknown" for b in opened.blockers)
                      else "blocked" if opened.blockers else "settling" if opened.detail else "idle")
             visit = replace(self._visit(target, state, snapshot=snapshot), detail=opened.detail)
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
+        self._schedule_speculative(target, lane, snapshot, opened, visit)
         blockers = opened.blockers
-        if target.kind == "epic" and lane.complete_epic and visit.state in {"idle", "delivered"}:
+        window_deferred = (opened.batch is None and opened.blockers and all(
+            item["code"] == "selection_deferred" for item in opened.blockers))
+        if (target.kind == "epic" and lane.complete_epic
+                and (visit.state in {"idle", "delivered"} or window_deferred)):
             _progress("settle_epic")
+            # A bounded selection window is not an aggregate verdict. The
+            # full evaluator still examines every required child. Other
+            # admission refusals (such as repository recovery) retain authority.
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":
@@ -730,13 +839,155 @@ class IntegrationTrain:
             blockers += tuple(item for item in completion if item.get("blocking") is not False)
             if events:
                 visit = replace(visit, detail={**(visit.detail or {}), "epic_completions": events})
+                if any(item.get("code") == "epic_delivered" for item in events):
+                    visit = replace(visit, state="delivered")
             if blockers and visit.state == "idle":
                 visit = replace(visit, state="blocked")
         if blockers:
             visit = replace(visit, detail={
                 **(visit.detail or {}), "blockers": list(blockers),
             })
+        queue = getattr(self.batches, "queued_members", None)
+        if target.kind == "root" and queue is not None:
+            if visit.state == "delivered" and depart_next:
+                # Re-fetch after settlement: the successor must be built and
+                # checked on the newly observed delivery tip, in this turn.
+                successor = await self._visit_target(target, depart_next=False)
+                if successor.batch_id and successor.batch_id != visit.batch_id:
+                    return replace(successor, detail={
+                        **(successor.detail or {}), "settled_batch_id": visit.batch_id,
+                    })
+            inflight = opened.batch if visit.state != "delivered" else None
+            # A departure just froze the ready frontier. Observe later arrivals
+            # on subsequent visits, without repeating its admission side effects.
+            queued = (await queue(target, snapshot, opened.members)
+                      if inflight and opened.existing else ())
+            state = ("idle" if inflight is None else "repairing" if visit.state in
+                     {"repairing", "repair", "conflict", "red", "preexisting"}
+                     or visit.repair else "busy")
+
+            def member_row(member):
+                return {"task_id": member.task_id, "source_sha": member.source_sha,
+                        "source_base_sha": member.source_base_sha}
+
+            dispatch = {"state": state, "batch_id": inflight.id if inflight else None,
+                        "members": [member_row(m) for m in opened.members] if inflight else [],
+                        "queued_members": [member_row(m) for m in queued], "wait_ids": [],
+                        "candidate_sha": visit.candidate_sha, "checks": visit.checks}
+            if self.waits is not None:
+                dispatch.update(await self.waits.sync(target, inflight, visit, queued,
+                    lane.checks.resolved(inflight, visit.candidate_sha) if inflight else None,
+                    **({"speculative": self._speculative[target.key]}
+                       if target.key in self._speculative else {})))
+            visit = replace(visit, detail={**(visit.detail or {}), "dispatch": dispatch})
         return visit
+
+    def _discard_speculative(self, target):
+        item = self._speculative.pop(target.key, None)
+        if item and not item.task.done():
+            item.task.cancel()
+
+    def _schedule_speculative(self, target, lane, snapshot, opened, visit):
+        item = self._speculative.get(target.key)
+        if item and item.task.done() and item.prepared is None:
+            self._discard_speculative(target)
+            item = None
+        if item and (lane.prepare_speculative is None or not opened.batch or
+                     opened.batch.id != item.parent_id or
+                     opened.batch.repair_attempt_count != item.parent_attempt or
+                     visit.candidate_sha != item.base or
+                     visit.state not in {"testing", "delivered"} or visit.repair):
+            self._discard_speculative(target)
+            item = None
+        if (item is None and lane.prepare_speculative is not None and opened.batch and
+                visit.state == "testing" and visit.candidate_sha and not visit.repair and
+                not opened.batch.repair_attempt_count):
+            # No speculative await belongs to N's visit or publication path.
+            async def run():
+                try:
+                    async with asyncio.timeout(self.visit_timeout_seconds):
+                        await self._build_speculative(target, lane, snapshot, opened.batch, item)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("Speculative CI unavailable for %s", target.key, exc_info=True)
+            task = asyncio.create_task(run(), name="speculative:" + opened.batch.id)
+            item = _Speculation(opened.batch.id, visit.candidate_sha, task,
+                                opened.batch.repair_attempt_count)
+            self._speculative[target.key] = item
+
+    async def _build_speculative(self, target, lane, snapshot, parent, item):
+        prepared = await lane.prepare_speculative(parent, item.base, snapshot)
+        if prepared is None or not prepared.batch or not prepared.members:
+            return
+        service, batch = lane.service, prepared.batch
+        repo = await service.gitops.repository(batch)
+        merged = await service.gitops.merge_sources(
+            repo, item.base, prepared.members, created_at=batch.created_at)
+        if merged["outcome"] != "merged":
+            return
+        # Preserve the assembled history while making the speculative base an
+        # explicit first parent, including for multi-member batches.
+        tree = await service.gitops.git.atree_sha(str(repo.store), merged["head"])
+        sha = await service.gitops.run(
+            repo, *service.gitops.git.resolve_commit_identity().config_args(),
+            "commit-tree", tree, "-p", item.base, "-p", merged["head"],
+            "-m", f"AQ-Speculative: {parent.id} {parent.repair_attempt_count} {item.base}",
+        )
+
+        async def authorize():
+            current = await service.store.db.get_integration_batch(parent.id)
+            successor = await service.store.get(batch.id)
+            project = await service.store.db.get_project(parent.project_id)
+            configured = ((project.hierarchical_integration_policy or {}).get("train") or {})
+            return bool(current and current["intent"] == "open" and
+                        current["lifecycle"] != "promoted" and successor is None and
+                        current["repair_attempt_count"] == parent.repair_attempt_count and
+                        current["tested_candidate_sha"] == item.base and
+                        configured.get("speculative_ci") and
+                        await service.gitops.remote(repo, candidate_ref(parent.id)) == item.base and
+                        await service.eligible(batch, prepared.members))
+
+        # N+1 has its own candidate ref and never owns the delivery target.
+        ref = candidate_ref(batch.id)
+        expected = await service.gitops.remote(repo, ref) or "0" * 40
+        await service.publish(repo, ref, expected_old_oid=expected, new_oid=sha,
+                              authorize=authorize)
+        if await service.gitops.remote(repo, ref) != sha:
+            return
+        exact = await lane.checks.for_candidate(batch, sha)
+        if exact is None or isinstance(exact, HybridChecks):
+            return
+        item.prepared, item.sha, item.exact = prepared, sha, exact
+        await self._checks(exact, candidate_head(batch, sha))
+        self.wake(target.project_id, target.repository_id, target.target_ref)
+
+    async def _adopt_speculative(self, target, lane, snapshot, opened):
+        item = self._speculative.get(target.key)
+        if item is None or (opened.batch and opened.batch.id == item.parent_id):
+            return
+        # Never wait for N+1: an unfinished build is disposable on N's departure.
+        self._speculative.pop(target.key, None)
+        if not item.task.done():
+            item.task.cancel()
+            return
+        prepared = item.prepared
+        if (lane.prepare_speculative is None or not prepared or not opened.batch or
+                not item.sha or snapshot.target_oid != item.base or
+                opened.batch.id != prepared.batch.id or opened.members != prepared.members):
+            return
+        service, batch = lane.service, opened.batch
+        repo = await service.gitops.repository(batch)
+        first_parent = await service.gitops.run(repo, "rev-parse", item.sha + "^1")
+        if first_parent != snapshot.target_oid:
+            return
+        # Freeze and current source/policy checks have already run normally.
+        # Only the candidate ref is adopted; the ordinary service publishes it.
+        ref = candidate_ref(batch.id)
+        expected = await service.gitops.remote(repo, ref) or "0" * 40
+        if expected != item.sha:
+            return
+        await lane.checks.for_candidate(batch, item.sha)
 
     async def _visit_batch(
         self, target: TrainTarget, lane: TrainLane, snapshot: GitTruthSnapshot,
@@ -748,7 +999,9 @@ class IntegrationTrain:
                   target_sha=observation.target_sha)
         if observation.state == "delivered":
             if head := observation.candidate_sha or observation.target_sha:
-                await self.repair.settle_green(batch.id, head)
+                await getattr(self.repair, "settle_delivered", self.repair.settle_green)(
+                    batch.id, head,
+                )
             _progress("settle_batch")
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
@@ -768,6 +1021,11 @@ class IntegrationTrain:
                 head_sha=observation.candidate_sha, authorize=authorize_reservation,
                 held=batch.intent != "open",
             )
+        if (observation.state == "conflict" and lane.train_policy
+                and lane.train_policy.action("conflict") == "wait"):
+            return replace(self._visit(target, "conflict", batch, observation), detail={
+                "reason": "train_policy_wait", "retry_at": self.clock() +
+                lane.train_policy.wait_seconds})
         if observation.state == "conflict":
             async def completion_blocker(task_id, starting_sha):
                 return await lane.service.repair_completion_blocker(
@@ -783,6 +1041,9 @@ class IntegrationTrain:
             return self._visit(target, observation.state, batch, observation)
         head = (await lane.checks.head(batch, observation.candidate_sha)
                 if target.kind == "promotion" else candidate_head(batch, observation.candidate_sha))
+        record_candidate = getattr(self.batches, "record_candidate", None)
+        if record_candidate is not None:
+            await record_candidate(batch, observation)
         _progress("resolve_checks")
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
@@ -793,12 +1054,17 @@ class IntegrationTrain:
             _progress("publish_candidate")
             published = await lane.service.visit(batch, members, snapshot)
             if published.state == "delivered":
-                if result is not None and not result.green:
-                    await self.repair.settle_green(batch.id, observation.candidate_sha)
+                await getattr(self.repair, "settle_delivered", self.repair.settle_green)(
+                    batch.id, observation.candidate_sha,
+                )
                 _progress("settle_batch")
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
+            if lane.train_policy and lane.train_policy.action("red") == "wait":
+                return replace(self._visit(target, "red", batch, observation, result), detail={
+                    "reason": "train_policy_wait", "retry_at": self.clock() +
+                    lane.train_policy.wait_seconds})
             if target.kind == "promotion":
                 return self._visit(target, "held", batch, replace(observation, detail={
                     "reason": "promotion_checks_failed",
@@ -806,9 +1072,26 @@ class IntegrationTrain:
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks, snapshot
             )
+        if hasattr(checks, "reconcile_stuck"):
+            async def authorize_rerun():
+                return await lane.service.repair_authorized(
+                    batch, members, observation.candidate_sha,
+                )
+
+            reconciliation = await checks.reconcile_stuck(batch, head, authorize=authorize_rerun)
+            if reconciliation:
+                observation = replace(observation, detail={
+                    **(observation.detail or {}), "check_reconciliation": reconciliation,
+                })
         missing_push = [check for check in getattr(result, "checks", ())
                         if check.classification == "ci_not_triggered"]
         if missing_push:
+            if lane.train_policy is not None:
+                # A newly required check may not have started yet. Unknown CI
+                # takes the policy's bounded observation path, not a code fixer.
+                return replace(self._visit(target, "testing", batch, observation, result), detail={
+                    "reason": "train_policy_wait", "retry_at": self.clock() +
+                    lane.train_policy.wait_seconds})
             diagnostic = missing_push[0]
             observation = replace(observation, detail={
                 **(observation.detail or {}), "ci_not_triggered": {
@@ -824,13 +1107,14 @@ class IntegrationTrain:
         members: tuple[BatchMember, ...], observation: BatchObservation, result: ChecksResult,
         head: HeadIdentity, checks: ExactChecks, snapshot: GitTruthSnapshot,
     ) -> TrainVisit:
-        """A red candidate is repaired only where the target is not already red.
+        """Classify red checks and admit bounded repairs on the retained candidate.
 
         A required check that also fails on the target commit this candidate was
         built on is a pre-existing failure, and one the target has not decided is
-        nobody's. Only an epic's proven pre-existing failures can authorize a
-        bounded merge of a verified default head; all other unrepairable reds
-        re-request the candidate's own suites under bounded backoff.
+        nobody's. A sealed epic can repair proven inherited failures when a
+        verified default sync cannot resolve them. An ordinary root
+        can admit a green pending baseline fix through a replacement batch.
+        Otherwise re-request the candidate's own suites under bounded backoff.
         """
         if not failing(result):
             # A workflow can fail while every required job succeeds. Preserve
@@ -841,15 +1125,42 @@ class IntegrationTrain:
                 "reason": "red candidate has no identifiable failing required checks",
             }), result)
         _progress("compare_target_baseline")
+        baseline_sha, baseline_ref = observation.target_sha, None
+        if batch.epic_refresh:
+            # The epic can itself have introduced these failures. Only the
+            # frozen default input can establish that a refresh failure already
+            # exists on the default branch; never substitute its later head.
+            (default_member,) = members
+            baseline_sha = default_member.source_sha
+            repo = await lane.service.gitops.repository(batch)
+            baseline_ref = "refs/heads/" + repo.default_branch.removeprefix("refs/heads/")
         baseline = await self.baseline.verdict(
-            batch, candidate=result, target_sha=observation.target_sha, checks=checks,
+            batch, candidate=result, target_sha=baseline_sha, checks=checks,
+            target_ref=baseline_ref,
         )
+        sealed_target = (await self.baseline.sealed_target(batch)
+                         if target.kind == "epic" and not batch.epic_refresh
+                         and baseline.pre_existing else None)
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
-                brief=red_brief(baseline, head.sha, candidate=result),
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
             )
-            return replace(visit, detail={**(visit.detail or {}), **baseline.detail()})
+            detail = {**(visit.detail or {}), **baseline.detail()}
+            if batch.epic_refresh and baseline.repairable:
+                detail.update(
+                    blocker="epic_refresh_checks_failed",
+                    reason="the refresh candidate fails required checks that pass on its "
+                           "frozen default-branch input",
+                    supervisor_action=(
+                        f"Inspect and repair refresh candidate {head.sha} for batch {batch.id}; "
+                        f"baseline {baseline_ref} at {baseline_sha} passes "
+                        f"{', '.join(baseline.repairable)}. Publication requires trusted checks "
+                        "and attestation on the exact candidate. To abandon the refresh, use "
+                        f"aq integration abort-batch {batch.id} --apply --reason REASON."
+                    ),
+                )
+            return replace(visit, detail=detail)
         sync = None
         if target.kind == "epic" and baseline.state == "pre_existing" and lane.sync_default_branch:
             _progress("verify_default_branch")
@@ -869,6 +1180,29 @@ class IntegrationTrain:
                     return replace(visit, detail={
                         **(visit.detail or {}), **baseline.detail(), "sync_default_branch": sync,
                     })
+        if sealed_target and baseline.pre_existing:
+            visit = await self._repair(
+                target, lane, batch, members, observation, result,
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
+            )
+            return replace(visit, detail={
+                **(visit.detail or {}), **baseline.detail(),
+                **({"sync_default_branch": sync} if sync else {}), "target_repair": {
+                    "epic_task_id": sealed_target,
+                    "checks": list(baseline.pre_existing),
+                },
+            })
+        reassembly = None
+        if (target.kind in {"root", "development"} and baseline.state == "pre_existing"
+                and lane.baseline_fix_checks is not None):
+            _progress("admit_baseline_fix", candidate_sha=head.sha)
+            reassembly = await self.batches.reassemble_preexisting(
+                target, snapshot, lane.service, batch, members,
+                names=baseline.pre_existing, source_checks=lane.baseline_fix_checks,
+            )
+            if reassembly and reassembly.get("outcome") == "reassembled":
+                return replace(self._visit(target, "preexisting", batch, observation, result),
+                    detail={**baseline.detail(), "reassembly": reassembly})
         _progress("rerequest_preexisting", candidate_sha=head.sha)
         re_requested = await self.baseline.re_request(
             batch, candidate=result, baseline=baseline, checks=checks,
@@ -877,6 +1211,7 @@ class IntegrationTrain:
         return replace(visit, detail={
             **(visit.detail or {}), **baseline.detail(), "re_request": re_requested,
             **({"sync_default_branch": sync} if sync else {}),
+            **({"reassembly": reassembly} if reassembly else {}),
         })
 
     async def _checks(self, checks: ExactChecks, head: HeadIdentity) -> ChecksResult:
@@ -921,25 +1256,26 @@ class IntegrationTrain:
         if missing_push:
             source = missing_push.get("repair_source_ref", "the repository's default branch")
             brief = (
-                f"CI did not trigger on the exact candidate {head}. {missing_push['reason']}\n"
-                f"Fetch {source} and review its .github/workflows changes against this candidate. "
-                "Merge or apply the missing workflow changes as an ordinary commit on the "
-                "candidate, preserving intentional branch-specific changes and every frozen "
-                "batch member. Ensure the workflows providing the required checks trigger on "
-                f"push to {candidate_ref(batch.id)}. Publish the new candidate head with the "
-                "managed lease so GitHub creates a push run for that exact SHA. "
-                "Keep the trusted producer, required check names and attestation unchanged; "
-                "workflow_dispatch and checks on another SHA cannot satisfy this repair. "
-                "If the workflows already allow the candidate ref, diagnose path filters, "
-                "push credentials or GitHub availability before changing workflow content."
+                render_task_template(
+                    "train-ci-not-triggered",
+                    head=head,
+                    missing_push_reason=missing_push["reason"],
+                    source=source,
+                    candidate_ref=candidate_ref(batch.id),
+                )
             )
         _progress("allocate_repair")
+        fixer_input = {}
+        if result is not None and getattr(self.repair, "task_free", False):
+            fixer_input["failure_evidence"] = result.model_dump(mode="json")
         repair = await self.repair.allocate(batch.id, target_ref=(
-            batch.target_ref if batch.epic_refresh else candidate_ref(batch.id)),
+            batch.target_ref if batch.epic_refresh and not getattr(self.repair, "task_free", False)
+            else candidate_ref(batch.id)),
                                             head_sha=head, held=batch.intent != "open",
                                             authorize=authorize, brief=brief,
                                             policy=lane.repair_policy,
                                             completion_blocker=completion_blocker,
+                                            **fixer_input,
                                             **({"sync_default_branch": sync_default_branch}
                                                if sync_default_branch else {}))
         if repair.get("outcome") in {"blocked", "human_required"}:

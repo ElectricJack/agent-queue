@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import type { Edge, NodeChange } from "@xyflow/react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +17,7 @@ interface FlowNode {
 }
 
 interface FlowProps {
+  colorMode?: "light" | "dark" | "system";
   nodes: FlowNode[];
   edges: Edge[];
   children: ReactNode;
@@ -27,9 +28,10 @@ interface FlowProps {
   onNodesChange?: (changes: NodeChange[]) => void;
   onNodeDragStop?: (event: unknown, node: FlowNode) => void;
   nodesDraggable?: boolean;
+  elevateNodesOnSelect?: boolean;
 }
 
-const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
+const flow = vi.hoisted(() => ({ current: null as FlowProps | null, real: false }));
 const fitBounds = vi.hoisted(() => vi.fn());
 const setCenter = vi.hoisted(() => vi.fn());
 const fitView = vi.hoisted(() => vi.fn());
@@ -37,29 +39,35 @@ const zoomIn = vi.hoisted(() => vi.fn());
 const zoomOut = vi.hoisted(() => vi.fn());
 const setViewport = vi.hoisted(() => vi.fn());
 const getViewport = vi.hoisted(() => vi.fn(() => ({ x: 0, y: 0, zoom: 1 })));
-vi.mock("@xyflow/react", () => ({
-  MarkerType: { ArrowClosed: "arrowclosed" },
-  Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
-  ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
-  useReactFlow: () => ({ fitBounds, fitView, setCenter, setViewport, getViewport, zoomIn, zoomOut }),
-  ReactFlow: (props: FlowProps) => {
-    flow.current = props;
-    return <div>
-      {props.nodes.map((node) => <div key={node.id} data-testid={`node-${node.id}`} />)}
-      {props.children}
-    </div>;
-  },
-  Background: () => null,
-  Handle: () => null,
-  Controls: () => null,
-  Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
-  ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
-  // The avatar layer positions its badges from the nodes they dock at, so the
-  // fake store answers from whatever the canvas last handed React Flow.
-  useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({
-    nodeLookup: new Map((flow.current?.nodes ?? []).map((node) => [node.id, node])),
-  }),
-}));
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const { ReactFlow: ActualReactFlow } = await importOriginal<typeof import("@xyflow/react")>();
+  return {
+    MarkerType: { ArrowClosed: "arrowclosed" },
+    Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+    ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
+    useReactFlow: () => ({ fitBounds, fitView, setCenter, setViewport, getViewport, zoomIn, zoomOut }),
+    ReactFlow: (props: FlowProps) => {
+      flow.current = props;
+      // jsdom has no viewport geometry. Render every node when a test needs
+      // React Flow's real wrappers, including their computed stacking order.
+      if (flow.real) return <ActualReactFlow {...props} onlyRenderVisibleElements={false} width={800} height={600} />;
+      return <div>
+        {props.nodes.map((node) => <div key={node.id} data-testid={`node-${node.id}`} />)}
+        {props.children}
+      </div>;
+    },
+    Background: () => null,
+    Handle: () => null,
+    Controls: () => null,
+    Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
+    ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
+    // The avatar layer positions its badges from the nodes they dock at, so the
+    // fake store answers from whatever the canvas last handed React Flow.
+    useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({
+      nodeLookup: new Map((flow.current?.nodes ?? []).map((node) => [node.id, node])),
+    }),
+  };
+});
 
 const tiles = vi.hoisted(() => ({
   store: null as unknown,
@@ -206,6 +214,8 @@ const base = {
 };
 
 beforeEach(() => {
+  flow.real = false;
+  delete document.documentElement.dataset.theme;
   tiles.store = mergeTiles(emptyStore(), ["0:0"], {
     nodes: [n("e", "collapsed", 0, 0), n("z", "card", 2, 0)],
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
@@ -238,9 +248,44 @@ beforeEach(() => {
   dashboardStateFake.docs.clear();
   dashboardStateFake.puts.length = 0;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  delete document.documentElement.dataset.theme;
+});
 
 describe("LayoutCanvas", () => {
+  it("selects an entered epic without elevating its frame above the children", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 6, h: 3 }),
+        n("child", "card", 0.1, 0.45, { container_id: "e", depth: 1 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    const child = flow.current!.nodes.find((node) => node.id === "child");
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" selectedTaskId="e" /></MemoryRouter>);
+    expect(flow.current!.nodes.find((node) => node.id === "e")!.selected).toBe(true);
+    expect(flow.current!.nodes.find((node) => node.id === "child")).toBe(child);
+    expect(flow.current!.elevateNodesOnSelect).toBe(false);
+    expect(base.setFocus).not.toHaveBeenCalled();
+  });
+
+  it("uses the dark default when the shell has not published a theme", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("dark");
+  });
+
+  it("reads the shell theme and updates an already-mounted canvas", async () => {
+    document.documentElement.dataset.theme = "light";
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("light");
+
+    await act(async () => { document.documentElement.dataset.theme = "dark"; });
+    expect(flow.current?.colorMode).toBe("dark");
+    await act(async () => { document.documentElement.dataset.theme = "light"; });
+    expect(flow.current?.colorMode).toBe("light");
+  });
+
   describe("viewport gestures", () => {
     beforeEach(() => {
       // Give the real React Flow pan/zoom engine a measurable, offset canvas.
@@ -427,6 +472,59 @@ describe("LayoutCanvas", () => {
     expect(after.z).toBe(before.z);
   });
 
+  it.each([false, true])("keeps children above the entered epic when it is selected and reselected (selected before entering: %s)", (selectedBeforeEntering) => {
+    flow.real = true;
+    // React Flow reads the viewport's transform while measuring new nodes;
+    // jsdom has no DOMMatrix implementation, and this test uses zoom 1.
+    vi.stubGlobal("DOMMatrixReadOnly", class { m22 = 1; });
+    const rootStore = tiles.store;
+    const enteredStore = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("e", "container", 0, 0, { w: 4, h: 3 }),
+        n("child-a", "card", 0.2, 0.5, { container_id: "e", depth: 1, agg_children: 0 }),
+        n("child-b", "card", 2, 0.5, { container_id: "e", depth: 1, agg_children: 0 }),
+      ],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      variant_applied: "active",
+    } as unknown as TilesResponse);
+    function Harness() {
+      const [focusId, setFocusId] = useState<string | null>(null);
+      const [selectedTaskId, setSelectedTaskId] = useState<string | null>(selectedBeforeEntering ? "e" : null);
+      const setFocus = useCallback((id: string | null) => {
+        tiles.store = id ? enteredStore : rootStore;
+        setFocusId(id);
+      }, []);
+      return <MemoryRouter><LayoutCanvas {...base} focusId={focusId} setFocus={setFocus}
+        selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} /></MemoryRouter>;
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Enter e" }));
+    expect(tiles.params).toMatchObject({ root: "e", expanded: [] });
+    const assertChildrenVisible = () => {
+      const frame = screen.getByTestId("rf__node-e");
+      for (const id of ["child-a", "child-b"]) {
+        const child = screen.getByTestId(`rf__node-${id}`);
+        expect(child).toBeVisible();
+        // DOM presence alone misses this regression: the opaque frame was
+        // elevated over the children, which stayed mounted underneath it.
+        expect(Number(child.style.zIndex)).toBeGreaterThan(Number(frame.style.zIndex));
+      }
+      expect(tiles.params).toMatchObject({ root: "e", expanded: [] });
+    };
+    assertChildrenVisible();
+    const openEpic = screen.getByRole("button", { name: "Open task e" });
+    fireEvent.click(openEpic);
+    expect(screen.getByTestId("rf__node-e")).toHaveClass("selected");
+    assertChildrenVisible();
+    fireEvent.click(openEpic);
+    assertChildrenVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open task child-a" }));
+    expect(screen.getByTestId("rf__node-child-a")).toHaveClass("selected");
+    assertChildrenVisible();
+    fireEvent.click(openEpic);
+    assertChildrenVisible();
+  });
+
   it("only asks for tiles again when a pan changes the cells the viewport covers", () => {
     const observers = globalThis.ResizeObserver;
     const raf = globalThis.requestAnimationFrame;
@@ -463,6 +561,79 @@ describe("LayoutCanvas", () => {
       globalThis.ResizeObserver = observers;
       globalThis.requestAnimationFrame = raf;
     }
+  });
+
+  describe("static stripes (§3.3)", () => {
+    const running = (count: number) => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: Array.from({ length: count }, (_, i) => n(`r${i}`, "card", 0, 0, {
+          status: "IN_PROGRESS", agg_children: 0, agg_descendants: 0, agg_active: 0,
+        })),
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+    };
+    const withSizedCanvas = (body: (move: (vp: { x: number; y: number; zoom: number }) => void) => void) => {
+      const observers = globalThis.ResizeObserver;
+      const raf = globalThis.requestAnimationFrame;
+      let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+      class Stub {
+        constructor(cb: typeof notify) { notify = cb; }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+      globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+      const frames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as unknown as typeof requestAnimationFrame;
+      try {
+        body((vp) => {
+          act(() => flow.current!.onMove!(null, vp));
+          act(() => { for (const cb of frames.splice(0)) cb(0); });
+        });
+        act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      } finally {
+        globalThis.ResizeObserver = observers;
+        globalThis.requestAnimationFrame = raf;
+      }
+    };
+    const graph = () => document.querySelector(".aq-task-graph")!;
+
+    it("stops the drift once more than 60 striped cards are on screen", () => {
+      running(61);
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        move({ x: 0, y: 0, zoom: 1 });
+      });
+      expect(graph().classList.contains("aq-static-stripes")).toBe(true);
+    });
+
+    it("keeps 60 striped cards drifting, and a pan away from 61 resumes it", () => {
+      running(60);
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        move({ x: 0, y: 0, zoom: 1 });
+      });
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+      cleanup();
+
+      running(61);
+      let pan: (vp: { x: number; y: number; zoom: number }) => void = () => {};
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        pan = move;
+      });
+      act(() => pan({ x: -500000, y: -500000, zoom: 1 }));
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+    });
+
+    it("stops the drift below zoom 0.45 whatever is on screen", () => {
+      running(1);
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+      act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom: 0.4 }));
+      expect(graph().classList.contains("aq-static-stripes")).toBe(true);
+    });
   });
 
   it("waits for the focus node's layout: a 202 fits nothing, the real response fits once", () => {

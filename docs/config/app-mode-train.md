@@ -38,7 +38,7 @@ agent-queue; §9.7 covers every other project.
 ## Commands
 
 ```text
-aq integration trust-manifest PROJECT [--policy FILE] [--repository-id ID] (--write PATH | --check | --print) [--json]
+aq integration trust-manifest PROJECT [--policy FILE | --hosted-check-policy FILE] [--repository-id ID] (--write PATH | --check | --print) [--json]
 aq integration app-verify PROJECT [--policy FILE] [--repository-id ID] [--json]
 aq integration app-setup PROJECT [--policy FILE] [--repository-id ID] [--apply]
 aq integration onboard-train PROJECT [--write-policy PATH] [--write-trust-manifest PATH] [--write-audit-workflow PATH] [--write-ruleset PATH]
@@ -56,6 +56,11 @@ aq doctor --check integration.app_mode
 - Each takes the policy from `--policy FILE`, so the anchors can be prepared
   before the policy is bound, else the project's bound policy. `--repository-id`
   defaults to the project's designated integration repository.
+- For trust bootstrap without hierarchical routing artifacts, `trust-manifest`
+  also accepts a strictly validated CI-only `--hosted-check-policy FILE`.
+  See the [current bootstrap example](../guides/promotion-flow.md#a-realistic-example).
+  Repository and attestation App identities still come from the daemon;
+  this input never binds policy, changes integration mode or activates a flow.
 - `app-verify` reports one item per concern, each `ok`, `warn` or `fail` with
   a code, what was expected, what GitHub showed and the exact fix: `credential`,
   `repository`, `producer`, `manifest`, `variables`, `protection`,
@@ -79,11 +84,16 @@ generation() {
 - `integration.github_app` is configured (`app_id`, `installation_id`,
   `private_key_path`). The private key is readable only by the daemon user:
   `OwnerFilePrivateKeyProvider` refuses anything broader than 0600.
-- The App registration grants exactly `actions: read`, `actions_variables:
+- The App registration grants `actions: read` by default, `actions_variables:
   read`, `administration: read`, `checks: write`, `contents: write`, `issues:
   write`, `metadata: read`, `pull_requests: write` and `workflows: write`. The
   token mint refuses a grant that differs, and `app-verify` reports it as
   `credential` `app_token_unavailable`.
+- For stuck-job recovery, the operator grants and approves Actions write and
+  explicitly sets `integration.github_app.actions_permission: write`, then
+  restarts the daemon. Default-read installations need no change. Token minting
+  and validation require the configured level; denied job requests remain
+  pending with durable permission guidance and are never retried automatically.
 - The installation covers every repository a train will use.
 - The shared or project routes are imported and active
   ([train-onboarding.md §1](train-onboarding.md#1-the-shared-routes-once-per-install),
