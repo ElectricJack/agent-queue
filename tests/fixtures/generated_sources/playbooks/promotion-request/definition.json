@@ -9,7 +9,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-20T15:28:38.275077Z",
+  "compiled_at": "2026-10-23T07:41:24.676428Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "promotion-request",
   "purpose": "routine",
@@ -19,11 +19,11 @@
       "id": "advance-source",
       "name": "advance-source",
       "source": {
-        "end_line": 26,
+        "end_line": 23,
         "excerpt": "## Rule: advance-source",
         "heading": "Rule: advance-source",
         "path": "promotion-request.md",
-        "start_line": 26
+        "start_line": 23
       },
       "trigger": {
         "event_type": "promotion.source_settled"
@@ -34,11 +34,11 @@
       "id": "explicit-request",
       "name": "explicit-request",
       "source": {
-        "end_line": 36,
+        "end_line": 29,
         "excerpt": "## Rule: explicit-request",
         "heading": "Rule: explicit-request",
         "path": "promotion-request.md",
-        "start_line": 36
+        "start_line": 29
       },
       "trigger": {
         "event_type": "promotion.request_due"
@@ -49,11 +49,11 @@
       "id": "hotfix-completed",
       "name": "hotfix-completed",
       "source": {
-        "end_line": 44,
+        "end_line": 37,
         "excerpt": "## Rule: hotfix-completed",
         "heading": "Rule: hotfix-completed",
         "path": "promotion-request.md",
-        "start_line": 44
+        "start_line": 37
       },
       "trigger": {
         "event_type": "promotion.hotfix_completed"
@@ -64,11 +64,11 @@
       "id": "visit-intent",
       "name": "visit-intent",
       "source": {
-        "end_line": 51,
+        "end_line": 43,
         "excerpt": "## Rule: visit-intent",
         "heading": "Rule: visit-intent",
         "path": "promotion-request.md",
-        "start_line": 51
+        "start_line": 43
       },
       "trigger": {
         "event_type": "promotion.intent_due"
@@ -79,11 +79,11 @@
       "id": "backmerge-delivered",
       "name": "backmerge-delivered",
       "source": {
-        "end_line": 59,
+        "end_line": 50,
         "excerpt": "## Rule: backmerge-delivered",
         "heading": "Rule: backmerge-delivered",
         "path": "promotion-request.md",
-        "start_line": 59
+        "start_line": 50
       },
       "trigger": {
         "event_type": "promotion.delivered"
@@ -94,17 +94,17 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:1fe223117055fe42e0e70be6a00ea4827c834b21e886f461c7c9e4b62dc53d26",
+  "source_hash": "sha256:3f3a2836bac2c7cf90bd5209bf2c4f0d2974139377f6209954b61a4de7727356",
   "steps": {
     "advance-source--done": {
       "outcome": "completed",
       "rule": "advance-source",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Completed",
       "type": "terminal"
@@ -123,11 +123,11 @@
       },
       "rule": "backmerge-delivered",
       "source": {
-        "end_line": 59,
+        "end_line": 50,
         "excerpt": "## Rule: backmerge-delivered",
         "heading": "Rule: backmerge-delivered",
         "path": "promotion-request.md",
-        "start_line": 59
+        "start_line": 50
       },
       "title": "backmerge",
       "transitions": {
@@ -180,11 +180,11 @@
       "outcome": "completed",
       "rule": "backmerge-delivered",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Completed",
       "type": "terminal"
@@ -193,11 +193,11 @@
       "outcome": "failed",
       "rule": "backmerge-delivered",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Failed",
       "type": "terminal"
@@ -232,11 +232,11 @@
       },
       "rule": "backmerge-delivered",
       "source": {
-        "end_line": 59,
+        "end_line": 50,
         "excerpt": "## Rule: backmerge-delivered",
         "heading": "Rule: backmerge-delivered",
         "path": "promotion-request.md",
-        "start_line": 59
+        "start_line": 50
       },
       "title": "notify",
       "transitions": {
@@ -276,11 +276,11 @@
       "default": "explicit-request--request",
       "rule": "explicit-request",
       "source": {
-        "end_line": 36,
+        "end_line": 29,
         "excerpt": "## Rule: explicit-request",
         "heading": "Rule: explicit-request",
         "path": "promotion-request.md",
-        "start_line": 36
+        "start_line": 29
       },
       "title": "choose",
       "type": "decision"
@@ -289,11 +289,11 @@
       "outcome": "completed",
       "rule": "explicit-request",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Completed",
       "type": "terminal"
@@ -302,11 +302,11 @@
       "outcome": "failed",
       "rule": "explicit-request",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Failed",
       "type": "terminal"
@@ -341,11 +341,11 @@
       },
       "rule": "explicit-request",
       "source": {
-        "end_line": 36,
+        "end_line": 29,
         "excerpt": "## Rule: explicit-request",
         "heading": "Rule: explicit-request",
         "path": "promotion-request.md",
-        "start_line": 36
+        "start_line": 29
       },
       "title": "notify",
       "transitions": {
@@ -370,11 +370,11 @@
       "rule": "explicit-request",
       "save_result_as": "input",
       "source": {
-        "end_line": 36,
+        "end_line": 29,
         "excerpt": "## Rule: explicit-request",
         "heading": "Rule: explicit-request",
         "path": "promotion-request.md",
-        "start_line": 36
+        "start_line": 29
       },
       "title": "read",
       "transitions": {
@@ -446,11 +446,11 @@
       },
       "rule": "explicit-request",
       "source": {
-        "end_line": 36,
+        "end_line": 29,
         "excerpt": "## Rule: explicit-request",
         "heading": "Rule: explicit-request",
         "path": "promotion-request.md",
-        "start_line": 36
+        "start_line": 29
       },
       "title": "request",
       "transitions": {
@@ -530,11 +530,11 @@
       "default": "hotfix-completed--request",
       "rule": "hotfix-completed",
       "source": {
-        "end_line": 44,
+        "end_line": 37,
         "excerpt": "## Rule: hotfix-completed",
         "heading": "Rule: hotfix-completed",
         "path": "promotion-request.md",
-        "start_line": 44
+        "start_line": 37
       },
       "title": "choose",
       "type": "decision"
@@ -543,11 +543,11 @@
       "outcome": "completed",
       "rule": "hotfix-completed",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Completed",
       "type": "terminal"
@@ -556,11 +556,11 @@
       "outcome": "failed",
       "rule": "hotfix-completed",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Failed",
       "type": "terminal"
@@ -595,11 +595,11 @@
       },
       "rule": "hotfix-completed",
       "source": {
-        "end_line": 44,
+        "end_line": 37,
         "excerpt": "## Rule: hotfix-completed",
         "heading": "Rule: hotfix-completed",
         "path": "promotion-request.md",
-        "start_line": 44
+        "start_line": 37
       },
       "title": "notify",
       "transitions": {
@@ -628,11 +628,11 @@
       "rule": "hotfix-completed",
       "save_result_as": "input",
       "source": {
-        "end_line": 44,
+        "end_line": 37,
         "excerpt": "## Rule: hotfix-completed",
         "heading": "Rule: hotfix-completed",
         "path": "promotion-request.md",
-        "start_line": 44
+        "start_line": 37
       },
       "title": "read",
       "transitions": {
@@ -708,11 +708,11 @@
       },
       "rule": "hotfix-completed",
       "source": {
-        "end_line": 44,
+        "end_line": 37,
         "excerpt": "## Rule: hotfix-completed",
         "heading": "Rule: hotfix-completed",
         "path": "promotion-request.md",
-        "start_line": 44
+        "start_line": 37
       },
       "title": "request",
       "transitions": {
@@ -766,11 +766,11 @@
       "outcome": "completed",
       "rule": "visit-intent",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Completed",
       "type": "terminal"
@@ -779,11 +779,11 @@
       "outcome": "failed",
       "rule": "visit-intent",
       "source": {
-        "end_line": 75,
+        "end_line": 63,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "promotion-request.md",
-        "start_line": 75
+        "start_line": 63
       },
       "title": "Failed",
       "type": "terminal"
@@ -818,11 +818,11 @@
       },
       "rule": "visit-intent",
       "source": {
-        "end_line": 51,
+        "end_line": 43,
         "excerpt": "## Rule: visit-intent",
         "heading": "Rule: visit-intent",
         "path": "promotion-request.md",
-        "start_line": 51
+        "start_line": 43
       },
       "title": "notify",
       "transitions": {
@@ -842,11 +842,11 @@
       },
       "rule": "visit-intent",
       "source": {
-        "end_line": 51,
+        "end_line": 43,
         "excerpt": "## Rule: visit-intent",
         "heading": "Rule: visit-intent",
         "path": "promotion-request.md",
-        "start_line": 51
+        "start_line": 43
       },
       "title": "publish",
       "transitions": {
@@ -863,6 +863,16 @@
       },
       "type": "command"
     }
+  },
+  "trusted_execution": {
+    "required_capabilities": [
+      "integration_backmerge_source",
+      "integration_promotion_policy_input",
+      "integration_promotion_publish",
+      "message_send",
+      "promote_cancel",
+      "promote_request"
+    ]
   },
   "version": 1
 }
