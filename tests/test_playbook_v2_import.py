@@ -22,14 +22,12 @@ from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_IMPORT_COMMANDS,
     PlaybookV2CommandsMixin,
 )
-from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 from src.profiles.capabilities import CapabilityPolicy
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -46,11 +44,9 @@ PLAYBOOK_IDS = (
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("reviewed-import.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("reviewed-import.db")
     yield database
-    await database.close()
 
 
 class _Handler(PlaybookV2CommandsMixin):
