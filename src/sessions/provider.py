@@ -55,6 +55,8 @@ __all__ = [
     "CapabilityUnsupported",
     "DialogRule",
     "NotSubmitted",
+    "NudgeDeferred",
+    "NudgeReason",
     "PartialListError",
     "SessionDiedDuringStartup",
     "SessionError",
@@ -142,6 +144,12 @@ class DialogRule:
         with ``sleep_reason=rate_limit``) rather than a dismissal.
     once:
         Fire at most once per startup.
+    signal:
+        What a *quarantine* dialog means about the provider: ``"auth"`` (the
+        CLI is not logged in) or ``"usage"`` (the account is out of usage).
+        Read by provider availability (``docs/specs/provider-failover.md``
+        D2); ``None`` falls back to a built-in dialog-name map so an
+        operator-edited vault harness without the field still classifies.
     """
 
     name: str
@@ -150,6 +158,7 @@ class DialogRule:
     is_regex: bool = False
     quarantine: bool = False
     once: bool = True
+    signal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +174,8 @@ class SessionSpec:
     work_dir: str
     #: argv.  The agent is the initial process; never typed into a shell.
     command: tuple[str, ...]
+    #: Original harness executable, before prompt and resource wrappers.
+    harness_executable: str | None = None
     #: Full child environment (already scrubbed, ``AQ_*`` markers merged).
     env: dict[str, str] = field(default_factory=dict)
     #: Bootstrap prompt text.  ``None`` when ``prompt_mode == "none"``.
@@ -195,6 +206,19 @@ class SessionSpec:
     #: session" is a launch fact, not a re-derivation from a harness file
     #: that may have been edited since.
     hooks_provisioned: bool = False
+    #: Digest of the Git identity this launch's env carries
+    #: (``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*``), recorded on the session row.
+    git_identity_digest: str | None = None
+    #: Knowledge transport this launch actually provisioned (design §9
+    #: delivery seams): ``hook_envelope``, ``startup_prompt``,
+    #: ``startup_guidance`` or ``None`` when no bundle was prepared for it.
+    #: Recorded rather than re-derived, because "the hook file was written" and
+    #: "knowledge rides that hook" are different facts about the same launch.
+    knowledge_transport: str | None = None
+    #: True when the launch should record ``work_dir``'s repository root as
+    #: trusted in Codex's ``config.toml`` before starting, so Codex never
+    #: parks on its "Trust this folder?" screen (:mod:`src.sessions.codex_trust`).
+    codex_project_trust: bool = False
 
 
 @dataclass(frozen=True)
@@ -235,7 +259,10 @@ def require_session_executable(spec: SessionSpec) -> None:
     """Check the child lookup context, before creating files or starting a process."""
     if not spec.command:
         raise ValueError(f"session {spec.session_name!r} has an empty command")
-    command = spec.command[0]
+    # Prompt-file and resource-limit wrappers can put sh, nice or systemd-run
+    # first. Diagnose the CLI the operator needs to install before checking
+    # those launch helpers.
+    command = spec.harness_executable or spec.command[0]
     work_dir = Path(spec.work_dir).resolve()
     # Relative PATH entries (including an empty entry) resolve in the child's
     # working directory, never in the daemon's current checkout.
@@ -248,6 +275,10 @@ def require_session_executable(spec: SessionSpec) -> None:
         target = str(work_dir / command)
     if not shutil.which(target, path=os.pathsep.join(paths)):
         raise SessionExecutableNotFound(command)
+    if spec.harness_executable and spec.command[0] != command:
+        wrapper = spec.command[0]
+        if not shutil.which(wrapper, path=os.pathsep.join(paths)):
+            raise SessionExecutableNotFound(wrapper)
 
 
 class CapabilityUnsupported(SessionError):
@@ -290,12 +321,78 @@ class NotSubmitted(SessionError):
         self.composer_dirty = composer_dirty
 
 
+class NudgeReason(StrEnum):
+    """Why no key could be typed — structured, never parsed from prose.
+
+    The stall ladder has to tell a *human draft* (leave the worker alone, a
+    person is mid-thought) from a composer AQ cannot account for (spend a
+    rung, or a wedged-but-live worker holds its task forever).  One message
+    string cannot carry that: "has a draft or its input is unknown" was true
+    of a human's unsent prompt *and* of an OpenCode TUI that wedged mid-turn
+    and kept painting the same stale box, so the ladder treated them alike
+    and a permanently stalled pool holder produced no rung, no event and no
+    escalation at all.
+
+    ``DRAFT``/``TERMINAL_BUSY``/``RECENT_INPUT`` are the reasons a person is
+    demonstrably present: never escalate on them.
+    ``STALE_FRAME``/``UNREADABLE`` assert only that no draft is being typed,
+    so the caller corroborates them with evidence independent of the composer
+    before advancing (:meth:`NudgeDeferred.escalates_ladder`).
+    """
+
+    #: A readable composer holding text: someone is writing a message.
+    DRAFT = "draft"
+    #: An attached client, copy mode, or an unrecognizable input line: a
+    #: person is at this terminal.
+    TERMINAL_BUSY = "terminal_busy"
+    #: Keys were accepted moments ago; an old frame does not describe the
+    #: input that followed them.
+    RECENT_INPUT = "recent_input"
+    #: Idle composer geometry holding text that cannot be typed input — a
+    #: wedged TUI's residue, left by a layout the process cannot repaint.
+    STALE_FRAME = "stale_frame"
+    #: The composer could not be observed consistently: tmux refused the
+    #: read, the pane changed between the two reads, or AQ's own pending
+    #: injection could not be identified or cleared.
+    UNREADABLE = "unreadable"
+
+
+#: Reasons that are *not* evidence of a human at the keyboard.  Only these
+#: may advance the stall ladder, and only with independent evidence behind
+#: them (see :meth:`SessionReconciler._deferral_escalates`).
+LADDER_ESCALATING_REASONS: frozenset[NudgeReason] = frozenset(
+    {NudgeReason.STALE_FRAME, NudgeReason.UNREADABLE}
+)
+
+
 class NudgeDeferred(NotSubmitted):
     """No input was sent: the composer is busy, has a draft, or is unknown.
 
     Retry later without treating this as an agent's failed response or
     consuming a stall/restart attempt. Message delivery remains pending.
+
+    ``reason`` says *why* in a form a caller can branch on.
+    :attr:`reason` defaults to :attr:`NudgeReason.DRAFT` — the protective
+    answer — so a provider that raises this without one keeps today's
+    behavior instead of acquiring a new escalation path.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_name: str = "",
+        composer_dirty: bool = False,
+        reason: NudgeReason | str = NudgeReason.DRAFT,
+    ):
+        super().__init__(
+            message, session_name=session_name, composer_dirty=composer_dirty
+        )
+        self.reason = NudgeReason(reason)
+
+    def escalates_ladder(self) -> bool:
+        """Whether this refusal may advance the stall ladder if corroborated."""
+        return self.reason in LADDER_ESCALATING_REASONS
 
 
 class PartialListError(SessionError):
@@ -318,10 +415,23 @@ class SessionDiedDuringStartup(SessionError):
     is diagnosable without a live pane.
     """
 
-    def __init__(self, name: str, start_stderr_path: str | None = None, detail: str = ""):
+    def __init__(
+        self,
+        name: str,
+        start_stderr_path: str | None = None,
+        detail: str = "",
+        *,
+        dialog: str | None = None,
+        signal: str | None = None,
+    ):
         self.name = name
         self.start_stderr_path = start_stderr_path
         self.detail = detail
+        #: The quarantine dialog that killed startup, when one did, and what
+        #: it means (``auth``/``usage``) -- the typed signal provider
+        #: availability acts on instead of parsing ``detail`` (D2).
+        self.dialog = dialog
+        self.signal = signal
         super().__init__(
             f"session {name!r} died during startup"
             + (f": {detail}" if detail else "")
@@ -391,6 +501,10 @@ class SessionProvider(ABC):
         explicitly implement a fresh probe here; unsupported/unknown is unsafe.
         """
         return False
+
+    async def confirm_instance_stopped(self, h: SessionHandle) -> bool:
+        """Confirm this instance is gone, allowing a different same-named successor."""
+        return await self.confirm_stopped(h)
 
     @abstractmethod
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...]) -> bool:
