@@ -6,9 +6,7 @@ import logging
 import time
 from typing import Any
 
-from src.notifications.builder import build_agent_summary, build_task_detail
 from src.notifications.events import (
-    AgentQuestionEvent,
     BudgetWarningEvent,
     TextNotifyEvent,
 )
@@ -156,42 +154,6 @@ class EventsMixin:
         await self._emit_notify(
             "notify.text",
             TextNotifyEvent(message=message, project_id=project_id),
-        )
-
-    async def _notify_agent_question(
-        self,
-        task: Task,
-        agent: Any,
-        question: str,
-        project_id: str | None = None,
-    ) -> None:
-        """Send an agent-question notification with both text and embed.
-
-        Called when the orchestrator detects that an agent is asking the user
-        a question (e.g. via the ``AskUserQuestion`` tool).  Sends the
-        notification to the project channel using both the plain-text
-        formatter (for logging) and the rich embed formatter (for Discord).
-        """
-        from src.models import Agent
-
-        # Ensure we have proper model objects (may receive raw DB rows)
-        if not isinstance(agent, Agent):
-            agent = await self.db.get_agent(getattr(agent, "id", agent))
-        await self._emit_notify(
-            "notify.agent_question",
-            AgentQuestionEvent(
-                task=build_task_detail(task),
-                agent=build_agent_summary(agent),
-                question=question,
-                project_id=project_id or task.project_id,
-            ),
-        )
-        await self.db.log_event(
-            "agent_question",
-            project_id=task.project_id,
-            task_id=task.id,
-            agent_id=agent.id,
-            payload=question[:500],
         )
 
     # Budget warning thresholds — notifications are sent when project usage

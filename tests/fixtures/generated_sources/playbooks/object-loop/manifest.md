@@ -1,10 +1,10 @@
 ---
 playbook_id: object-loop
-artifact_sha256: sha256:e460ed23a681f061e0227e6d1722d7cb13b9c7ec3c596b9e68a510466eef3d13
-source_sha256: sha256:19c8d15bc6482d98b95c57fb101b7e36b46252ce6ae6646a128c4302a11869fb
+artifact_sha256: sha256:ecedcd7f954c072a56cbb90396e79842284ad844dc0586ee79b3d886882af573
+source_sha256: sha256:77da1958782764d017e6c25dd0d6389ff0c0b92d0883c1bdbd122af2366ec081
 contract_fingerprint: sha256:af9dc2189778dc24f6c86e8351d7853c1399dc6329421536dacdff4ae253962c
 questions_resolved: 0
-traces_sha256: sha256:a9c804055a8b7cfa59c8a04d19a9205ce7d4b037197ee07904d338af1fa95e81
+traces_sha256: sha256:5bce9bc182b4eb81b7cd6e62d0bd56302c41fa095bcc345d03e917a4dca5b72e
 capabilities_granted:
   aq_commands:
   - object_checkpoint_read
@@ -25,20 +25,3 @@ This recording binds executable bytes, source, command contracts and exact grant
 It is shipped inactive for artifact review. Proposal approval does not activate
 this bundle or authorize paid generation, asset publication or product integration.
 See source.md for the finite policy and formula handoff.
-
-The reusable-building-block port documents the existing five typed commands and
-their ownership; executable rules, command inputs, predicates, retries
-and bounded foreach traversal are unchanged. This new artifact still requires
-separate review and an operator activation decision. Existing loops remain bound
-to their previous artifact until explicitly migrated.
-
-The `required_capabilities` declaration is deferred under `amber-crest-92`:
-it changes the execution principal and currently refuses `object_checkpoint_read`.
-Legacy authority metadata is preserved; no authorization checks are changed.
-
-`tests/fixtures/playbooks/object-loop-port/` retains the installed pre-port artifact
-and synthetic command-boundary scenarios. `test_object_loop_playbook.py` compares
-old/new command arguments and traversal for every event trigger, alongside the
-unchanged disposable-database acceptance tests. The existing `traces.json` is
-historical evidence with its original artifact identity, preserved byte-for-byte;
-it is not relabelled as a run of this new artifact.
