@@ -1,0 +1,14 @@
+{
+  "workspace_kind_ci_repair_review": {
+    "generic_dependencies": {
+      "src/database/queries/job_queries.py::unpinned_workspace": "Generic managed-job pin predicate; no integration storage or ref authority. Integration acquisition callers and their fencing remain charged.",
+      "src/git/process.py::PREPARE_CLEANUP_HOLD": "Generic string key naming an unproved preparation cleanup hold. It performs no reads or writes; integration consumers and metadata writers remain inventoried.",
+      "src/models.py::KIND_MODE_WORKTREE": "Generic workspace mode string constant, with no integration policy, storage or ref authority.",
+      "src/workspace_disable.py::OPERATOR": "Generic workspace disable-provenance string constant. It neither changes state nor grants integration authority.",
+      "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority."
+    },
+    "ownership": "Workspace cutover, command adapter, retained-workspace acquisition and cleanup guard remain shared; retained reservation predicate is charged under src/integration.",
+    "source": "fleet-vault-71 epoch 2",
+    "storage": "Ten changed existing metadata/audit sink owners reviewed individually. No new ref replay authority, journal, integration storage category, baseline or budget increase."
+  }
+}

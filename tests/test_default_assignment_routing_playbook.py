@@ -35,6 +35,7 @@ from src.profiles.capabilities import CapabilityPolicy
 from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.scheduler import PoolKey
 from src.sessions.harness_parser import Harness
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
@@ -123,6 +124,7 @@ async def handler(tmp_path):
         yield handler
     finally:
         set_handler_provider(None)
+        await orchestrator.cancel_claim_preparations()
         await db.close()
 
 
@@ -136,6 +138,7 @@ def _engine(handler):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -280,15 +283,15 @@ async def test_reviewed_router_routes_launches_and_claims_operator_work(
         "kind": "session", "session_id": session.id, "project_id": "p",
         "task_id": None, "elevated": False,
     }
-    # Preparation may outlive the first response on a loaded machine. Exercise
-    # that response explicitly, then await this generation before checking ownership.
+    # Exercise the early response deterministically; routing and ownership
+    # assertions concern the settled claim, regardless of preparation speed.
     monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
-    preparing = await handler._cmd_task_claim({"next": True})
-    assert preparing["result"] == "claim_in_progress", preparing
-    preparation = orch.claim_preparations[(
-        session.id, preparing["task_id"], preparing["claim_epoch"],
-    )]
-    await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+    claimed = await handler._cmd_task_claim({"next": True})
+    assert claimed["result"] == "claim_in_progress", claimed
+    key = (session.id, claimed["task_id"], claimed["claim_epoch"])
+    preparation = orch.claim_preparations.get(key)
+    if preparation is not None:
+        await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
     claimed = await handler._cmd_task_claim({"next": True})
     assert claimed["result"] == "claimed", claimed
     assert claimed["task"]["id"] == task.id
