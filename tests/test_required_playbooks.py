@@ -187,7 +187,7 @@ def test_first_install_has_an_explicit_minimal_inventory(tmp_path, empty_vault):
         (tmp_path / "vault").mkdir()
     expected = {
         "default-assignment-routing", "provider-usage-probe", "provider-failover",
-        "default-pipeline", "supervisor-failure-triage", "morning-report", "stuck-task-watch",
+        "default-pipeline", "supervisor-failure-triage", "morning-report",
     }
     assert set(INITIAL_SYSTEM_PLAYBOOK_IDS) == expected
     assert set(install_initial_playbooks(str(tmp_path))) == expected
@@ -1274,18 +1274,13 @@ async def test_activation_writes_reach_the_timer_service_without_a_restart(tmp_p
         handler.orchestrator = SimpleNamespace(playbook_manager=runtime)
         timer = TimerService(event_bus=SimpleNamespace(emit=AsyncMock()), playbook_manager=runtime)
         timer.start()
-        assert "timer.10m" in timer.active_intervals  # probe and stuck-task watch
+        assert "timer.10m" in timer.active_intervals  # usage probe
+        assert "timer.15m" not in timer.active_intervals  # watch requires deliberate import
 
         paused = await handler._cmd_set_playbook_enabled(
             {"playbook_id": "provider-usage-probe", "enabled": False}
         )
         assert paused["success"] is True
-        await timer.tick()
-        assert "timer.10m" in timer.active_intervals  # the watch still subscribes
-        paused_watch = await handler._cmd_set_playbook_enabled(
-            {"playbook_id": "stuck-task-watch", "enabled": False}
-        )
-        assert paused_watch["success"] is True
         await timer.tick()
         assert "timer.10m" not in timer.active_intervals
 
@@ -1345,6 +1340,101 @@ async def test_the_reviewed_bundles_doctor_check_warns_and_fixes(tmp_path):
     assert fixed.data["written"] == ["default-assignment-routing"]
     reconcile.assert_awaited_once()
     assert (await _check_reviewed_bundles(_doctor_ctx(tmp_path))).severity is Severity.OK
+
+
+@pytest.mark.parametrize("drifted_bundle", [False, True])
+@pytest.mark.parametrize("stale_profile", [False, True])
+async def test_doctor_offers_pipeline_upgrade_until_explicitly_activated(
+    tmp_path, drifted_bundle, stale_profile,
+):
+    """File refresh alone cannot repair an older optional pipeline activation."""
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _check_reviewed_bundles, _fix_reviewed_bundles
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        identifier = "default-pipeline"
+
+        def previous_release(body):
+            # The old three-rule pipeline cannot consume batch.held.
+            retired = {"fidelity-review-on-held", "release-on-receipt"}
+            body["rules"] = [rule for rule in body["rules"] if rule["id"] not in retired]
+            body["steps"] = {
+                key: step for key, step in body["steps"].items() if step["rule"] not in retired
+            }
+            if stale_profile:
+                body["compiled_against"]["profiles"]["spec-ingest"] = "sha256:" + "d" * 64
+
+        old = _shipped_variant(identifier, previous_release)
+        old_sha = await _store_variant(db, handler, old)
+        handler._store.put_source(
+            old_sha, (reviewed_bundle_source() / identifier / "source.md").read_text()
+        )
+        await _activate(db, identifier, old_sha)
+        health = await handler._cmd_playbook_activation_health({"playbook_id": identifier})
+        assert health["activations"][0]["health"] == (
+            "stale_contract" if stale_profile else "ready"
+        )
+        before = await _system_row(db, identifier)
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        ctx = DoctorContext(config=handler.config, db=db, handler=handler)
+        if drifted_bundle:
+            _age_bundle(_vault_bundle(tmp_path, identifier))
+
+        checked = await _check_reviewed_bundles(ctx)
+        assert checked.severity is Severity.WARN
+        assert old_sha in checked.detail
+        assert len(checked.data["activation_updates"]) == 1
+        update = checked.data["activation_updates"][0]
+        assert update["playbook_id"] == identifier
+        assert update["active_sha256"] == old_sha
+        assert update["shipped_sha256"] in checked.detail
+        assert update["import_command"] == (
+            "aq playbook import --path reviewed-playbooks/default-pipeline --activate"
+        )
+        assert await _system_row(db, identifier) == before
+
+        fixed = await _fix_reviewed_bundles(ctx)
+        assert fixed.severity is Severity.WARN
+        assert fixed.data["written"] == ([identifier] if drifted_bundle else [])
+        assert fixed.data["activation_updates"] == [update]
+        assert await _system_row(db, identifier) == before
+        assert not reviewed_bundle_drift(str(tmp_path))
+
+        # Follow the exact operations offered by the CLI import --activate wrapper.
+        imported = await handler._cmd_playbook_v2_import({"path": f"reviewed-playbooks/{identifier}"})
+        assert imported["success"], imported
+        activated = await handler._cmd_playbook_activate({
+            "playbook_id": identifier, "artifact_sha256": imported["artifact_sha256"],
+        })
+        assert activated["success"], activated
+        assert (await _system_row(db, identifier))["active_artifact_sha256"] == update["shipped_sha256"]
+        assert (await _check_reviewed_bundles(ctx)).severity is Severity.OK
+    finally:
+        await db.close()
+
+
+async def test_doctor_preserves_optional_activation_and_scope_choices(tmp_path):
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_reviewed_bundles, _fix_reviewed_bundles
+
+    ensure_reviewed_playbook_bundles(str(tmp_path))
+    old_sha = "sha256:" + "d" * 64
+    rows = [
+        {"playbook_id": "default-pipeline", "scope": "system", "scope_identifier": "",
+         "active_artifact_sha256": old_sha, "enabled": False},
+        {"playbook_id": "default-pipeline", "scope": "project", "scope_identifier": "custom",
+         "active_artifact_sha256": old_sha, "enabled": True},
+        {"playbook_id": "operator-pipeline", "scope": "system", "scope_identifier": "",
+         "active_artifact_sha256": old_sha, "enabled": True},
+    ]
+    db = SimpleNamespace(list_playbook_activations=AsyncMock(return_value=rows))
+    ctx = _doctor_ctx(tmp_path)
+    ctx.db = db
+    assert (await _check_reviewed_bundles(ctx)).severity is Severity.OK
+    assert (await _fix_reviewed_bundles(ctx)).severity is Severity.OK
+    db.list_playbook_activations.assert_awaited_with(enabled_only=True)
 
 
 def test_the_reviewed_bundles_check_is_registered_with_a_fix():

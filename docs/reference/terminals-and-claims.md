@@ -349,7 +349,7 @@ the next reader can act on it:
 | `needs_attention: branch_fenced` | the task's branch is fenced by a writer the owner-recovery sweep releases | same |
 | `branch_fenced` | same — carries reason, branch, repository, workspace, session and timestamp | same |
 | `prepare_failure` | any permanent preparation failure, released, blocked or retained — carries reason, error type, stage, cause chain, session, instance token, claim epoch, workspace, disposition, attempt and timestamp | same |
-| `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds |
+| `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds, or a foreign checkpoint is discarded with a `manual_pause_checkpoint_discarded` audit record (`aq task discard-pause-checkpoint`) |
 
 Every surface reports one description of a failure, built by
 [`describe_preparation_failure`](../../src/preparation_failure.py): the claim

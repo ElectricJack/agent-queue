@@ -5,6 +5,7 @@ import type { AskPrepareDecisionRequest, AskPreview } from "../../api/client";
 import { useDraftWarning } from "./useDraftWarning";
 import { DecisionPreview } from "../../panes/review/DecisionPreview";
 import { useRawEventSubscription } from "../../ws/useEventStream";
+import { randomUUID } from "../../randomUUID";
 
 export function AskDecision({ data, draftBlocked = false, saveDraft, pendingSave = false, approveRef, responseRoute }: {
   approveRef?: RefObject<HTMLButtonElement | null>;
@@ -53,7 +54,7 @@ export function AskDecision({ data, draftBlocked = false, saveDraft, pendingSave
       const args = { ask_id: data.ask.id, expected, option_key: option, overall_note: note, ...(option === "request_changes" && responderClass ? { responder_class: responderClass } : {}) };
       const started = epoch.current;
       const result = await prepare.mutateAsync(args);
-      setPrepared({ preview: result.preview, args, key: crypto.randomUUID() });
+      setPrepared({ preview: result.preview, args, key: randomUUID() });
       setStale(started !== epoch.current);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Preparation failed; your draft is preserved."); }
     finally { setSaving(false); }
