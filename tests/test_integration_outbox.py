@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import asyncio
 import json
 import os
@@ -28,9 +30,11 @@ from src.integration.outbox import (
     IntegrationOutbox,
     DestinationArtifactUnavailable,
     NoIntegrationEventConsumer,
+    PROMOTION_EVENT_TYPES,
     RETRY_EXHAUSTED_PREFIX,
     UNSUBSCRIBED_EVENT_TYPES,
     enqueue_integration_event,
+    enqueue_batch_event,
     freeze_destination_manifest,
     load_acceptance_state,
 )
@@ -42,6 +46,41 @@ from src.playbooks.runtime import V2PlaybookRuntime
 
 
 NOW = 1_789_000_000.0
+
+
+@pytest.mark.parametrize("event_type", [
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+])
+async def test_batch_event_atomic_replay_and_consumer_requirement(db, event_type):
+    batch = {"project_id": "p", "batch_id": "b", "structure_revision": 2,
+             "structure_digest": "current", "reviewer_task_id": None,
+             "release_revision": 1, "release_digest": "released"}
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with db.immediate() as conn:
+            await enqueue_batch_event(conn, batch, event_type, now=NOW)
+            raise RuntimeError("rollback")
+    assert not await _outbox_rows(db)
+    async with db.immediate() as conn:
+        event_id = await enqueue_batch_event(conn, batch, event_type, now=NOW)
+        assert await enqueue_batch_event(
+            conn, {**batch, "reviewer_task_id": "later-assignment"}, event_type, now=NOW,
+        ) == event_id
+    rows = await _outbox_rows(db)
+    assert len(rows) == 1
+    assert rows[0]["payload"]["reviewer_task_id"] is None
+    assert rows[0]["payload"]["structure_digest"] == (
+        "released" if event_type == "batch.released" else "current")
+
+    async def no_consumer(*args):
+        raise NoIntegrationEventConsumer("no matching policy")
+
+    outbox = IntegrationOutbox(db, no_consumer, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    row = (await _outbox_rows(db))[0]
+    assert (row["delivered_at"] is None) == (event_type in {"batch.held", "batch.receipt_recorded"})
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    await outbox.dispatch_due(NOW + 1)
+    assert (await _outbox_rows(db))[0]["delivered_at"] is not None
 
 
 @pytest.fixture
@@ -387,6 +426,78 @@ async def test_committed_event_survives_dispatcher_restart(db, tmp_path):
     assert await _accepted_activation_count(db, "event-1") == 1
 
 
+@pytest.mark.parametrize("event_type", [
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+])
+async def test_batch_policy_acceptance_survives_restart_without_duplicate_run(db, tmp_path, event_type):
+    await _activate(db, tmp_path / "compiled", "batch-policy", event_type)
+    async with db.immediate() as conn:
+        event_id = await enqueue_batch_event(conn, {
+            "batch_id": "held-batch", "project_id": "p", "structure_revision": 1,
+            "structure_digest": "d" * 64, "reviewer_task_id": None,
+            "release_revision": 1, "release_digest": "d" * 64,
+        }, event_type, now=NOW)
+    first = _runtime(db, tmp_path / "compiled")
+    await first.refresh()
+    assert await first.accept_integration_event(
+        event_type, (await _outbox_rows(db))[0]["payload"], event_id,
+    )
+    # Lose the outbox acknowledgment, then replay against the durable consumer.
+    await first.shutdown()
+    restarted = _runtime(db, tmp_path / "compiled")
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, event_id)
+    await _wait_for_pending_resolution(db, event_id)
+    assert await _accepted_activation_count(db, event_id) == 1
+    await restarted.shutdown()
+
+
+async def test_shutdown_during_pending_claim_releases_lease_for_restart(db, tmp_path, monkeypatch):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "integration-train", "integration.sealed")
+    await _enqueue(db)
+    first = _runtime(db, compiled)
+    await first.refresh()
+    await first.shutdown()
+    assert await first.accept_integration_event(
+        "integration.sealed", (await _outbox_rows(db))[0]["payload"], "event-1"
+    )
+    [row] = await _pending_rows(db)
+    original_claim = db.claim_pending_event_dispatch
+
+    async def cancel_after_commit(*args, **kwargs):
+        token = await original_claim(*args, **kwargs)
+        assert token is not None
+        # Shutdown can cancel the dispatcher while the committed claim is
+        # still returning through the connection's asynchronous cleanup.
+        dispatcher.cancel()
+        await asyncio.sleep(0)
+        return token
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "claim_pending_event_dispatch", cancel_after_commit)
+        dispatcher = asyncio.create_task(first._dispatch_integration_pending(row))
+        with pytest.raises(asyncio.CancelledError):
+            await dispatcher
+
+    [retained] = await _pending_rows(db)
+    assert retained["resolved_at"] is None
+    assert retained["dispatch_claim_token"] is None
+    assert retained["dispatch_claimed_at"] is None
+    assert "CancelledError" in retained["last_error"]
+
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
 async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_path):
     await _activate(db, tmp_path / "compiled", "integration-train", "integration.sealed")
     await _enqueue(db)
@@ -448,6 +559,9 @@ async def test_runtime_restart_replays_an_accepted_but_unstarted_pending_event(d
     assert await _accepted_activation_count(db, "event-1") == 1
     [row] = await _pending_rows(db)
     assert row["resolution"] == "dispatched"
+    [run] = await db.list_runs(playbook_id="integration-train")
+    assert run.context["observed_at"] == NOW
+    assert run.context["observation_id"] == "event-1"
 
 
 async def test_zero_matching_activations_keeps_event_for_retry(db):
@@ -741,6 +855,14 @@ async def _offer(runtime, **kwargs) -> bool:
     )
 
 
+async def test_publication_bus_copy_does_not_bypass_durable_acceptance(db, tmp_path):
+    runtime = _runtime(db, tmp_path / "compiled")
+    runtime._dispatch = AsyncMock()
+    runtime._on_event({"_event_type": "integration.publication_verified", "project_id": "p"})
+    assert not runtime._tasks
+    runtime._dispatch.assert_not_called()
+
+
 @pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
 async def test_runtime_proves_no_consumer_only_when_asked(db, tmp_path, event_type):
     compiled = tmp_path / "compiled"
@@ -940,7 +1062,10 @@ async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_pa
     assert await _accepted_activation_count(db, "event-1") == 2
 
 
-async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(db, tmp_path):
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(
+    db, tmp_path, supplied_time
+):
     activation_id, artifact_sha256 = await _activate(
         db, tmp_path / "compiled", "integration-train", "integration.sealed"
     )
@@ -961,13 +1086,15 @@ async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(d
             "event_id": "event-1",
             "project_id": "p",
             "operation_id": "operation-1",
+            "_received_at": supplied_time,
         },
         event_id="event-1",
         now=NOW,
     )
     [row] = await db.get_pending_events([pending_id])
 
-    async def partial_dispatch(*_args, **_kwargs):
+    async def partial_dispatch(event, *_args, **_kwargs):
+        assert event["_received_at"] == NOW
         return SimpleNamespace(
             rules_selected=("accepted", "crashed-before-run"),
             run_ids=("run-1",),
@@ -1849,6 +1976,38 @@ async def test_dispatch_page_is_bounded(db):
     outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
     assert await outbox.dispatch_due(NOW) == 2
     assert len(accepted) == 2
+
+
+async def test_promotion_only_pages_do_not_dispatch_or_starve_behind_legacy_events(db):
+    async with db.immediate() as conn:
+        for index in range(7):
+            await enqueue_integration_event(conn, event_id=f"legacy-{index}",
+                dedup_key=f"legacy-{index}", project_id="p",
+                event_type="integration.sealed", payload={}, available_at=NOW - 1)
+        for index, event_type in enumerate(sorted(PROMOTION_EVENT_TYPES)):
+            await enqueue_integration_event(conn, event_id=f"promotion-{index}",
+                dedup_key=f"promotion-{index}", project_id="p",
+                event_type=event_type, payload={}, available_at=NOW)
+    accepted = []
+
+    async def accept(event_type, _payload, _event_id):
+        accepted.append(event_type)
+        return True
+
+    # Restart in the middle of the page scan; all promotion kinds remain
+    # deliverable, while legacy rows retain their attempts and availability.
+    for _restart in range(2):
+        outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
+        for _page in range(3):
+            await outbox.dispatch_due(NOW, event_types=PROMOTION_EVENT_TYPES)
+    assert sorted(accepted) == sorted(PROMOTION_EVENT_TYPES)
+    rows = await _outbox_rows(db)
+    legacy = [row for row in rows if row["id"].startswith("legacy-")]
+    assert len(legacy) == 7
+    assert all(row["delivered_at"] is None and row["attempts"] == 0
+               and row["available_at"] == NOW - 1 for row in legacy)
+    # An empty filtered scan must finish even though legacy work remains due.
+    assert await outbox.dispatch_due(NOW, event_types=PROMOTION_EVENT_TYPES) == 0
 
 
 async def test_slow_declines_retry_from_completion_and_page_other_projects(db, caplog):
