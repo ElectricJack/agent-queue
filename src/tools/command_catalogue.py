@@ -17,28 +17,30 @@ def load_command_catalogue() -> dict:
 
 def render_command_catalogue() -> str:
     """Build the artifact; used only by generation and drift checks."""
-    from src.mcp_registration import _discover_all_commands
-    from src.plugins.internal import collect_internal_tool_definitions
+    from src.commands.command_inventory import command_snapshot
     from src.tools.definitions import (
-        _ALL_TOOL_DEFINITIONS,
         _CLI_CATEGORY_OVERRIDES,
         _TOOL_CATEGORIES,
     )
     from src.tools.registry import CATEGORIES
 
-    explicit = {definition["name"] for definition in _ALL_TOOL_DEFINITIONS}
+    snapshot = command_snapshot()
+    explicit = set(snapshot.explicit_names)
     fallback = {
-        name: definition
-        for name, definition in _discover_all_commands().items()
-        if name not in explicit
+        name: snapshot.commands[name].tool_definition()
+        for name in sorted(snapshot.handler_names) if name not in explicit
     }
+    internal: dict[str, list[dict]] = {}
+    for plugin in snapshot.plugins:
+        if plugin.category and plugin.definition_json:
+            internal.setdefault(plugin.category, []).append(json.loads(plugin.definition_json))
     # Preserve each model's field order: Click renders options in schema order.
     catalogue = {
-        "explicit": _ALL_TOOL_DEFINITIONS,
+        "explicit": [snapshot.commands[name].tool_definition() for name in snapshot.explicit_names],
         "fallback": fallback,
         "categories": {name: meta.description for name, meta in CATEGORIES.items()},
         "tool_categories": _TOOL_CATEGORIES,
         "cli_category_overrides": _CLI_CATEGORY_OVERRIDES,
-        "internal": collect_internal_tool_definitions(),
+        "internal": list(internal.items()),
     }
     return json.dumps(catalogue, indent=2) + "\n"

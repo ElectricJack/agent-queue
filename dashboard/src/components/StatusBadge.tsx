@@ -13,6 +13,11 @@ const statusColors: Record<string, string> = {
   cancelled: "bg-gray-500/10 text-gray-400",
   timed_out: "bg-orange-500/10 text-orange-400",
   active: "bg-blue-500/15 text-blue-300",
+  hibernated: "bg-violet-500/15 text-violet-300",
+  resume_pending: "bg-amber-500/15 text-amber-300",
+  verified: "bg-green-500/10 text-green-400",
+  stale: "bg-amber-500/15 text-amber-300",
+  unavailable: "bg-gray-500/10 text-gray-400",
   waiting: "bg-slate-500/15 text-slate-300",
 };
 
