@@ -1,0 +1,348 @@
+{
+  "artifact_verify": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_artifact_verify",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out of scope: artifact does not belong to an accessible object')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await asyncio.to_thread(verify, self.config.data_dir, request.uri, request.sha256)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:86689ee0091264c0cf4403ec3a4bfab1458f810a04a8f828f0e76f65960ab79c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "object_checkpoint_read": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_checkpoint_read",
+    "resource_gates": [
+      "held_session_or_project_playbook_invocation"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop not found in project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop not found in project')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'approved': approved if row.state.get('checkpoint') else False, 'state': row.state, 'evidence': evidence}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:fe3d1ec9528edf65eb9cc39fb0c5ac0ccc40774a504a880ecc4ee12aeb25f004",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_object_loop_playbook.py::test_project_playbook_reads_only_its_project_checkpoint",
+      "tests/test_object_loop_playbook.py::test_playbook_checkpoint_read_refuses_unbound_or_borrowed_authority",
+      "tests/test_object_loop_playbook.py::test_checkpoint_exception_does_not_widen_other_held_commands",
+      "tests/test_object_loop.py::test_object_evidence_refuses_stale_or_unrelated_held_work"
+    ]
+  },
+  "object_loop_inputs": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_loop_inputs",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object_loop_inputs is not available to worker sessions; the project supervisor runs it (aq object_loop inputs) and cooks the object formula, because formula cooking and loop mutation stay out of worker scope')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop inputs are outside the caller project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **inputs}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:a46d774057d6b2d21f3e1ddfd52897fee22e63df8f44e9e310e872f2c375d7a2",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "object_loop_reconcile": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_loop_reconcile",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop not found in project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('choose next variants or a stop reason')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop already stopped with a different request')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale object loop version')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop is stopped')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'state': state, 'outcome': 'brief_held'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('continuation is only accepted at a checkpoint')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale object loop version')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('checkpoint is not approved for this candidate revision')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'state': state, 'outcome': 'checkpoint_held'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'state': state, 'outcome': 'checkpoint_approved'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'state': state, 'outcome': 'waiting_for_wave'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'state': state, 'outcome': 'waiting_for_score'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': version, 'state': state, 'outcome': 'stopped'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': version, 'state': state, 'outcome': stopped_outcome or 'reconciled'}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:974636c8b3ec70f97b1a32e40b825c29015f0a23e45966f5ac0c9b8dd940fa4c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "object_loop_start": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_loop_start",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:4a98cb6f2902f199cf2c7283aecf32a9c78eb3abf566806292a3b94e8ee43566",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "object_score_record": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_score_record",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object loop not found in project')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version, 'state': state, 'outcome': 'reused'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale object loop version')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('score task is not the current round scorer')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('scoring task has not completed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stop requires an explicit reason')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('failed scorer stop cannot include scores, variants or a review')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wave has unsettled candidates')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version + 1, 'state': state, 'outcome': 'stop'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('brief review is no longer approved at the exact revision')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('checkpoint approval changed during this round')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wave has unsettled candidates')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('duplicate variant score')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('score belongs to a foreign variant')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('completed candidate is missing its score')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(str(exc))"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'object_id': request.object_id, 'version': row.version + 1, 'state': state, 'outcome': request.action}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:a81a53cd952a8f37a87d0812e1e6af75e0a238bc38768a2c64469c81ee8f4662",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}
