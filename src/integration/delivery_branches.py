@@ -100,6 +100,9 @@ ACTIVE_BATCH_LIFECYCLES = (
     "sealing", "sealed", "building", "testing", "repairing", "human_blocked",
     "promoting", "cleanup_pending",
 )
+#: Supersede records an abort; settlement records promotion. Keep the terminal
+#: decision authoritative even when legacy queue/cleanup metadata survives it.
+TERMINAL_BATCH_LIFECYCLES = ("aborted", "promoted")
 #: Promotion intents in these states have finished with their refs.
 SETTLED_INTENT_STATES = ("committed", "conflict", "superseded")
 #: Refs deleted per ``git push``.
@@ -148,6 +151,47 @@ async def completed_branch_tasks(conn: Any, branches: Iterable[str]) -> set[str]
             )
         ).scalars()
     )
+
+
+async def batch_branch_references(conn, *, project_id=None, include_terminal=False):
+    """Live batch holds and terminal batch identities by ref, from current rows.
+
+    Terminal membership is diagnostic history, never a live-owner assertion.
+    Unknown legacy batches remain explicit operator-review holds.
+    """
+    batch, member = integration_batches.c, integration_batch_members.c
+    query = select(
+        batch.id, batch.intent, batch.lifecycle, batch.integration_branch,
+        batch.cleanup_state, batch.fixer_queue, member.task_id, member.source_ref,
+    ).select_from(integration_batches.outerjoin(
+        integration_batch_members, member.batch_id == batch.id,
+    ))
+    if project_id is not None:
+        query = query.where(batch.project_id == project_id)
+    if not include_terminal:
+        query = query.where(batch.intent != "aborted",
+                            batch.lifecycle.not_in(TERMINAL_BATCH_LIFECYCLES))
+    held, terminal = {}, {}
+    for row in (await conn.execute(query)).mappings():
+        ended = (row["intent"] == "aborted"
+                 or row["lifecycle"] in TERMINAL_BATCH_LIFECYCLES)
+        legacy = row["id"].startswith("integration-batch-")
+        retained = (row["cleanup_state"] == "retained"
+                    and (row["fixer_queue"] or {}).get("status") in {"deferred", "companion"})
+        if not ended and not (legacy or retained or row["lifecycle"] in ACTIVE_BATCH_LIFECYCLES):
+            continue
+        reason = f"integration batch {row['id']} is {row['lifecycle']} (intent={row['intent']})"
+        if legacy and not ended:
+            reason = "operator review required: legacy " + reason
+        refs = {branch_of(row["integration_branch"]), branch_of(row["source_ref"])}
+        if row["task_id"]:
+            refs.add(f"aq/{row['task_id']}")
+        for ref in refs - {None}:
+            if ended:
+                terminal.setdefault(ref, set()).add(reason)
+            else:
+                held.setdefault(ref, reason)
+    return held, terminal
 
 
 async def live_branch_references(
@@ -248,6 +292,8 @@ async def live_branch_references(
         if row["state"] not in UNSETTLED_DELIVERY_STATES:
             continue
         reason = f"development batch {row['id']} is {row['state']}"
+        if row["id"].startswith("legacy-operation:"):
+            reason = "operator review required: legacy " + reason
         target = branch_of(row["target_ref"])
         if target and target.startswith(TASK_BRANCH_PREFIX):
             hold(target, reason)  # an assembly publish still in flight
@@ -327,29 +373,9 @@ async def live_branch_references(
         for task_id, branch in await _branches_of(conn, operation_tasks):
             hold(branch, operation_tasks[task_id], wip=True)
 
-    # Abort intent overrides lifecycle; fixer queues hold refs only while retained.
-    batch = integration_batches.c
-    for row in await rows(
-        select(batch.id, batch.integration_branch).where(or_(
-            (batch.intent != "aborted") & batch.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
-            (batch.cleanup_state == "retained")
-            & batch.fixer_queue["status"].astext.in_(("deferred", "companion")),
-            (batch.lifecycle == "promoted") & (batch.cleanup_state != "complete"),
-        ))
-    ):
-        reason = f"integration batch {row['id']} is active"
-        hold(row["integration_branch"], reason)
-        members = (
-            await conn.execute(
-                select(
-                    integration_batch_members.c.task_id,
-                    integration_batch_members.c.source_ref,
-                ).where(integration_batch_members.c.batch_id == row["id"])
-            )
-        ).all()
-        for task_id, source_ref in members:
-            hold(source_ref, reason)
-            hold(f"aq/{task_id}", reason)
+    batch_holds, _terminal = await batch_branch_references(conn)
+    for ref, reason in batch_holds.items():
+        hold(ref, reason)
 
     for row in await rows(
         select(

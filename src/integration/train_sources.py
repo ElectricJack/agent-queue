@@ -2178,8 +2178,16 @@ class DatabaseBatches:
             target_ref=root_ref, snapshot=snapshot.for_target(root_ref),
         )
 
-    async def eligible(self, batch: Batch, members: tuple[BatchMember, ...]) -> bool:
+    async def eligible(self, batch: Batch, members: tuple[BatchMember, ...], *,
+                       snapshot: GitTruthSnapshot | None = None) -> bool:
         """Ordinary identity is still current: completed, routed to this target."""
+        if snapshot is None:
+            snapshot = self._refresh_snapshots.get(
+                (batch.project_id, batch.repository_id, batch.target_ref))
+        elif (snapshot.observation.project_id, snapshot.observation.repository_id,
+              snapshot.observation.target_ref) != (
+                  batch.project_id, batch.repository_id, batch.target_ref):
+            return False
         if batch.epic_refresh:
             from src.integration.stacked_branches import EpicRefresh
 
@@ -2199,8 +2207,7 @@ class DatabaseBatches:
                 return False
             if graph.project_holds or any(node.required and node.holds for node in graph.nodes):
                 return False
-            key = (batch.project_id, batch.repository_id, batch.target_ref)
-            observed = self._refresh_snapshots.get(key)
+            observed = snapshot
             if observed is not None:
                 observed = observed.for_target(_branch(row["default_branch"]))
             if observed is None or observed.error or not observed.target_oid:
@@ -2262,8 +2269,6 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
-        snapshot = self._refresh_snapshots.get(
-            (batch.project_id, batch.repository_id, batch.target_ref))
         for member in members:
             if (member.task_id not in recorded_origins
                     and await stacks.completed_source_matches(
@@ -2279,9 +2284,7 @@ class DatabaseBatches:
                                                   .where(tasks.c.id.in_(ids)))).all())
         for member in members:
             if source_types.get(member.task_id) == "backmerge":
-                observed = self._refresh_snapshots.get(
-                    (batch.project_id, batch.repository_id, batch.target_ref))
-                if not await BackmergeAdmission(self.db, None).eligible(batch, member, observed):
+                if not await BackmergeAdmission(self.db, None).eligible(batch, member, snapshot):
                     return False
         for task_id in ids:
             request, target = requests.get(task_id), routed.get(task_id)
@@ -2295,8 +2298,7 @@ class DatabaseBatches:
             sources = {member.task_id: member.source_sha for member in members}
             for task_id in await _epic_branches_on(conn, ids):
                 if not await self._epic_current_on(conn, task_id, requests[task_id].completion_id,
-                        source=sources[task_id], snapshot=self._refresh_snapshots.get(
-                            (batch.project_id, batch.repository_id, batch.target_ref))):
+                        source=sources[task_id], snapshot=snapshot):
                     return False
         return True
 
@@ -2800,7 +2802,9 @@ class DaemonLanes:
                  review_requirements: ReviewRequirements | None = None) -> None:
         self.orchestrator, self.batches, self.clock = orchestrator, batches, clock
         self.db, self.git = orchestrator.db, orchestrator.git
-        self.truth = GitTruth(orchestrator.git, share_fetches=True)
+        reconciler = getattr(orchestrator, "git_truth_reconciler", None)
+        self.truth = (reconciler.observer.truth if reconciler is not None else
+                      GitTruth(orchestrator.git, share_fetches=True, skip_unchanged=True))
         self.store = BatchStore(self.db, clock=clock, require_enabled=True)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
         if self.batches is not None:
@@ -2957,11 +2961,25 @@ class DaemonLanes:
                 return False
             return await checks.gate(batch, candidate_sha, tree_sha)
 
+        async def refresh_eligibility():
+            # A retained fixer can publish before this daemon's first train
+            # visit. Keep its fresh observation local to this publication;
+            # another visit must not replace its evidence through the cache.
+            observed = await snapshot()
+            if observed.error or not observed.target_oid:
+                raise GitError("batch publication Git evidence is unavailable")
+
+            async def eligible(batch, members):
+                return await self.batches.eligible(batch, members, snapshot=observed)
+
+            return eligible
+
         service = BatchService(self.store, gitops, publish=self.publish,
                                eligible=self.batches.eligible, gate=current_gate,
                                attest=None if unattested else attest,
                                require_attestation=not unattested,
-                               observe_deferred=observe_deferred)
+                               observe_deferred=observe_deferred,
+                               refresh_eligibility=refresh_eligibility)
 
         complete_epic = None
         sync_default_branch = None
@@ -3451,7 +3469,7 @@ class DaemonLanes:
         cache[batch.id] = (key, now + PROMOTION_RESOLUTION_TTL_SECONDS, trust, client)
         return trust, client
 
-    async def _pr_checks(self, target, member, policy, binding):
+    async def _pr_checks(self, target, member, policy, binding, *, pr_head_sha=None):
         """The required checks a root PR member's head must pass to be admitted."""
         batch = Batch("pr-admission-" + member.task_id, target.project_id,
                       target.repository_id, target.target_ref)
@@ -3470,7 +3488,8 @@ class DaemonLanes:
                 await retain_train_candidate(self.git, store, batch, member.source_sha)
             return self._local_checks(target, store, ci, policy, batch, requested=True)
         return await self._hosted(policy, binding, target, batch, member.source_sha,
-                                  expected_event="pull_request")
+                                  expected_event="pull_request",
+                                  allow_push_fallback=pr_head_sha == member.source_sha)
 
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:
@@ -3617,7 +3636,7 @@ class DaemonLanes:
                            on_change=self._checks_changed)
 
     async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None,
-                      expected_event="push"):
+                      expected_event="push", allow_push_fallback=False):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci_producers import HostedCIProducer
 
@@ -3643,7 +3662,8 @@ class DaemonLanes:
             return await self._workflow_diagnostic(retained, head)
 
         return ExactChecks(self.db, HostedChecks(
-            HostedCIProducer(client, trust, expected_event=expected_event),
+            HostedCIProducer(client, trust, expected_event=expected_event,
+                             allow_push_fallback=allow_push_fallback),
             diagnose=diagnose if retained is not None else None,
         ), clock=self.clock, on_change=self._checks_changed)
 

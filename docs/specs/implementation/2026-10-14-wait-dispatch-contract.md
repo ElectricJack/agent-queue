@@ -1,5 +1,33 @@
 # Wait outcome integration contract
 
+## Recoverable listener failures — 2026-10-25
+
+Outcome measurements are idempotent by measurement id. A duplicate preserves
+the existing sample, including any later resume-cost updates, and does not
+roll back outcome delivery or source-cursor progress.
+
+Graph contention is a local retry, never a reason to restart the listener's
+TaskGroup. A refused deadline remains unfired and uncancelled and retries with
+per-deadline exponential backoff from one second up to thirty seconds. Heap
+rebuilds preserve that cadence; other due deadlines can proceed. Restart may
+retry immediately from durable deadlines. This applies to graph-busy refusals
+from deadline effects and quarantine as well as firing itself. Source dispatch
+preserves the graph-busy classification and rolls back the attempted batch,
+then retries on the listener's existing graph-contention cadence. Unknown
+failures and lease loss retain their existing recovery behavior.
+
+## Previously dispatched CI evidence — 2026-10-25
+
+The listener also reconciles pending verified CI check/run waits whose latest
+dispatched source event is newer than their registration watermark. Older
+dispatch stamps do not prove that a wait consumed an observation. Reconciliation
+shares the bounded retry budget and the normal lease, graph, source and owner
+fences, observes the current exact-head condition, and never moves the main
+cursor backwards. A dispatched hint cannot itself prove success. Pending or
+unavailable observations retain the wait, respect provider retry intervals, and
+remain eligible after restart without a new provider revision. Successful
+settlement uses ordinary outcome delivery and remains idempotent.
+
 ## Temporary CI observation failures — 2026-10-25
 
 A train visit that cannot freshly observe a disappearing pending wait preserves

@@ -19,10 +19,11 @@ live sessions, owners, active subjects/batches and attached worktrees, and
 uses the observed SHA as an exact lease. Reopened or re-claimed work invalidates
 an older decision. A moved head is a conflict; transport failures and temporarily
 held branches retry with backoff. The audit is retained after successful removal.
-Batch abort intent overrides a stale active lifecycle when checking live refs.
-Deferred fixer batches and companions still hold their refs while their cleanup
-state explicitly retains them; historical queue markers alone are not liveness.
-Promoted batches whose cleanup has not finished also hold their refs.
+Batch abort intent and terminal lifecycles override stale queue and cleanup
+metadata when checking live refs. Aborted and promoted batches (including
+superseded and settled batches, respectively) are no longer ref owners.
+Deferred fixer batches and companions hold refs only while the batch remains
+open. Independent task, session and unreleased writer guards still apply.
 Local removal visits registered AQ checkout common directories for the same
 repository and the retained integration and publisher stores. It never detaches
 another writer. It removes audited `origin` tracking refs alongside local heads,
@@ -47,6 +48,16 @@ Explicit materialized-origin deletes use the same retirement mechanism. Ordinary
 delete with `branches=keep` remains an explicit preservation choice. Archive's
 existing delivery and live-session admission guards remain required; admitted
 archives now retire their branches instead of leaving orphan refs indefinitely.
+
+Legacy source abandonment also supports explicit preservation:
+`scripts/backfill-legacy-deliveries.py PROJECT --abandon-task TASK --keep-branch`
+(or `--abandon-epic EPIC --keep-branch`). Preview reports `keep_branch`; apply
+still requires a reason and records the usual `abandoned` delivery decision,
+including for selected undelivered descendants, with `[branches: keep]` in its
+audit reason. It queues no branch retirements. Without this option, abandonment
+continues to queue retirement. The option requires an abandon selection and
+cannot be combined with `--relanded`; it does not cancel existing retirements
+or exempt branches from later explicit disposal or ordinary proven-merged cleanup.
 
 The earlier `branch_deletion_audit` schema and revision remain as history.
 Pending, held or failed rows are imported once into retirement intents; their recorded
@@ -96,6 +107,15 @@ Each project's supervisor receives its own inbox report through `CommandHandler`
 with local/remote deletion and hold counts, retirement and migration outcomes,
 unique refs, stash/registration counts and failures. Cleanup failures in one project
 do not suppress another project's report.
+
+The report separately counts pending/conflicted retirement refs associated with
+terminal batches, grouped by batch, even when another guard still holds them.
+Unresolved nonterminal legacy `integration-batch-*` holders and unsettled
+`legacy-operation:*` publisher records remain conservative holds and appear in an
+explicit operator-review list with their recorded states. Terminal legacy batches
+and finished/cancelled publisher actions do not hold refs. Neither historical
+metadata nor terminal membership authorizes ordinary sweep deletion without Git
+containment or patch-equivalence proof; unique unmerged refs remain intact.
 
 ## Re-landed content
 

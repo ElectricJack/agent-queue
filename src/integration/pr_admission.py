@@ -268,7 +268,18 @@ class PRAdmission:
     lock_ids: set = field(default_factory=set)
     source_projects: set = field(default_factory=set)
     source_repos: set = field(default_factory=set)
+    freshness_ids: set = field(default_factory=set)
     changed: bool = False
+
+    def record_change(self, code, detail, task_id=None, *, ids=None):
+        """Explain a failed guard on the candidates it withholds."""
+        affected = {task_id} if task_id else (self.ids if ids is None else ids)
+        for tid in affected:
+            reason = {"code": code, "ref": tid, "detail": detail}
+            reasons = self.reasons.setdefault(tid, [])
+            if reason not in reasons:
+                reasons.append(reason)
+        return False
 
     async def matches(self, *, conn, lock=False, task_id=None):
         if lock:
@@ -294,18 +305,55 @@ class PRAdmission:
                     )
             except DBAPIError as exc:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
-                    return False
+                    return self.record_change(
+                        "pr_admission_lock_unavailable",
+                        "PR project/repository input lock unavailable (55P03); retry", task_id,
+                    )
                 raise
-        return self.inputs == (await _inputs(self.db, self.ids, self.default_mode, conn))[-1]
+        current = (await _inputs(self.db, self.ids, self.default_mode, conn))[-1]
+        if self.inputs != current:
+            groups = ("edges", "sources", "projects", "repositories", "completions",
+                      "recorded sources", "candidate branches", "parent modes", "default mode",
+                      "gates", "labels", "generated gate links")
+            changed = (
+                ", ".join(name for name, before, after in zip(groups, self.inputs, current,
+                                                            strict=True) if before != after)
+                if len(self.inputs) == len(current) == len(groups) else "input shape/mode"
+            )
+            return self.record_change(
+                "pr_admission_inputs_changed", f"PR admission inputs changed: {changed}; retry",
+                task_id,
+            )
+        return True
 
     async def is_fresh(self, task_id=None):
         try:
             for client, url, identity in self.observations:
-                if _identity(await client.pull_request(url)) != identity:
-                    return False
-            return all([await snapshot.is_fresh() for snapshot in self.snapshots])
-        except Exception:  # Remote unavailability never establishes delivery.
-            return False
+                current = _identity(await client.pull_request(url))
+                if current != identity:
+                    fields = ("state", "merged", "head.sha", "head.ref", "base.ref",
+                              "merge_commit_sha", "base.repo.full_name")
+                    changed = ", ".join(name for name, before, after in zip(
+                        fields, identity, current, strict=True) if before != after)
+                    return self.record_change(
+                        "pr_admission_identity_changed",
+                        f"PR identity comparison changed ({changed}): {url}; retry",
+                        task_id, ids=self.freshness_ids,
+                    )
+            for snapshot in self.snapshots:
+                if not await snapshot.is_fresh():
+                    return self.record_change(
+                        "pr_admission_snapshot_changed",
+                        f"PR delivery snapshot freshness failed: {snapshot.target_ref}; retry",
+                        task_id, ids=self.freshness_ids,
+                    )
+            return True
+        except Exception as exc:  # Remote unavailability never establishes delivery.
+            return self.record_change(
+                "pr_admission_freshness_unavailable",
+                f"PR admission freshness unavailable ({type(exc).__name__}); retry", task_id,
+                ids=self.freshness_ids,
+            )
 
     async def verify_workspace(self, task_id, path):
         try:
@@ -335,6 +383,7 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
     async with db._engine.connect() as conn:
         sources, required, candidates, fence, inputs = await _inputs(db, ids, default_mode, conn)
     batch = PRAdmission(db, service, ids, default_mode, inputs, allowed=set(ids))
+    batch.freshness_ids = {tid for tid, deps in required.items() if deps}
     batch.lock_ids = fence["tasks"]
     batch.source_projects = fence["projects"]
     batch.source_repos = fence["repos"]
@@ -480,6 +529,10 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
         except DBAPIError as exc:
             if getattr(exc.orig, "sqlstate", None) != "55P03":
                 raise
+            batch.record_change(
+                "pr_admission_lock_unavailable",
+                "PR gate bookkeeping task/project/repository lock unavailable (55P03); retry",
+            )
             batch.allowed.clear()
             batch.changed = True
     return batch
