@@ -1,5 +1,12 @@
 # Playbook V2 — Package 7 child plan: Drain, atomic cutover, rollback window, and V1 removal
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:executing-plans`. **Do not** use `superpowers:subagent-driven-development` for commits 1–3: roadmap §7 makes this package serial and operator-led, and §3.9 names three human gates that a fan-out would step over. Commit 4 (removal) has a bounded parallel lane, described in §3.1.
 
 **Roadmap:** `docs/superpowers/plans/2026-09-01-playbook-v2-implementation-roadmap.md` §5 "Package 7 — Drain, atomic cutover, rollback window, and V1 removal".

@@ -14,6 +14,8 @@ export function GithubRepositoryStep() {
   const source = state.source;
   const isGithubClone = source.mode === "github_clone";
   const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [accountOperationsAvailable, setAccountOperationsAvailable] = useState(true);
+  const [repositoryCheck, setRepositoryCheck] = useState<string | null>(null);
   const [repositories, setRepositories] = useState<GithubRepositoryRef[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
@@ -26,7 +28,11 @@ export function GithubRepositoryStep() {
     let active = true;
     void githubAuthStatus().then(
       (status) => {
-        if (active && (!status.installed || !status.authenticated)) {
+        if (!active) return;
+        if (status.credential_mode === "app") {
+          setAccountOperationsAvailable(false);
+          setAuthMessage("GitHub App selected. Paste an existing repository URL to check access. Cloning with App credentials is unavailable in this release.");
+        } else if (!status.installed || !status.authenticated) {
           setAuthMessage(setupGuidance(status.installed, status.message));
         }
       },
@@ -73,6 +79,7 @@ export function GithubRepositoryStep() {
     } });
   };
   const updatePastedUrl = (value: string) => {
+    setRepositoryCheck(null);
     const display = githubRepositoryDisplay(value);
     dispatch({ type: "update_source", mode: "github_clone", patch: {
       githubUrl: value,
@@ -80,11 +87,21 @@ export function GithubRepositoryStep() {
       directoryName: source.directoryNameAuto ? display?.name || "" : source.directoryName,
     } });
   };
+  const checkRepository = async () => {
+    if (!pasted || !source.githubUrl) return;
+    setRepositoryCheck("Checking repository access…");
+    try {
+      const status = await githubAuthStatus(source.githubUrl);
+      setRepositoryCheck(status.repository_access ? "GitHub App can access this repository." : "Repository access could not be verified.");
+    } catch {
+      setRepositoryCheck("Repository access could not be verified. Check the URL and App installation permissions.");
+    }
+  };
 
   return (
     <div className="space-y-5">
       {authMessage && <p role="status" className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">{authMessage}</p>}
-      <div className="space-y-2">
+      {accountOperationsAvailable && <div className="space-y-2">
         <label htmlFor={`${uid}-search`} className="block text-sm font-medium text-gray-200">Search GitHub repositories</label>
         <div className="flex gap-2">
           <input id={`${uid}-search`} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search repositories" className="min-w-0 flex-1 rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-100" />
@@ -100,11 +117,13 @@ export function GithubRepositoryStep() {
           </li>)}
         </ul>}
         {nextCursor && <button type="button" onClick={() => void search(true)} disabled={searching} className="text-sm text-indigo-300 underline disabled:opacity-50">Load more repositories</button>}
-      </div>
+      </div>}
       <div>
-        <label htmlFor={`${uid}-url`} className="block text-sm font-medium text-gray-200">Or paste a GitHub repository URL</label>
+        <label htmlFor={`${uid}-url`} className="block text-sm font-medium text-gray-200">{accountOperationsAvailable ? "Or paste a GitHub repository URL" : "Paste a GitHub repository URL"}</label>
         <input id={`${uid}-url`} value={source.githubUrl} onChange={(event) => updatePastedUrl(event.target.value)} placeholder="https://github.com/owner/repository" className="mt-1 w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-100" />
         {pasted && <p className="mt-1 text-xs text-gray-400">Will use GitHub repository {pasted.owner}/{pasted.name}. The original URL will be validated by the server.</p>}
+        {!accountOperationsAvailable && pasted && <button type="button" onClick={() => void checkRepository()} className="mt-2 rounded border border-gray-600 px-3 py-2 text-sm text-gray-200">Check repository access</button>}
+        {repositoryCheck && <p role="status" className="mt-2 text-sm text-gray-300">{repositoryCheck}</p>}
         {selected && <p className="mt-1 text-xs text-gray-400">Selected repository: {selected.owner}/{selected.name}</p>}
       </div>
       <div>

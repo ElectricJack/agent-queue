@@ -1,0 +1,51 @@
+{
+  "fixture": {
+    "completions": 200,
+    "targets": 55,
+    "source_commits": 2,
+    "concurrency": 1,
+    "network_requests": 0,
+    "db_queries": 0,
+    "warning": "Scale in completions/targets only; not representative repository history, DB cardinality, contention, or remote latency."
+  },
+  "cold": {
+    "seconds_per_200_proofs": {
+      "n": 1,
+      "p50": 4.318589411966968,
+      "p95": 4.318589411966968,
+      "p99": 4.318589411966968,
+      "max": 4.318589411966968
+    },
+    "git_processes": 1402
+  },
+  "warm": {
+    "seconds_per_200_proofs": {
+      "n": 100,
+      "p50": 0.004904553992673755,
+      "p95": 0.006614408979658037,
+      "p99": 0.007667383004445583,
+      "max": 0.007695073029026389
+    },
+    "git_processes": 0
+  },
+  "warm_root_scan_repetition": {
+    "seconds_per_200_proofs": {
+      "n": 110,
+      "p50": 0.0032070239540189505,
+      "p95": 0.004946586966980249,
+      "p99": 0.0060498639941215515,
+      "max": 0.006205061974469572
+    },
+    "git_processes": 0
+  },
+  "changed_generation": {
+    "state": "unknown",
+    "reason": "missing_git_provenance",
+    "git_processes": 0
+  },
+  "cold_cached_only": {
+    "state": "unknown",
+    "reason": "proof_unavailable",
+    "git_processes": 0
+  }
+}
