@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:c4b4900717db460e5897391066d83ea8163d00940d204d1903e9e28ddebbd4b6` |
+| Contract fingerprint | `sha256:bb0ba01c7f653433f0735de81f5a3589444481c9174995a5e628887dca8f9334` |
 
 ## Parameters
 
@@ -22,7 +22,9 @@
 |---|---|---|---|---|
 | `task_id` | `string \| null` | no | `null` | — |
 | `owner_row_id` | `string \| null` | no | `null` | — |
-| `dry_run` | `boolean` | no | `false` | — |
+| `dry_run` | `boolean` | no | `true` | — |
+| `no_push` | `boolean` | no | `false` | — |
+| `self_owned` | `boolean` | no | `false` | — |
 
 ## Result
 

@@ -12,6 +12,7 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 OWNER = "integration"
 _DEVELOPMENT_APP_ITEMS = frozenset({"credential", "repository", "protection"})
 _APP_MODE_SEVERITY = {"fail": Severity.ERROR, "warn": Severity.WARN}
+CONTINUOUS_PROMOTION_LAG_SECONDS = 6 * 3600
 
 
 def _unavailable(check_id, detail="database unavailable"):
@@ -39,6 +40,50 @@ async def _check_delivery_engine(ctx: DoctorContext) -> CheckResult:
         else "every delivery mode has an engine and designated repository",
         data={"projects": issues},
     )
+
+
+async def _check_branch_origins(ctx: DoctorContext) -> CheckResult:
+    from src.integration.hierarchy import missing_origin_tasks_on
+
+    check_id = "integration.branch_origins"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    findings = []
+    for project in await ctx.db.list_projects():
+        if project.hierarchical_integration_mode not in {"hierarchy", "train"}:
+            continue
+        if not project.integration_repository_id:
+            continue  # integration.delivery_engine owns a missing repository.
+        async with ctx.db._engine.connect() as conn:
+            missing = await missing_origin_tasks_on(conn, project.id, project.integration_repository_id)
+        if missing:
+            findings.append({"project_id": project.id, "task_ids": missing,
+                             "mode": project.hierarchical_integration_mode,
+                             "generation": project.hierarchical_integration_generation})
+    return CheckResult(
+        check_id, Severity.ERROR if findings else Severity.OK,
+        f"{sum(len(row['task_ids']) for row in findings)} task(s) lack live branch origins; "
+        "repair with `aq doctor --check integration.branch_origins --fix`"
+        if findings else "every managed task has a live branch origin",
+        fixable=bool(findings), data={"projects": findings},
+    )
+
+
+async def _fix_branch_origins(ctx: DoctorContext) -> CheckResult:
+    if ctx.handler is None:
+        return _unavailable("integration.branch_origins", "command handler unavailable for Git proof")
+    before = await _check_branch_origins(ctx)
+    results = []
+    for row in before.data.get("projects", []):
+        results.append(await ctx.handler.execute("edit_project", {
+            "project_id": row["project_id"], "hierarchical_integration_mode": row["mode"],
+            "expected_integration_generation": row["generation"],
+            "reason": "doctor backfill missing branch origins",
+        }))
+    after = await _check_branch_origins(ctx)
+    after.fix_applied = bool(results) and after.severity == Severity.OK
+    after.data["repairs"] = results
+    return after
 
 
 async def _subjects(ctx, *, held):
@@ -142,6 +187,7 @@ async def completed_undelivered(ctx: DoctorContext, *, project_ids=None, now=Non
 
     return await observe_completed_branches(
         ctx.db, _doctor_observer(ctx), project_ids=project_ids, now=now,
+        **({"cached_only": True} if ctx.read_only else {}),
     )
 
 
@@ -160,12 +206,17 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
     stranded = [e for e in entries if not e["accounted"] and e["rule"] != "unknown"]
     accounted = [e for e in entries if e["accounted"]]
     unknown = [e for e in entries if e["rule"] == "unknown"] + inventory["unavailable"]
+    # Accounting explains why a branch remains; it does not establish root
+    # delivery. In particular a queued PR/batch must not hide a completed root.
+    roots = [e for e in entries if e.get("root") and not e["archived"]
+             and not e["wip"] and e["rule"] != "unknown"]
     by_rule: dict[str, int] = {}
     for entry in entries:
         by_rule[entry["rule"]] = by_rule.get(entry["rule"], 0) + 1
     data = {
         "stranded": stranded[:100], "accounted": accounted[:100], "unknown": unknown[:100],
         "by_rule": dict(sorted(by_rule.items())), "projects": inventory["projects"],
+        "undelivered_roots": roots[:100],
     }
     if stranded:
         return CheckResult(
@@ -175,6 +226,16 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
                 "cannot reach, and nothing on record will deliver or retire them — e.g. "
                 f"{_describe_completed(stranded[0])}. Settle it: {stranded[0]['remedy']}"
             ),
+            data=data,
+        )
+    if roots:
+        first = roots[0]
+        return CheckResult(
+            id=check_id, severity=Severity.WARN,
+            detail=f"{len(roots)} COMPLETED root branch(es) are not contained in the default "
+                   f"branch — e.g. {_describe_completed(first)}. Inspect "
+                   f"`aq integration redrive-root {first['task_id']}`; implementation "
+                   "completion does not establish delivery",
             data=data,
         )
     detail = "no COMPLETED task branch holds work that nothing will deliver or retire"
@@ -355,37 +416,152 @@ async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None or ctx.handler is None:
         detail = "promotion flow re-validation unavailable without database and command handler"
         return _unavailable(check_id, detail)
-    handler = ctx.handler
     try:
         found = await recheck_stored_flows(
             ctx.db,
-            lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
+            lambda pid: ctx.handler.execute("promote_validate", {"project_id": pid}),
         )
     except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
-        return _read_error(
-            check_id, "could not read stored promotion flows; check db.migrations", exc,
-        )
+        return _read_error(check_id, "could not read stored promotion flows; check db.migrations", exc)
     if not found:
-        return CheckResult(
-            id=check_id, severity=Severity.OK, detail="every stored promotion flow validates"
-        )
+        return CheckResult(check_id, Severity.OK, "every stored promotion flow validates")
     projects = [
         {"project_id": project_id, "problems": problems,
          **{key: problems[0].get(key) for key in ("code", "pointer", "message")}}
         for project_id, problems in sorted(found.items())
     ]
-    named = "; ".join(
-        f"{entry['project_id']}: {entry['code']} at {entry['pointer']!r}" for entry in projects
-    )
-    return CheckResult(
-        id=check_id,
-        severity=Severity.ERROR,
-        detail=(
-            f"{len(projects)} stored promotion flow(s) no longer validate; their targets are "
-            f"misconfigured and the train promotes to the default branch ({named}). Fix the "
-            "flow with `aq promote validate --file` and `aq project set <id> promotion-flow`."
-        ),
+    named = "; ".join(f"{p['project_id']}: {p['code']} at {p['pointer']!r}" for p in projects)
+    return CheckResult(check_id, Severity.ERROR,
+        f"{len(projects)} stored promotion flow(s) no longer validate; their targets are "
+        f"misconfigured and the train promotes to the default branch ({named}). Fix the "
+        "flow with `aq promote validate --file` and `aq project set <id> promotion-flow`.",
         data={"projects": projects},
+    )
+
+
+async def continuous_promotion_lag(
+    ctx: DoctorContext, *, project_ids=None, now=None,
+    max_age_seconds=CONTINUOUS_PROMOTION_LAG_SECONDS,
+) -> dict:
+    """Age the oldest source-only first-parent commit from one fetched repo snapshot."""
+    from src.database.tables import projects, repos
+    from src.git.manager import is_valid_git_oid
+    from src.integration.delivery_observer import DeliveryTarget
+    from src.integration.promotion_steps import FlowSchema
+
+    report = {"findings": [], "unavailable": [], "checked": 0,
+              "max_age_seconds": max_age_seconds}
+    if ctx.db is None or not getattr(ctx.db, "_engine", None):
+        return report
+    now = time.time() if now is None else now
+    statement = select(
+        projects.c.id, projects.c.promotion_flow, repos.c.id.label("repository_id"),
+        repos.c.url, repos.c.default_branch,
+    ).select_from(projects.join(repos, (repos.c.id == projects.c.integration_repository_id)
+                               & (repos.c.project_id == projects.c.id))).where(
+        projects.c.status == "ACTIVE",
+        projects.c.hierarchical_integration_mode.in_(("train", "hierarchy", "development")),
+        projects.c.promotion_flow.is_not(None),
+    )
+    if project_ids is not None:
+        statement = statement.where(projects.c.id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement.order_by(projects.c.id))).mappings().all()
+    observer = None
+    for row in rows:
+        flow = FlowSchema.validate(row["promotion_flow"], default_branch=row["default_branch"])
+        # Trust is checked separately; branch drift needs only flow layers 1-2.
+        if any(problem.layer < 3 for problem in flow.problems):
+            continue
+        steps = [step for step in flow.flow or [] if step["type"] == "continuous"]
+        if not steps:
+            continue
+        observer = observer or _doctor_observer(ctx, prerequisite=False)
+        try:
+            snapshot = await observer.snapshot(DeliveryTarget(
+                row["id"], row["repository_id"], row["url"], "refs/heads/" + row["default_branch"],
+            ), **({"cached_only": True} if ctx.read_only else {}))
+            observed = getattr(snapshot, "observation", snapshot)
+            if observed.error:
+                raise ValueError(observed.error)
+        except Exception as exc:  # a failed read is visible, never a healthy flow
+            report["unavailable"].append({"project_id": row["id"],
+                "repository_id": row["repository_id"], "reason": str(exc)})
+            continue
+        for step in steps:
+            identity = {"project_id": row["id"], "repository_id": row["repository_id"],
+                        "step_id": step["id"], "source": step["source"], "target": step["target"]}
+            try:
+                source = observed.source_heads.get("refs/remotes/origin/" + step["source"])
+                target = observed.source_heads.get("refs/remotes/origin/" + step["target"])
+                if not is_valid_git_oid(source) or not is_valid_git_oid(target):
+                    raise ValueError("source or target branch head unavailable")
+                counts = await observed.git.arun_git_result([
+                    "--no-replace-objects", "rev-list", "--left-right", "--count",
+                    f"{target}...{source}",
+                ], cwd=observed.store, timeout=5)
+                if counts.returncode:
+                    raise ValueError("branch commit counts unavailable")
+                behind, ahead = map(int, counts.stdout.split())
+                report["checked"] += 1
+                if not ahead:
+                    continue
+                dates = await observed.git.arun_git_result([
+                    "--no-replace-objects", "log", "--first-parent", "--format=%ct",
+                    f"{target}..{source}",
+                ], cwd=observed.store, timeout=5)
+                if dates.returncode or not dates.stdout.strip():
+                    raise ValueError("source-only commit dates unavailable")
+                oldest = min(int(value) for value in dates.stdout.split())
+                age = now - oldest
+                if age <= max_age_seconds:
+                    continue
+                report["findings"].append({**identity, "source_sha": source, "target_sha": target,
+                    "ahead": ahead, "behind": behind, "oldest_unpromoted_at": oldest,
+                    "age_seconds": age, "max_age_seconds": max_age_seconds,
+                    "detail": f"continuous step {step['id']} ({step['source']} -> {step['target']}) "
+                              f"has {ahead} source-only commit(s), oldest {age / 3600:.1f}h "
+                              f"(threshold {max_age_seconds / 3600:g}h); inspect promotion status, "
+                              "source CI and the project promotion-continuous activation"})
+            except Exception as exc:  # one unreadable step does not hide the others
+                report["unavailable"].append({**identity, "reason": str(exc)})
+    return report
+
+
+async def _check_continuous_promotion_lag(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.continuous_promotion_lag"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    try:
+        report = await continuous_promotion_lag(ctx)
+    except Exception as exc:
+        return _read_error(check_id, "could not observe continuous promotion branches", exc)
+    findings, unavailable = report["findings"], report["unavailable"]
+    return CheckResult(check_id, Severity.WARN if findings or unavailable else Severity.OK,
+        f"{len(findings)} continuous promotion step(s) have work older than "
+        f"{report['max_age_seconds'] / 3600:g}h; {len(unavailable)} unavailable"
+        + "".join(f"\n{item['project_id']}: {item['detail']}" for item in findings),
+        data=report)
+
+
+async def _check_ci_producer(ctx: DoctorContext) -> CheckResult:
+    from src.integration.models import invalid_policy_producers
+
+    check_id = "integration.ci_producer"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    invalid = [
+        {"project_id": project.id, **entry}
+        for project in await ctx.db.list_projects()
+        for entry in invalid_policy_producers(project.hierarchical_integration_policy)
+    ]
+    return CheckResult(
+        check_id, Severity.ERROR if invalid else Severity.OK,
+        "; ".join(f"{entry['project_id']}: {entry['field']}={entry['producer_id']!r} "
+                  "must be a positive decimal GitHub App ID (GitHub Actions: 15368); "
+                  "update with `aq project set <id> integration-policy`" for entry in invalid)
+        or "every configured CI producer is a numeric GitHub App ID",
+        data={"invalid": invalid},
     )
 
 
@@ -457,11 +633,122 @@ async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_promotion_stranded(ctx: DoctorContext) -> CheckResult:
+    """Open promotion intents whose task StepAdmission refuses idle on every train visit."""
+    from src.database.tables import integration_batch_members, integration_batches, tasks
+    from src.integration.promotion_steps import promotion_task_defect
+
+    check_id = "integration.promotion_stranded"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    batch, member = integration_batches.c, integration_batch_members.c
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(select(
+            batch.id.label("batch_id"), batch.project_id, batch.request_id, tasks.c.id,
+            tasks.c.task_type, tasks.c.status, tasks.c.profile_id,
+        ).select_from(integration_batches.join(
+            integration_batch_members, member.batch_id == batch.id,
+        ).join(tasks, tasks.c.id == member.task_id)).where(
+            batch.trigger == "promotion", batch.target_ref.is_not(None), batch.intent != "aborted",
+            batch.lifecycle.not_in(("promoted", "aborted", "failed", "empty")),
+        ).order_by(batch.id))).mappings().all()
+    stranded = [{"batch_id": row["batch_id"], "project_id": row["project_id"],
+                 "request_id": row["request_id"], "task_id": row["id"], "reason": reason}
+                for row in rows if (reason := promotion_task_defect(row, allow_completed=True))]
+    return CheckResult(check_id, Severity.ERROR if stranded else Severity.OK, "; ".join(
+        f"batch {entry['batch_id']}: {entry['reason']}; back up and restore it with `aq promote "
+        f"repair {entry['request_id']} --project {entry['project_id']}`" for entry in stranded)
+        or "every open promotion intent has an admissible task", data={"stranded": stranded})
+
+
+async def stalled_train_batches(
+    ctx: DoctorContext, *, now=None, project_ids=None, alert_after_seconds=None,
+) -> list[dict]:
+    """Age alarms for sealed inputs, independent of the legacy Subject journal."""
+    from sqlalchemy import union_all
+
+    from src.database.tables import archived_tasks, integration_batches, projects, tasks
+    from src.integration.models import IntegrationTrainPolicy
+    from src.integration.repair import ordinary_repair_id
+
+    now = time.time() if now is None else now
+    batch = integration_batches.c
+    statement = select(
+        batch.id.label("batch_id"), batch.project_id, batch.repository_id, batch.target_ref,
+        batch.updated_at, batch.repair_attempt_count, projects.c.hierarchical_integration_policy,
+    ).select_from(integration_batches.join(projects, projects.c.id == batch.project_id)).where(
+        batch.target_ref.is_not(None), batch.intent == "open", batch.lifecycle == "sealed",
+        projects.c.status == "ACTIVE",
+        projects.c.hierarchical_integration_mode.in_(("development", "hierarchy", "train")),
+    ).order_by(batch.id)
+    if project_ids is not None:
+        statement = statement.where(batch.project_id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement)).mappings().all()
+        ids = [ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
+               for row in rows if row["repair_attempt_count"]]
+        repairs = {}
+        if ids:
+            # Prefer the live row if archival overlaps a read.
+            repairs = {row["id"]: row for row in (await conn.execute(union_all(*(
+                select(table.c.id, table.c.status, table.c.updated_at).where(table.c.id.in_(ids))
+                for table in (archived_tasks, tasks)
+            )))).mappings().all()}
+    train = getattr(getattr(ctx.handler, "orchestrator", None), "integration_train", None)
+    lanes = {(row["project_id"], row["repository_id"], row["target_ref"]): row
+             for row in train.status()} if train is not None else {}
+    findings = []
+    for row in rows:
+        repair_id = (ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
+                     if row["repair_attempt_count"] else None)
+        repair = repairs.get(repair_id)
+        if (alert_after_seconds is None and repair is not None
+                and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}):
+            continue  # Existing task/repair capacity diagnostics own this wait.
+        lane = lanes.get((row["project_id"], row["repository_id"], row["target_ref"]), {})
+        progress_at = max(row["updated_at"], repair["updated_at"] if repair else 0)
+        if lane.get("batch_id") == row["batch_id"]:
+            progress_at = max(progress_at, lane.get("progress_at", 0))
+        policy = IntegrationTrainPolicy.model_validate(
+            (row["hierarchical_integration_policy"] or {}).get("train") or {})
+        due_at = progress_at + (alert_after_seconds or policy.settling_cap_seconds)
+        if alert_after_seconds is None:
+            due_at = max(due_at, lane.get("deferred_until", 0) + 60)
+            if lane.get("running"):
+                due_at = max(due_at, lane.get("visit_started_at", 0)
+                             + train.visit_timeout_seconds + 60)
+        if now < due_at:
+            continue
+        findings.append({
+            "batch_id": row["batch_id"], "project_id": row["project_id"],
+            "repository_id": row["repository_id"], "target_ref": row["target_ref"],
+            "repair_task_id": repair_id, "repair_status": repair["status"] if repair else None,
+            "progress_at": progress_at, "due_at": due_at,
+            "age_seconds": now - progress_at, "observation": lane,
+            "detail": f"sealed batch {row['batch_id']} has no progress for "
+                      f"{int((now - progress_at) / 60)}m; inspect "
+                      f"aq integration status {row['project_id']} and its candidate checks",
+        })
+    return findings
+
+
+async def _check_train_batches_stalled(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.train_batches_stalled"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    findings = await stalled_train_batches(ctx)
+    return CheckResult(check_id, Severity.WARN if findings else Severity.OK,
+                       "; ".join(row["detail"] for row in findings)
+                       or "no sealed train batch is past its progress deadline",
+                       data={"findings": findings})
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=f"integration.{name}", run=run, fix=fix, timeout_s=timeout, owner=OWNER)
         for name, run, timeout, fix in (
             ("delivery_engine", _check_delivery_engine, 30.0, None),
+            ("branch_origins", _check_branch_origins, 300.0, _fix_branch_origins),
             ("legacy_deliveries", _check_legacy_deliveries, 300.0, None),
             ("completed_undelivered", _check_completed_undelivered, 300.0, None),
             ("finished_branch_owners", _check_finished_branch_owners,
@@ -470,7 +757,11 @@ def integration_checks() -> list[DoctorCheck]:
             ("subjects_held", _check_subjects_held, 5.0, None),
             ("trust", _check_trust, 60.0, None),
             ("promotion_flow", _check_promotion_flow, 60.0, None),
+            ("continuous_promotion_lag", _check_continuous_promotion_lag, 60.0, None),
+            ("promotion_stranded", _check_promotion_stranded, 30.0, None),
+            ("train_batches_stalled", _check_train_batches_stalled, 30.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
+            ("ci_producer", _check_ci_producer, 30.0, None),
         )
     ]
 

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.observations.models import SnapshotValue
+
 from src.api.models.project import EffectiveGitIdentity
 
 
@@ -113,6 +115,16 @@ class EnvVarReference(BaseModel):
     resolved: bool
 
 
+class DeploymentEvent(BaseModel):
+    timestamp: float
+    outcome: str
+    branch: str = ""
+    previous: str = ""
+    target: str = ""
+    message: str = ""
+    automatic: bool = False
+
+
 class GetConfigResponse(BaseModel):
     """The config as written on disk, with literal credentials redacted.
 
@@ -132,6 +144,7 @@ class GetConfigResponse(BaseModel):
     env_var_references: list[EnvVarReference] = []
     redacted: list[str] = []
     secret_placeholder: str = ""
+    deployment_history: list[DeploymentEvent] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -234,6 +247,9 @@ class StuckTask(BaseModel):
     assigned_agent: str | None = None
     updated_at: float
     seconds_in_state: float
+    kind: str | None = None
+    reason: str | None = None
+    suggested_command: str | None = None
 
 
 class StuckTasksThresholds(BaseModel):
@@ -241,10 +257,11 @@ class StuckTasksThresholds(BaseModel):
     in_progress: int
 
 
-class GetStuckTasksResponse(BaseModel):
+class GetStuckTasksResponse(SnapshotValue):
     stuck: list[StuckTask] = []
-    now_used: float
-    thresholds: StuckTasksThresholds
+    now_used: float | None = None
+    thresholds: StuckTasksThresholds | None = None
+    summary: str = ""
 
 
 class StubScanEntry(BaseModel):
