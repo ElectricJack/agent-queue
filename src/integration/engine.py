@@ -18,10 +18,9 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import select, text
 
 from src.database.tables import (
-    integration_branch_owners,
     integration_candidate_ref_mutations,
     integration_promotion_intents,
     integration_repair_operations,
@@ -29,8 +28,7 @@ from src.database.tables import (
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
-    AdmissionPredicate,
+from src.integration.runtime_contracts import (
     Decision,
     EjectArgs,
     Subject,
@@ -46,7 +44,6 @@ class EngineRefused(RuntimeError):
 _scope: ContextVar[tuple[Any, str, SubjectEngine, asyncio.Task | None, Any] | None] = ContextVar(
     "root_engine_scope", default=None
 )
-_admission: ContextVar[AdmissionPredicate | None] = ContextVar("root_admission", default=None)
 _ejection: ContextVar[RootPolicyEjection | None] = ContextVar("root_policy_ejection", default=None)
 
 
@@ -63,7 +60,9 @@ class RootPolicyEjection:
         if current_policy_ejection(db, batch["id"], task_id, reason) is not self:
             raise EngineRefused("policy ejection escaped its root operation")
         current = await db.lock_integration_subject_on(conn, self.subject.id)
-        current_subject = Subject.from_row(current) if current is not None else None
+        if current is None or current["engine"] != SubjectEngine.RECONCILER.value:
+            raise EngineRefused("policy ejection subject/batch identity changed")
+        current_subject = Subject.from_row(current)
         identity_fields = (
             "id", "version", "project_id", "repository_id", "kind", "engine", "phase",
             "policy", "batch_id", "target_ref", "head_sha", "base_sha", "generation",
@@ -168,22 +167,6 @@ def current_policy_ejection(db, batch_id, task_id, reason) -> RootPolicyEjection
     return authority
 
 
-@contextmanager
-def root_admission(predicate: AdmissionPredicate):
-    token = _admission.set(predicate)
-    try:
-        yield
-    finally:
-        _admission.reset(token)
-
-
-def current_admission() -> AdmissionPredicate | None:
-    scope = _scope.get()
-    if scope and scope[2] is SubjectEngine.RECONCILER and scope[3] is asyncio.current_task():
-        return _admission.get()
-    return None
-
-
 def lock_key(repository_id: str, *, publisher: bool = False) -> int:
     return int.from_bytes(
         hashlib.sha256(
@@ -261,7 +244,9 @@ class RootEngineOwnership:
 
     @asynccontextmanager
     async def _operation(self, conn, repository_id, subject, publisher):
-        engine = SubjectEngine.RECONCILER if subject else SubjectEngine.LEGACY
+        if subject is None:
+            raise EngineRefused("root mutation requires the active reconciler subject")
+        engine = SubjectEngine.RECONCILER
         rows = (
             (
                 await conn.execute(
@@ -275,14 +260,11 @@ class RootEngineOwnership:
             .mappings()
             .all()
         )
-        if subject is None and rows:
-            raise EngineRefused("repository root publisher belongs to the reconciler")
-        if subject is not None:
-            current = next((row for row in rows if row["id"] == subject.id), None)
-            if current is None or current["version"] != subject.version:
-                raise EngineRefused("root subject engine/version changed")
-            if subject.kind is not SubjectKind.ROOT_BATCH or not subject.is_live:
-                raise EngineRefused("not a live root subject")
+        current = next((row for row in rows if row["id"] == subject.id), None)
+        if current is None or current["version"] != subject.version:
+            raise EngineRefused("root subject engine/version changed")
+        if subject.kind is not SubjectKind.ROOT_BATCH or not subject.is_live:
+            raise EngineRefused("not a live root subject")
         token = _scope.set((self.db, repository_id, engine, asyncio.current_task(), conn))
         try:
             if publisher:
@@ -290,6 +272,28 @@ class RootEngineOwnership:
             yield
         finally:
             _scope.reset(token)
+
+    @asynccontextmanager
+    async def publisher_exclusion(self, repository_id: str):
+        """Serialize shared Git ports and cleanup without granting root authority.
+
+        SubjectGitAuthority checks the exact subject and branch fence at every
+        write. Root adapters additionally enter operation() for root authority.
+        Transfers take the exclusive side of this repository fence.
+        """
+        async with self.db._engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            try:
+                await conn.execute(text("SELECT pg_advisory_lock_shared(:key)"),
+                                   {"key": lock_key(repository_id)})
+                await self._publisher(conn, repository_id)
+                yield
+            finally:
+                try:
+                    await conn.execute(text("SELECT pg_advisory_unlock_all()"))
+                except BaseException:
+                    await conn.invalidate()
+                    raise
 
     async def transfer(
         self,
@@ -304,9 +308,8 @@ class RootEngineOwnership:
     ) -> dict:
         """Transfer the entire repository's roots, with exact versions and audit.
 
-        A cutover needs explicit operator evidence. Disabling the feature does
-        not erase ownership: rollback is this same serialized transfer to legacy.
-        Neither transfer touches Git nor removes any journal or reservation.
+        Forward activation needs explicit operator evidence and exact versions.
+        Disabling the loop preserves ownership; no fallback engine exists.
         """
         engine = SubjectEngine(engine)
         if not dry_run and (not reason.strip() or not expected_versions):
@@ -393,7 +396,7 @@ class RootEngineOwnership:
                 )
             now = self.clock()
             for row in rows:
-                subject = Subject.from_row(row)
+                subject = Subject.from_row({**row, "engine": "reconciler"})
                 await self.db.append_integration_subject_journal_on(
                     conn,
                     {
@@ -410,7 +413,7 @@ class RootEngineOwnership:
                         "primitive": "record_decision",
                         "outcome": "recorded",
                         "payload": {
-                            "from": subject.engine.value,
+                            "from": row["engine"],
                             "to": engine.value,
                             "reason": reason,
                             "command": "integration_engine_transfer",
@@ -432,21 +435,6 @@ class RootEngineOwnership:
                 )
                 if changed is None:
                     raise EngineRefused("subject changed during engine transfer")
-            # Keep the row and monotonic token for future activation. The lock
-            # excludes an in-flight publisher before releasing its reservation.
-            if engine is SubjectEngine.LEGACY:
-                await conn.execute(
-                    update(integration_branch_owners)
-                    .where(
-                        integration_branch_owners.c.repository_id == repository_id,
-                        integration_branch_owners.c.owner_id == "root-reconciler:" + repository_id,
-                        integration_branch_owners.c.owner_role == "publisher",
-                        integration_branch_owners.c.handoff_state == "reserved",
-                        integration_branch_owners.c.session_id.is_(None),
-                        integration_branch_owners.c.workspace_id.is_(None),
-                    )
-                    .values(handoff_state="released", updated_at=now)
-                )
         return {
             "outcome": "transferred",
             "repository_id": repository_id,
@@ -456,9 +444,10 @@ class RootEngineOwnership:
 
 
 def root_engine_guard(
-    resource: str, *, outcome="wait", result_model=None, refusal=None, publisher=False
+    resource: str, *, outcome="wait", result_model=None, refusal=None, publisher=False,
+    aborted_pr_cleanup=False, promoted_train_cleanup=False,
 ):
-    """Cover legacy service entry points, including autonomous/restart callers.
+    """Require an active root visit for shared mutation primitives.
 
     An active adapter enters the exclusion before calling CommandHandler; its
     nested service uses that same authority. Caller arguments cannot grant it.
@@ -500,6 +489,17 @@ def root_engine_guard(
                     batch = await db.get_integration_batch(identity)
                 repository_id = batch["repository_id"] if batch else None
             if repository_id is None:
+                return await method(self, *args, **kwargs)
+            # Retiring a terminal batch's audit PR does not mutate source refs,
+            # candidate construction or publication. A repository's new root
+            # owner must not strand this independent, immutable cleanup work.
+            if (aborted_pr_cleanup and batch is not None and batch["lifecycle"] == "aborted"
+                    and bound.get("kind", "audit_pr") == "audit_pr"):
+                return await method(self, *args, **kwargs)
+            # Train cleanup uses immutable inputs and its own per-ref leases,
+            # without a legacy root subject or promotion intent.
+            if (promoted_train_cleanup and batch is not None
+                    and batch["target_ref"] is not None and batch["lifecycle"] == "promoted"):
                 return await method(self, *args, **kwargs)
             try:
                 async with RootEngineOwnership(db).operation(repository_id, publisher=publisher):

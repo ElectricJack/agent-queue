@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/task_graph.py::GraphParseError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph.py::create_graph": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph.py::extract_graph_from_spec": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph.py::parse_graph": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph.py::split_findings": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph.py::validate_graph": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/providers/availability.py::EXIT_RATE_LIMIT": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
