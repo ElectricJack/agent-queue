@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/api/sessions.py::build_sessions_router": {
+      "baseline_span": [
+        96,
+        270
+      ],
+      "landing_span": [
+        96,
+        270
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/sessions.py::import from src.api.scope import check_command_scope": {
+      "baseline_span": [
+        31,
+        31
+      ],
+      "landing_span": [
+        31,
+        31
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

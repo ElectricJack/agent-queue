@@ -7,6 +7,7 @@ import { usePaletteState } from "./paletteState";
 import { useProjects, useActiveTasksAllProjects } from "../../api/hooks";
 import { useShellPaneStore } from "../../panes/store";
 import { workspaceHref, workspaceNavigation } from "../projectNavigation";
+import { taskSelectionHref, writeRecordSelection } from "../../pages/records/recordUrlState";
 
 /**
  * Linear-style command palette.
@@ -101,7 +102,8 @@ export function Palette() {
                   key={t.id}
                   value={t.id}
                   onSelect={() => {
-                    navigate(`/tasks/${encodeURIComponent(t.id)}`, {
+                    navigate(taskSelectionHref(t.project_id, t.id,
+                      workspace.projectId === t.project_id ? workspace.search : ""), {
                       state: { from },
                     });
                     pane.close();
@@ -123,7 +125,8 @@ export function Palette() {
                   key={p.id}
                   value={p.id}
                   onSelect={() => {
-                    navigate(workspaceHref(p.id, workspace.tab, workspace.search));
+                    const params = writeRecordSelection(new URLSearchParams(workspace.search), null);
+                    navigate(workspaceHref(p.id, workspace.tab, params.size ? `?${params}` : ""));
                     setOpen(false);
                     setQ("");
                   }}
