@@ -1464,3 +1464,25 @@ async def test_approval_retry_recovers_lost_review_response(promote_env):
     e.human.request_json = real
     assert (await e.handler._cmd_promote_approve(args))["outcome"] == "already_approved"
     assert e.human.posts == 1
+
+
+async def test_request_supersedes_a_task_its_aborted_intent_left_in_progress(promote_env):
+    """2026-10-21: an aborted staging intent's task ran 21h beside newer promotions."""
+    e = promote_env
+    created = await request(e)
+    async with e.db._engine.begin() as conn:
+        # The pre-fix `aq integration abort` projection: batch terminal, task untouched.
+        await conn.execute(update(integration_batches).values(
+            intent="aborted", lifecycle="aborted", human_abort_reason="red on dev"))
+    other = commit(
+        e.repo.store, {"pyproject.toml": '[project]\nversion = "0.2.1"\n'}, base=e.source
+    )
+    git(e.repo.store, "push", "origin", other + ":refs/heads/dev")
+    e.github.runs[other] = "success"
+    e.github.created = 0
+    newer = await request(e, source_sha=other)
+    assert newer["outcome"] == "requested", newer
+    assert newer["superseded_task_ids"] == [created["task_id"]]
+    async with e.db._engine.connect() as conn:
+        statuses = dict((await conn.execute(select(tasks.c.id, tasks.c.status))).all())
+    assert statuses == {created["task_id"]: "FAILED", newer["task_id"]: "IN_PROGRESS"}
