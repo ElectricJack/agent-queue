@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,8 +14,13 @@ from sqlalchemy import insert
 
 from src.commands.claim_commands import write_claim_file
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
-from src.database.tables import integration_branch_owners
+from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
+from src.database.tables import (
+    integration_branch_owners,
+    integration_parent_episodes,
+    integration_repair_operations,
+    integration_repair_stages,
+)
 from src.doctor.models import Severity
 from src.doctor.pool_checks import run_check
 from src.models import (
@@ -21,6 +28,7 @@ from src.models import (
     AgentProfile,
     AgentState,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -29,22 +37,27 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
+from src.sessions.context import completed_turn_at
 from src.sessions.exit_classifier import ExitVerdict, Verdict
 from src.sessions.fake import FakeProvider
-from src.sessions.reconciler import META_STALL_LAST_ACTION, META_STALL_NUDGES, SessionReconciler
+from src.sessions.provider import SessionHandle, SessionSpec
+from src.sessions.reconciler import (
+    DRAIN_ACK_KEY,
+    META_STALL_LAST_ACTION,
+    META_STALL_NUDGES,
+    SessionReconciler,
+)
 from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", harness="claude"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -100,20 +113,22 @@ async def held_pool_session(
     # ``tasks.assigned_agent_id`` and ``agents.current_task_id`` form a
     # cycle -- insert both with the cross-reference unset, then backfill.
     await db.create_task(Task(id=task_id, project_id=PROJECT_ID, title=task_id, description=task_id,
-                              status=TaskStatus.IN_PROGRESS, claim_epoch=1, profile_id="worker",
+                              status=TaskStatus.IN_PROGRESS, profile_id="worker",
                               route_source="legacy"))
     await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="worker",
                                 state=AgentState.BUSY))
-    await db.update_task(task_id, assigned_agent_id=agent_id)
+    await db.update_task(task_id, assigned_agent_id=agent_id, claim_epoch=1)
     await db.update_agent(agent_id, current_task_id=task_id)
     await db.create_workspace(Workspace(id=f"ws-{agent_id}", project_id=PROJECT_ID,
                                         workspace_path=f"/wd/{agent_id}",
                                         source_type=RepoSourceType.LINK, kind_id="project-repo",
                                         locked_by_agent_id=agent_id, locked_by_task_id=task_id))
+    task = await db.get_task(task_id)
     await db.create_session(SessionRecord(
         id=sid, project_id=PROJECT_ID, profile_id="worker", harness="claude", provider="fake",
         name=sid, lifecycle="pool", work_dir=f"/wd/{agent_id}", epoch="e", instance_token="t",
         started_at=time.time() - 600, state="running", agent_id=agent_id, task_id=task_id,
+        last_claim_epoch=task.claim_epoch,
         claim_phase=phase, claim_phase_at=phase_at if phase_at is not None else time.time()))
     return sid
 
@@ -123,6 +138,25 @@ async def observe(reconciler, now=None):
     now = now if now is not None else time.time()
     live = await reconciler._step_observe(now)
     return live, now
+
+
+@pytest.mark.parametrize("desired_state", ["stopped", "running"])
+async def test_deleted_profile_retries_guarded_stop_of_a_busy_pool(
+    db, reconciler, provider, desired_state,
+):
+    sid = await held_pool_session(db)
+    await provider.start(SessionSpec(
+        session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+    ))
+    await db.update_session(sid, desired_state=desired_state)
+    await db.delete_profile("worker")
+
+    row = await db.get_session(sid)
+    await reconciler._step_drain_ack([row], time.time())
+
+    assert (await db.get_session(sid)).state == "stopped"
+    task = await db.get_task("t1")
+    assert (task.status, task.assigned_agent_id, task.profile_id) == (TaskStatus.READY, None, None)
 
 
 class TestPrepareTimeout:
@@ -184,6 +218,25 @@ class TestPrepareTimeout:
 
 
 class TestExits:
+    @pytest.mark.parametrize("epoch_delta", [None, -1, 1])
+    async def test_pool_exit_with_inconsistent_claim_epoch_preserves_task(
+        self, db, reconciler, provider, orch, epoch_delta
+    ):
+        sid = await held_pool_session(db)
+        task = await db.get_task("t1")
+        claim_epoch = None if epoch_delta is None else task.claim_epoch + epoch_delta
+        await db.update_session(sid, last_claim_epoch=claim_epoch)
+        provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
+        live, now = await observe(reconciler)
+
+        await reconciler._step_exits(live, now)
+
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
+        assert (await db.get_session(sid)).state == "running"
+        assert await db.get_task_meta("t1", "worker_failure_streak") is None
+        assert orch._pool_quarantine == {}
+
     async def test_pool_exit_holding_task_returns_task_and_releases_worker(self, db, reconciler,
                                                                          provider):
         sid = await held_pool_session(db)
@@ -348,6 +401,102 @@ class TestStallLadder:
         assert (await db.get_session(sid)).state == "stopped"
         t = await db.get_task("t1")
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
+
+    async def test_completed_turn_repainting_pane_enters_ladder(
+        self, db, reconciler, monkeypatch
+    ):
+        sid = await held_pool_session(db)
+        now = time.time()
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1000)
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                            AsyncMock(return_value=now - 1000))
+        await reconciler._step_stall_ladder(await db.list_sessions(live_only=True), now)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+
+
+class TestCompletedTurnBackstop:
+    @pytest.mark.parametrize("exemption", [None, "question", "wait", "heartbeat", "disabled"])
+    async def test_repainting_idle_holder_released_unless_exempt(
+        self, db, reconciler, monkeypatch, exemption
+    ):
+        sid = await held_pool_session(db)
+        now = time.time()
+        reconciler.config.agents_config.stuck_timeout_seconds = 0
+        if exemption == "disabled":
+            reconciler.sessions_config.idle_claim_timeout_seconds = 0
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=(
+            now if exemption == "heartbeat" else now - 1000
+        ))
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                            AsyncMock(return_value=now - 1000))
+        if exemption == "question":
+            monkeypatch.setattr(reconciler, "_waiting_for_question", AsyncMock(return_value=True))
+        if exemption == "wait":
+            monkeypatch.setattr(reconciler, "_wait_lease", AsyncMock(return_value=(True, 0.0)))
+        await reconciler._step_backstop(await db.list_sessions(live_only=True), now)
+        row = await db.get_session(sid)
+        task = await db.get_task("t1")
+        if exemption:
+            assert row.state == "running"
+            assert task.status == TaskStatus.IN_PROGRESS
+        else:
+            assert row.state == "stopped"
+            assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+            assert (await db.get_agent("agent-1")).state == AgentState.IDLE
+            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id is None
+
+    async def test_resumed_turn_before_stop_retains_claim(self, db, reconciler, monkeypatch):
+        sid = await held_pool_session(db)
+        now = time.time()
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1000)
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                            AsyncMock(side_effect=[now - 1000, None]))
+        await reconciler._step_backstop(await db.list_sessions(live_only=True), now)
+        assert (await db.get_session(sid)).state == "running"
+        assert (await db.get_task("t1")).assigned_agent_id == "agent-1"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("newer", [None, "user", "tool", "partial", "malformed", "preclaim"])
+async def test_completed_turn_requires_current_explicit_completion(
+    tmp_path, monkeypatch, harness, newer
+):
+    at = time.time() - 1000
+    stamp = datetime.fromtimestamp(at, UTC).isoformat()
+    row = SimpleNamespace(harness=harness, session_key="key", started_at=at - 100,
+                          claim_phase_at=at - 50)
+    complete = {"timestamp": stamp, "type": "assistant",
+                "message": {"stop_reason": "end_turn"}} if harness == "claude" else {
+                    "timestamp": stamp, "type": "event_msg",
+                    "payload": {"type": "task_complete"}}
+    records = [json.dumps(complete)]
+    if newer in {"user", "tool"}:
+        records.append(json.dumps(
+            {"type": "user" if newer == "user" else "assistant",
+             "message": {"stop_reason": "tool_use"}} if harness == "claude" else
+            {"type": "event_msg" if newer == "user" else "response_item",
+             "payload": {"type": "task_started" if newer == "user" else "function_call"}}
+        ))
+    if newer == "preclaim":
+        row.claim_phase_at = at + 1
+    path = tmp_path / "transcript.jsonl"
+    content = "\n".join(records) + "\n"
+    if newer == "partial":
+        content += '{"type":'
+    if newer == "malformed":
+        content += "broken\n"
+    path.write_text(content)
+    reader = MagicMock()
+    reader.resolve_session.return_value = path
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda *a, **kw: reader)
+    result = await completed_turn_at(row, base_dir=tmp_path)
+    if newer is None:
+        assert result == path.stat().st_mtime
+    else:
+        assert result is None
 
 
 class TestPrepareTimeoutFlagGate:
@@ -579,3 +728,463 @@ class TestOrphans:
         )
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
         assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"
+
+
+# ---------------------------------------------------------------------------
+# A drain-acked worker still holding a retired integration delegate
+# (bold-impact-53).  The close refuses forever ("this delegate is retired"),
+# the worker acks, and the pool branch must not wait for a close that cannot
+# come -- but only for a durably proven retirement, and only on the agent's
+# own ack.
+# ---------------------------------------------------------------------------
+
+SHA = "a" * 40
+
+
+async def _integration_delegate(
+    db, *, operation_state="completed", stage_state="passed", active_stage=0, task_id="t1"
+):
+    """Make *task_id* the stage-0 repair delegate of a parent repair operation."""
+    if await db.get_repo("repo") is None:
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+    await db.create_task(Task(id="parent", project_id=PROJECT_ID, title="parent",
+                              description="", status=TaskStatus.IN_PROGRESS))
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="episode", parent_task_id="parent", repository_id="repo", generation=1,
+            pre_collection_checkpoint_sha=SHA, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="operation", target_kind="parent", parent_task_id="parent",
+            episode_id="episode", active_stage=active_stage, state=operation_state,
+            policy_snapshot={}, artifact_snapshot={}, required_check_version="checks-v1",
+            created_at=1.0, updated_at=1.0,
+        ))
+        for ordinal in range(active_stage + 1):
+            await conn.execute(insert(integration_repair_stages).values(
+                operation_id="operation", ordinal=ordinal, policy={}, starting_sha=SHA,
+                repair_task_id=task_id if ordinal == 0 else None,
+                writer_kind="repair_delegate" if ordinal == 0 else None,
+                attempts=0, state=stage_state if ordinal == 0 else "active",
+            ))
+
+
+class TestRetiredDelegateDrain:
+    @pytest.fixture
+    async def acked(self, db, provider):
+        """A pool worker that ran ``aq session drain-ack`` over its still-open claim."""
+        sid = await held_pool_session(db)
+        await db.update_task("t1", claim_epoch=1)
+        await provider.start(SessionSpec(
+            session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+        ))
+        await db.update_session(sid, state="draining", desired_state="stopped",
+                                last_claim_epoch=1)
+        await provider.set_meta(SessionHandle(sid, "fake", "t"), DRAIN_ACK_KEY, "1")
+        return sid
+
+    async def _assert_still_waiting(self, db, provider, sid):
+        assert sid in provider.sessions
+        session = await db.get_session(sid)
+        assert (session.state, session.task_id, session.claim_phase) == (
+            "draining", "t1", "active"
+        )
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
+            TaskStatus.IN_PROGRESS, "agent-1", 1
+        )
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
+
+    @pytest.mark.parametrize(("operation_state", "stage_state", "active_stage", "disposition"), [
+        ("completed", "passed", 0, "superseded"),
+        ("cancelled", "active", 0, "cancelled"),
+        ("escalated", "expired", 1, "superseded"),
+    ])
+    async def test_acked_worker_of_a_retired_delegate_is_stopped(
+        self, db, reconciler, provider, orch, acked, operation_state, stage_state,
+        active_stage, disposition,
+    ):
+        await _integration_delegate(db, operation_state=operation_state,
+                                    stage_state=stage_state, active_stage=active_stage)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        # Stopped through the same teardown a supervisor kill reaches.
+        assert acked not in provider.sessions
+        session = await db.get_session(acked)
+        assert (session.state, session.desired_state, session.end_reason) == (
+            "stopped", "stopped", "retired_delegate"
+        )
+        # Back on the frontier like any pool teardown -- never a manufactured pass.
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert await db.get_task_meta("t1", "outcome") is None
+        bodies = [c["body"] for c in (await db.list_task_comments("t1"))["comments"]]
+        assert any(
+            "integration operation operation" in body and "drain-ack" in body
+            for body in bodies
+        )
+        stopped = [c for c in orch.bus.emit.await_args_list
+                   if c.args[0] == "session.retired_delegate_stopped"]
+        assert len(stopped) == 1
+        assert stopped[0].args[1]["task_id"] == "t1"
+        assert stopped[0].args[1]["retirement"]["disposition"] == disposition
+
+        if operation_state == "escalated":
+            # The live operation keeps the ticket off the frontier for its successor.
+            return
+        from src.integration.delegate_release import release_delegates
+
+        released = await release_delegates(db, now=now, released_by="integration_service")
+        assert [row["task_id"] for row in released] == ["t1"]
+        assert (await db.get_task("t1")).status == TaskStatus.FAILED
+        record = await db.get_task_meta("t1", "integration_retirement")
+        assert record["disposition"] == disposition
+
+    async def test_an_attached_owner_keeps_the_stopped_writers_evidence(
+        self, db, reconciler, provider, acked
+    ):
+        """Stop proof comes first; owner recovery preserves the work before any release."""
+        await _integration_delegate(db)
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner-1", repository_id="repo", ref="aq/parent", owner_id="t1",
+                owner_role="repair", fence_token=4, handoff_state="attached",
+                session_id=acked, workspace_id="ws-agent-1", created_at=1.0, updated_at=1.0,
+            ))
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        assert acked not in provider.sessions
+        session = await db.get_session(acked)
+        assert (session.state, session.desired_state) == ("stopped", "stopped")
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (workspace.locked_by_agent_id, workspace.locked_by_task_id) == ("agent-1", "t1")
+        owner = await db.get_integration_delegate_cleanup("t1")
+        assert [(b["code"], b.get("handoff_state")) for b in owner] == [
+            ("branch_owner_retained", "attached"), ("workspace_locked", None),
+        ]
+
+    @pytest.mark.parametrize("seat", [
+        "active", "awaiting_completion", "human_required", "current_terminal", "unrelated",
+    ])
+    async def test_an_unproven_retirement_keeps_waiting_for_the_close(
+        self, db, reconciler, provider, acked, seat
+    ):
+        shapes = {
+            "active": {"operation_state": "active", "stage_state": "active"},
+            "awaiting_completion": {
+                "operation_state": "active", "stage_state": "awaiting_completion",
+            },
+            # Human gate: a resume may revive this stage with this very writer.
+            "human_required": {"operation_state": "human_required", "stage_state": "expired"},
+            "current_terminal": {"operation_state": "escalated", "stage_state": "expired"},
+        }
+        if seat in shapes:
+            await _integration_delegate(db, **shapes[seat])
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        await self._assert_still_waiting(db, provider, acked)
+
+    async def test_without_the_agents_own_ack_a_retired_delegate_is_not_stopped(
+        self, db, reconciler, provider, acked
+    ):
+        """An operator drain is not the worker saying its work is saved."""
+        await _integration_delegate(db)
+        await provider.set_meta(SessionHandle(acked, "fake", "t"), DRAIN_ACK_KEY, "0")
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        await self._assert_still_waiting(db, provider, acked)
+
+    async def test_an_unconfirmed_stop_releases_nothing_and_retries(
+        self, db, reconciler, provider, acked
+    ):
+        await _integration_delegate(db)
+        real_stop = provider.stop
+        provider.stop = AsyncMock(side_effect=RuntimeError("tmux server unreachable"))
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        await self._assert_still_waiting(db, provider, acked)
+        assert provider.stop.await_count == 1
+
+        provider.stop = AsyncMock(wraps=real_stop)
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+        assert acked not in provider.sessions
+        assert (await db.get_session(acked)).state == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# A drain-acked worker still bound to a task whose close already committed
+# (wise-willow).  A daemon restart lost the close after its terminal
+# transition: the task is COMPLETED, but the claim and the attached branch
+# owner still name the session, so ``release_displaced_pool_claim`` keeps
+# refusing and nothing stopped the idle worker.
+# ---------------------------------------------------------------------------
+
+
+async def _attached_owner(db, sid, *, task_id="t1"):
+    if await db.get_repo("repo") is None:
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner-1", repository_id="repo", ref=f"aq/{task_id}", owner_id=task_id,
+            owner_role="worker", fence_token=2, handoff_state="attached",
+            session_id=sid, workspace_id="ws-agent-1", created_at=1.0, updated_at=1.0,
+        ))
+
+
+async def _completion(db, *, completed_at=None, task_id="t1", outcome="pass"):
+    from src.models import TaskCompletion
+
+    await db.save_task_completion(TaskCompletion(
+        id=f"completion-{task_id}-{completed_at}", task_id=task_id, outcome=outcome,
+        summary="Pushed the fix.",
+        completed_at=time.time() if completed_at is None else completed_at,
+    ))
+
+
+async def _accepted_close(db, session_id, *, claim_epoch=1, task_id="t1"):
+    """The identity the transition accepting a close records in its transaction."""
+    await db.set_task_meta(task_id, ACCEPTED_CLOSE_KEY, {
+        "completion_id": f"completion-{task_id}", "session_id": session_id,
+        "claim_epoch": claim_epoch,
+    })
+
+
+class TestSettledClaimDrain:
+    @pytest.fixture
+    async def bound(self, db, provider):
+        """The ambiguous close: the terminal transition committed and nothing after it.
+
+        The claim, the workspace hold and the attached branch owner still name
+        the session; the worker then ran ``aq session drain-ack``.
+        """
+        sid = await held_pool_session(db)
+        await db.update_task("t1", claim_epoch=1)
+        await _attached_owner(db, sid)
+        await provider.start(SessionSpec(
+            session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+        ))
+        await db.update_session(sid, state="draining", desired_state="stopped",
+                                last_claim_epoch=1)
+        await provider.set_meta(SessionHandle(sid, "fake", "t"), DRAIN_ACK_KEY, "1")
+        return sid
+
+    async def _close_committed(self, db, status=TaskStatus.COMPLETED):
+        await db.update_task("t1", status=status, assigned_agent_id=None)
+
+    async def _owner_state(self, db):
+        async with db._engine.connect() as conn:
+            return (await conn.execute(
+                integration_branch_owners.select().where(integration_branch_owners.c.id == "owner-1")
+            )).mappings().one()["handoff_state"]
+
+    async def _assert_still_bound(self, db, provider, sid, status):
+        assert sid in provider.sessions
+        session = await db.get_session(sid)
+        assert (session.state, session.task_id, session.claim_phase) == (
+            "draining", "t1", "active"
+        )
+        assert (await db.get_task("t1")).status == status
+        assert await self._owner_state(db) == "attached"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
+
+    @pytest.mark.parametrize(("status", "evidence"), [
+        (TaskStatus.COMPLETED, "completion_record"),
+        (TaskStatus.FAILED, "completion_record"),
+        # bold-impact-53's wait: no record and no receipt yet, but the transition
+        # that accepted this session's close recorded its identity.
+        (TaskStatus.COMPLETED, "accepted_close"),
+        (TaskStatus.FAILED, "accepted_close"),
+    ])
+    async def test_acked_worker_of_a_settled_task_is_stopped(
+        self, db, reconciler, provider, orch, bound, status, evidence
+    ):
+        await self._close_committed(db, status)
+        if evidence == "completion_record":
+            await _completion(db, outcome="pass" if status == TaskStatus.COMPLETED else "fail")
+        else:
+            await _accepted_close(db, bound)
+        completions = await db.get_task_completions("t1")
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        # Stopped through the teardown a supervisor kill reaches, stop confirmed.
+        assert bound not in provider.sessions
+        session = await db.get_session(bound)
+        assert (session.state, session.desired_state, session.end_reason) == (
+            "stopped", "stopped", "settled_claim"
+        )
+        # The owner keeps the claim, hold and binding for owner recovery.
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (workspace.locked_by_agent_id, workspace.locked_by_task_id) == ("agent-1", "t1")
+        assert await self._owner_state(db) == "attached"
+        assert (await db.get_agent("agent-1")).state == AgentState.RETIRED
+        # Completion truth is untouched: same status, no new close record.
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id, task.claim_epoch) == (status, None, 1)
+        assert await db.get_task_completions("t1") == completions
+        bodies = [c["body"] for c in (await db.list_task_comments("t1"))["comments"]]
+        assert any(
+            f"is {status.value} with" in body and "drain-ack" in body for body in bodies
+        )
+        stopped = [c for c in orch.bus.emit.await_args_list
+                   if c.args[0] == "session.settled_claim_stopped"]
+        assert len(stopped) == 1
+        assert stopped[0].args[1]["task_id"] == "t1"
+        assert stopped[0].args[1]["settlement"]["evidence"]["kind"] == evidence
+
+    @pytest.mark.parametrize("shape", [
+        "active", "blocked", "no_evidence", "earlier_close", "requeued_epoch", "live_seat",
+        "closed_elsewhere", "earlier_claim_accepted", "unaccepted_close_metadata",
+    ])
+    async def test_an_open_or_unsettled_task_keeps_waiting(
+        self, db, reconciler, provider, bound, shape
+    ):
+        status = TaskStatus.COMPLETED
+        if shape == "active":
+            # The worker acked over its own open claim: a premature drain.
+            status = TaskStatus.IN_PROGRESS
+            await _completion(db)
+        elif shape == "blocked":
+            status = TaskStatus.BLOCKED
+            await self._close_committed(db, status)
+            await _completion(db, outcome="fail")
+        elif shape == "no_evidence":
+            await self._close_committed(db)
+        elif shape == "earlier_close":
+            # A reopened task's previous close says nothing about this claim.
+            await self._close_committed(db)
+            attempt_start = (await db.get_session(bound)).started_at
+            await _completion(db, completed_at=attempt_start - 100)
+        elif shape == "closed_elsewhere":
+            # An accepted close speaks only for the session it names.
+            await self._close_committed(db)
+            await _accepted_close(db, "another-session")
+        elif shape == "earlier_claim_accepted":
+            # This session's close of an earlier claim on the task says
+            # nothing about the claim it holds now.
+            await self._close_committed(db)
+            await _accepted_close(db, bound, claim_epoch=0)
+        elif shape == "unaccepted_close_metadata":
+            # ``task close`` writes its metadata before the close is accepted:
+            # a refused close leaves it, and an unrelated failure then ended
+            # the task.  Only the accepted-close marker proves this session's
+            # close committed.
+            await db.set_task_meta("t1", "close_session_id", bound)
+            await db.set_task_meta("t1", "outcome", "pass")
+            status = TaskStatus.FAILED
+            await self._close_committed(db, status)
+        elif shape == "requeued_epoch":
+            await self._close_committed(db)
+            await db.update_task("t1", claim_epoch=2)
+            await _completion(db)
+        else:
+            # A running operation still owns the task as its repair writer.
+            await self._close_committed(db)
+            await _completion(db)
+            await _integration_delegate(
+                db, operation_state="active", stage_state="awaiting_completion"
+            )
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        await self._assert_still_bound(db, provider, bound, status)
+
+    async def test_without_the_agents_own_ack_a_settled_task_is_not_stopped(
+        self, db, reconciler, provider, bound
+    ):
+        """An operator drain is not the worker saying its work is saved."""
+        await self._close_committed(db)
+        await _completion(db)
+        await provider.set_meta(SessionHandle(bound, "fake", "t"), DRAIN_ACK_KEY, "0")
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        await self._assert_still_bound(db, provider, bound, TaskStatus.COMPLETED)
+
+    async def test_a_close_still_running_here_is_not_stopped_mid_handoff(
+        self, db, reconciler, provider, orch, bound
+    ):
+        """The worker acked after its close timed out client-side; the pipeline runs on.
+
+        The terminal transition and its accepted-close marker are committed,
+        so only the task's control lock says the handoff has not finished.
+        """
+        await self._close_committed(db)
+        await _accepted_close(db, bound)
+
+        async with orch._task_control_lock("t1"):
+            live, now = await observe(reconciler)
+            await reconciler._step_drain_ack(live, now)
+            await self._assert_still_bound(db, provider, bound, TaskStatus.COMPLETED)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+        assert bound not in provider.sessions
+        assert (await db.get_session(bound)).end_reason == "settled_claim"
+
+    async def test_an_unconfirmed_stop_releases_nothing_and_retries(
+        self, db, reconciler, provider, bound
+    ):
+        await self._close_committed(db)
+        await _completion(db, outcome="pass")
+        real_stop = provider.stop
+        provider.stop = AsyncMock(side_effect=RuntimeError("tmux server unreachable"))
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        await self._assert_still_bound(db, provider, bound, TaskStatus.COMPLETED)
+        assert provider.stop.await_count == 1
+
+        provider.stop = AsyncMock(wraps=real_stop)
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+        assert bound not in provider.sessions
+        session = await db.get_session(bound)
+        assert (session.state, session.task_id) == ("stopped", "t1")
+
+    async def test_a_retired_delegate_is_stopped_under_its_own_proof_only(
+        self, db, reconciler, provider, orch, bound
+    ):
+        """A task proving both takes the retirement; an unconfirmed stop is not redone."""
+        await self._close_committed(db)
+        await _completion(db)
+        await _integration_delegate(db)
+        real_stop = provider.stop
+        provider.stop = AsyncMock(side_effect=RuntimeError("tmux server unreachable"))
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        assert provider.stop.await_count == 1
+        await self._assert_still_bound(db, provider, bound, TaskStatus.COMPLETED)
+
+        provider.stop = AsyncMock(wraps=real_stop)
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+        assert (await db.get_session(bound)).end_reason == "retired_delegate"
+        emitted = [c.args[0] for c in orch.bus.emit.await_args_list]
+        assert "session.retired_delegate_stopped" in emitted
+        assert "session.settled_claim_stopped" not in emitted

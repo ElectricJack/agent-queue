@@ -1,5 +1,13 @@
 # Switching integration modes
 
+<!-- aq:historical -->
+> **Historical procedure.** The development/Subject publishers and runtimes are
+> retired. Commands and defaults below describe their earlier rollout and must
+> not be used as current operating instructions. `git_first: shadow` starts no
+> fallback publisher. Use the [Git-first train runbook](git-first-train-runbook.md)
+> and [current recovery guide](hierarchical-integration-trains.md).
+> `app-setup`, `app-verify` and `trust-manifest` remain available for diagnostics.
+
 Moving a project between AQ's delivery modes — into development mode, back out
 of it, or on to one of the optional strict modes — without losing history or
 stranding work in flight.
@@ -147,7 +155,7 @@ A blocked result lists exactly what is missing — repository configuration,
 dependencies the runtime path needs, playbook routes, and historical state the
 new mode cannot interpret
 ([`preflight.py`](../../src/integration/preflight.py),
-[`controls.py`](../../src/integration/controls.py)). Fix the named blocker and
+`controls.py` (retired)). Fix the named blocker and
 try again.
 
 For **historical** blockers only — the ones that describe state left by an
@@ -177,10 +185,12 @@ Tasks created before hierarchy mode was enabled have no reserved branch origin,
 and claiming in hierarchy mode is gated on one:
 
 ```bash
-aq integration reconcile-unmaterialized demo --expected-generation 16 --reason 'Bind pre-rollout tasks'
+aq doctor --check integration.branch_origins          # list tasks with no live origin
+aq doctor --check integration.branch_origins --fix    # backfill through a fenced mode edit
 ```
 
-That binds the safe pre-rollout tasks and reserves their origins;
+The fix re-runs the generation-fenced mode edit, which adopts published
+branches and reserves origins for absent ones;
 [`BranchMaterializationService`](../../src/integration/branch_materialization.py)
 then cuts the branches from the integration loop.
 
@@ -233,7 +243,7 @@ decide explicitly what to do with the journal first.
 
 ## Source and tests
 
-[`src/integration/controls.py`](../../src/integration/controls.py),
+`src/integration/controls.py` (retired),
 [`src/integration/development.py`](../../src/integration/development.py),
 [`src/integration/preflight.py`](../../src/integration/preflight.py),
 [`src/cli/integration.py`](../../src/cli/integration.py).

@@ -250,12 +250,14 @@ def test_the_repeat_failure_report_is_quieter_than_the_code_default():
 
 def test_integration_defaults_never_merge_unreviewed_work_to_the_default_branch():
     tuned = recommended_tuning(MachineResources(8, 16.0))["integration"]
+    assert tuned["git_first"] == "active"
     assert tuned["default_mode"] == "pull_request"
     # `required` fails closed on an unreadable rollup, which on an install
     # with no CI yet means nothing would ever merge.
     assert tuned["merge_ci_policy"] == "warn"
     assert tuned["merge_require_up_to_date"] is True
-    assert tuned["owner_recovery_sweep"] is False
+    # Stranded-owner recovery is routine; the recovery itself refuses live writers.
+    assert tuned["owner_recovery_sweep"] is True
 
 
 # ── The rationale ────────────────────────────────────────────────────────────

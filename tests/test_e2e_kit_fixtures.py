@@ -1,7 +1,8 @@
 """The swarm e2e kit's Tier-1 stand-ins must close the way a real agent would.
 
 Under ``sessions.provider: fake`` nothing is spawned: ``scripts/e2e/smoke.py``
-*is* the session, and it produces no commits.  The e2e remote is a bare
+*is* the session. Most scenarios produce no commits; S20 exercises real Git
+delivery with a credential adapter limited to the disposable home. The e2e remote is a bare
 local repository, so no pull request can ever exist for a task branch there.
 Two things follow, and each is pinned here because losing either one turns
 S4 into "close refused: No open PR found" (task solid-forge-63):
@@ -22,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,8 +160,31 @@ def test_app_train_verifier_retries_fixable_close_before_draining(monkeypatch, t
 
     assert app._verifier_close("S4", claimed, tmp_path) is None
     assert recorded == [("S4", "verifier_close_retry", {
-        "task": "verify-1", "issues": [
+        "task": "verify-1", "escalated": False, "issues": [
             "Parent integration completion was refused: stale_verification."]})]
+    assert app._verifier_close("S4", claimed, tmp_path) == {
+        "status": "COMPLETED", "pipeline_ok": True}
+
+
+def test_app_train_verifier_keeps_waiting_for_the_named_trusted_evidence_refusal(
+    monkeypatch, tmp_path
+):
+    """The named wait refusal (escalated on an unchanged replay) still waits."""
+    app = _load_app_train(monkeypatch, tmp_path)
+    results = iter([
+        {"status": "IN_PROGRESS", "result": "verification_failed", "escalated": True,
+         "issues": ["Parent integration completion was refused: "
+                    "awaiting_trusted_verification (verification_not_recorded)."]},
+        {"status": "COMPLETED", "pipeline_ok": True},
+    ])
+    recorded = []
+    monkeypatch.setattr(app, "worker_aq", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr(app, "record", lambda *args: recorded.append(args))
+    claimed = {"task_id": "verify-1", "claim_epoch": 1}
+
+    assert app._verifier_close("S4", claimed, tmp_path) is None
+    assert recorded[0][0:2] == ("S4", "verifier_close_retry")
+    assert recorded[0][2]["escalated"] is True
     assert app._verifier_close("S4", claimed, tmp_path) == {
         "status": "COMPLETED", "pipeline_ok": True}
 
@@ -198,12 +223,16 @@ def test_development_validation_preset_checks_the_committed_readme(tmp_path):
     preset, args = finite_command(smoke.DEVELOPMENT_VALIDATION_COMMAND)
     command = validate_args(presets(REPO_ROOT)[preset], args, tmp_path, worker_cap=1)
 
-    passed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    passed = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, check=False, text=True, timeout=30
+    )
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert "1 passed" in passed.stdout
 
     readme.unlink()
-    failed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    failed = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, check=False, text=True, timeout=30
+    )
     assert failed.returncode == 1, failed.stdout + failed.stderr
     assert "test_readme_exists" in failed.stdout and "1 failed" in failed.stdout
 
@@ -226,6 +255,7 @@ def test_e2e_config_enables_jobs_with_a_separate_test_database(tmp_path, test_ds
         check=True, env=env, capture_output=True, text=True,
     )
     config = load_config(str(tmp_path / "config.yaml"))
+    assert config.integration.git_first == "active"
     assert config.resources.jobs.enabled
     assert config.resources.jobs.test_database_url == (
         test_dsn or
@@ -240,15 +270,19 @@ def test_s4_child_close_reports_a_no_op_work_outcome(monkeypatch):
 
     def fake_aq(*args, **kwargs):
         calls.append((args, kwargs))
-        if args[:2] == ("task", "children"):
-            return {"children": [{"id": "child-1", "status": "IN_PROGRESS"}]}
-        if args[:2] == ("session", "list"):
-            return {"sessions": [{"id": "sess-1", "task_id": "child-1", "state": "running"}]}
         if args[:2] == ("task", "close"):
             return {"success": True}
         raise AssertionError(f"unexpected aq call: {args}")
 
+    def fake_api(command, args):
+        if command == "task_children":
+            assert args == {"task_id": "container-1"}
+            return {"children": [{"id": "child-1", "status": "IN_PROGRESS"}]}
+        assert command == "session_list" and args == {}
+        return {"sessions": [{"id": "sess-1", "task_id": "child-1", "state": "running"}]}
+
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api", fake_api)
     monkeypatch.setattr(smoke, "session_token", lambda session_id: f"tok-{session_id}")
 
     smoke._close_next_child("container-1")
@@ -407,6 +441,735 @@ def test_pool_worker_close_reports_a_no_op_work_outcome(monkeypatch):
     assert kwargs == {"token": "tok", "session_id": "sess-1", "check_ok": True}
 
 
+@pytest.fixture
+def s2_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    worker = smoke.Worker(session_id="holder", token="holder-token")
+    responses = [{"result": "claimed", "task": {"id": "s1-2"}, "claim_epoch": 7}]
+    calls = []
+    replacement = {"id": "replacement", "state": "running"}
+    sessions = [{"id": "holder", "state": "running"}, replacement]
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        if args[:2] == ("task", "heartbeat") and kwargs.get("check_ok") is False:
+            return {"_error": smoke.CliError({"error": {
+                "message": "stale epoch", "details": {"result": "stale_claim"},
+            }}, "")}
+        if args[:2] == ("task", "close"):
+            sessions[:] = [replacement]
+            return {"success": True, "next": {
+                "result": "drain_requested", "session": {"claims": 1},
+            }}
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "idle_worker", lambda: worker)
+    monkeypatch.setattr(smoke, "pool_sessions", lambda: list(sessions))
+    monkeypatch.setattr(smoke, "_open_pool_tasks", lambda: [
+        {"id": "s1-1", "title": "S1 worker task 1"},
+        {"id": "s1-2", "title": "S1 worker task 2"},
+        {"id": "unrelated", "title": "unrelated fixture"},
+    ])
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "COMPLETED" if not worker.task_id else "READY",
+        "profile_id": smoke.POOL_PROFILE, "route_source": "router", "is_blocked": False,
+    })
+    monkeypatch.setattr(smoke, "api_checked", lambda command, args: {
+        "session": {"state": "stopped", "end_reason": "drained"},
+    })
+    monkeypatch.setattr(smoke, "_swarm_checks", lambda: {
+        "pools.orphan_agents": {"severity": "ok"},
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda predicate, **kwargs: predicate())
+    # The replacement must appear only after close to exercise its identity check.
+    sessions.pop()
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s2_retries_empty_claims_then_proves_fencing_and_retirement(s2_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s2_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s2_claim_loop({})
+
+    assert "claimed 1/1 then drain_requested; holder retired, replaced by replacement" == result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    heartbeats = [args for args, _ in calls if args[:2] == ("task", "heartbeat")]
+    assert heartbeats == [
+        ("task", "heartbeat", "--claim-epoch", "48"),
+        ("task", "heartbeat", "--claim-epoch", "7"),
+    ]
+    assert any(args[:2] == ("task", "close") and "--claim-next" in args for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s2_does_not_retry_other_claim_failures(s2_surfaces, result):
+    smoke, responses, calls, clock = s2_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s2_claim_loop({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s2_rejects_a_claim_outside_its_s1_fixtures(s2_surfaces):
+    smoke, responses, calls, _clock = s2_surfaces
+    responses[0]["task"]["id"] = "unrelated"
+
+    with pytest.raises(smoke.Failure, match="s1-1.*s1-2.*unrelated"):
+        smoke.s2_claim_loop({})
+
+    assert len(calls) == 1
+
+
+def test_s2_empty_claim_timeout_reports_every_fixture(s2_surfaces):
+    smoke, responses, calls, clock = s2_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "holder", "claims": 0}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s2_claim_loop({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("s1-1", "s1-2", "no_ready_work", "holder", "router"):
+        assert detail in str(error.value)
+
+
+@pytest.fixture
+def s7_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    workers = [smoke.Worker(session_id=sid, token=sid + "-token") for sid in ("a", "b")]
+    responses = [["claimed", "no_ready_work"]]
+    launches = []
+    clock = SimpleNamespace(now=0.0)
+
+    def popen(argv, **kwargs):
+        index = len(launches)
+        launches.append((argv, kwargs))
+        result = responses[min(index // 2, len(responses) - 1)][index % 2]
+
+        def communicate(**_kwargs):
+            # Both CLI processes must launch before either response is collected.
+            assert len(launches) == index // 2 * 2 + 2
+            data = {"result": result}
+            if result == "claimed":
+                data["task"] = {"id": "contested"}
+            return json.dumps({"data": data}), ""
+
+        return SimpleNamespace(communicate=communicate)
+
+    monkeypatch.setattr(smoke.subprocess, "Popen", popen)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: workers)
+    monkeypatch.setattr(smoke, "create_task", lambda *_args, **_kwargs: "contested")
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {"id": task_id, "status": "READY"})
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, launches, clock
+
+
+@pytest.mark.parametrize("empty_rounds", [0, 2])
+def test_s7_retries_only_empty_races_with_both_callers(s7_surfaces, empty_rounds):
+    smoke, responses, launches, clock = s7_surfaces
+    responses[:0] = [["no_ready_work", "no_ready_work"]] * empty_rounds
+
+    assert "one winner" in smoke.s7_claim_race({})
+
+    assert len(launches) == 2 * (empty_rounds + 1)
+    assert clock.now == empty_rounds * 0.25
+    assert [kwargs["env"]["AQ_SESSION_ID"] for _, kwargs in launches] == (
+        ["a", "b"] * (empty_rounds + 1)
+    )
+
+
+@pytest.mark.parametrize("outcomes", [
+    ["claimed", "claimed"], ["prepare_failed", "no_ready_work"],
+    ["claimed", "not_admissible"],
+])
+def test_s7_rejects_multiple_winners_and_other_failures(s7_surfaces, outcomes):
+    smoke, responses, launches, clock = s7_surfaces
+    responses[:] = [outcomes]
+
+    with pytest.raises(smoke.Failure):
+        smoke.s7_claim_race({})
+
+    assert len(launches) == 2
+    assert clock.now == 0
+
+
+def test_s7_empty_race_timeout_reports_fixture_and_outcomes(s7_surfaces):
+    smoke, responses, _launches, clock = s7_surfaces
+    responses[:] = [["no_ready_work", "no_ready_work"]]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s7_claim_race({})
+
+    assert clock.now == 1
+    assert all(detail in str(error.value) for detail in ("contested", "no_ready_work", "READY"))
+
+
+@pytest.fixture
+def s5_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    holder = smoke.Worker(session_id="holder", token="holder-token")
+    intruder = smoke.Worker(session_id="intruder", token="intruder-token")
+    responses = [{"result": "claimed", "task": {"id": "holder-task"}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        if args[:2] == ("task", "heartbeat") or args[0] == "prime":
+            return {"_error": smoke.CliError({"error": {
+                "message": "out of scope", "details": {"result": "out_of_scope"},
+            }}, "")}
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: [holder, intruder])
+    monkeypatch.setattr(smoke, "create_task", lambda _title, **kwargs:
+                        "foreign-task" if kwargs.get("project_id") == smoke.OTHER_PROJECT
+                        else "holder-task")
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "profile_id": smoke.POOL_PROFILE,
+        "route_source": "router", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s5_waits_for_its_fixture_then_checks_both_scope_refusals(s5_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s5_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s5_fence_and_scope({})
+
+    assert "cross-session heartbeat and cross-project prime both refused" in result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    heartbeat = next((args, kwargs) for args, kwargs in calls
+                     if args[:2] == ("task", "heartbeat"))
+    assert heartbeat == (("task", "heartbeat", "holder-task", "--claim-epoch", "7"), {
+        "token": "intruder-token", "session_id": "intruder", "check_ok": False,
+    })
+    prime = next((args, kwargs) for args, kwargs in calls if args[0] == "prime")
+    assert prime == (("prime", "--task-id", "foreign-task"), {
+        "token": "holder-token", "session_id": "holder", "check_ok": False,
+    })
+    assert any(args[:2] == ("task", "close") for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s5_does_not_retry_other_claim_failures(s5_surfaces, result):
+    smoke, responses, calls, clock = s5_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s5_fence_and_scope({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s5_rejects_a_claim_of_a_different_task(s5_surfaces):
+    smoke, responses, calls, _clock = s5_surfaces
+    responses[0]["task"]["id"] = "leftover-task"
+
+    with pytest.raises(smoke.Failure, match="holder-task.*leftover-task"):
+        smoke.s5_fence_and_scope({})
+
+    assert len(calls) == 1
+
+
+def test_s5_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s5_surfaces):
+    smoke, responses, calls, clock = s5_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "holder", "claims": 0}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s5_fence_and_scope({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("holder-task", "no_ready_work", "holder", "READY", "router"):
+        assert detail in str(error.value)
+
+
+@pytest.fixture(params=[False, True], ids=["global-supervisor", "project-supervisor"])
+def s18_surfaces(monkeypatch, request):
+    smoke = _load_smoke()
+    worker = smoke.Worker(session_id="triage-worker", token="triage-token")
+    responses = [{"result": "claimed", "task": {"id": "triage-task"}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        return {"success": True}
+
+    def fake_api(command, args):
+        if command == "get_project":
+            assert args == {"project_id": smoke.PROJECT}
+            return {"supervisor_enabled": request.param}
+        if command == "list_playbook_runs":
+            closed = any(args[:2] == ("task", "close") for args, _ in calls)
+            runs = [{"run_id": "previous-run"}]
+            if closed:
+                runs.append({"run_id": "triage-run"})
+            return {"runs": runs}
+        if command == "inspect_playbook_run":
+            assert args == {"run_id": "triage-run"}
+            return {"run": {
+                "run_id": "triage-run",
+                "lifecycle": "completed",
+            }}
+        if command == "message_list":
+            recipient = f"supervisor-{smoke.PROJECT}" if request.param else "supervisor-global"
+            assert args["to_id"] == recipient
+            return {"messages": [{
+                "id": "triage-notice", "body": "Failed triage-task", "project_id": smoke.PROJECT,
+            }]}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", fake_api)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: [worker])
+    monkeypatch.setattr(smoke, "create_task", lambda *_args, **_kwargs: "triage-task")
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id,
+        "status": "BLOCKED" if any(args[:2] == ("task", "close") for args, _ in calls)
+        else "READY",
+        "profile_id": smoke.POOL_PROFILE, "route_source": "router", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        time=lambda: 100.0,
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s18_retries_empty_claims_then_verifies_failure_triage(s18_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s18_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s18_supervisor_failure_triage({})
+
+    assert "triage run triage-run" in result and "notice triage-notice" in result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    close_args, close_kwargs = next((args, kwargs) for args, kwargs in calls
+                                   if args[:2] == ("task", "close"))
+    for flag, expected in (("--outcome", "fail"), ("--failure-class", "hard"),
+                           ("--work-outcome", "abandoned"), ("--claim-epoch", "7")):
+        assert close_args[close_args.index(flag) + 1] == expected
+    assert close_kwargs["token"] == "triage-token"
+    assert any(args[:2] == ("session", "drain-ack") for args, _ in calls)
+    assert any(args[:2] == ("task", "delete") for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s18_does_not_retry_other_claim_failures(s18_surfaces, result):
+    smoke, responses, calls, clock = s18_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s18_supervisor_failure_triage({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s18_rejects_a_claim_of_a_different_task(s18_surfaces):
+    smoke, responses, calls, _clock = s18_surfaces
+    responses[0]["task"]["id"] = "leftover-task"
+
+    with pytest.raises(smoke.Failure, match="triage-task.*leftover-task"):
+        smoke.s18_supervisor_failure_triage({})
+
+    assert len(calls) == 1
+
+
+def test_s18_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s18_surfaces):
+    smoke, responses, calls, clock = s18_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "triage-worker"}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s18_supervisor_failure_triage({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("triage-task", "no_ready_work", "triage-worker", "READY", "router"):
+        assert detail in str(error.value)
+
+
+@pytest.fixture(params=["std", "solo"])
+def s16_canary_surfaces(monkeypatch, request):
+    """Exercise S16's probation-canary claim without a live daemon."""
+    smoke = _load_smoke()
+    profile = smoke.STD_A if request.param == "std" else smoke.SOLO_A
+    expected = "pinned-task" if request.param == "std" else "solo-task"
+    responses = [{"result": "claimed", "task": {"id": expected}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("session", "token"):
+            return {"token": "canary-token"}
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        raise AssertionError(args)
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "live_sessions_for", lambda profile_id: (
+        [{"id": "canary", "profile_id": profile}] if profile_id == profile else []
+    ))
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "profile_id": profile,
+        "route_source": "pin", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock, profile, expected
+
+
+def _claims(calls):
+    return [args for args, _ in calls if args[:2] == ("task", "claim")]
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s16_canary_retries_empty_claims_then_holds_its_pools_task(
+    s16_canary_surfaces, empty_attempts,
+):
+    smoke, responses, calls, _clock, profile, expected = s16_canary_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    worker, canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert (canary["id"], canary["profile_id"], held) == ("canary", profile, expected)
+    assert (worker.session_id, worker.token) == ("canary", "canary-token")
+    assert (worker.task_id, worker.claim_epoch) == (expected, 7)
+    assert len(_claims(calls)) == empty_attempts + 1
+    assert all(kwargs["token"] == "canary-token" for args, kwargs in calls
+               if args[:2] == ("task", "claim"))
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s16_canary_does_not_retry_other_claim_failures(s16_canary_surfaces, result):
+    smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+    assert clock.now == 0
+
+
+def test_s16_canary_rejects_the_other_pools_held_task(s16_canary_surfaces):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    other = "solo-task" if expected == "pinned-task" else "pinned-task"
+    responses[0]["task"]["id"] = other
+
+    with pytest.raises(smoke.Failure, match=f"{expected}.*{other}"):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+
+
+def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
+    s16_canary_surfaces,
+):
+    smoke, responses, calls, clock, profile, expected = s16_canary_surfaces
+    # The shape of the CI failure this retry absorbs (run 37983264206).
+    responses[:] = [{"result": "no_ready_work", "session": {
+        "id": "canary", "claims": 0, "claim_phase": "claiming",
+    }}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert clock.now == 1
+    assert len(_claims(calls)) > 1
+    for detail in (expected, "no_ready_work", "claim_phase", "READY", profile, "pin"):
+        assert detail in str(error.value)
+
+
+def test_s16_canary_retries_when_empty_long_poll_consumes_its_wait(
+    s16_canary_surfaces, monkeypatch,
+):
+    smoke, responses, calls, clock, _profile, expected = s16_canary_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * 2
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 4)
+    original_aq = smoke.aq
+
+    def elapsed_aq(*args, **kwargs):
+        result = original_aq(*args, **kwargs)
+        if result.get("result") == "no_ready_work":
+            clock.now += int(args[-1])
+        return result
+
+    monkeypatch.setattr(smoke, "aq", elapsed_aq)
+
+    worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert held == expected == worker.task_id
+    assert len(_claims(calls)) == 3
+    assert clock.now < smoke.CONVERGE_TIMEOUT
+
+
+@pytest.mark.parametrize("wrong_task", [False, True])
+def test_s16_canary_observes_only_its_fixture_preparation(
+    s16_canary_surfaces, wrong_task,
+):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    responses.insert(0, {
+        "result": "claim_in_progress", "task_id": "foreign-task" if wrong_task else expected,
+        "claim_epoch": 7, "claim_phase": "preparing",
+    })
+
+    if wrong_task:
+        with pytest.raises(smoke.Failure, match=f"{expected}.*foreign-task"):
+            smoke._claim_probation_canary("pinned-task", "solo-task")
+        assert len(_claims(calls)) == 1
+    else:
+        worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+        assert held == expected == worker.task_id
+        assert worker.claim_epoch == 7
+        assert len(_claims(calls)) == 2
+
+
+@pytest.fixture
+def s19_claim_surfaces(monkeypatch, tmp_path):
+    """Exercise both S19 claims up to the checklist, without a live daemon."""
+    smoke = _load_smoke()
+    planner = smoke.Worker(session_id="planner", token="planner-token")
+    worker = smoke.Worker(session_id="child-worker", token="child-token")
+    workers = {"planner": planner, "child": worker}
+    responses = {
+        stage: [{"result": "claimed", "task": {"id": f"{stage}-task"}, "claim_epoch": 7}]
+        for stage in workers
+    }
+    claims = []
+    created = False
+
+    def refusal(message):
+        return {"_error": smoke.CliError({"error": {"message": message}}, "")}
+
+    def fake_aq(*args, **kwargs):
+        nonlocal created
+        if args[:2] == ("task", "claim"):
+            stage = "planner" if kwargs["token"] == planner.token else "child"
+            claims.append(stage)
+            replies = responses[stage]
+            return replies.pop(0) if len(replies) > 1 else replies[0]
+        if args[:2] == ("task", "deps"):
+            return {"provenance": [{"id": "planner-task", "dep_type": "discovered-from"}]}
+        assert args[:2] == ("task", "create")
+        if "--parent" in args:
+            return refusal("hierarchy.parent_out_of_scope")
+        if smoke.OTHER_PROJECT in args:
+            return refusal("project_id mismatch")
+        if "--root" in args:
+            return refusal("graph.root_needs_parent")
+        if "--dry-run" in args:
+            return {"parent_id": "planner-task"}
+        created = True
+        # Model an immediate router decision and scheduler assignment. The
+        # production override must still refuse a child that already started.
+        clock.child_running = not clock.scheduling_paused
+        return {"created": True, "request_id": "graph-request",
+                "nodes": [{"task_id": "child-task"}]}
+
+    def fake_api(command, _args, **_kwargs):
+        if command == "set_project_constraint":
+            assert _args == {"project_id": smoke.PROJECT, "pause_scheduling": True}
+            assert not _kwargs.get("token")
+            clock.scheduling_paused = True
+            clock.scheduling_events.append("pause")
+            return {"constraint_set": True}
+        if command == "release_project_constraint":
+            assert _args == {"project_id": smoke.PROJECT, "fields": ["pause_scheduling"]}
+            assert not _kwargs.get("token")
+            clock.scheduling_paused = False
+            clock.scheduling_events.append("release")
+            return {"constraint_released": True}
+        if command == "task_children":
+            return {"count": int(created)}
+        assert command == "create_task_graph"
+        return {"code": "graph.root_needs_parent"}
+
+    def fake_override(task_id, profile, intelligence_class):
+        assert (task_id, profile, intelligence_class) == (
+            "child-task", smoke.POOL_PROFILE, smoke.POOL_CLASS,
+        )
+        if clock.child_running:
+            raise smoke.Failure("routing.not_routable: child already started")
+        clock.scheduling_events.append("override")
+
+    class ChecklistReached(Exception):
+        pass
+
+    def stop_at_checklist(*args, **_kwargs):
+        assert args == ("prime",)
+        raise ChecklistReached
+
+    monkeypatch.setenv("AQ_E2E_HOME", str(tmp_path))
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api", fake_api)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: [worker])
+    monkeypatch.setattr(smoke, "create_task", lambda _title, **kwargs:
+                        "foreign-task" if kwargs.get("project_id") == smoke.OTHER_PROJECT
+                        else "planner-task")
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda *_args, **_kwargs:
+                        {"id": planner.session_id})
+    monkeypatch.setattr(smoke.Worker, "adopt", lambda _session_id: planner)
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "parent_task_id": "planner-task",
+        "profile_id": smoke.PLANNER_PROFILE if task_id == "planner-task" else smoke.POOL_PROFILE,
+        "route_source": "router", "is_blocked": False,
+    })
+    monkeypatch.setattr(smoke, "override_route", fake_override)
+    monkeypatch.setattr(smoke, "run_aq", stop_at_checklist)
+    clock = SimpleNamespace(
+        now=0.0, scheduling_paused=False, child_running=False, scheduling_events=[],
+    )
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, workers, responses, claims, clock, ChecklistReached
+
+
+def test_s19_routes_child_before_scheduler_can_assign(s19_claim_surfaces):
+    smoke, _workers, _responses, claims, clock, reached = s19_claim_surfaces
+
+    with pytest.raises(reached):
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.scheduling_events == ["pause", "override", "release"]
+    assert not clock.scheduling_paused and not clock.child_running
+    assert claims == ["planner", "child"]
+
+
+@pytest.mark.parametrize("stage", ["create", "override"])
+def test_s19_releases_scheduling_pause_after_graph_setup_failure(
+    s19_claim_surfaces, monkeypatch, stage
+):
+    smoke, _workers, _responses, claims, clock, _reached = s19_claim_surfaces
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("graph setup failed")
+
+    if stage == "create":
+        original = smoke.aq
+
+        def fail_create(*args, **kwargs):
+            if args[:2] == ("task", "create") and "--dry-run" not in args:
+                return fail()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(smoke, "aq", fail_create)
+    else:
+        monkeypatch.setattr(smoke, "override_route", fail)
+
+    with pytest.raises(RuntimeError, match="graph setup failed"):
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.scheduling_events == ["pause", "release"]
+    assert not clock.scheduling_paused
+    assert claims == ["planner"]
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s19_retries_empty_claims_before_checking_the_graph_checklist(
+    s19_claim_surfaces, stage, empty_attempts
+):
+    smoke, workers, responses, claims, _clock, reached = s19_claim_surfaces
+    responses[stage][:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    with pytest.raises(reached):
+        smoke.s19_scoped_planner_graph({})
+
+    assert claims.count(stage) == empty_attempts + 1
+    for name, worker in workers.items():
+        assert worker.task_id == f"{name}-task"
+        assert worker.claim_epoch == 7
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s19_does_not_retry_other_claim_failures(s19_claim_surfaces, stage, result):
+    smoke, _workers, responses, claims, clock, _reached = s19_claim_surfaces
+    responses[stage][:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s19_scoped_planner_graph({})
+
+    assert claims.count(stage) == 1
+    assert clock.now == 0
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+def test_s19_rejects_a_claim_of_a_different_task(s19_claim_surfaces, stage):
+    smoke, _workers, responses, claims, _clock, _reached = s19_claim_surfaces
+    responses[stage][0]["task"]["id"] = "leftover-task"
+
+    with pytest.raises(smoke.Failure, match="leftover-task") as error:
+        smoke.s19_scoped_planner_graph({})
+
+    assert f"{stage}-task" in str(error.value)
+    assert claims.count(stage) == 1
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+def test_s19_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s19_claim_surfaces, stage):
+    smoke, workers, responses, claims, clock, _reached = s19_claim_surfaces
+    responses[stage][:] = [{"result": "no_ready_work", "session": {"id": workers[stage].session_id}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.now == 1
+    assert claims.count(stage) > 1
+    for detail in (f"{stage}-task", "no_ready_work", workers[stage].session_id, "READY", "router"):
+        assert detail in str(error.value)
+
+
 def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(monkeypatch):
     smoke = _load_smoke()
     monkeypatch.setenv("AQ_E2E_HOME", "/tmp/aq-e2e-owned")
@@ -421,6 +1184,34 @@ def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(mo
     assert env["AGENT_QUEUE_DB"] == "postgresql+asyncpg://example/e2e_only"
     assert env["AQ_DATABASE_URL"] == "postgresql+asyncpg://example/e2e_only"
     assert env["AQ_DB_SCOPE"] == "worker"
+
+
+@pytest.mark.parametrize("as_worker", [False, True])
+def test_cli_subprocesses_do_not_inherit_the_callers_task_or_claim(monkeypatch, as_worker):
+    smoke = _load_smoke()
+    caller = {
+        "AQ_API_TOKEN": "outer-token",
+        "AQ_SESSION_ID": "outer-session",
+        "AQ_TASK_ID": "outer-task",
+        "AQ_CLAIM_EPOCH": "73",
+    }
+    for name, value in caller.items():
+        monkeypatch.setenv(name, value)
+
+    env = smoke._cli_env(
+        token="fixture-token" if as_worker else None,
+        session_id="fixture-session" if as_worker else None,
+    )
+
+    assert "AQ_TASK_ID" not in env
+    assert "AQ_CLAIM_EPOCH" not in env
+    if as_worker:
+        assert env["AQ_API_TOKEN"] == "fixture-token"
+        assert env["AQ_SESSION_ID"] == "fixture-session"
+    else:
+        assert "AQ_API_TOKEN" not in env
+        assert "AQ_SESSION_ID" not in env
+    assert {name: os.environ[name] for name in caller} == caller
 
 
 def test_collection_rows_accepts_versioned_envelope_data_and_legacy_wrappers():
@@ -480,7 +1271,10 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
         if command == "session_kill":
             return fake_aq("session", "kill", args["session_id"])
         if command == "delete_task":
-            assert args["cascade"] is True
+            if not args.get("confirmed"):
+                return {"success": True, "disposition": "preview"}
+            assert args["recursive"] is True
+            assert args["branches"] == "delete"
             return fake_aq("task", "delete", "--task-id", args["task_id"])
         if command == "session_list":
             assert args == {"lifecycle": "pool"}
@@ -674,19 +1468,22 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
 
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
-    # filing under the fake provider, so the docs and runner stay synchronized.
-    assert set(by_key) == {f"S{number}" for number in range(1, 20)}
+    # filing under the fake provider; S20 proves ordinary train delivery;
+    # S21 proves held ingestion, assigned fidelity review and release replay.
+    assert set(by_key) == {f"S{number}" for number in range(1, 22)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
     assert by_key["S12"].families == ("MCP registry CRUD",)
     assert by_key["S13"].families == ("plugin extension startup",)
     assert by_key["S14"].families == ("graph/vault",)
-    assert by_key["S15"].families == ("integration",)
+    assert by_key["S15"].families == ("integration/CLI",)
     assert by_key["S16"].families == ("provider availability/failover",)
     assert by_key["S17"].families == ("task graph/phases/subtasks",)
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
+    assert by_key["S20"].families == ("integration/train/provenance",)
+    assert by_key["S21"].families == ("ingestion/recovery/fidelity",)
 
 
 def test_ci_scenario_groups_cover_every_scenario_once():
@@ -701,25 +1498,109 @@ def test_ci_scenario_groups_cover_every_scenario_once():
     assert {phase.key for phase in smoke.FAILOVER_PHASES} == {"S16a", "S16b"}
 
 
-def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):
+@pytest.mark.parametrize("readiness_failure", [False, True])
+def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
+    monkeypatch, readiness_failure,
+):
     smoke = _load_smoke()
     calls: list[tuple[str, ...]] = []
-    restored: list[bool] = []
+    failure = smoke.Failure("readiness still unavailable after restoring the failover policy")
 
     def fake_aq(*args, **_kwargs):
         calls.append(args)
         return {"enabled": args[-1] == "--enabled"}
 
-    monkeypatch.setattr(smoke, "aq", fake_aq)
-    monkeypatch.setattr(smoke, "_s16", lambda state: "manual sweep complete")
-    monkeypatch.setattr(smoke, "_restore_providers", lambda: restored.append(True))
+    def manual_sweep(_state):
+        calls.append(("manual sweep",))
+        return "manual sweep complete"
 
-    assert smoke.s16_provider_failover({}) == "manual sweep complete"
+    def readiness():
+        calls.append(("readiness",))
+        if readiness_failure:
+            raise failure
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {
+        "assignment_playbook_id": "project-router",
+    })
+    monkeypatch.setattr(smoke, "observe_scheduler_cycles", lambda _: calls.append(("cycle",)))
+    monkeypatch.setattr(smoke, "_s16", manual_sweep)
+    monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
+
+    if readiness_failure:
+        with pytest.raises(smoke.Failure) as error:
+            smoke.s16_provider_failover({})
+        assert error.value is failure
+    else:
+        assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--no-enabled"),
+        ("cycle",),
+        ("manual sweep",),
+        ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--enabled"),
+        ("readiness",),
     ]
-    assert restored == [True]
+
+
+def test_s16_logout_stops_late_and_draining_recovery_sessions_once(monkeypatch):
+    smoke = _load_smoke()
+    stopped = []
+    snapshots = iter([
+        [
+            {"id": "recovery", "profile_id": smoke.STD_A},
+            {"id": "draining", "profile_id": smoke.STD_B},
+            {"id": "claude", "profile_id": smoke.POOL_PROFILE},
+        ],
+        [
+            {"id": "recovery", "profile_id": smoke.STD_A},
+            {"id": "late-launch", "profile_id": smoke.SOLO_A},
+        ],
+        [],
+    ])
+
+    def pool_sessions(project_id, *, include_draining):
+        assert project_id is None and include_draining is True
+        return next(snapshots)
+
+    def kill(command, args):
+        assert command == "session_kill"
+        stopped.append(args["session_id"])
+        return {"success": True}
+
+    def provider(key):
+        assert key == smoke.PROVA
+        return {"state": "unauthenticated" if "late-launch" in stopped else "available"}
+
+    def wait(predicate, *, what):
+        assert "the second logout" in what
+        assert predicate() is None
+        assert predicate() is None
+        return predicate()
+
+    monkeypatch.setattr(smoke, "pool_sessions", pool_sessions)
+    monkeypatch.setattr(smoke, "api_checked", kill)
+    monkeypatch.setattr(smoke, "provider", provider)
+    monkeypatch.setattr(smoke, "wait_for", wait)
+
+    assert smoke._wait_for_failover_logout() == {"state": "unauthenticated"}
+    assert stopped == ["recovery", "draining", "late-launch"]
+
+
+def test_s16_logout_still_requires_provider_failure(monkeypatch):
+    smoke = _load_smoke()
+    bounded_wait = smoke.wait_for
+    monkeypatch.setattr(smoke, "provider", lambda _key: {"state": "available"})
+    monkeypatch.setattr(smoke, "pool_sessions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        smoke, "wait_for", lambda predicate, **kwargs: bounded_wait(predicate, timeout=0, **kwargs),
+    )
+
+    with pytest.raises(smoke.Failure, match="the second logout"):
+        smoke._wait_for_failover_logout()
 
 
 def test_e2e_env_generates_an_opt_in_plugin_entry_point_and_local_message_sink():
@@ -834,3 +1715,406 @@ def test_cleanup_rejects_operator_and_default_tmux_sockets_before_any_action(
     env, trace = _cleanup_env(tmp_path, home, socket=socket)
 
     _assert_cleanup_refused_without_actions(env, trace, decoy)
+
+
+def test_scenario_selection_is_individual_and_keeps_declared_prerequisites(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("claims", {})
+    calls = []
+    resets = []
+
+    def run(argv, **_kwargs):
+        keys = argv[1:]
+        calls.append(keys)
+        return SimpleNamespace(returncode=0, stderr="", stdout="\n".join(
+            [*(f"PASS {key} scenario" for key in keys),
+             f"{len(keys)}/{len(keys)} scenarios passed",
+             "passed unsupported dependency-unavailable explicitly-untested"]))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(world, "reset", lambda: resets.append(True))
+    world.run("S2")
+    world.run("S3")
+    assert calls == [["S1", "S2"], ["S3"]]
+    assert resets == [True]
+
+
+@pytest.mark.parametrize("failure", ["assertion", "timeout"])
+def test_scenario_failure_cleans_chain_and_rebuilds_prerequisites(monkeypatch, failure):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("claims", {})
+    world.completed.add("S1")
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv[1:])
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 270, output=b"PASS S1 (1s)")
+        return SimpleNamespace(returncode=1, stdout="FAIL S2", stderr="failure")
+
+    def reset():
+        world.completed.clear()
+        calls.append("reset")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(world, "reset", reset)
+    with pytest.raises(AssertionError):
+        world.run("S2")
+    assert calls == [["S2"], "reset"]
+    assert not world.completed
+
+
+@pytest.mark.parametrize("readiness_failure", [False, True])
+def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(
+    monkeypatch, readiness_failure,
+):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    world.swarm = {"enabled": True, "max_starts_per_tick": 2, "scale_down_grace": 3600}
+    smoke = world.smoke
+    sessions = [{"id": "holding"}, {"id": "draining"}]
+    tasks = [{"id": "completed", "status": "COMPLETED"},
+             {"id": "failed", "status": "FAILED"}]
+    calls = []
+    modes = []
+
+    def api(command, args):
+        calls.append((command, args))
+        if command == "session_list":
+            assert args == {"live_only": True}
+            return {"sessions": list(sessions)}
+        if command == "session_kill":
+            sessions[:] = [row for row in sessions if row["id"] != args["session_id"]]
+        if command == "list_projects":
+            return [{"id": "e2e"}]
+        if command == "list_tasks":
+            assert args["include_completed"]
+            return list(tasks)
+        if command == "delete_task":
+            if not args.get("confirmed"):
+                return {"success": True, "disposition": "preview"}
+            assert args["recursive"]
+            assert args["branches"] == "delete"
+            tasks[:] = [row for row in tasks if row["id"] != args["task_id"]]
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "fake_script", lambda: modes.append("healthy"))
+    monkeypatch.setattr(smoke, "wait_for", lambda fn, **_: fn() or fn())
+
+    def readiness():
+        assert calls[-1] == (
+            "set_playbook_enabled", {"playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True},
+        )
+        calls.append(("readiness", {}))
+        if readiness_failure:
+            raise smoke.Failure("required_playbooks: provider-failover still disabled")
+
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
+    world.completed.add("S1")
+    if readiness_failure:
+        with pytest.raises(smoke.Failure, match="provider-failover still disabled"):
+            world.reset()
+        assert world.poisoned
+        with pytest.raises(AssertionError, match="contaminated"):
+            world.run("S18")
+    else:
+        world.reset()
+        assert not world.poisoned
+    assert not tasks and not sessions and not world.completed
+    assert modes == ["healthy"]
+    assert ("update_config", {"section": "swarm", "data": world.swarm}) in calls
+    assert ("set_playbook_enabled", {"playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True}) in calls
+    assert {args["provider"] for cmd, args in calls if cmd == "provider_set_state"} == {
+        "claude", "codex", smoke.PROVA, smoke.PROVB,
+    }
+
+
+def test_cleanup_failure_prevents_reusing_the_world(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    monkeypatch.setattr(world.smoke, "wait_for", lambda *_args, **_kwargs:
+                        (_ for _ in ()).throw(RuntimeError("cleanup failed")))
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        world.reset()
+    assert world.poisoned
+    with pytest.raises(AssertionError, match="contaminated"):
+        world.run("S18")
+
+
+def test_world_reset_reports_deletion_refusal_before_reusing_the_world(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    smoke = world.smoke
+
+    def api(command, args):
+        if command == "session_list":
+            return {"sessions": []}
+        if command == "list_projects":
+            return [{"id": "e2e"}]
+        if command == "list_tasks":
+            return [{"id": "completed", "status": "COMPLETED"}]
+        if command == "delete_task":
+            return {"success": False, "error": "fixture deletion refused"}
+        pytest.fail(f"unexpected cleanup command: {command}")
+
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "wait_for", lambda fn, **_: fn())
+    with pytest.raises(smoke.Failure, match="fixture deletion refused"):
+        world.reset()
+    assert world.poisoned
+    with pytest.raises(AssertionError, match="contaminated"):
+        world.run("S18")
+
+
+@pytest.mark.parametrize("fail_stage", [None, "build", "start", "scenario"])
+def test_disposable_fixture_builds_once_and_cleans_even_after_failure(monkeypatch, tmp_path, fail_stage):
+    from tests import test_e2e_cli_stateful as acceptance
+
+    home = tmp_path / "world"
+    env = acceptance.world_env(home)
+    calls = []
+    world = SimpleNamespace(timing=lambda _: None, cli_server=None)
+    monkeypatch.setattr(acceptance, "World", lambda *_: world)
+    monkeypatch.setattr(acceptance, "start_cli_server", lambda _: None)
+
+    def run(argv, **_kwargs):
+        script = Path(argv[0]).name
+        calls.append(script)
+        if script == "e2e-env.sh":
+            home.mkdir()
+            (home / ".aq-e2e").touch()
+            (home / "config.yaml").write_text("swarm:\n  enabled: true\n")
+        stage = {"e2e-env.sh": "build", "e2e-daemon.sh": "start"}.get(script)
+        return SimpleNamespace(returncode=int(stage == fail_stage and stage is not None),
+                               stdout="fixture", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    try:
+        with acceptance.disposable_world("graphs", env) as fixture:
+            assert fixture is world
+            if fail_stage == "scenario":
+                raise AssertionError("scenario failure")
+    except AssertionError:
+        assert fail_stage is not None
+    assert calls.count("e2e-env.sh") == 1
+    assert calls.count("e2e-clean.sh") == 1
+    assert calls.count("e2e-daemon.sh") == int(fail_stage != "build")
+
+
+def test_parallel_worlds_fence_inherited_e2e_targets(monkeypatch, tmp_path):
+    from tests.test_e2e_cli_stateful import world_env
+
+    for key in ("AQ_E2E_HOME", "AQ_E2E_API_URL", "E2E_DB_NAME", "E2E_FAKE_SCRIPT"):
+        monkeypatch.setenv(key, "operator-owned")
+    first = world_env(tmp_path / "one")
+    second = world_env(tmp_path / "two")
+    for key in ("AQ_E2E_HOME", "AQ_E2E_API_URL", "E2E_DB_NAME", "AQ_E2E_TMUX_SOCKET"):
+        assert first[key] != second[key]
+        assert first[key] != "operator-owned"
+    assert "E2E_FAKE_SCRIPT" not in first
+
+
+def test_s16_restoration_failure_is_a_failure_and_still_restores_policy(monkeypatch):
+    smoke = _load_smoke()
+    restored = []
+    monkeypatch.setattr(smoke, "set_failover_policy_enabled", restored.append)
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", lambda: restored.append("ready"))
+    monkeypatch.setattr(smoke, "_s16", lambda _: "passed")
+    monkeypatch.setattr(smoke, "_restore_providers", lambda:
+                        (_ for _ in ()).throw(RuntimeError("provider cleanup failed")))
+    with pytest.raises(RuntimeError, match="provider cleanup failed"):
+        smoke.s16_provider_failover({})
+    assert restored == [False, True, "ready"]
+
+
+@pytest.mark.parametrize("code,reason", [
+    (1, "required_playbooks: provider-failover disabled"),
+    (2, "not answering: TimeoutError"),
+    (3, "health snapshot unavailable: timeout"),
+])
+def test_restored_readiness_expires_with_actual_diagnosis(monkeypatch, code, reason):
+    from scripts.e2e import probe
+
+    smoke = _load_smoke()
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+
+    def fetch(_url, timeout):
+        assert 0 < timeout <= min(2, 15 - clock.now)
+        clock.now += timeout
+        return code, reason
+
+    monkeypatch.setattr(probe, "fetch", fetch)
+    with pytest.raises(smoke.Failure, match=reason):
+        smoke.wait_for_restored_readiness()
+    assert clock.now == 15
+
+
+@pytest.mark.asyncio
+async def test_local_train_transport_keeps_real_git_leases_and_disposable_scope(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from scripts.e2e.daemon import install_local_git_transport
+    from src.git.manager import GitError, GitManager
+    from tests.test_integration_gitops import git as run_git
+
+    home = tmp_path / "e2e"
+    home.mkdir()
+    (home / ".aq-e2e").touch()
+    remote, checkout = home / "remote.git", home / "checkout"
+    run_git(home, "init", "--bare", str(remote))
+    run_git(home, "clone", str(remote), str(checkout))
+    run_git(checkout, "config", "user.name", "AQ E2E")
+    run_git(checkout, "config", "user.email", "e2e@example.test")
+    run_git(checkout, "commit", "--allow-empty", "-m", "base")
+    oid = run_git(checkout, "rev-parse", "HEAD")
+    git = GitManager()
+    resolver = AsyncMock(return_value="original")
+    orch = SimpleNamespace(git=git, github_repository_binding_resolver=resolver)
+    original_head, original_push = git.aremote_branch_head, git.apush_repository_oid
+    restore = install_local_git_transport(orch, home)
+    try:
+        binding = await orch.github_repository_binding_resolver(SimpleNamespace(url=str(remote)))
+        assert await git.aremote_branch_head(repository=binding, branch="main") is None
+        await git.apush_repository_oid(
+            str(checkout), repository=binding, tip_oid=oid, branch="main", expected_old_oid="0" * 40,
+        )
+        assert await git.aremote_branch_head(repository=binding, branch="main") == oid
+        observed = await git.als_remote_ref(
+            str(checkout), "main", repository_url=f"https://github.com/{binding.full_name}.git",
+        )
+        assert observed.oid == oid
+        run_git(checkout, "commit", "--allow-empty", "-m", "next")
+        next_oid = run_git(checkout, "rev-parse", "HEAD")
+        with pytest.raises(GitError, match="authority expired"):
+            await git.apush_repository_oid(
+                str(checkout), repository=binding, tip_oid=next_oid, branch="main",
+                expected_old_oid=oid, authority_deadline=asyncio.get_running_loop().time() - 1,
+            )
+        with pytest.raises(GitError):
+            await git.apush_repository_oid(
+                str(checkout), repository=binding, tip_oid=next_oid, branch="main",
+                expected_old_oid="0" * 40,
+            )
+        assert await git.aremote_branch_head(repository=binding, branch="main") == oid
+        outside = SimpleNamespace(url=str(tmp_path))
+        assert await orch.github_repository_binding_resolver(outside) == "original"
+        resolver.assert_awaited_once_with(outside)
+    finally:
+        restore()
+    assert orch.github_repository_binding_resolver is resolver
+    assert git.aremote_branch_head == original_head and git.apush_repository_oid == original_push
+    with pytest.raises(ValueError, match="marked disposable"):
+        install_local_git_transport(orch, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_negative_provider_assertion_observes_completed_scheduler_cycles(monkeypatch, tmp_path):
+    from scripts.e2e.daemon import run_fake_cycles
+
+    smoke = _load_smoke()
+    monkeypatch.setenv("AQ_E2E_HOME", str(tmp_path))
+    observed = []
+    orch = SimpleNamespace(run_one_cycle=None)
+
+    async def original():
+        observed.append("cycle")
+
+    async def scheduler(worker, _shutdown, *, interval):
+        assert interval == 0.25
+        for _ in range(3):
+            await worker.run_one_cycle()
+
+    orch.run_one_cycle = original
+    await run_fake_cycles(scheduler, orch, None, 0.25)
+    assert (tmp_path / "scheduler-cycles").read_text() == "3"
+    assert orch.run_one_cycle is original
+
+    def wait(predicate, **_kwargs):
+        assert not predicate()
+        (tmp_path / "scheduler-cycles").write_text("4")
+        assert not predicate()
+        (tmp_path / "scheduler-cycles").write_text("5")
+        assert predicate()
+
+    monkeypatch.setattr(smoke, "wait_for", wait)
+    smoke.observe_scheduler_cycles(lambda: observed.append("assertion"))
+    assert observed == ["cycle"] * 3 + ["assertion"] * 3
+
+
+def test_preloaded_cli_keeps_output_exit_codes_and_environment_isolation(tmp_path):
+    import signal
+    from scripts.e2e.cli_server import request
+    from tests.test_e2e_cli_stateful import World, start_cli_server, world_env
+
+    env = world_env(tmp_path)
+    world = World("probe", env)
+    start_cli_server(world)
+    try:
+        for argv in (["--json", "schema"], ["--json", "task", "show"]):
+            normal = subprocess.run([sys.executable, str(REPO_ROOT / "scripts/e2e/aq.py"), *argv],
+                                    env={k: v for k, v in env.items() if k != "AQ_E2E_CLI_SOCKET"},
+                                    capture_output=True, text=True, timeout=30)
+            fast = request(env["AQ_E2E_CLI_SOCKET"], argv, env)
+            assert fast["returncode"] == normal.returncode
+            assert fast["stdout"] == normal.stdout
+        legacy_env = {**env, "AQ_JSON_LEGACY": "1"}
+        legacy = request(env["AQ_E2E_CLI_SOCKET"], ["--json", "schema"], legacy_env)
+        fresh = request(env["AQ_E2E_CLI_SOCKET"], ["--json", "schema"], env)
+        assert "data" not in json.loads(legacy["stdout"])
+        assert "data" in json.loads(fresh["stdout"])
+    finally:
+        os.killpg(world.cli_server.pid, signal.SIGTERM)
+        world.cli_server.wait(timeout=5)
+
+
+@pytest.mark.parametrize("argv", [
+    ["task", "claim", "--help"],
+    ["task", "create", "--graph", "/definitely-missing.yaml"],
+    ["e2e-fixture", "ping"],
+])
+def test_race_and_plugin_probes_bypass_cli_preloading(tmp_path, argv):
+    env = {**os.environ, "AQ_E2E_CLI_SOCKET": str(tmp_path / "missing.sock")}
+    result = subprocess.run([sys.executable, str(REPO_ROOT / "scripts/e2e/aq.py"), *argv],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode in (0, 2)
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("group", SCENARIO_GROUPS)
+def test_pytest_collection_selects_only_the_requested_shard(group):
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_e2e_cli_stateful.py", "--co", "-q",
+         "-m", "integration", "-k", f"{group}-"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nodes = [line for line in result.stdout.splitlines()
+             if line.startswith("tests/test_e2e_cli_stateful.py::")]
+    assert {line.rsplit("[", 1)[1].removesuffix("]") for line in nodes} == {
+        f"{group}-{key}" for key in SCENARIO_GROUPS[group]
+    }
+
+
+def test_train_validation_pin_excludes_retired_commands(monkeypatch, tmp_path):
+    from src.playbooks.definition import load_definition_json
+
+    smoke = _load_smoke()
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {"success": True})
+    policy = smoke._pin_train_validation("fixture", tmp_path)
+    definition = load_definition_json(
+        (tmp_path / "vault/e2e-bundles/fixture-development/artifact.json").read_text()
+    )
+    assert [rule.id for rule in definition.rules] == ["cleanup-promoted"]
+    assert all(name.startswith("cleanup-promoted--") for name in definition.steps)
+    assert policy["development"]["route"]["artifact"]["artifact_sha256"]
