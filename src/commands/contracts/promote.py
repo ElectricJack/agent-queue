@@ -33,6 +33,10 @@ class PromoteRequestArgs(PromoteProjectArgs):
         default=False, description="Acknowledge reading the notes at the pinned source."
     )
     from_task: str | None = Field(default=None, description="Completed hotfix task to promote.")
+    allow_breaking_migration: bool = Field(
+        default=False,
+        description="Local operator override of non-additive migrations; disables code rollback.",
+    )
 
     @field_validator("source_sha")
     @classmethod
@@ -105,6 +109,7 @@ class PromoteValue(CommandValue):
     draft: str | None = None
     notes: str | None = None
     policy: dict[str, Any] | None = None
+    migration_admission: dict[str, Any] | None = None
     backmerges: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -146,6 +151,9 @@ REFUSALS = (
     "prepare_in_progress",
     "version_not_increasing",
     "notes_stale",
+    "migrations_not_additive",
+    "migration_range_invalid",
+    "breaking_migration_override_forbidden",
     "notes_range_invalid",
     "notes_range_too_large",
     "notes_source_missing",

@@ -21,6 +21,7 @@ from src.integration.train import IntegrationTrain, TrainTarget
 from src.integration.train_sources import DaemonLanes, DatabaseBatches, LeasedPublish
 from src.playbooks.run_state import RunLifecycle
 from src.playbooks.services import resolve_integration_route
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_promotion_policy import policy_engine
 from tests.test_promotion_steps import promotion as promotion
@@ -31,6 +32,9 @@ from tests.test_promote_commands import (
 
 async def test_one_step_release_pr_checks_approval_publish_and_annotated_tag(production_push):
     e = production_push
+    await e.db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     opened = await request(e, source_sha=e.source)
     assert opened["outcome"] == "requested", opened
     meta = opened["promotion"]

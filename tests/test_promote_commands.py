@@ -32,11 +32,13 @@ from src.integration.ci import (
     AuthenticatedGitHubObserver,
     FailedCIObservation,
     IntegrationTrustManifest,
+    TrustedCIObservation,
 )
 from src.integration.delivery_observer import delivery_targets
 from src.integration.promotion_steps import cache_promotion_review, promotion_ref
 from src.integration.train import TrainLane
 from src.profiles.capabilities import DENY_ALL
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git
 from tests.test_integration_gitops import setup as setup
 from tests.test_promotion_steps import PromotionGitHub
@@ -165,6 +167,183 @@ async def request(e, **kwargs):
     return await e.handler._cmd_promote_request({"project_id": "p", "step_id": "release", **kwargs})
 
 
+def _migration(revision, parent, body):
+    return ("from alembic import op\nimport sqlalchemy as sa\n"
+            f"revision = {revision!r}\ndown_revision = {parent!r}\n"
+            f"def upgrade():\n    {body}\n")
+
+
+def _migration_source(e, files, *, base=None):
+    source = commit(e.repo.store, files, base=base or e.source)
+    git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
+    e.github.runs[source] = "success"
+    e.source = source
+    return source
+
+
+@pytest.mark.parametrize("operation", [
+    "op.execute('UPDATE tasks SET title = title')",
+    "op.drop_constraint('ck_tasks_old', 'tasks')",
+    "op.alter_column('tasks', 'title', type_=sa.Integer())",
+    "op.add_column('tasks', column)",
+])
+async def test_nonadditive_release_refuses_before_pr_ref_or_intent(promote_env, operation):
+    e = promote_env
+    _migration_source(e, {"migrations/versions/a.py": _migration("a", None, operation)})
+    refs_before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await request(e)
+    assert result["outcome"] == "migrations_not_additive", result
+    audit = result["migration_admission"]
+    assert audit["range"] == {"previous": None, "current": e.source}
+    assert audit["finding_count"] == 1 and audit["override"] is None
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == refs_before
+    async with e.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).all()
+        assert not (await conn.execute(select(tasks))).all()
+
+
+async def test_first_release_bootstrap_and_previous_tag_pin_migration_range(promote_env):
+    e = promote_env
+    boundary = _migration_source(e, {
+        "migrations/versions/a.py": _migration("a", None, "op.execute('old backfill')"),
+    })
+    source = _migration_source(e, {
+        "migrations/versions/b.py": _migration("b", "a", "op.add_column('tasks', sa.Column('new', sa.Text(), nullable=True))"),
+    })
+    assert (await request(e))["outcome"] == "migrations_not_additive"
+    step = copy.deepcopy(e.meta["step"])
+    step["notes"]["bootstrap_sha"] = boundary
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(projects).values(promotion_flow=[step]))
+    opened = await request(e)
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["migration_admission"]["range"] == {"previous": boundary, "current": source}
+    assert opened["promotion"]["migration_admission"]["status"] == "additive"
+    # A replay keeps the immutable audit even if the caller requests an override.
+    replay = await request(e, allow_breaking_migration=True)
+    assert replay["outcome"] == "already_requested"
+    assert replay["promotion"]["migration_admission"] == opened["promotion"]["migration_admission"]
+
+
+async def test_previous_tag_overrides_bootstrap_and_uses_pinned_source_tree(promote_env):
+    e = promote_env
+    boundary = _migration_source(e, {
+        "migrations/versions/a.py": _migration("a", None, "op.execute('old backfill')"),
+    })
+    git(e.repo.store, "tag", "-a", "v0.1.0", "-m", "previous", boundary)
+    git(e.repo.store, "push", "origin", "refs/tags/v0.1.0")
+    source = _migration_source(e, {"source.txt": "safe source"})
+    _migration_source(e, {"migrations/versions/b.py": _migration("b", "a", "op.execute('new backfill')")})
+    assert (await request(e))["outcome"] == "migrations_not_additive"
+    opened = await request(e, source_sha=source)
+    assert opened["outcome"] == "requested", opened
+    audit = opened["promotion"]["migration_admission"]
+    assert audit["range"] == {"previous": boundary, "current": source}
+    assert audit["previous_tag"] == "v0.1.0" and audit["status"] == "additive"
+
+
+async def test_release_audit_bounds_findings_without_losing_total_or_digest(promote_env):
+    e = promote_env
+    body = "\n    ".join("op.execute('backfill')" for _ in range(120))
+    _migration_source(e, {"migrations/versions/a.py": _migration("a", None, body)})
+    refused = await request(e)
+    assert refused["outcome"] == "migrations_not_additive", refused
+    audit = refused["migration_admission"]
+    assert audit["finding_count"] == 120 and len(audit["findings"]) == 100
+    assert audit["findings_truncated"] is True and len(audit["findings_sha256"]) == 64
+    accepted = await request(e, allow_breaking_migration=True)
+    assert accepted["outcome"] == "requested", accepted
+    assert accepted["promotion"]["migration_admission"]["findings_sha256"] == audit["findings_sha256"]
+
+
+async def test_invalid_migration_graph_cannot_be_overridden(promote_env):
+    e = promote_env
+    _migration_source(e, {"migrations/versions/a.py": _migration("a", "missing", "pass")})
+    result = await request(e, allow_breaking_migration=True)
+    assert result["outcome"] == "migrations_not_additive" and "graph" in result["error"]
+    assert e.github.created == 0
+
+
+async def test_migration_admission_preserves_exact_historical_file_contents(promote_env):
+    e = promote_env
+    path = "migrations/versions/a.py"
+    original = _migration("a", None, "pass")
+    boundary = _migration_source(e, {path: original})
+    git(e.repo.store, "tag", "-a", "v0.1.0", "-m", "previous", boundary)
+    git(e.repo.store, "push", "origin", "refs/tags/v0.1.0")
+    _migration_source(e, {path: "\n" + original})
+    result = await request(e)
+    assert result["outcome"] == "migrations_not_additive", result
+    assert result["migration_admission"]["findings"] == [path + ":1: existing migration removed or modified"]
+    assert e.github.created == 0
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK])
+async def test_breaking_override_is_local_operator_only(promote_env, kind):
+    e = promote_env
+    principal = _supervisor("p") if kind is PrincipalKind.SESSION else ExecutionPrincipal(kind=kind, policy=DENY_ALL)
+    with principal_context(principal):
+        result = await request(e, allow_breaking_migration=True)
+    assert result["outcome"] == "breaking_migration_override_forbidden"
+    assert e.github.created == 0
+
+
+async def test_operator_breaking_override_freezes_exact_evidence_and_publishes_annotation(promote_env):
+    from src.integration.promotion_steps import PromotionIntentInvalid, StepPullRequestGate
+    from tests.test_promotion_steps import visit
+
+    e = promote_env
+    path = "migrations/versions/a.py"
+    _migration_source(e, {path: _migration("a", None, "op.execute('backfill')")})
+    refusal = await request(e)
+    opened = await request(e, allow_breaking_migration=True)
+    assert opened["outcome"] == "requested", opened
+    meta = opened["promotion"]
+    audit = meta["migration_admission"]
+    assert audit["schema"] == "aq.migration-admission.v1"
+    assert audit["range"] == {"previous": None, "current": e.source}
+    assert audit["findings"] == [path + ":6: non-additive or unproven operation: execute"]
+    assert audit["findings_sha256"] == refusal["migration_admission"]["findings_sha256"]
+    assert audit["override"]["identity"] == "human:local-operator"
+    assert audit["override"]["github_login"] == "operator" and audit["override"]["recorded_at"] > 0
+    assert "Code rollback across this release is disabled" in e.github.body
+    batch = await e.store.get(opened["batch_id"])
+    members = await e.store.members(batch.id)
+    assert await e.admission.load(batch, members) == meta
+    async with e.db._engine.begin() as conn:
+        edited = copy.deepcopy(meta)
+        edited["migration_admission"]["override"] = None
+        await conn.execute(update(task_context).values(content=json.dumps(edited)))
+    with pytest.raises(PromotionIntentInvalid):
+        await e.admission.load(batch, members)
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(task_context).values(content=json.dumps(meta)))
+    assert (await request(e))["promotion"]["migration_admission"] == audit
+    assert (await e.handler._cmd_promote_approve({"project_id": "p", "request_id": meta["request_id"]}))["outcome"] == "approved"
+    e.batch, e.member, e.meta = batch, members[0], meta
+    e.checks.pull_request = lambda _: StepPullRequestGate(e.github, e.repo.binding)
+    observation = await visit(e)
+    assert observation.state == "delivered", observation
+    annotation = git(e.ops.git.remote_path, "cat-file", "-p", "v0.2.0")
+    encoded = next(line.removeprefix("AQ-Migration-Admission: ") for line in annotation.splitlines()
+                   if line.startswith("AQ-Migration-Admission: "))
+    assert json.loads(encoded) == audit
+
+
+def attempt_jobs(path, checks, workflows):
+    """The attempt endpoint links each job to its exact check run and suite."""
+    run_id = int(path.split("/actions/runs/", 1)[1].split("/", 1)[0])
+    attempt = int(path.split("/attempts/", 1)[1].split("/", 1)[0])
+    workflow = next(row for row in workflows
+                    if row["id"] == run_id and row["run_attempt"] == attempt)
+    return [{"id": check["id"] + 5000, "name": check["name"],
+             "run_id": run_id, "run_attempt": attempt, "head_sha": check["head_sha"],
+             "status": check["status"], "conclusion": check["conclusion"],
+             "check_run_url": f"https://api.github.com/repos/test/repo/check-runs/{check['id']}"}
+            for check in checks if check["check_suite"]["id"] == workflow["check_suite_id"]]
+
+
 @pytest.fixture
 async def source_audit(promote_env):
     """The reported green delivery push: 16 prefixed tests and one audit check."""
@@ -193,6 +372,8 @@ async def source_audit(promote_env):
     listing = e.github.paged_items
 
     async def audit_listing(path, *, key):
+        if key == "jobs":
+            return attempt_jobs(path, e.audit_checks, e.audit_workflows)
         if e.source in path:
             if key == "check_runs":
                 return copy.deepcopy(e.audit_checks)
@@ -257,6 +438,7 @@ async def test_staging_source_audit_refuses_invalid_evidence_before_writes(sourc
         e.audit_checks[0].update(status="in_progress", conclusion=None)
     elif condition == "workflow_failed":
         e.audit_workflows[0]["conclusion"] = "failure"
+        e.audit_checks[0]["conclusion"] = "failure"
     elif condition == "pr_only":
         e.audit_workflows[0]["event"] = "pull_request"
     elif condition == "foreign_app":
@@ -289,6 +471,202 @@ async def test_source_audit_configuration_does_not_replace_exact_candidate_check
     assert isinstance(observed, FailedCIObservation)
     assert {check["conclusion"] for check in observed.checks} == {"missing"}
     assert tuple(check["name"] for check in observed.checks) == e.trust.required_checks.names
+
+
+@pytest.fixture
+async def cancelled_source_batch(promote_env):
+    """A green promotion push followed by a cancelled batch on the identical SHA."""
+    e = promote_env
+    check, workflow, _job = e.github._rows(e.source)
+    e.source_checks = [check, {**check, "id": 3000, "conclusion": "cancelled",
+                              "check_suite": {"id": 300}}]
+    e.source_workflows = [
+        {**workflow, "head_branch": "aq/promote/staging/test"},
+        {**workflow, "id": 4000, "check_suite_id": 300, "conclusion": "cancelled",
+         "head_branch": "aq/batches/superseded"},
+    ]
+    listing = e.github.paged_items
+
+    async def source_listing(path, *, key):
+        if key == "jobs":
+            return attempt_jobs(path, e.source_checks, e.source_workflows)
+        if e.source in path:
+            if key == "check_runs":
+                return copy.deepcopy(e.source_checks)
+            if key == "workflow_runs":
+                return copy.deepcopy(e.source_workflows)
+        return await listing(path, key=key)
+
+    e.github.paged_items = source_listing
+    return e
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "skipped"])
+@pytest.mark.parametrize("check_conclusion", ["success", "cancelled", "skipped"])
+@pytest.mark.parametrize("green_branch", ["dev", "aq/promote/staging/test"])
+async def test_request_accepts_green_source_under_cancelled_batch_checks(
+    cancelled_source_batch, conclusion, check_conclusion, green_branch,
+):
+    e = cancelled_source_batch
+    e.source_checks[1]["conclusion"] = check_conclusion
+    e.source_workflows[0]["head_branch"] = green_branch
+    e.source_workflows[1]["conclusion"] = conclusion
+    # Candidate/attestation CI uses the latest required job, even when another
+    # job cancelled its workflow. Only source admission may reuse older proof.
+    strict = await AuthenticatedGitHubObserver(e.github, expected_event="push").observe(
+        e.trust, e.source,
+    )
+    assert isinstance(strict, TrustedCIObservation if check_conclusion == "success"
+                      else FailedCIObservation)
+    if isinstance(strict, TrustedCIObservation):
+        assert strict.payload.checks[0].check_run_id == 3000
+    else:
+        assert strict.checks[0]["check_run_id"] == 3000
+
+    opened = await request(e)
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["source_sha"] == e.source
+    assert e.github.pull["head"]["sha"] == e.source
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
+
+
+async def assert_source_admission_uses_required_jobs(e, conclusion, *, audit):
+    checks = e.audit_checks if audit else e.source_checks
+    workflows = e.audit_workflows if audit else e.source_workflows
+    workflows[0].update(status="queued" if conclusion is None else "completed",
+                        conclusion=conclusion)
+    if audit:
+        opened = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    else:
+        opened = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "release"})
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["source_sha"] == e.source
+    assert all(check["conclusion"] == "success" for check in checks if
+               check["check_suite"]["id"] == workflows[0]["check_suite_id"])
+
+
+@pytest.mark.parametrize("conclusion", [None, "failure", "cancelled", "skipped"])
+async def test_source_admission_uses_required_jobs_under_non_success_workflow(
+    cancelled_source_batch, conclusion,
+):
+    await assert_source_admission_uses_required_jobs(cancelled_source_batch, conclusion, audit=False)
+
+
+@pytest.mark.parametrize("conclusion", [None, "failure", "cancelled", "skipped"])
+async def test_source_audit_uses_required_jobs_under_non_success_workflow(source_audit, conclusion):
+    await assert_source_admission_uses_required_jobs(source_audit, conclusion, audit=True)
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", None])
+async def test_queued_workflow_audit_cannot_replace_present_canonical_check(source_audit, conclusion):
+    e = source_audit
+    e.audit_workflows[0].update(status="queued", conclusion=None)
+    e.audit_checks.append({**e.audit_checks[0], "id": 3000,
+                          "name": e.trust.required_checks.names[0],
+                          "status": "in_progress" if conclusion is None else "completed",
+                          "conclusion": conclusion})
+    result = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    assert result["outcome"] == "promotion_source_pending", result
+    assert e.github.created == 0
+
+
+@pytest.mark.parametrize("condition,outcome", [
+    ("no_coverage", "promotion_source_red"),
+    ("older_failure", "promotion_source_red"),
+    ("older_pending", "promotion_source_pending"),
+    ("older_infra", "promotion_source_unavailable"),
+    ("foreign_app", "promotion_source_red"),
+    ("wrong_head", "promotion_source_untrusted"),
+    ("pr_only", "promotion_source_red"),
+    ("workflow_failed", "promotion_source_red"),
+    ("workflow_pending", "promotion_source_pending"),
+    ("workflow_malformed", "promotion_source_untrusted"),
+    ("batch_failure", "promotion_source_red"),
+    ("batch_pending", "promotion_source_pending"),
+    ("batch_infra", "promotion_source_unavailable"),
+    ("batch_workflow_failed", "promotion_source_red"),
+    ("batch_workflow_pending", "promotion_source_pending"),
+    ("batch_workflow_malformed", "promotion_source_untrusted"),
+    ("same_suite_rerun", "promotion_source_red"),
+    ("other_branch", "promotion_source_red"),
+    ("batch_wrong_head", "promotion_source_untrusted"),
+    ("newer_failure", "promotion_source_red"),
+])
+async def test_cancelled_batch_never_replaces_invalid_source_evidence(
+    cancelled_source_batch, condition, outcome,
+):
+    e = cancelled_source_batch
+    good, batch = e.source_checks
+    workflow, batch_workflow = e.source_workflows
+    if condition == "no_coverage":
+        e.source_checks.pop(0)
+    elif condition == "older_failure":
+        good["conclusion"] = "failure"
+    elif condition == "older_pending":
+        good.update(status="in_progress", conclusion=None)
+    elif condition == "older_infra":
+        good["conclusion"] = "timed_out"
+    elif condition == "foreign_app":
+        good["app"] = {"id": 999}
+    elif condition == "wrong_head":
+        good["head_sha"] = e.base
+    elif condition == "pr_only":
+        workflow["event"] = "pull_request"
+    elif condition == "workflow_failed":
+        workflow["conclusion"] = "failure"
+        good["conclusion"] = "failure"
+    elif condition == "workflow_pending":
+        workflow.update(status="in_progress", conclusion=None)
+        good.update(status="in_progress", conclusion=None)
+    elif condition == "workflow_malformed":
+        workflow["run_attempt"] = None
+    elif condition == "batch_failure":
+        batch["conclusion"] = "failure"
+    elif condition == "batch_pending":
+        batch.update(status="in_progress", conclusion=None)
+    elif condition == "batch_infra":
+        batch["conclusion"] = "timed_out"
+    elif condition == "batch_workflow_failed":
+        batch_workflow["conclusion"] = "failure"
+    elif condition == "batch_workflow_pending":
+        batch_workflow.update(status="in_progress", conclusion=None)
+        batch.update(status="in_progress", conclusion=None)
+    elif condition == "batch_workflow_malformed":
+        batch_workflow["run_attempt"] = None
+    elif condition == "same_suite_rerun":
+        e.source_workflows.append({**batch_workflow, "run_attempt": 2, "conclusion": "failure"})
+    elif condition == "other_branch":
+        batch_workflow["head_branch"] = "dev"
+    elif condition == "batch_wrong_head":
+        batch["head_sha"] = e.base
+    elif condition == "newer_failure":
+        e.source_checks.append({**good, "id": 2000, "conclusion": "failure"})
+
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await request(e)
+    assert result["outcome"] == outcome, result
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "skipped"])
+async def test_source_audit_retains_green_coverage_under_cancelled_batch(source_audit, conclusion):
+    e = source_audit
+    e.audit_checks.extend(
+        {**check, "id": 3000 + index, "conclusion": conclusion if index % 2 else "success",
+         "check_suite": {"id": 300}}
+        for index, check in enumerate(e.audit_checks[:len(e.trust.required_checks.names)])
+    )
+    e.audit_workflows.append({
+        **e.audit_workflows[0], "id": 4000, "check_suite_id": 300,
+        "head_branch": "aq/batches/superseded", "conclusion": conclusion,
+    })
+    result = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    assert result["outcome"] == "requested", result
+    assert result["promotion"]["source_sha"] == e.source
 
 
 @pytest.fixture
@@ -453,6 +831,37 @@ async def test_cancel_closes_pr_then_aborts_and_replays(promote_env):
     assert (await e.store.get(created["batch_id"])).intent == "aborted"
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
     assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
+
+
+async def test_cancelled_promotion_recovery_hold_survives_diagnosis_and_reconciliation(promote_env):
+    e = promote_env
+    created = await request(e)
+    assert (await e.handler._cmd_promote_cancel({
+        "project_id": "p", "request_id": created["request_id"],
+    }))["outcome"] == "cancelled"
+    tid = created["task_id"]
+    first = await e.db.notify_task_recovery(tid, project_id="p")
+    current = await e.db.get_task_meta(tid, "supervisor_recovery_incident")
+    assert current["attempt_id"] is None and current["retry_allowed"] is False
+    await e.db.add_task_comment(
+        tid, "Aborted PR has a replacement; leave this intent retired.",
+        author_kind="supervisor", author_id="supervisor-p",
+    )
+    await e.db.update_task(tid, pr_url=created["pr_url"])
+    assert await e.db.queue_task_recovery_notifications() == 0
+    assert (await e.db.notify_task_recovery(tid))["incident_id"] == first["incident_id"]
+    before = await e.db.get_task(tid)
+    result = await e.db.decide_task_recovery(
+        tid, first["incident_id"], "hold", "Keep aborted promotion retired.",
+        author_kind="supervisor", author_id="supervisor-p", project_id="p",
+    )
+    assert result["status"] == "FAILED"
+    assert await e.db.get_task(tid) == before
+    assert (await e.store.get(created["batch_id"])).intent == "aborted"
+    assert (await e.db.get_message("msg-" + first["incident_id"])).archived_at is not None
+    assert await e.db.queue_task_recovery_notifications() == 0
+    assert (await e.db.get_task_meta(tid, "supervisor_recovery_incident"))["decision"] == "hold"
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
 
 
 async def test_changing_commands_wake_only_their_own_promotion_target(promote_env):
@@ -642,6 +1051,11 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
             "request", ["--step", "release", "--from-task", "fix"],
             {"step_id": "release", "from_task": "fix", "source_sha": None,
              "version": None, "notes_reviewed": False},
+        ),
+        (
+            "request", ["--step", "release", "--allow-breaking-migration"],
+            {"step_id": "release", "source_sha": None, "version": None,
+             "notes_reviewed": False, "allow_breaking_migration": True},
         ),
         (
             "hotfix", ["--step", "release", "--title", "Fix release", "--version", "0.2.1"],
@@ -1050,3 +1464,25 @@ async def test_approval_retry_recovers_lost_review_response(promote_env):
     e.human.request_json = real
     assert (await e.handler._cmd_promote_approve(args))["outcome"] == "already_approved"
     assert e.human.posts == 1
+
+
+async def test_request_supersedes_a_task_its_aborted_intent_left_in_progress(promote_env):
+    """2026-10-21: an aborted staging intent's task ran 21h beside newer promotions."""
+    e = promote_env
+    created = await request(e)
+    async with e.db._engine.begin() as conn:
+        # The pre-fix `aq integration abort` projection: batch terminal, task untouched.
+        await conn.execute(update(integration_batches).values(
+            intent="aborted", lifecycle="aborted", human_abort_reason="red on dev"))
+    other = commit(
+        e.repo.store, {"pyproject.toml": '[project]\nversion = "0.2.1"\n'}, base=e.source
+    )
+    git(e.repo.store, "push", "origin", other + ":refs/heads/dev")
+    e.github.runs[other] = "success"
+    e.github.created = 0
+    newer = await request(e, source_sha=other)
+    assert newer["outcome"] == "requested", newer
+    assert newer["superseded_task_ids"] == [created["task_id"]]
+    async with e.db._engine.connect() as conn:
+        statuses = dict((await conn.execute(select(tasks.c.id, tasks.c.status))).all())
+    assert statuses == {created["task_id"]: "FAILED", newer["task_id"]: "IN_PROGRESS"}
