@@ -1,0 +1,15 @@
+{
+  "shared": {
+    "dashboard/src/components/CreateTaskModal.tsx::export default function CreateTaskModal({ open, onClose, defaultProjectId, onCreated }: CreateTaskModalProps) {": {
+      "baseline_span": [
+        14,
+        129
+      ],
+      "landing_span": [
+        14,
+        129
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
