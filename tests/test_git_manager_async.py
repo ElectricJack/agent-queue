@@ -238,6 +238,25 @@ async def test_arun_git_result_preserves_status_stdin_and_scoped_environment(clo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("nice", [None, "/usr/bin/nice"])
+async def test_low_priority_git_uses_owned_process_with_available_nice(clone, mgr, nice):
+    from unittest import mock
+
+    from src.git.manager import run_owned_process
+
+    with (
+        mock.patch("src.git.manager.shutil.which", return_value=nice),
+        mock.patch("src.git.manager.run_owned_process", wraps=run_owned_process) as run,
+    ):
+        result = await mgr.arun_git_result(["rev-parse", "HEAD"], cwd=clone,
+                                          low_priority=True, timeout=25)
+    assert result.returncode == 0
+    prefix = ("nice", "-n", "10") if nice else ()
+    assert run.call_args.args == (*prefix, "git", "rev-parse", "HEAD")
+    assert 0 < run.call_args.kwargs['timeout'] <= 25
+
+
+@pytest.mark.asyncio
 async def test_remote_ref_result_distinguishes_absent_from_io_failure(clone, mgr, monkeypatch):
     absent = await mgr.als_remote_ref(clone, "missing")
     assert absent.state is RemoteRefState.ABSENT
@@ -3060,3 +3079,52 @@ async def test_unsettled_startup_is_bounded_and_late_handle_remains_owned(mgr, c
         await asyncio.wait_for(asyncio.gather(*process._pending), timeout=10)
     assert created and all(child.returncode is not None for child in created)
     assert not any(process._group_has_writer(child.pid) for child in created)
+
+
+_TIMEOUT = GitError("authenticated Git push preparation failed (reason=git_timeout, "
+                    "subcommand=fetch, elapsed=100.0s, budget=100.0s)")
+
+
+def test_timeout_budget_doubles_to_ceiling_and_resets():
+    from src.git import manager
+
+    streaks = {}
+
+    def budget():
+        return manager._escalated_budget(streaks, "s", 120.0, 1200.0)
+
+    assert budget() == 120.0
+    seen = []
+    for _ in range(5):
+        manager._record_budget_outcome(streaks, "s", _TIMEOUT)
+        seen.append(budget())
+    assert seen == [240.0, 480.0, 960.0, 1200.0, 1200.0]
+    manager._record_budget_outcome(streaks, "s", GitError("fatal: other failure"))
+    assert budget() == 120.0
+    manager._record_budget_outcome(streaks, "s", _TIMEOUT)
+    manager._record_budget_outcome(streaks, "s", None)
+    assert budget() == 120.0
+
+
+@pytest.mark.asyncio
+async def test_authenticated_fetch_budget_grows_while_timing_out_then_resets(tmp_path):
+    """A timed-out transfer is discarded whole, so a fixed budget would loop forever."""
+    manager = GitManager.__new__(GitManager)
+    budgets, outcomes = [], [_TIMEOUT, _TIMEOUT, None, None]
+
+    async def once(checkout_path, *, budget=None, **options):
+        budgets.append(budget)
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        return "transfer"
+
+    manager._afetch_origin_with_auth_to_url_once = once
+    call = manager._afetch_origin_with_auth_to_url
+    for _ in range(2):
+        with pytest.raises(GitError):
+            await call(str(tmp_path), source_url="u", token=None)
+    assert await call(str(tmp_path), source_url="u", token=None) == "transfer"
+    assert await call(str(tmp_path), source_url="u", token=None) == "transfer"
+    assert budgets == [GitManager._GIT_TIMEOUT, 2 * GitManager._GIT_TIMEOUT,
+                       4 * GitManager._GIT_TIMEOUT, GitManager._GIT_TIMEOUT]
