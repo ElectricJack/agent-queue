@@ -1,6 +1,6 @@
 ---
 name: aq-cli
-description: Discovery and orientation for the aq (agent-queue) command-line interface. Use when you need to find or invoke any daemon command, or when another aq-* skill directs you to run `aq <group> <cmd>`. Answers "what can I do with aq" and "how do I get more detail on a specific command".
+description: Discovery and orientation for the aq (agent-queue) command-line interface. Use when you need to find or invoke any daemon command, or when another aq skill directs you to run an aq subcommand. Answers "what can I do with aq" and "how do I get more detail on a specific command".
 allowed-tools:
   - Bash
 ---
@@ -9,7 +9,7 @@ allowed-tools:
 
 `aq` is the command-line surface for the agent-queue daemon. Everything the
 daemon can do — task management, workspaces, sessions, playbooks, gates,
-messages, projects, plugins, memory — is reachable through it. Prefer
+messages, projects, plugins, knowledge records — is reachable through it. Prefer
 `aq` over any MCP tool that duplicates its function; the CLI is the
 source of truth.
 
@@ -29,17 +29,17 @@ aq graph        — server-side spatial task-graph layout
 aq handoff      — record a handoff note, request a session restart
 aq inbox        — pending messages (alias for `aq message inbox`)
 aq integration  — inspect and control hierarchical integration trains
+aq knowledge    — create, read, revise and protect versioned durable knowledge
 aq logs         — tail and filter daemon logs (reads JSONL directly, no daemon needed)
 aq mcp          — MCP server registry + tool catalog
-aq memory       — semantic memory search, project profiles, compaction
 aq message      — inter-agent and user message queue
-aq note         — project notes (list / read / write / append / delete)
 aq playbook     — playbook compilation, runs, HITL, health
 aq plugin       — plugin management
 aq pool         — worker pool sizing (status / scale)
 aq prime        — print this task's startup prime document
 aq project      — project CRUD, workspaces, channels, budgets
 aq question     — pending worker questions (list / answer / escalate)
+aq record       — scoped lexical search, capabilities and informational links
 aq reply        — reply to a message (alias for `aq message reply`)
 aq schema       — the system's enum catalog (statuses, outcomes, error codes)
 aq session      — inspect and steer agent sessions
@@ -57,16 +57,26 @@ aq start / stop / restart — daemon lifecycle (operator only)
 does — treat it as a map, and confirm a shape with `--help` before you
 run something new.
 
+## Durable knowledge
+
+Use **aq-knowledge** when asked to save or recall a reference, finding, decision
+or procedure. `aq knowledge` writes the canonical PostgreSQL records;
+`aq record` discovers and links them. Check `aq record capabilities` for the
+explicit project and search before creating a duplicate. Confirm a save with its
+record identity, revision and canonical readback. Legacy notes, vault files and
+Markdown exports do not establish graph ingestion. Optional semantic memory is
+separate from core storage and lexical search; it is not the durable-save path.
+
 ## Discovery workflow
 
-Two commands cover every need:
+Start with a narrow reference; load broad inventory only when needed:
 
-1. **`aq --help-all`** — prints the full command reference for the entire
+1. **`aq <group> <cmd> --help`** — prints detail on one specific command.
+   Use this before invoking anything you haven't run before.
+2. **`aq --help-all`** — prints the full command reference for the entire
    CLI (every group, every subcommand, every flag). Emit this to a temp
    file (`aq --help-all > /tmp/aq-help.txt`) and read/grep it when you
    need a broad view.
-2. **`aq <group> <cmd> --help`** — prints detail on one specific command.
-   Use this before invoking anything you haven't run before.
 
 Example:
 
@@ -82,7 +92,7 @@ actually validates against — task statuses, `outcome` (`pass` / `fail`),
 
 ## Output formats
 
-`aq` prints human-friendly tables by default. Two flags change that:
+`aq` prints human-friendly tables by default. These flags change that:
 
 - `--json` — the versioned envelope on stdout:
   `{"schema_version": …, "data": …, "pagination"?: …}` on success and
@@ -91,8 +101,13 @@ actually validates against — task statuses, `outcome` (`pass` / `fail`),
   pre-envelope raw payload for one release; don't rely on it.)
 - `--brief` — trims each entity to a compact projection (still readable).
   Composes with `--json`.
+- `--save-output PATH` — for emit-based CLI results, writes the complete
+  unprojected envelope to a new private JSON file and prints its path, byte count,
+  SHA-256 and shape. Page relevant keys/lines from it instead of repeating large
+  success output. Failures, warnings, gates, claim outcomes and instructions remain
+  visible. Existing files are refused; no evidence is overwritten.
 
-Both are **global**: they mean the same thing wherever you put them, so
+These are **global**: they mean the same thing wherever you put them, so
 `aq task list --json`, `aq task --json list` and `aq --json task list` are
 the same command. Two exceptions: after a passthrough command the flag
 belongs to the child program (`aq test tests/x.py --json` hands `--json` to
@@ -117,11 +132,14 @@ is sent as `Authorization: Bearer <token>` and **is enforced**:
   command is allowed.
 - **A session token** — restricted to the agent command set (task reads
   and writes for your own task, comments, close, claim, heartbeat,
-  handoff, messages, memory, `prime`, `schema`, `session drain-ack`), and
+  handoff, messages, granted knowledge/record operations, `prime`, `schema`,
+  `session drain-ack`), and
   to your own `task_id` / `project_id`. Anything else answers
   `out of scope: <command>` or `out of scope: <field> mismatch`.
-- **A supervisor token** — *elevated*: any command, still pinned to that
-  supervisor's project.
+- **A supervisor token** — *elevated*, within its session scope and grants.
+  A project supervisor stays in its project. A global supervisor chooses an
+  explicit project for targeted record operations without changing its session
+  scope; global records require explicit global scope and separate enablement.
 
 Don't work around scope errors and don't retry them — they are a property
 of your token, not a transient failure. If you legitimately need a broader
@@ -139,9 +157,12 @@ aq agent list-profiles                    # the profiles that exist here
 aq system list-intelligence-classes       # the classes that exist here
 ```
 
-Worker profile IDs are installation-specific. For ordinary queued work, prefer
-an enabled `lifecycle: pool` profile from `aq agent list-profiles`; do not
-infer a route from an ID prefix or an example in documentation. Shipped
+Nobody files queued work on a profile: the project's router picks every
+task's profile, provider and model, and a filing that names one is refused
+(`routing.choice_forbidden`). A filer gives the kind (`--type`) and, when it
+matters, an intelligence-class hint (`--intelligence-class`); see the aq-tasks
+skill. Worker profile IDs are installation-specific, so never infer one from
+an ID prefix or an example in documentation. Shipped
 intelligence classes are `fast-{low,high}`, `standard-high`, `deep-{low,high}`
 and `astra-{low,high}` — Astra is OpenAI-only, and nothing from the deep tier
 upward runs on Gemini. Anything you see in an example is not a guarantee that
@@ -155,6 +176,8 @@ command shapes and gotchas. Use them instead of re-deriving:
 - **aq-tasks** — creating / closing / reopening / editing tasks, working
   with results, dependencies, the pool claim loop.
 - **aq-comms** — messages, inbox handling, and blocker reporting.
+- **aq-knowledge** — canonical durable saves, scoped search, revision-guarded
+  edits, receipts and informational links.
 - **aq-workspaces-and-git** — workspace ops + git via CLI.
 - **aq-playbooks-and-gates** — playbook runs and human-in-the-loop
   gates.
@@ -178,8 +201,8 @@ after the in-tree source is fixed.
 
 `aq doctor --check skills.installed_drift` reports installed copies that
 differ from the shipped source; `--fix` backs each one up next to itself
-as `SKILL.md.bak` and re-copies the shipped version. To do it by hand,
-delete the installed copy and restart the daemon:
+as `SKILL.md.bak` and re-copies the shipped version. Review the reported drift
+before applying the fix and reconcile custom edits from the backups afterwards:
 
 ```bash
 aq doctor --check skills.installed_drift          # what has drifted
@@ -189,3 +212,7 @@ aq doctor --check skills.installed_drift --fix    # back up + re-copy
 An agent inside a task worktree cannot do this: the installed copies live
 outside the workspace and re-seeding is a daemon/operator action. Ship the
 fix in `src/skills/` and tell the operator to run the check.
+New skills are discovered by directory scan and seeded when absent for Claude,
+Codex and both Gemini installations with the applicable harness homes present.
+See `docs/guides/knowledge-records.md` in the agent-queue repository for the
+canonical workflow and the separate profile-text refresh procedure.
