@@ -52,7 +52,13 @@ async def api(env, monkeypatch):
         ))
     config = AppConfig()
     config.messages.enabled = True
+    # Exercise legacy wait ownership in its supported rollback configuration.
+    # The default v2 cutover's registration and ACK path has separate coverage.
+    config.wait_policy.v2_enabled = False
+    config.wait_policy.scheduler_waits_enabled = False
     config.security.capability_enforcement = "enforce"
+    # Exercise legacy compatibility during a flag-only rollback.
+    config.wait_policy.v2_enabled = False
     handler = CommandHandler(SimpleNamespace(
         db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None,
     ), config)
@@ -100,9 +106,9 @@ async def command(api, name, args, *, caller="s"):
     return response.json()
 
 
-async def native_send(api, args):
+async def native_send(api, args, *, caller="s"):
     """Native dispatch receives only the scope authenticated from the minted token."""
-    scope = await api.store.validate(api.tokens["s"])
+    scope = await api.store.validate(api.tokens[caller])
     assert scope is not None
     args = dict(args)
     error = await check_request_scope("message_send", args, scope, db=api.handler.db)
@@ -181,6 +187,42 @@ async def test_native_dispatch_owns_defaults_and_explicit_own_sender(api, explic
     assert "error" not in result, result
     row = result["message"]
     assert (row["from_kind"], row["from_id"]) == ("session", "s")
+
+
+async def test_global_supervisor_cli_status_acknowledges_its_report(api, env, monkeypatch):
+    message = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="sup-p", to_kind="session",
+        to_id="supervisor-global", body="report for the global supervisor",
+    )
+    assert await env.db.claim_message_notification(message.id, now=time.time(), retry_delay=0)
+    loop = asyncio.get_running_loop()
+    real_client = CLIClient(base_url="http://test", token=api.tokens["sup-global"])
+    async with httpx.AsyncClient(
+        transport=api.http._transport, base_url="http://test",
+        headers={"Authorization": f"Bearer {api.tokens['sup-global']}"},
+    ) as http:
+        real_client._http = http
+
+        async def execute(name, args):
+            return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(
+                real_client.execute(name, args), loop,
+            ))
+
+        @asynccontextmanager
+        async def cli_client(_api_url):
+            yield SimpleNamespace(execute=execute)
+
+        monkeypatch.setattr("src.cli.messages._get_client", cli_client)
+        result = await asyncio.to_thread(CliRunner().invoke, cli, [
+            "message", "status", message.id, "--json",
+        ])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["state"] == "acknowledged"
+    assert data["message"]["body"] == message.body
+    stored = await env.db.get_message(message.id)
+    assert stored.read_at is not None and stored.delivered_at is not None
+    assert not await env.db.claim_message_notification(message.id, now=time.time() + 600, retry_delay=0)
 
 
 @pytest.mark.parametrize("named", [False, True])
@@ -365,6 +407,50 @@ async def test_live_supervisor_may_use_its_owned_explicit_address(api, address):
         to_kind="session", to_id="s", body="guidance", from_kind="session", from_id="supervisor-q",
     ), caller="sup-p")
     assert not forged["ok"] and "out of scope" in forged["error"]
+
+
+@pytest.mark.parametrize("destination", [
+    "supervisor-global", "n-supervisor--global", "sup-global", "s",
+])
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("path", ["/api/messages/send", "native"])
+async def test_project_supervisor_sends_ordinary_reports_and_worker_guidance(
+    api, env, destination, explicit, path,
+):
+    args = dict(to_kind="session", to_id=destination, body="guidance or report", thread_id="report")
+    if explicit:
+        args.update(from_kind="session", from_id="sup-p")
+    if path == "native":
+        result = await native_send(api, args, caller="sup-p")
+    else:
+        response = await api.http.post(
+            path, json=args,
+            headers={"Authorization": f"Bearer {api.tokens['sup-p']}"},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+    assert "error" not in result, result
+    stored = await env.db.get_message(result["message_id"])
+    assert (stored.project_id, stored.from_kind, stored.from_id) == ("p", "session", "sup-p")
+    assert stored.to_id == ("s" if destination == "s" else "supervisor-global")
+    assert stored.thread_id == "report"
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_project_supervisor_named_relay_keeps_report_in_own_project(api, env, explicit):
+    payload = {"body": "project report", "thread_id": "relay-report"}
+    if explicit:
+        payload.update({"from_kind": "session", "from": "sup-p"})
+    response = await api.http.post(
+        "/api/sessions/supervisor-global/message", json=payload,
+        headers={"Authorization": f"Bearer {api.tokens['sup-p']}"},
+    )
+    assert response.status_code == 200, response.text
+    stored = await env.db.get_message(response.json()["message_id"])
+    assert (stored.project_id, stored.from_kind, stored.from_id, stored.to_id) == (
+        "p", "session", "sup-p", "supervisor-global",
+    )
+    assert stored.thread_id == "relay-report"
 
 
 async def test_local_human_defaults_and_explicit_senders_remain_distinct(api):
