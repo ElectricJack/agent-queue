@@ -185,21 +185,12 @@ def _db(policy: dict) -> SimpleNamespace:
         default_branch="main",
         url="https://github.com/ElectricJack/agent-queue.git",
     )
-    parsed = HierarchicalIntegrationPolicy.model_validate(_policy())
-    profiles = {
-        profile
-        for boundary in (parsed.parent, parsed.root)
-        for profile in (
-            boundary.primary_profile_id,
-            boundary.repair.debug_profile_id,
-            boundary.verifier_profile_id,
-        )
-    }
+    # No list_profiles: preflight gates on the class hints only; the router
+    # assigns repair and verifier profiles.
     return SimpleNamespace(
         get_project=AsyncMock(return_value=_project(policy)),
         get_repo=AsyncMock(side_effect=lambda rid: repository if rid == "agent-queue2" else None),
         get_session=AsyncMock(return_value=None),
-        list_profiles=AsyncMock(return_value=[SimpleNamespace(id=value) for value in profiles]),
     )
 
 
@@ -527,6 +518,69 @@ async def test_every_item_is_ok_with_the_anchors_in_place(protected):
     assert all(f"?ref={SHA}" in path for path in client.paths if "/contents/" in path)
 
 
+async def test_app_verify_and_preflight_block_missing_origins_without_writing(protected, reuse_database):
+    from sqlalchemy import select
+    from src.database.tables import task_branch_origins
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+
+    db = await reuse_database("app-origin-readiness")
+    await db.create_project(Project(id="agent-queue", name="Queue"))
+    await db.create_repo(RepoConfig(id="agent-queue2", project_id="agent-queue", default_branch="main",
+                                    source_type=RepoSourceType.CLONE))
+    await db.create_task(Task(id="legacy", project_id="agent-queue", title="legacy", description="",
+                              status=TaskStatus.READY))
+    handler = _handler(FakeGitHub())
+    handler.db._engine = db._engine
+    verified = await handler._cmd_integration_app_verify({"project_id": "agent-queue"})
+    preflight = await daemon_functional_preflight(handler.orchestrator, "agent-queue", "agent-queue2")
+    assert verified["ready"] is False
+    assert verified["blockers"] == list(preflight) == ["branch_origins_missing"]
+    item = next(item for item in verified["items"] if item["id"] == "branch_origins")
+    assert item["observed"] == {"task_ids": ["legacy"]}
+    assert item["fix"] == "aq doctor --check integration.branch_origins --fix"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins))).all() == []
+
+
+@pytest.mark.parametrize("drift", [None, "missing", "another-attestation"])
+async def test_verify_and_preflight_compare_bound_promotion_identities(protected, monkeypatch, drift):
+    steps = [
+        {"id": "staging", "source": "main", "target": "staging",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (staging)"}},
+        {"id": "release", "source": "staging", "target": "production",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (release)"}},
+    ]
+    names = [step["gate"]["attestation"] for step in steps]
+    stored = AsyncMock(return_value=steps)
+    monkeypatch.setattr("src.integration.promotion_steps.read_stored_promotion_flow", stored)
+    client = FakeGitHub()
+    manifest = _manifest()
+    manifest["promotion_attestation_names"] = names.copy()
+    if drift == "missing":
+        manifest.pop("promotion_attestation_names")
+    elif drift == "another-attestation":
+        manifest["promotion_attestation_names"][1] = "Unconfigured release attestation"
+    client.files[trust_manifest.TRUST_MANIFEST_PATH] = trust_manifest.canonical_text(manifest)
+    result = await _handler(client)._cmd_integration_app_verify({"project_id": "agent-queue"})
+    item = next(item for item in result["items"] if item["id"] == "manifest")
+    preflight = await daemon_functional_preflight(
+        _orchestrator(client, _policy()), "agent-queue", "agent-queue2",
+    )
+    assert stored.await_count == 2
+    assert result["expected"]["manifest"]["promotion_attestation_names"] == names
+    if drift is None:
+        assert item["status"] == "ok"
+        assert "trust_manifest_mismatch" not in result["blockers"]
+        assert "trust_manifest_mismatch" not in preflight
+    else:
+        assert item["status"] == "fail"
+        assert [change["field"] for change in item["observed"]["diff"]] == [
+            "promotion_attestation_names",
+        ]
+        assert "trust_manifest_mismatch" in result["blockers"]
+        assert "trust_manifest_mismatch" in preflight
+
+
 async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(protected):
     result = await _handler(FakeGitHub())._cmd_integration_app_verify(
         {"project_id": "agent-queue"}
@@ -758,6 +812,7 @@ async def test_contract_is_a_typed_read():
             assert command == "integration_app_verify"
             assert payload == {
                 "project_id": "p", "policy": None, "repository_id": None, "policy_path": None,
+                "repository_access_only": False,
             }
             return report
 
@@ -780,10 +835,12 @@ async def test_status_contract_carries_warnings():
     register_integration_contracts(registry)
     registration = registry.require("integration_status")
     warning = {"code": "audit_workflow_missing", "detail": "d", "ref": "agent-queue2"}
+    activity = {"scope": "daemon", "api_calls_per_minute": {"GET repos/acme/widgets": 3}}
 
     class StubHandler:
         async def execute(self, command, payload):
-            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning]}
+            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning],
+                    "github": activity}
 
     set_handler_provider(StubHandler)
     try:
@@ -793,6 +850,7 @@ async def test_status_contract_carries_warnings():
     finally:
         set_handler_provider(None)
     assert result.value.ready is True and result.value.warnings == (warning,)
+    assert result.value.github == activity
 
 
 # ---------------------------------------------------------------------------

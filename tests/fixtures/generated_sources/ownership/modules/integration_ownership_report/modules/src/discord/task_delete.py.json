@@ -1,0 +1,10 @@
+{
+  "shared_definitions": {
+    "src/discord/task_delete.py::DeleteTaskView.confirm": {
+      "reason": "Discord confirmation supplies the server-owned human actor to unified task deletion and displays the audit identity and cleanup warnings."
+    },
+    "src/discord/task_delete.py::import from src.integration.task_deletion import deletion_actor": {
+      "reason": "Imports the server-only audit actor context for Discord task deletion; no caller-provided actor enters the command contract."
+    }
+  }
+}
