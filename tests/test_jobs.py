@@ -241,14 +241,15 @@ async def development_lanes(world, tmp_path, monkeypatch, validation: str):
                                   default_branch="main")
     built, hosted = [], []
 
-    async def development_repository(primitives, repo_row, binding, settings):
+    async def development_repository(primitives, repo_row, binding, settings, *, fetch=True):
+        assert not fetch
         built.append(settings)
         return retained
 
     async def binding(repo_row):
         return None
 
-    monkeypatch.setattr("src.integration.development_runtime.development_repository",
+    monkeypatch.setattr("src.integration.repository_git.development_repository",
                         development_repository)
     orchestrator = SimpleNamespace(
         db=world.db, git=world.git, _command_handler=world.lanes.orchestrator._command_handler,
