@@ -667,6 +667,45 @@ class TestReply:
 
 
 class TestInbox:
+    @pytest.mark.parametrize("address", [
+        "supervisor-global", "n-supervisor--global", "global-admin",
+    ])
+    @pytest.mark.parametrize("scope", [None, _GLOBAL_SUPERVISOR_SCOPE])
+    async def test_global_alias_lists_unread_mail_after_delivery(self, setup, address, scope):
+        handler, db, bus = setup
+        await _seed_global_supervisor(db)
+        delivered = await db.create_message(**_send_args(
+            to_id="supervisor-global", body="injected but unread", priority=1,
+        ))
+        await db.mark_delivered(delivered.id)
+        primed = await db.create_message(**_send_args(
+            to_id="n-supervisor--global", body="primed but unread", priority=2,
+        ))
+        await db.mark_delivered(primed.id, via="prime")
+        pending = await db.create_message(**_send_args(to_id="global-admin", priority=3))
+        read = await db.create_message(**_send_args(to_id="supervisor-global", priority=0))
+        await db.mark_read(read.id)
+        archived = await db.create_message(**_send_args(to_id="supervisor-global", priority=0))
+        await db.archive_messages([archived.id])
+        before = [await db.get_message(m.id) for m in (delivered, primed, pending)]
+
+        args = {"to_kind": "session", "to_id": address, "_scope": scope}
+        result = await handler.execute("message_inbox", args)
+        assert result["success"], result
+        assert [m["id"] for m in result["messages"]] == [
+            delivered.id, primed.id, pending.id,
+        ]
+        limited = await handler.execute("message_inbox", {**args, "limit": 2})
+        assert [m["id"] for m in limited["messages"]] == [delivered.id, primed.id]
+        assert [await db.get_message(m.id) for m in before] == before
+        assert bus.of_type("message.delivered") == []
+
+        injected = await handler.execute("message_inbox", {**args, "inject": True})
+        assert injected["injected"] == 1
+        assert [m["id"] for m in injected["messages"]] == [pending.id]
+        again = await handler.execute("message_inbox", {**args, "inject": True})
+        assert again["injected"] == 0
+
     async def test_read_only_by_default(self, setup):
         handler, db, bus = setup
         sent = await handler._cmd_message_send(_send_args())
@@ -749,7 +788,7 @@ class TestInboxIncludeConsumed:
         assert "consumed" not in result
         assert "consumed_messages" not in result
 
-    async def test_recovers_the_body_a_crashed_inject_burned(self, setup):
+    async def test_plain_inbox_recovers_the_unread_body_a_crashed_inject_burned(self, setup):
         handler, _db, _bus = setup
         sent = await handler._cmd_message_send(_send_args())
         # Delivery consumed, bodies discarded — the worker's parser crashed.
@@ -760,15 +799,15 @@ class TestInboxIncludeConsumed:
             await handler._cmd_message_inbox(
                 {"to_kind": "session", "to_id": "supervisor-p1"}
             )
-        )["count"] == 0
+        )["count"] == 1
 
         result = await handler._cmd_message_inbox(
             {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
         )
-        assert result["count"] == 0
-        assert result["consumed"] == 1
-        assert result["consumed_messages"][0]["id"] == sent["message_id"]
-        assert result["consumed_messages"][0]["body"] == _send_args()["body"]
+        assert result["count"] == 1
+        assert result["consumed"] == 0
+        assert result["messages"][0]["id"] == sent["message_id"]
+        assert result["messages"][0]["body"] == _send_args()["body"]
 
     async def test_recovers_an_archived_body(self, setup):
         """``archive_after_inject`` sweeps rows in the same pass that delivers
@@ -823,8 +862,8 @@ class TestInboxIncludeConsumed:
         result = await handler._cmd_message_inbox(
             {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
         )
-        assert [m["id"] for m in result["messages"]] == [new["message_id"]]
-        assert [m["id"] for m in result["consumed_messages"]] == [old["message_id"]]
+        assert [m["id"] for m in result["messages"]] == [old["message_id"], new["message_id"]]
+        assert result["consumed_messages"] == []
 
     async def test_read_only_never_mutates(self, setup):
         """A plain consumed re-read leaves both stamps exactly as they were."""
@@ -854,21 +893,30 @@ class TestInboxIncludeConsumed:
         result = await handler._cmd_message_inbox(
             {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
         )
-        assert [m["id"] for m in result["consumed_messages"]] == [mine["message_id"]]
-        assert other["message_id"] not in {m["id"] for m in result["consumed_messages"]}
+        assert [m["id"] for m in result["messages"]] == [mine["message_id"]]
+        assert result["consumed_messages"] == []
+        assert other["message_id"] not in {m["id"] for m in result["messages"]}
 
     async def test_limit_applies_to_each_half(self, setup):
         handler, _db, _bus = setup
         for index in range(4):
             await handler._cmd_message_send(_send_args(body=f"old{index}"))
-        await handler._cmd_message_inbox(
+        injected = await handler._cmd_message_inbox(
             {"to_kind": "session", "to_id": "supervisor-p1", "inject": True, "limit": 4}
         )
+        for message in injected["messages"]:
+            await _db.mark_read(message["id"])
+        for index in range(3):
+            await handler._cmd_message_send(_send_args(body=f"new{index}"))
         result = await handler._cmd_message_inbox(
             {"to_kind": "session", "to_id": "supervisor-p1",
              "include_consumed": True, "limit": 2}
         )
+        assert result["count"] == 2
         assert result["consumed"] == 2
+        assert {m["id"] for m in result["messages"]}.isdisjoint(
+            m["id"] for m in result["consumed_messages"]
+        )
 
     async def test_foreign_mailbox_still_refused(self, setup):
         """The re-read is not a way around the fence."""
@@ -952,7 +1000,8 @@ async def _seed_session_row(db, *, task_id: str | None = "task-claimed") -> None
 
 
 class TestInboxMailboxFence:
-    async def test_supervisor_uuid_inbox_includes_named_mailboxes_in_priority_order(self, setup):
+    @pytest.mark.parametrize("address", ["sess-1", "supervisor-p1", "n-supervisor--p1"])
+    async def test_supervisor_inbox_includes_named_mailboxes_in_priority_order(self, setup, address):
         handler, db, _bus = setup
         await db.create_session(SessionRecord(
             id="sess-1", project_id="p1", profile_id="supervisor", harness="codex",
@@ -961,15 +1010,17 @@ class TestInboxMailboxFence:
         ))
         for recipient, priority in (("sess-1", 3), ("supervisor-p1", 1), ("n-supervisor--p1", 2)):
             await handler._cmd_message_send(_send_args(to_id=recipient, priority=priority))
-        args = {"to_kind": "session", "to_id": "sess-1", "limit": 2,
+        args = {"to_kind": "session", "to_id": address, "limit": 2,
                 "_scope": _session_scope(elevated=True)}
-        plain = await handler.execute("message_inbox", {**args, "_scope": _session_scope()})
+        plain = await handler.execute("message_inbox", {
+            **args, "to_id": "sess-1", "_scope": _session_scope(),
+        })
         assert [m["to_id"] for m in plain["messages"]] == ["sess-1"]
         result = await handler.execute("message_inbox", args)
         assert [m["to_id"] for m in result["messages"]] == ["supervisor-p1", "n-supervisor--p1"]
         result = await handler.execute("message_inbox", {**args, "inject": True})
         assert result["injected"] == 2
-        remaining = await handler.execute("message_inbox", args)
+        remaining = await handler.execute("message_inbox", {**args, "inject": True})
         assert [m["to_id"] for m in remaining["messages"]] == ["sess-1"]
 
     async def test_own_session_mailbox_is_readable(self, setup):
@@ -1138,10 +1189,7 @@ class TestStatusMailboxFence:
             assert stored.delivered_at is None and stored.read_at is None
 
     async def test_pool_worker_reads_a_nudged_message_to_its_claimed_task(self, setup):
-        """The nudge marks the row delivered, so ``inbox`` no longer lists it.
-
-        ``message_status`` is the only way the worker can reach the body.
-        """
+        """Delivered unread mail stays visible until the holder acknowledges it."""
         handler, db, _bus = setup
         await _seed_session_row(db, task_id="task-claimed")
         sent = await handler._cmd_message_send(
@@ -1153,7 +1201,8 @@ class TestStatusMailboxFence:
             "message_inbox",
             {"to_kind": "task", "to_id": "task-claimed", "_scope": _session_scope(task_id=None)},
         )
-        assert inbox["count"] == 0
+        assert [m["id"] for m in inbox["messages"]] == [sent["message_id"]]
+        assert (await db.get_message(sent["message_id"])).read_at is None
 
         result = await handler.execute(
             "message_status",
@@ -1162,6 +1211,11 @@ class TestStatusMailboxFence:
         assert "error" not in result, result
         assert result["state"] == "acknowledged"
         assert result["message"]["body"] == "rebase onto main first"
+        inbox = await handler.execute(
+            "message_inbox",
+            {"to_kind": "task", "to_id": "task-claimed", "_scope": _session_scope(task_id=None)},
+        )
+        assert inbox["count"] == 0
 
     async def test_own_session_and_pinned_task_messages_are_readable(self, setup):
         handler, _db, _bus = setup
@@ -2135,3 +2189,22 @@ async def test_global_supervisor_status_read_stops_nudges(setup, monkeypatch, re
     assert bus.of_type("message.delivered") == [{
         "message_id": message.id, "project_id": project_id, "method": "read",
     }]
+
+
+@pytest.mark.parametrize("destination", ["discord:395982012789293056", "discord", "unknown"])
+async def test_send_refuses_user_without_delivery_path_before_queueing(setup, destination):
+    handler, db, bus = setup
+    result = await handler._cmd_message_send(_send_args(to_kind="user", to_id=destination))
+    assert result["success"] is False
+    assert result["error_code"] == "unsupported_user_destination"
+    assert "aq supervisor-inbox say" in result["error"]
+    assert not await db.list_messages(to_kind="user", to_id=destination)
+    assert not bus.of_type("message.sent")
+
+
+async def test_send_to_dashboard_retains_human_inbox_delivery(setup):
+    handler, db, bus = setup
+    result = await handler._cmd_message_send(_send_args(to_kind="user", to_id="dashboard"))
+    assert result["success"], result
+    assert (await db.get_message(result["message_id"])).to_id == "dashboard"
+    assert len(bus.of_type("message.sent")) == 1

@@ -19,6 +19,11 @@ live sessions, owners, active subjects/batches and attached worktrees, and
 uses the observed SHA as an exact lease. Reopened or re-claimed work invalidates
 an older decision. A moved head is a conflict; transport failures and temporarily
 held branches retry with backoff. The audit is retained after successful removal.
+Batch abort intent and terminal lifecycles override stale queue and cleanup
+metadata when checking live refs. Aborted and promoted batches (including
+superseded and settled batches, respectively) are no longer ref owners.
+Deferred fixer batches and companions hold refs only while the batch remains
+open. Independent task, session and unreleased writer guards still apply.
 Local removal visits registered AQ checkout common directories for the same
 repository and the retained integration and publisher stores. It never detaches
 another writer. It removes audited `origin` tracking refs alongside local heads,
@@ -43,6 +48,16 @@ Explicit materialized-origin deletes use the same retirement mechanism. Ordinary
 delete with `branches=keep` remains an explicit preservation choice. Archive's
 existing delivery and live-session admission guards remain required; admitted
 archives now retire their branches instead of leaving orphan refs indefinitely.
+
+Legacy source abandonment also supports explicit preservation:
+`scripts/backfill-legacy-deliveries.py PROJECT --abandon-task TASK --keep-branch`
+(or `--abandon-epic EPIC --keep-branch`). Preview reports `keep_branch`; apply
+still requires a reason and records the usual `abandoned` delivery decision,
+including for selected undelivered descendants, with `[branches: keep]` in its
+audit reason. It queues no branch retirements. Without this option, abandonment
+continues to queue retirement. The option requires an abandon selection and
+cannot be combined with `--relanded`; it does not cancel existing retirements
+or exempt branches from later explicit disposal or ordinary proven-merged cleanup.
 
 The earlier `branch_deletion_audit` schema and revision remain as history.
 Pending, held or failed rows are imported once into retirement intents; their recorded
@@ -93,7 +108,62 @@ with local/remote deletion and hold counts, retirement and migration outcomes,
 unique refs, stash/registration counts and failures. Cleanup failures in one project
 do not suppress another project's report.
 
+The report separately counts pending/conflicted retirement refs associated with
+terminal batches, grouped by batch, even when another guard still holds them.
+Unresolved nonterminal legacy `integration-batch-*` holders and unsettled
+`legacy-operation:*` publisher records remain conservative holds and appear in an
+explicit operator-review list with their recorded states. Terminal legacy batches
+and finished/cancelled publisher actions do not hold refs. Neither historical
+metadata nor terminal membership authorizes ordinary sweep deletion without Git
+containment or patch-equivalence proof; unique unmerged refs remain intact.
+
 ## Re-landed content
+
+The ordinary legacy-delivery backfill also inventories completed tasks without
+any recorded branch origin, in the integration repository (or with no explicit
+repository). It excludes promotion tasks and tasks belonging to another project
+or repository. A missing origin or deleted task branch does not prevent proof
+from the completion's reported commits or other retained source locators. Git
+must still prove delivery on the default target, and apply rechecks the same
+completion generation before recording the audited row. Missing source evidence
+stays unproven; a dry run writes no rows and a repeated apply is idempotent.
+This recovery inventory does not relax the train's filing-origin requirements.
+
+For an originless task with a passing completion, backfill also retains that
+generation's exact final reported source when Git proves it is an ancestor of
+the default target. This source binding lets ordinary dependency admission
+re-evaluate containment through its existing Git provenance reader. Preview
+publishes nothing. Repeating backfill repairs a previously recorded legacy row
+that lacks this binding, using fresh Git proof rather than the row as authority.
+An earlier reported commit, content equivalence, a failed completion or an
+unavailable final source cannot supply this provenance. A changed generation
+refuses retention, and later target rewinds still fail ordinary containment.
+Admission tracks each snapshot's evaluated task IDs itself when checking
+freshness, so this fence works with the shared Git truth snapshot API.
+
+The same strict recovery includes completed epic children whose parent branch
+has disappeared, even when they retain filing origins. Backfill inventories
+these children regardless of whether their origins are live or retired. A fresh,
+repository-authorized remote advertisement establishes parent absence; stale
+tracking refs and unavailable remote reads cannot establish presence or absence.
+An existing child completion marker is a source locator, not proof that its work
+landed on the default target, and does not suppress this recovery preview. Apply
+preserves an existing matching immutable source binding and records the audited
+root delivery once; a conflicting binding stays unproven. Backfill proves against
+the fetched default target and retains only the current
+passing completion's final reported source under exact ancestry. An old legacy
+delivery row cannot replace this binding. Deleted child refs are harmless when
+the exact commit is reachable from the default target; missing or equivalent
+sources remain unproven.
+
+Epic cleanup refuses deletion while a completed code-bearing child lacks a
+retained delivery witness for its current completion and task version. This
+fence applies to retirement, sweep and train cleanup, including archived task
+identities. Normal Git truth reconciliation retains the source, target and
+completion identity before recording the witness used by this deletion fence.
+A reclose restores the hold. Audited lifecycle dispositions and organizational
+children carry no source obligation. The witness permits cleanup only; admission
+continues to prove containment against the current target.
 
 Salvage, repair and squash re-landings put a task's content on the default
 branch under different SHAs, so neither ancestry nor patch-id proves the source

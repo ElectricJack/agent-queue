@@ -12,10 +12,10 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, not_, select
+from sqlalchemy import and_, func, not_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from src.database.tables import integration_check_evidence
+from src.database.tables import integration_check_evidence, repos
 from src.git.manager import GitError
 from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
 from src.integration.ci_producers import (
@@ -28,6 +28,22 @@ from src.integration.ci_producers import (
 from src.integration.runtime_contracts import CIState, HeadIdentity
 
 logger = logging.getLogger(__name__)
+
+
+async def lock_check_evidence(conn, repository_id, sha, *, project_id=None):
+    """Fence exact-head cache writers and wait revalidation, including first inserts.
+
+    Repository first, then one head lock, before any check-specific lock or write.
+    A head-wide fence avoids opposite row-id/check-name ordering and phantoms.
+    Callers touching several heads must acquire these fences in sorted order.
+    """
+    repository = select(repos.c.id).where(repos.c.id == repository_id)
+    if project_id is not None:
+        repository = repository.where(repos.c.project_id == project_id)
+    await conn.execute(repository.with_for_update(read=True))
+    await conn.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(
+        "ci-evidence:" + digest([repository_id, sha]), 0,
+    ))))
 
 #: Prefix for local job evidence; the suffix binds its boundary and command plan.
 LOCAL_CHECKS_PRODUCER_ID = "local-jobs"
@@ -233,8 +249,21 @@ class HostedChecks:
         if producer.observer.expected_event == "pull_request":
             # A PR run tests the merge ref. It must never satisfy bare-head
             # candidate checks, even when the source OID and names are identical.
+            event = "pull_request+push" if producer.observer.allow_push_fallback else "pull_request"
             self.required = self.required.model_copy(update={
-                "producer_id": self.required.producer_id + ":pull_request",
+                "producer_id": self.required.producer_id + ":" + event,
+            })
+        if producer.observer.expected_branch is not None:
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":scope:" + digest({
+                    "event": producer.observer.expected_event,
+                    "branch": producer.observer.expected_branch,
+                    "workflow": producer.observer.expected_workflow,
+                }),
+            })
+        elif producer.observer.ignore_cancelled_batches:
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":promotion-source",
             })
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
@@ -472,17 +501,39 @@ class ExactChecks:
         ]
         if rows:
             async with self.db._engine.begin() as conn:
-                for check in rows:
+                for repository_id, sha in sorted({(row.repository_id, row.sha) for row in rows}):
+                    await lock_check_evidence(conn, repository_id, sha)
+                for check in sorted(rows, key=lambda row: row.name):
+                    # Serialize the comparison as well as the upsert, including
+                    # concurrent first observations where no cache row exists.
+                    # Poll timestamps are freshness metadata, not a source change.
+                    await conn.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(
+                        "ci-check:" + digest([getattr(check, key) for key in (
+                            "repository_id", "sha", "name", "producer_id",
+                        )]), 0,
+                    ))))
+                    prior = (await conn.execute(select(integration_check_evidence).where(
+                        integration_check_evidence.c.repository_id == check.repository_id,
+                        integration_check_evidence.c.sha == check.sha,
+                        integration_check_evidence.c.check_name == check.name,
+                        integration_check_evidence.c.producer_id == check.producer_id,
+                    ))).mappings().first()
                     changed = await conn.execute(_upsert(check))
-                    if changed.rowcount:
+                    evidence_fields = (
+                        "required_check_version", "run_id", "attempt", "conclusion",
+                        "run_url", "workflow_id", "classification",
+                    )
+                    if changed.rowcount and (prior is None or any(
+                        prior[key] != getattr(check, key) for key in evidence_fields
+                    ) or prior["checks"] != {"reason": check.reason, **check.detail}):
                         from src.waits.sources import record_source_event
 
                         await record_source_event(
                             conn,
                             source_key=f"ci_check:{check.repository_id}:{check.sha}:{check.name}",
-                            generation=0, revision=f"{check.producer_id}:"
-                            f"{check.required_check_version}:{check.run_id}:{check.attempt}:"
-                            f"{check.observed_at}:{check.conclusion.value}",
+                            # A -> B -> A is a new transition even if the
+                            # provider reports the same observation timestamp.
+                            generation=0, revision=uuid.uuid4().hex,
                             outcome_ref=check.run_url or f"check:{check.sha}:{check.name}",
                             occurred_at=check.observed_at,
                             payload={"repository_id": check.repository_id, "sha": check.sha,

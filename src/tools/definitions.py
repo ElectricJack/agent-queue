@@ -47,6 +47,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "project_doctor": "project",
     "repair_repository_checkout": "project",
     "repair_workspace_checkout": "project",
+    "recover_retained_holder": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -130,6 +131,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_sweep": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
+    "supervisor_inbox_say": "supervisor_inbox",
     "supervisor_inbox_status": "supervisor_inbox",
     "supervisor_inbox_history": "supervisor_inbox",
     # document reviews
@@ -179,6 +181,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_ack": "wait",
     "wait_decide": "wait",
     "wait_lift": "wait",
+    "wait_source_redispatch": "wait",
     "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
@@ -358,6 +361,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
+    "task_claim_abort": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     "knowledge_create": "knowledge",
@@ -920,6 +924,28 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "recover_retained_holder",
+        "description": (
+            "Preview or apply recovery of a positively stopped historical task holder. "
+            "Preserves local Git work before releasing exact legacy owner/job pins and stale "
+            "assignment. Leaves recovered workspaces disabled. Apply requires expected_proof "
+            "from preview. Local operator or live global supervisor only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "workspace_id": {"type": "string"},
+                "reason": {"type": "string"},
+                "expected_proof": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "task_id", "session_id", "reason"],
+        },
+    },
+    {
         "name": "project_doctor",
         "description": "Check a project's repository authorization and offer an audited binding command.",
         "input_schema": {
@@ -1278,6 +1304,14 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Filter by project ID (optional, but required for tree/compact modes)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Maximum tasks in a flat live listing, after filtering. "
+                        "The total remains uncapped. Use page_size for snapshots."
+                    ),
                 },
                 "status": {
                     "type": "string",
@@ -5889,6 +5923,25 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "task_claim_abort",
+        "description": (
+            "Abort one exact hung pool claim preparation (operator or live supervisor only). "
+            "Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains "
+            "the claim and branch ownership; active workers are refused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Preparing task ID."},
+                "session_id": {"type": "string", "description": "Exact preparing session ID."},
+                "claim_epoch": {"type": "integer", "minimum": 1},
+                "instance_token": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": ["task_id", "session_id", "claim_epoch", "instance_token", "reason"],
+        },
+    },
+    {
         "name": "task_handoff",
         "description": (
             "Record a structured handoff (8 KiB combined UTF-8 agent text, at most 20 "
@@ -6024,10 +6077,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "message_inbox",
         "description": (
-            "List the pending (undelivered) messages for one recipient.  With "
-            "inject=true it also marks them delivered and archives any rows "
+            "List unread, unarchived messages for one recipient, including "
+            "already-delivered mail. Supervisor aliases and the current named "
+            "session UUID share an inbox. With inject=true, return only "
+            "undelivered messages, mark them delivered and archive any rows "
             "flagged archive_after_inject.  include_consumed additionally "
-            "returns rows already delivered to this recipient, read-only, so a "
+            "returns other consumed rows for this recipient, read-only, so a "
             "worker whose inject consumed delivery before it could render the "
             "bodies can still read them."
         ),
@@ -8492,6 +8547,20 @@ _ALL_TOOL_DEFINITIONS.append({
 
 _ALL_TOOL_DEFINITIONS.extend([
     {
+        "name": "supervisor_inbox_say",
+        "description": "Initiate a supervisor message in an existing open Discord conversation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string", "minLength": 1},
+                "text": {"type": "string", "minLength": 1, "maxLength": 16000},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+            },
+            "required": ["conversation_id", "text", "idempotency_key"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "supervisor_inbox_status",
         "description": "Read global supervisor conversation health, limits and intake diagnostics.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -9490,6 +9559,7 @@ _WAIT_V2_DESCRIPTIONS = {
     "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
     "wait_decide": "Record a supervisor decision for a verified wait.",
     "wait_lift": "Lift an escalated verified wait with an authorized decision.",
+    "wait_source_redispatch": "Reobserve one durable source event in a supervisor project.",
 }
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],

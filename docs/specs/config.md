@@ -170,16 +170,27 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 |---|---|---|---|
 | `bot_token` | `str` | `""` | Discord bot token. |
 | `guild_id` | `str` | `""` | Discord server ID. |
-| `channel_id` | `str` | `""` | Numeric shared channel ID for digests and escalation roots. |
+| `channel_id` | `str` | `""` | Numeric shared channel ID for global-supervisor conversations across all projects, digests and escalation roots. |
+| `project_id` | `str` | `""` | Shared ask intake/admission scope; does not select the chat supervisor. |
 | `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
 | `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
-| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the elevated global supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
+
+The single channel is the global supervisor's interface for all projects.
+Ordinary chat and reference notices always belong to global, even when
+`discord.project_id` names a project with a live supervisor. A missing global
+session leaves chat queued; project supervisors never take over that conversation.
+`project_id` remains part of shared ask-channel admission, ask intake scope and the
+configuration fingerprint. Those uses and project-scoped ask decisions/discussions
+are preserved; this routing change requires no configuration migration. Keep the
+installed value when adopting global chat ownership. Changing it still invokes the
+existing ask-channel configuration reconciliation and cutover rules.
 
 #### 4.2.1 Supervisor-authored digest (phase P3, gated)
 
@@ -657,6 +668,7 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `stop_intent_report_seconds` | `int` | `600` | How long a recorded stop intent may stand before `aq doctor --check sessions.stop_intent_pending` reports the session. A report threshold, not an action: the reconciler owns the stop, and this only says the graceful path is not converging. `0` disables the report. |
 | `stall_max_nudges` | `int` | `3` | Nudges before the ladder escalates to interrupt + restart-with-resume. |
 | `stall_backoff_seconds` | `int` | `300` | Minimum gap between ladder rungs. |
+| `stall_command_grace_seconds` | `int` | `7200` | How long a session running a command of its own counts as active although its pane and transcript are quiet: a process carrying the session's `AQ_INSTANCE_TOKEN` that is an `aq test` run (`AQ_TEST_RUN_ID`) or a shell the harness spawned (a foreground tool call, or a background task the ended turn waits on). Within the grace neither the stall ladder nor the inactivity backstop acts, and no rung is spent. Measured from the session's last own activity, so a hung command still stalls after it. `0` disables the cover. |
 | `max_restarts` | `int` | `3` | Restarts within `restart_window_seconds` before a session is quarantined. Counters persist on the `sessions` row, so the ladder survives a daemon restart. |
 | `restart_window_seconds` | `int` | `600` | Also the rapid-crash window: a death inside it is classified `RAPID_CRASH` rather than `PRODUCTIVE_DEATH`. |
 | `restart_backoff_seconds` | `int` | `30` | Base backoff before a crashed task is re-queued; multiplied by the restart count. |
@@ -722,7 +734,7 @@ fresh each tick/request, there is no restart-required subset.
 | `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all pools (one pool = one profile, fleet-wide). |
 | `max_drains_per_tick` | `int` | `5` | Idle pool sessions `_reconcile_pools` may mark `desired_state='stopped'` in one bulk update per tick. |
 | `scale_down_grace` | `int` | `120` | Seconds a pool's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
-| `prepare_timeout` | `int` | `120` | Seconds a claim may stay `claim_phase='preparing'` (the git-reset window) before the reconciler releases it as `prepare_failed`. |
+| `prepare_timeout` | `int` | `120` | Owner/lease acquisition deadline for live claim preparation, and recovery age for abandoned preparations. Timeout unwinds the owning job before fenced release; unproved cleanup retains ownership. Slot reset keeps its configured longer budget. |
 | `max_filings_per_task` | `int` | `20` | Worker-filed tasks (`create_task` from a session holding a task) permitted per held task, across all its claims; reserved atomically, see design §12. |
 
 Validation (`SwarmConfig.validate`): every integer key must be `>= 0`, except
@@ -764,8 +776,10 @@ overrides; for example `{matter-engine-cpp: 1800}` gives that project's reposito
 is scoped to the reset coroutine and restored on success, failure or cancellation;
 concurrent resets and other Git operations keep their own budgets. Authenticated
 network operations retain their transport deadlines. The reconciler's
-`swarm.prepare_timeout` applies to abandoned preparations, and does not release
-an exact preparation still running in the daemon.
+`swarm.prepare_timeout` bounds owner/lease acquisition in the owning preparation
+job. Once reset begins, that job uses the configured slot reset budget plus its
+mutation allowance. The reconciler never releases an exact preparation still
+running in the daemon; interruption must unwind its Git and SQL contexts first.
 
 Git timeout errors report the command and elapsed budget, without attributing
 the timeout to a credential prompt without evidence.
@@ -991,6 +1005,13 @@ Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
 `loop_window_seconds: 3600`, `branch_admission_deadline_seconds: 1800`,
 `transition_budget_seconds: 120`, `resume_launch_attempts: 2`, and
 `resume_stall_seconds: 300`.
+
+The listener alerts when undispatched events exceed `listener_lag_events: 500`
+or the oldest commit is over 120 seconds old. `listener_lag_alert_minutes: 15`
+sets the global alert bucket duration in positive integer minutes. Each project
+with pending verified waits receives at most one notice per bucket, including
+across restarts and changes to the oldest sequence. These diagnostic notices do
+not create wait source events.
 
 `kinds` maps each wait kind to `WaitKindPolicy`, with
 `escalate_after_seconds` and `expected_duration_seconds`. Partial global

@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.jobs.workspace import guard_workspace
 
 
+import asyncio
 import logging
 import os
 import time
@@ -952,12 +953,7 @@ class WorkspaceMixin:
             raise
 
     async def _prepare_exact_origin_workspace_locked(
-        self,
-        task: Task,
-        project,
-        attachment,
-        origin: dict,
-        fence: Fence,
+        self, task: Task, project, attachment, origin: dict, fence: Fence,
     ) -> str:
         """Prepare any enabled checkout at its pinned origin under one owner fence."""
         ws = attachment.workspace
@@ -980,19 +976,23 @@ class WorkspaceMixin:
             current_head = (
                 await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             ).strip().lower()
-            if (
-                current_branch != branch
-                or current_head != provenance.get("head_sha")
-            ):
+            if current_branch != branch or current_head != provenance.get("head_sha"):
                 raise BranchBusy("retained repair workspace contents changed")
             return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
-        from src.integration.lock import REPAIR_START_SECONDS
+        from src.integration.lock import REPAIR_START_SECONDS, slot_preparation_timeout_seconds
+
+        preparation_timeout = REPAIR_START_SECONDS if role == "repair" else None
+        if ws.is_slot:
+            preparation_timeout = max(
+                preparation_timeout or 0,
+                slot_preparation_timeout_seconds(self.config.worktrees, task.project_id),
+            )
 
         async with BranchOwnership(self.db).mutation_exclusion(
             fence, expected_role=role,
-            timeout_seconds=REPAIR_START_SECONDS if role == "repair" else None,
+            timeout_seconds=preparation_timeout,
         ):
             from src.integration.owner_recovery import resume_recovery_snapshots
 
@@ -1227,11 +1227,33 @@ class WorkspaceMixin:
         self._register_slot_bases(slots, base.workspace_path)
 
         in_cap = [s for s in slots if (s.slot_index or 0) < cap]
-        free = [s for s in in_cap if s.enabled and s.locked_by_agent_id is None]
+        # "Free" must mean what acquisition means: cleared lock columns alone
+        # do not make a slot acquirable while a retaining session, a job pin
+        # or a live claim file still protects it.  Counting those as free
+        # starved a pool indefinitely below its cap (2026-10-28).
+        unlocked = [s for s in in_cap if s.enabled and s.locked_by_agent_id is None
+                    and s.locked_by_task_id is None]
+        protected = await self.db.protected_workspace_ids(unlocked)
+        free = [s for s in unlocked if s.id not in protected]
         warming = len(in_cap) < cap
         if free or len(in_cap) >= cap:
             # Something is acquirable, or we are already at cap: no growth.
             return SlotGrowth(warming=warming, worktree=True)
+        if protected:
+            from src.claim_file import read_claim_file
+
+            claims = {s.id: read_claim_file(s.workspace_path) or {} for s in unlocked}
+            logger.warning(
+                "All %d unlocked slot(s) of kind %s in %s are protected (retaining "
+                "session, job pin or claim file); growing past them: %s",
+                len(unlocked),
+                kind.id,
+                project.id,
+                ", ".join(
+                    f"{sid} claim={c.get('task_id')}/{c.get('session_id')}"
+                    for sid, c in claims.items()
+                ),
+            )
 
         known = {s.id for s in slots}
         try:
@@ -1892,14 +1914,55 @@ class WorkspaceMixin:
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
 
-    async def aconfirm_stopped_integration_pool_owner_handoff(self, owner: dict) -> bool:
+    async def aprepare_reopened_integration_owner(self, task) -> bool:
+        """Settle a drained predecessor before a reopened producer becomes claimable.
+
+        Never borrow the successor's epoch to prove the predecessor stopped.
+        The stopped-pool proof repeats session, retired-agent, workspace and
+        branch fences and preserves the task's terminal state throughout.
+        """
+        if not task.repo_id or not task.branch_name:
+            return True
+        try:
+            async with asyncio.timeout(self.config.swarm.prepare_timeout):
+                async with self._task_control_lock(task.id):
+                    target = BranchKey(repository_id=task.repo_id, branch=task.branch_name)
+                    owner = await BranchOwnership(self.db).get_owner(target)
+                    if (owner is None or owner["owner_id"] != task.id
+                            or owner["owner_role"] != "worker"
+                            or owner["handoff_state"] not in {"attached", "handoff_pending"}):
+                        return True
+                    session = await self.db.get_session(owner.get("session_id"))
+                    if session is None or session.lifecycle != "pool":
+                        return True
+                    if session.state != "stopped" or session.desired_state != "stopped":
+                        return False
+
+                    async def confirm(current):
+                        return await self.aconfirm_stopped_integration_pool_owner_handoff(
+                            current, expected_task_status=task.status,
+                        )
+
+                    await BranchOwnership(self.db, confirm_handoff=confirm).transfer(
+                        Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
+                        task.id, "worker",
+                    )
+                    return True
+
+        except (BranchOwnershipError, TimeoutError):
+            return False
+
+    async def aconfirm_stopped_integration_pool_owner_handoff(
+        self, owner: dict, *, expected_task_status: TaskStatus = TaskStatus.READY,
+    ) -> bool:
         """Recover one stale stopped pool writer without changing its requeued task.
 
         This is intentionally narrower than the live pool close confirmer:
         it accepts only the exact expired attachment left by a confirmed pool
         teardown, and refuses any agent/session/workspace reuse. The task's
-        current READY claim epoch is evidence of a successor attempt, not a
-        value to restore or overwrite.
+        current claim epoch is evidence of a successor attempt, not a value
+        to restore or overwrite. Reopen may instead fence the terminal status
+        before making the task READY.
         """
         if await self._integration_preparation_cleanup_unproved(owner):
             return False
@@ -1968,7 +2031,7 @@ class WorkspaceMixin:
             or not task.branch_name
             or task.branch_name.removeprefix("refs/heads/")
             != str(owner.get("ref") or "").removeprefix("refs/heads/")
-            or task.status != TaskStatus.READY
+            or task.status != expected_task_status
             or task.assigned_agent_id is not None
             or agent.state != AgentState.RETIRED
             or agent.current_task_id != owner.get("owner_id")
@@ -2043,6 +2106,7 @@ class WorkspaceMixin:
             workspace=workspace,
             session_instance_token=session.instance_token,
             confirmed_later_sessions=confirmed_later_sessions,
+            expected_task_status=expected_task_status,
         )
 
     async def aconfirm_integration_pool_owner_handoff(

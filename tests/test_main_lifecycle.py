@@ -261,6 +261,9 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
         config=config,
         _paused=False,
         _running_tasks={},
+        wait_scheduler_service=SimpleNamespace(health={
+            "ok": False, "failed_projects": {"p": {"consecutive_failures": 3}},
+        }),
         db=SimpleNamespace(
             list_agents=AsyncMock(side_effect=RuntimeError("db down")),
             count_tasks_by_status=AsyncMock(side_effect=RuntimeError("query timeout")),
@@ -276,6 +279,7 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
     assert checks["tasks"]["ok"] is False
     assert "query timeout" in checks["tasks"]["error"]
     assert checks["orchestrator"]["ok"] is True
+    assert checks["wait_scheduler"] == orch.wait_scheduler_service.health
     assert checks["messaging"]["ok"] is False
     assert checks["messaging"]["platform"] == "fake"
     assert checks["messaging"]["connected"] is False

@@ -11,6 +11,10 @@ Architecture
 - **schema.py** — Legacy DDL constants and ALTER TABLE migrations
 - **queries/** — Domain-specific query mixins (projects, tasks, agents, ...)
 - **adapters/** — The PostgreSQL backend implementation
+- **factory.py** — Configured backend construction
+
+Adapter, protocol and factory exports load on first access. Importing this
+package or a schema/DSN helper does not load query mixins or application services.
 
 PostgreSQL is the only supported backend.  ``Database`` is an alias for
 :class:`PostgreSQLDatabaseAdapter`, kept so existing imports keep working::
@@ -22,68 +26,40 @@ PostgreSQL is the only supported backend.  ``Database`` is an alias for
 
 from __future__ import annotations
 
-import logging
-import re
 from typing import TYPE_CHECKING
 
-from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-from src.database.base import DatabaseBackend
-
-from src.config import is_postgres_url
+from src.database.dsn import redact_dsn
 
 if TYPE_CHECKING:
-    from src.config import AppConfig
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from src.database.base import DatabaseBackend
+    from src.database.factory import create_database
 
-logger = logging.getLogger(__name__)
-
-# Backward-compatible alias: existing code does `from src.database import Database`
-Database = PostgreSQLDatabaseAdapter
-
-#: ``scheme://user:password@rest`` — the password is group 2.
-_DSN_CREDENTIALS_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*://[^/\s:@]*:)([^/\s@]*)(@)")
+    Database = PostgreSQLDatabaseAdapter
 
 
-def redact_dsn(url: str) -> str:
-    """*url* with any password in its authority replaced by ``***``.
+def __getattr__(name: str):
+    # Keep the public API while letting schema/DSN consumers avoid the adapter.
+    if name in {"Database", "PostgreSQLDatabaseAdapter"}:
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
 
-    Log lines outlive the process and get pasted into issues; a DSN is the
-    one config value that routinely carries a live credential.
-    """
-    return _DSN_CREDENTIALS_RE.sub(r"\1***\3", str(url or ""))
+        value = PostgreSQLDatabaseAdapter
+    elif name == "DatabaseBackend":
+        from src.database.base import DatabaseBackend
+
+        value = DatabaseBackend
+    elif name == "create_database":
+        from src.database.factory import create_database
+
+        value = create_database
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
 
 
-def create_database(config: AppConfig) -> DatabaseBackend:
-    """Create the PostgreSQL backend from application config.
-
-    Raises when ``database.url`` is not a PostgreSQL DSN.  This used to fall
-    through to SQLite for anything unrecognised, which meant a typo'd DSN
-    brought the daemon up healthy on an empty file while the real database
-    sat untouched.  There is one backend now, so the mistake is a hard error.
-
-    The returned object is not yet initialized — callers must
-    ``await db.initialize()`` before use.
-    """
-    from src.database.migration_guard import SchemaAheadPolicy
-
-    db_url = config.database.url
-    if not is_postgres_url(db_url):
-        raise ValueError(
-            "database.url must be a PostgreSQL DSN "
-            f"(got {redact_dsn(db_url) or 'empty'}). SQLite is no longer supported; "
-            "run `aq db import-sqlite <path>` to carry an old database over."
-        )
-    logger.info("database url=%s", redact_dsn(db_url))
-    return PostgreSQLDatabaseAdapter(
-        db_url,
-        config.database.pool_min_size,
-        config.database.pool_max_size,
-        pre_ping=config.database.pre_ping,
-        pool_recycle=config.database.pool_recycle_seconds,
-        schema_ahead_policy=SchemaAheadPolicy(
-            config.database.schema_ahead_migrations,
-            config.database.schema_ahead_max_revisions,
-        ),
-    )
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
 
 
 __all__ = [

@@ -647,6 +647,7 @@ class TaskCommandsMixin:
         ----------
         args : dict
             ``project_id`` – filter by project (optional).
+            ``limit`` – positive maximum rows for flat live reads (optional).
             ``status`` – filter by a specific TaskStatus value (optional).
             ``display_mode`` – ``"flat"``, ``"tree"``, or ``"compact"`` (default ``"flat"``).
             ``include_completed`` – if True, include terminal tasks (default False).
@@ -657,6 +658,15 @@ class TaskCommandsMixin:
         """
         from src.observations.commands import snapshot_command
         from src.observations.snapshots import requested
+
+        limit = args.get("limit")
+        if limit is not None:
+            if type(limit) is not int or limit < 1:
+                return {"success": False, "error": "limit must be a positive integer"}
+            if requested(args):
+                return {"success": False, "error": "Use page_size instead of limit for snapshots"}
+            if args.get("display_mode", "flat") != "flat":
+                return {"success": False, "error": "limit is only supported for flat listings"}
 
         if requested(args):
             return await snapshot_command(self, "list_tasks", args)
@@ -744,12 +754,12 @@ class TaskCommandsMixin:
                 hidden_count = all_count - len(tasks)
             # else: include_completed=True — return everything unfiltered.
 
-        # Always show all active tasks; only cap completed/finished ones so
-        # that active work (DEFINED, READY, IN_PROGRESS, …) is never hidden.
-        active = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
-        finished = [t for t in tasks if t.status in self._FINISHED_STATUSES]
-        cap = max(0, 200 - len(active))
-        capped_tasks = active + finished[:cap]
+        if args.get("limit") is not None:
+            capped_tasks = tasks[:args["limit"]]
+        else:
+            active = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+            finished = [t for t in tasks if t.status in self._FINISHED_STATUSES]
+            capped_tasks = active + finished[:max(0, 200 - len(active))]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
         await attach_activity(self.db, task_dicts)
         from src.task_graph.readiness import attach_readiness
@@ -4746,6 +4756,9 @@ class TaskCommandsMixin:
                 )
             }
         scope = self._current_scope or {}
+        continuation_recovery = await self.recover_continuation_incident(args)
+        if continuation_recovery is not None:
+            return continuation_recovery
         stopped_session = None
         operator_handoff = False
         if decision == "retry":
@@ -4847,41 +4860,55 @@ class TaskCommandsMixin:
     async def _cmd_restart_task(self, args: dict) -> dict:
         from src.commands.supervisor_authority import operator_or_global_supervisor
         from src.database.queries.task_recovery_queries import RecoveryHoldError
+        from src.wait_runtime.restart import restart_attempt
+        from src.waits.conditions import WaitError
 
-        hold_override, error = await self.db.restart_hold_override(
-            args['task_id'], args.get('override_hold', False), args.get('reason'),
-            authority=operator_or_global_supervisor)
-        if error:
-            return {'success': False, 'error': error}
         try:
-            return await TaskCommandsMixin._restart_task(self, args, hold_override)
+            async with restart_attempt(args['task_id']):
+                hold_override, error = await self.db.restart_hold_override(
+                    args['task_id'], args.get('override_hold', False), args.get('reason'),
+                    authority=operator_or_global_supervisor)
+                if error:
+                    return {'success': False, 'error': error}
+                return await TaskCommandsMixin._restart_task(self, args, hold_override)
         except RecoveryHoldError as exc:
             return {'success': False, 'error_code': 'task_recovery.held',
                     'error': str(exc), 'recovery_hold': exc.incident}
+        except WaitError as exc:
+            return {'success': False, 'error_code': exc.code, 'error': str(exc)}
 
     async def _restart_task(self, args: dict, hold_override) -> dict:
         from src.integration.repair import OrdinaryRepairService
-        from src.wait_runtime.restart import readmit, release_continuations, restart_lock
+        from src.wait_runtime.restart import (
+            readmit, release_continuations, restart_lock, restart_phase,
+        )
         from src.waits.conditions import WaitError
 
+        restart_phase('recovery hold guard (task row lock)')
         await self.db.guard_restart_recovery_hold(args["task_id"], hold_override)
+        restart_phase('manual pause resume (task-control/repository locks)')
         refused = await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])
         if refused is not None:
             return refused
         # Resume's task-control lock covers continuation cleanup and readmission.
+        restart_phase('task-control lock')
         async with restart_lock(self, args["task_id"]):
+            restart_phase('task/recovery observation')
             task = await self.db.get_task(args["task_id"])
             if not task:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            restart_phase('recovery hold guard (task row lock)')
             await self.db.guard_restart_recovery_hold(task.id, hold_override)
+            restart_phase('integration repair observation')
             if stale := await OrdinaryRepairService(self.db).stale(task):
                 return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
                 released = await release_continuations(self, task)
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
+            restart_phase('integration restart admission')
             project = await self.db.get_project(task.project_id)
             from src.integration.train_policy import worker_integration_enabled
 
@@ -5074,6 +5101,12 @@ class TaskCommandsMixin:
             self.db, task.project_id, subject="task reopen"
         )
         transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
+        if not await self.orchestrator.aprepare_reopened_integration_owner(task):
+            return {
+                "success": False,
+                "error": "Prior pool writer handoff remains unproven; retain the closed task "
+                         "and use aq integration release-owner after proving the writer stopped",
+            }
         try:
             if review_evidence_snapshot is None:
                 await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)

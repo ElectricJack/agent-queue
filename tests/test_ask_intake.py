@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,11 +10,13 @@ from sqlalchemy import func, select, update
 
 from src.asks.intake import clear_intent
 from src.commands.principal import ExecutionPrincipal, principal_context
+from src.profiles.capabilities import CapabilityPolicy
 from src.database.tables import (
     ask_decisions, ask_reconciliation_cases, conversation_inputs, human_communication_modes,
     messages, outbound_deliveries, supervisor_conversations,
 )
 from tests.test_ask_discussion import ask_for
+from tests.test_conversation_wiring import supervisor
 from tests.test_ask_discussion import env as env  # noqa: F401
 from tests.test_discord_inbound_router import GUILD, MESSAGE, message, router
 from tests.test_escalation_intake import BOT_USER_ID, CHANNEL, HUMAN
@@ -21,11 +24,18 @@ from tests.test_review_commands import _scoped
 from tests.test_review_commands import env as review_env  # noqa: F401
 
 
-async def enable(handler, monkeypatch):
-    handler.config.discord.guild_id = GUILD
-    handler.config.discord.channel_id = CHANNEL
+async def enable(handler, monkeypatch, *, guild_id=GUILD, channel_id=CHANNEL, author_id=HUMAN):
+    _, handler._test_global_principal = await supervisor(handler.db)
+    handler._test_global_principal = replace(
+        handler._test_global_principal,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=["supervisor_inbox_reply", "supervisor_inbox_say"],
+        ),
+    )
+    handler.config.discord.guild_id = guild_id
+    handler.config.discord.channel_id = channel_id
     handler.config.discord.project_id = "p"
-    handler.config.discord.authorized_users = [HUMAN]
+    handler.config.discord.authorized_users = [author_id]
     handler.config.discord.conversation.enabled = True
     from src.asks.delivery import config_fingerprint, destination
 
@@ -41,6 +51,11 @@ async def enable(handler, monkeypatch):
             expected_generation=0,
             conn=conn,
         )
+
+
+async def global_command(handler, command, args):
+    with principal_context(handler._test_global_principal):
+        return await handler.execute(command, args)
 
 
 def envelope(text, ident=MESSAGE):
@@ -229,7 +244,7 @@ async def test_ordinary_shared_input_reuses_addressed_supervisor_reply(env, monk
     await enable(handler, monkeypatch)
     handler.orchestrator.conversation_outbox = SimpleNamespace(bound=True, enqueue=AsyncMock())
     admitted = await admit(handler, "Hello, can you explain the current work?")
-    reply = await _scoped(
+    reply = await global_command(
         handler,
         "supervisor_inbox_reply",
         {
@@ -238,7 +253,6 @@ async def test_ordinary_shared_input_reuses_addressed_supervisor_reply(env, monk
             "text": "Here is the current work.",
             "idempotency_key": "ordinary-answer",
         },
-        session_id="supervisor",
     )
     assert reply["success"], reply
     assert handler.orchestrator.conversation_outbox.enqueue.await_count == 1
@@ -250,10 +264,10 @@ async def conversation_reply_receipt(handler, db):
     handler.orchestrator.conversation_outbox = DurableConversationOutbox(db)
     admitted = await admit(handler, "Interview question, please")
     conversation_id = admitted["receipt"]["conversation_id"]
-    reply = await _scoped(handler, "supervisor_inbox_reply", {
+    reply = await global_command(handler, "supervisor_inbox_reply", {
         "conversation_id": conversation_id, "input_id": admitted["input_id"],
         "text": "Question one: shall we continue?", "idempotency_key": "interview-question",
-    }, session_id="supervisor")
+    })
     assert reply["success"], reply
     reference = str(int(MESSAGE) + 100)
     async with db.immediate() as conn:
@@ -287,10 +301,73 @@ async def test_reply_to_supervisor_receipt_continues_conversation(env, monkeypat
         notice = (await conn.execute(select(messages).where(
             messages.c.id == item["supervisor_message_id"]
         ))).mappings().one()
-        assert notice["to_id"] == "supervisor-p"
+        assert notice["to_id"] == "supervisor-global"
         assert notice["thread_id"] == f"conversation:{conversation_id}"
         assert reference in notice["body"] and text in notice["body"]
         assert await conn.scalar(select(func.count()).select_from(ask_decisions)) == 0
+
+
+@pytest.mark.parametrize("in_thread", [False, True])
+async def test_reply_to_live_supervisor_receipt_with_retained_thread(env, monkeypatch, in_thread):
+    """The 2026-10-24 channel reply referenced a conversation with an old thread."""
+    handler, db = env
+    guild, channel, author = "1231634668135120906", "1477498117430579240", "395982012789293056"
+    thread, reference = "1556327270954704978", "1563602510818713662"
+    conversation_id = "conv-7b812291-a40d-465b-9a86-21da0d9c3a7e"
+    await enable(handler, monkeypatch, guild_id=guild, channel_id=channel, author_id=author)
+    async with db.immediate() as conn:
+        await db._insert_conversation(
+            conn, conversation_id=conversation_id, transport="discord", guild_id=guild,
+            channel_id=channel, external_root_message_id=thread, external_thread_id=thread,
+            created_by=f"human:discord:{author}", audience=[author], kind="thread", now=1000,
+        )
+        await conn.execute(update(supervisor_conversations).where(
+            supervisor_conversations.c.id == conversation_id
+        ).values(state="open"))
+        delivery, _ = await db.reserve_outbound_delivery_in_transaction(
+            conn, owner_kind="conversation", owner_id=conversation_id,
+            dedup_key="conv-reply:msg-conv-reply-6e07260e",
+            destination={"transport": "discord", "channel_id": channel},
+            payload={"action": "reply", "conversation_id": conversation_id,
+                     "input_id": "cinput-0854621158", "reply_message_id": "msg-conv-reply-6e07260e",
+                     "text": "Question one"},
+            due_at=1000, now=1000,
+        )
+        await conn.execute(update(outbound_deliveries).where(
+            outbound_deliveries.c.id == delivery["id"]
+        ).values(state="sent", external_receipt_id=reference, receipt_confirmed_at=1001))
+    # A short conversation answer must not be inferred as an ask decision.
+    await ask_for(handler)
+    inbound, _, _ = router(handler, config=handler.config)
+    incoming = message(
+        id=int(reference) + 1, mention=False, content="yes",
+        guild=SimpleNamespace(id=int(guild)),
+        channel=SimpleNamespace(id=int(thread if in_thread else channel),
+                                parent_id=int(channel) if in_thread else None),
+        author=SimpleNamespace(id=int(author), bot=False),
+        reference=SimpleNamespace(message_id=int(reference)),
+    )
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:created"
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID, source="backfill") == "posted:replayed"
+    async with db.immediate() as conn:
+        item = (await conn.execute(select(conversation_inputs).where(
+            conversation_inputs.c.external_message_id == str(incoming.id)
+        ))).mappings().one()
+        assert item["author_id"] == author and item["verified_actor"] == f"human:discord:{author}"
+        assert item["external_thread_id"] == (thread if in_thread else None)
+        assert item["reference_message_id"] == reference
+        assert item["conversation_id"] == conversation_id
+        assert item["routing_state"] == "conversation" and item["ask_id"] is None
+        notice = (await conn.execute(select(messages).where(
+            messages.c.id == item["supervisor_message_id"]
+        ))).mappings().one()
+        assert notice["to_id"] == "supervisor-global"
+        assert notice["thread_id"] == f"conversation:{conversation_id}"
+        assert reference in notice["body"]
+        assert await conn.scalar(select(func.count()).select_from(ask_decisions)) == 0
+        assert await conn.scalar(select(func.count()).select_from(outbound_deliveries).where(
+            outbound_deliveries.c.dedup_key == f"ask-reference:{item['id']}"
+        )) == 0
 
 
 @pytest.mark.parametrize("failure", ["missing", "channel", "transport", "guild", "thread", "audience", "closed"])
@@ -315,8 +392,10 @@ async def test_unroutable_reference_has_public_and_supervisor_receipts(env, monk
             await conn.execute(update(supervisor_conversations).where(
                 supervisor_conversations.c.id == conversation_id
             ).values(**changes[failure]))
+    # An observed unrelated thread cannot borrow the channel's reply receipt.
     incoming = message(
         id=int(MESSAGE) + 1, mention=False, content="My answer",
+        thread=int(MESSAGE) + 200 if failure == "thread" else None,
         reference=SimpleNamespace(message_id=int(reference) + (failure == "missing")),
     )
     inbound, _, _ = router(handler, config=handler.config)
@@ -335,7 +414,7 @@ async def test_unroutable_reference_has_public_and_supervisor_receipts(env, monk
         assert "resend" in rows[0]["payload"]["text"]
         assert rows[0]["payload"]["reference_message_id"] == str(incoming.id)
         assert await conn.scalar(select(func.count()).select_from(messages).where(
-            messages.c.id == f"msg-reference-{item['id']}", messages.c.to_id == "supervisor-p"
+            messages.c.id == f"msg-reference-{item['id']}", messages.c.to_id == "supervisor-global"
         )) == 1
     adapter = ConversationDeliveryAdapter(db, SimpleNamespace(), config=handler.config,
                                           lease_owner="test")
@@ -680,12 +759,12 @@ async def test_ordinary_gateway_input_wakes_addressed_stopped_supervisor_after_c
     handler, db = env
     await enable(handler, monkeypatch)
     await db.update_project("p", supervisor_enabled=True)
-    await db.update_session("supervisor", state="stopped", desired_state="stopped")
+    await db.update_session("launch-supervisor-global", state="stopped", desired_state="stopped")
     wakes = []
 
     async def committed_event(kind, payload):
         assert kind == "message.sent"
-        assert payload["to_id"] == "supervisor-p"
+        assert payload["to_id"] == "supervisor-global"
         assert payload["body_kind"] == "conversation_input"
         notice = await db.get_message(payload["message_id"])
         item = await db.find_conversation_input_by_supervisor_message(notice.id)
@@ -701,3 +780,45 @@ async def test_ordinary_gateway_input_wakes_addressed_stopped_supervisor_after_c
     assert replay["success"] and not replay["created"]
     assert replay["input_id"] == accepted["input_id"]
     assert wakes == [f"msg-{accepted['input_id']}"] * 2
+
+
+@pytest.mark.parametrize("reply_reference", [False, True], ids=["new-message", "discord-reply"])
+async def test_answer_to_initiated_supervisor_post_returns_to_conversation(
+    env, monkeypatch, reply_reference,
+):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    handler.config.messages.enabled = handler.config.sessions.enabled = True
+    handler.orchestrator._discord_bot = SimpleNamespace(
+        _cutover_report=SimpleNamespace(status="complete"),
+    )
+    profile = await db.get_profile("supervisor")
+    await db.update_profile("supervisor", aq_commands=[*profile.aq_commands, "supervisor_inbox_say"])
+    conversation_id, _ = await conversation_reply_receipt(handler, db)
+    first = await db.list_conversation_inputs(conversation_id)
+    assert len(first) == 1 and first[0]["state"] == "answered"
+    sent = await global_command(handler, "supervisor_inbox_say", {
+        "conversation_id": conversation_id, "text": "Question two: what comes next?",
+        "idempotency_key": "interview-question-two",
+    })
+    assert sent["success"], sent
+    reference = str(int(MESSAGE) + 101)
+    async with db.immediate() as conn:
+        await conn.execute(update(outbound_deliveries).where(
+            outbound_deliveries.c.id == sent["delivery_id"]
+        ).values(state="sent", external_receipt_id=reference, receipt_confirmed_at=1001))
+    incoming = message(
+        id=int(MESSAGE) + 2, mention=False, content="My second interview answer",
+        **({"reference": SimpleNamespace(message_id=int(reference))} if reply_reference else {}),
+    )
+    inbound, _, _ = router(handler, config=handler.config)
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:created"
+    async with db.immediate() as conn:
+        item = (await conn.execute(select(conversation_inputs).where(
+            conversation_inputs.c.external_message_id == str(incoming.id)
+        ))).mappings().one()
+        assert item["routing_state"] == "conversation" and item["ask_id"] is None
+        assert item["conversation_id"] == conversation_id
+        assert item["reference_message_id"] == (reference if reply_reference else None)
+        notice = await db.get_message(item["supervisor_message_id"])
+        assert notice.to_id == "supervisor-global" and notice.project_id is None

@@ -203,7 +203,7 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "_error('out_of_scope', 'reply requires the live addressed supervisor launch')"
+        "return": "_error('out_of_scope', 'reply requires the live global supervisor launch')"
       },
       {
         "protocol": "delegated_producer",
@@ -220,10 +220,6 @@
       {
         "protocol": "delegated_producer",
         "return": "_error('input_not_in_conversation', 'input does not belong to this conversation')"
-      },
-      {
-        "protocol": "delegated_producer",
-        "return": "_error('out_of_scope', 'input is addressed to another supervisor')"
       },
       {
         "protocol": "delegated_producer",
@@ -262,12 +258,93 @@
         "return": "{'success': True, 'created': recorded['created'], 'reply_message_id': reply_message_id, 'delivery_dedup_key': dedup_key, 'discord_text_chars': len(discord_text), 'truncated': discord_text != f'{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}'}"
       }
     ],
+    "review_notes": "Discord chat is global-owned regardless of configured project or legacy notice address. Live global launch and instance fencing replace project recipient authorization; local operator authority and existing input, destination, quota and replay guards remain.",
     "schema_quality": "typed",
-    "source_digest": "sha256:6a00315773a676d08cf8af34d8dbe78708f0478f2369cb207e9b80c8e6e17545",
+    "source_digest": "sha256:135977a151311b006278e1dc0ed715a878d0116f0d0eaa6c9b079553cbccddff",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "supervisor_inbox_say": {
+    "argument_reads_diagnostic_only": [
+      "conversation_id",
+      "idempotency_key",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_say",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'created': recorded['created'], 'reply_message_id': reply_message_id, 'delivery_id': delivery_id, 'delivery_dedup_key': dedup_key, 'discord_text_chars': len(discord_text), 'truncated': discord_text != f'{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('spoofed_identity', 'caller identity and destination are server-derived')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'conversation_id, text and idempotency_key are required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'post text or idempotency key exceeds its limit')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('preconditions_unmet', 'conversation preconditions unmet', unmet=list(preconditions.unmet))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_open', 'conversation has no active delivery destination')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('visibility_changed', 'conversation destination or audience is unauthorized')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'say requires the live global supervisor launch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('rate_limited', 'supervisor post rate limit reached', scope=exc.scope)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('idempotency_conflict', 'idempotency key belongs to another sender')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_open', 'conversation must be open before posting')"
+      }
+    ],
+    "review_notes": "Initiated conversation posts retain typed outcomes. Live global launch and instance fencing, audience/destination preconditions, durable quotas and deterministic message/outbox keys are enforced before delivery. Configured projects and legacy notice addresses confer no chat authority. No input is consumed. Reviewed return branches include explicit scope, visibility, quota and idempotency refusals.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:1368147b89cf82dcde23fef764affbb5df607fd62c0242a4ba37765a1d9db572",
+    "tests": [
+      "tests/test_supervisor_inbox_say.py",
+      "tests/test_ask_intake.py::test_answer_to_initiated_supervisor_post_returns_to_conversation",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "supervisor_inbox_status": {

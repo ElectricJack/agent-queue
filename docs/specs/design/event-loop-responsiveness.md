@@ -60,3 +60,40 @@ content. It does not establish which code caused the historical fleet outage;
 operator deployment and a fleet soak remain necessary to verify that incident.
 Unit checks use thread barriers to prove health proceeds while parsing or
 collection is blocked, instead of machine-dependent wall-clock assertions.
+
+## Isolated Git repository cleanup
+
+Incident samples on 2026-10-25 repeatedly located the loop in synchronous
+`TemporaryDirectory` cleanup during authenticated origin fetches. Isolated Git
+directories (fetch, clone, push and remote reads) must be recursively removed in
+a worker thread. The owning operation waits for removal before returning or
+propagating cancellation, including cancellation received during cleanup. Git
+subprocesses and credential brokers retain their existing termination and
+zeroization order. Regression checks use thread barriers to prove the loop runs
+while removal is blocked and the operation retains ownership until removal ends.
+
+## Repeated handler work
+
+Wait cost accounting keeps at most 128 first-turn observations per lifecycle,
+including observations with no completed usage yet. Entries are scoped to the
+session identity, harness, work directory and turn start. A file's device,
+inode, size, nanosecond modification time and change time must still match
+before reuse. Changed, replaced or missing files invalidate the observation;
+a file changing during a read is never cached. Token reduction runs in a worker
+thread as well as transcript parsing. Completed accounting does no further
+measurement writes. This cache contains measurements, not wait lifecycle state.
+
+Delivered-PR sweeps reject ineligible PRs and attached writers before opening or
+locking the retained Git store. Eligible proofs still fetch and verify fresh
+remote heads, requesting both exact refs in one remote read. Apply retains its
+fresh proof and final PR-head check.
+
+Train stall and delivery watchdog inventories reserve their one-minute cadence
+before awaiting work, with at most one inventory in flight per handler. Slow
+inventories cannot multiply under overlapping ticks. Completion and cancellation
+release the guard; subsequent ticks still run the train.
+
+`scripts/acceptance/daemon-handler-cost.py` measures repeated active PR previews
+and unchanged pending transcripts using temporary Git stores and transcript
+files. See [the handler cost report](../../reports/2026-10-25-daemon-handler-cost.md)
+for before/after evidence and the separate live CPU acceptance obligation.

@@ -60,6 +60,7 @@ class WaitService:
         for name, callback in (("wait_deadline_fire", self.timers.fire),
                                ("wait_legacy_bridge", self.legacy_bridge.run),
                                ("wait_source_commit", self.source_commit),
+                               ("wait_source_redispatch", self.listener.redispatch),
                                ("wait_decide", self.decisions.decide),
                                ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
@@ -190,6 +191,8 @@ class WaitService:
 
     async def tick(self):
         if await self.processing_enabled():
+            # A manual tick publishes observations before draining them. The live
+            # loops below run independently, so maintenance cannot stall draining.
             await self.observe_sources_once()
             if self.enabled:
                 await self._bounded_bridge()
@@ -202,19 +205,34 @@ class WaitService:
         # listener, but retain the service task for a later project canary.
         while not await self.processing_enabled():
             await asyncio.sleep(self.listener.renewal_seconds)
-        if self.enabled:
-            await self.startup_bridge()
         try:
             async with asyncio.TaskGroup() as group:
                 maintenance = group.create_task(self.maintain())
                 observations = group.create_task(self.observe_sources())
+                monitor = group.create_task(self.monitor_listener())
+                # Legacy adoption may wait on graph/owner locks. Persisted
+                # continuations must begin retrying immediately after restart.
+                bridge = group.create_task(self._run_bridge()) if self.enabled else None
                 try:
                     await self.listener.run()
                 finally:
                     maintenance.cancel()
                     observations.cancel()
+                    monitor.cancel()
+                    if bridge is not None:
+                        bridge.cancel()
         finally:
             await self.lifecycle.stop()
+
+    async def monitor_listener(self):
+        """Lag diagnostics run even while source dispatch or maintenance is blocked."""
+        while True:
+            try:
+                async with asyncio.timeout(5):
+                    await self.orch._command_handler.wait_service_report_lag(self.listener)
+            except Exception:
+                logger.exception("Wait listener lag monitor failed")
+            await asyncio.sleep(self.listener.renewal_seconds)
 
     async def maintain(self):
         """Continue parked work even while source draining or orchestration is slow."""

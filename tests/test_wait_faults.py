@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.config import AppConfig
 from src.database.queries.wait_queries import register_wait
@@ -29,6 +29,7 @@ from src.database.tables import (
     wait_measurements,
     wait_priority_projection,
     wait_records,
+    wait_source_events,
 )
 from src.integration.admission import observe_admission
 from src.messages.delivery import MessageDeliveryEngine
@@ -642,6 +643,8 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
     env = hibernation_env
     driver, action, _ = await bound_resume(env)
     await env.db.update_session("fresh", state="stopped", desired_state="stopped")
+    # This retry case starts after the failed writer's checkout was released.
+    await env.db.update_workspace('resume-slot', locked_by_task_id=None, locked_by_agent_id=None)
     driver.service.lifecycle = SimpleNamespace(hibernate=HibernationTransaction(driver.service))
     driver.orch.token_store = SimpleNamespace(revoke_session=AsyncMock())
     env.registry = build_registry(clock=lambda: NOW)
@@ -766,7 +769,7 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
 
     from src.database.tables import agents
     from src.git.manager import GitManager
-    from src.models import RepoSourceType, SessionRecord, Workspace
+    from src.models import RepoSourceType, SessionRecord, Workspace, WorktreeSentinel
     from src.prime import PrimeRenderer
     from src.scheduler import AssignAction
     from src.wait_runtime.resume import ResumeTransaction
@@ -817,7 +820,11 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
     monkeypatch.setattr(env.db, "get_workspace", AsyncMock(return_value=base))
     monkeypatch.setattr(env.db, "resolve_workspace_kind", AsyncMock(return_value=SimpleNamespace()))
     monkeypatch.setattr(env.db, "update_workspace", AsyncMock())
-    slots = SimpleNamespace(reprovision_slot=AsyncMock())
+    slots = SimpleNamespace(
+        reprovision_slot=AsyncMock(),
+        read_sentinel=lambda _: WorktreeSentinel('slot-0', 0, 'base', 'p'),
+        write_sentinel=lambda *_: None,
+    )
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(return_value=str(old)),
                            _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
                            _worktree_base_paths={})
@@ -833,6 +840,9 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
         harness="codex", provider="fake", name="new", lifecycle="task", state="running",
         desired_state="running", work_dir=fresh, epoch="new-boot", instance_token="new-token",
         last_claim_epoch=2, started_at=NOW + 30)
+    await env.db.create_workspace(Workspace(
+        id='resume-slot', project_id='p', workspace_path=fresh,
+        source_type=RepoSourceType.CLONE, locked_by_task_id='owner', locked_by_agent_id='a'))
     await resume.bind_launch(action, record)
     await env.db.create_session(record)
     assert len([r for r in await records(env, sessions) if r["state"] == "running"]) == 1
@@ -948,6 +958,8 @@ async def test_matrix_accounting_from_park_through_sampler_api_and_display_contr
 
     async def prepare(*args):
         clock.now += 5
+        await env.db.update_workspace('available', locked_by_task_id='owner',
+                                      locked_by_agent_id=args[0].agent_id)
         return "/tmp/accounting-fresh"
 
     async def launch(action, task, unused, path):
@@ -1122,6 +1134,187 @@ async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_e
     assert created["success"] and created["created"], created
     assert replay["success"] and not replay["created"], replay
     assert len(await records(env, escalations)) == 1
+
+
+@pytest.mark.parametrize("driver,project_ids", [
+    ("scheduler", ("p", "q")),
+    ("scheduler", ("q", "p")),
+    ("listener", ()),
+], ids=["scheduler-first", "scheduler-last", "listener"])
+@pytest.mark.parametrize("interruption", ["timeout", "cancel"])
+async def test_interrupted_wait_transaction_retries_and_resolves_message(
+    env, monkeypatch, driver, project_ids, interruption,
+):
+    if (interruption, driver) == ("timeout", "scheduler"):
+        pytest.skip("recurring CI timing flake (PR #2112 twice, 2026-10-27)")
+    from unittest.mock import Mock
+
+    from sqlalchemy import event as sql_event
+
+    from src.wait_runtime import scheduler
+
+    service = service_for(env, [NOW + 1])
+    service.orch.config.wait_policy.scheduler_waits_enabled = True
+    await env.db.transition_task("source", TaskStatus.READY)
+    outgoing = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="s", to_kind="session",
+        to_id="peer", thread_id="reply-thread", body="question",
+    )
+    await register(env, {"kind": "message", "thread_id": "reply-thread",
+                         "after_seq": outgoing.created_seq})
+    assert await service.listener.tick()
+    answer = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="peer", to_kind="task",
+        to_id="owner", thread_id="reply-thread", body="answer",
+    )
+    source_seq = next(r["seq"] for r in await records(env, wait_source_events)
+                      if r["outcome_ref"] == f"message:{answer.id}")
+    original_title = (await env.db.get_task("source")).title
+    entered = asyncio.Event()
+
+    async def stall(conn):
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(title="aborted"))
+        entered.set()
+        # Cancellation during a real query invalidates the asyncpg connection.
+        await conn.execute(select(func.pg_sleep(60)))
+
+    original_dispatch = service.listener._dispatch
+    if driver == "scheduler":
+        monkeypatch.setattr(scheduler, "_rotated", lambda projects: sorted(
+            projects, key=lambda project: project_ids.index(project.id),
+        ))
+
+        async def observe(conn, task_id, **kwargs):
+            await stall(conn)
+
+        service.scheduler.reader = SimpleNamespace(observe_task=observe)
+        monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT",
+                            5 if interruption == "timeout" else 30)
+        async def tick():
+            return await scheduler.scheduler_tick(service.orch._command_handler)
+    else:
+        async def dispatch(conn, event):
+            await original_dispatch(conn, event)
+            if event["seq"] == source_seq:
+                # Roll back outcome/delivery writes along with the event cursor.
+                assert (await conn.scalar(select(wait_records.c.outcome))) == "satisfied"
+                await stall(conn)
+
+        monkeypatch.setattr(service.listener, "_dispatch", dispatch)
+        service.listener.lease_seconds = 1
+        tick = service.listener.tick
+
+    active_budget = fault_budget = None
+
+    def controlled_timeout(seconds):
+        nonlocal active_budget
+        budget = asyncio.timeout(None)
+        if seconds == (service.listener.lease_seconds if driver == "listener"
+                       else scheduler.SCHEDULER_SYNC_TIMEOUT):
+            active_budget = budget
+        return budget
+
+    # Arm the real timeout only once the rollback target reaches its SQL stall.
+    # Host load before that point must not consume the injected fault budget.
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    scheduler_asyncio = Mock(wraps=asyncio)
+    scheduler_asyncio.timeout.side_effect = controlled_timeout
+    monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
+
+    def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        nonlocal fault_budget
+        if interruption == "timeout" and "pg_sleep" in statement:
+            # Later projects create fresh budgets; retain the one we expired.
+            fault_budget = active_budget
+            assert fault_budget is not None
+            fault_budget.reschedule(asyncio.get_running_loop().time())
+
+    sql_event.listen(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+    try:
+        if interruption == "cancel":
+            running = asyncio.create_task(tick())
+            try:
+                await asyncio.wait_for(entered.wait(), 15)
+                await asyncio.sleep(0.02)
+                running.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await running
+            finally:
+                if not running.done():
+                    running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+        elif driver == "listener":
+            with pytest.raises(TimeoutError):
+                await tick()
+        else:
+            await tick()
+            assert service.scheduler.health["failed_projects"]["p"]["consecutive_failures"] == 1
+    finally:
+        sql_event.remove(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+
+    assert entered.is_set()
+    if interruption == "timeout":
+        assert fault_budget is not None and fault_budget.expired()
+    assert (await env.db.get_task("source")).title == original_title
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert not await records(env, wait_measurements)
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] < source_seq
+    assert not any(m["body_kind"] == "wait_outcome" for m in await records(env, messages))
+
+    service.scheduler.reader = SimpleNamespace(observe_task=AsyncMock(return_value=None))
+    monkeypatch.setattr(service.listener, "_dispatch", original_dispatch)
+    service.listener.lease_seconds = 30
+    assert await service.listener.tick()
+    await scheduler.scheduler_tick(service.orch._command_handler)
+    assert service.scheduler.health == {"ok": True, "failed_projects": {}}
+    outcome = await one_outcome(env)
+    assert outcome["result_ref"] == f"message:{answer.id}"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] >= source_seq
+    assert await service.listener.tick()
+    assert await one_outcome(env) == outcome
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+async def test_scheduler_health_tracks_project_failure_streak_until_completed_sync(
+    monkeypatch, failure,
+):
+    from src.wait_runtime import scheduler
+
+    projects = [SimpleNamespace(id=pid) for pid in ("healthy", "failing")]
+    mode = [failure]
+
+    async def execute(name, args):
+        if args["project_id"] == "healthy" or mode[0] == "success":
+            return {"success": True}
+        if mode[0] == "timeout":
+            await asyncio.sleep(60)
+        return {"success": False, "error_code": "wait.graph_busy" if mode[0] == "busy"
+                else "command_runtime_error"}
+
+    monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT", 0.01)
+    orch = SimpleNamespace(db=SimpleNamespace(list_projects=AsyncMock(return_value=projects)))
+    service = orch.wait_scheduler_service = SchedulerWaitService(orch, reader=SimpleNamespace())
+    handler = SimpleNamespace(orchestrator=orch, execute=execute)
+    for count in (1, 2):
+        if failure == "error":
+            with pytest.raises(WaitError) as error:
+                await scheduler.scheduler_tick(handler)
+            assert error.value.code == "wait.scheduler_sync_failed"
+        else:
+            await scheduler.scheduler_tick(handler)
+        health = service.health
+        assert health["ok"] is False
+        assert list(health["failed_projects"]) == ["failing"]
+        assert health["failed_projects"]["failing"]["consecutive_failures"] == count
+    mode[0] = "busy"
+    await scheduler.scheduler_tick(handler)
+    assert service.health == health  # Contention neither adds nor clears failures.
+    mode[0] = "success"
+    await scheduler.scheduler_tick(handler)
+    assert service.health == {"ok": True, "failed_projects": {}}
 
 
 async def test_hung_project_sync_is_bounded_and_rotates_off_the_head(monkeypatch, caplog):
