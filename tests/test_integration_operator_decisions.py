@@ -10,6 +10,7 @@ from src.database import tables as t
 from src.models import AgentProfile, Project, SessionRecord, Task
 from src.operator_decisions import OperatorDecisions
 from src.profiles.capabilities import CapabilityPolicy
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_surface_commands import db as db, handler as handler, task as task
 from tests.test_integration_batches import batch_env as batch_env
 from tests.test_integration_gitops import setup as setup, git
