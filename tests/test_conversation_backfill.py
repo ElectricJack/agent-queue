@@ -380,17 +380,14 @@ async def test_history_adapter_pages_oldest_first_with_window_and_maps_forbidden
 
 
 @pytest.fixture
-async def real_ingress():
+async def real_ingress(reuse_database):
     from src.commands.handler import CommandHandler
     from src.conversations.outbox import RecordingOutbox
-    from src.database import Database
     from src.discord.escalation_intake import DiscordEscalationIntake
     from src.discord.inbound import DiscordInboundRouter
     from src.discord.intake_diagnostics import IgnoreCounter
-    from tests.db_fixtures import lease_dsn
 
-    db = Database(lease_dsn("conversation-backfill"))
-    await db.initialize()
+    db = await reuse_database("conversation-backfill")
     cfg = config()
     orch = SimpleNamespace(
         db=db,
@@ -414,7 +411,6 @@ async def real_ingress():
         outbox_bound=lambda: True,
     )
     yield db, cfg, router
-    await db.close()
 
 
 async def test_live_and_history_overlap_and_edited_accepted_message_preserve_input(real_ingress):
