@@ -341,10 +341,10 @@ class ObsoleteClose:
         reason: str,
         principal: str,
         disposition: str = "obsolete",
-        _prepare_on: Callable[[Any], Awaitable[Any]] | None = None,
         replacement_task_id: str | None = None,
         satisfied_by: str | None = None,
         rewire: dict | None = None,
+        _prepare_on: Callable[[Any], Awaitable[Any]] | None = None,
     ) -> dict[str, Any]:
         """Close *task_id* with *disposition*, then run its cleanup.
 
@@ -383,7 +383,9 @@ class ObsoleteClose:
         else:
             transaction = self.db.immediate()
         async with transaction as conn:
-            # Recovery and retirement share the transaction; any refusal rolls both back.
+            # Internal recovery seam: acquire exclusion and settle an exactly
+            # proven Subject in this same transaction. A later refusal rolls
+            # back that settlement along with the obsolete close.
             settlement = await _prepare_on(conn) if _prepare_on is not None else None
             row = (
                 (
@@ -878,16 +880,6 @@ def _pending_owner(row: dict, reason: str, detail: str) -> dict:
         "owner_row_id": row["id"],
         "ref": row["ref"],
         "handoff_state": row["handoff_state"],
-        "reason": reason,
-        "detail": detail,
-    }
-
-
-def _pending_batch(batch: dict, reason: str, detail: str) -> dict:
-    return {
-        "kind": "development_batch",
-        "batch_id": batch["id"],
-        "state": batch["state"],
         "reason": reason,
         "detail": detail,
     }

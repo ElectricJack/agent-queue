@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/finished_owners.py::release_finished_branch_owners::04dadee56f5e464454b05c14133491df66ef37653c49a1758d6fd3849a9f7581": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 208,
+      "owner": "release_finished_branch_owners",
+      "owner_fingerprint": "dd8edcefcc36b3c43e3e5d5bdc8248e5ca92dae6abc820fc0715d0e6111673c4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
