@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/vault_watcher.py::VaultWatcher": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

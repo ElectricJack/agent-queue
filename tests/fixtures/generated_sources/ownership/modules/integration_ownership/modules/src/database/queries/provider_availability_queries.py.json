@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/provider_availability_queries.py::ProviderAvailabilityQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/provider_availability_queries.py::ProviderAvailabilityQueryMixin.save_provider_availability": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

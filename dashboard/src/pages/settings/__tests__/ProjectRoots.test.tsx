@@ -60,7 +60,7 @@ describe("Project roots settings", () => {
         { id: "scratch", label: "Scratch work", path: "/work/scratch" },
       ],
     }));
-    expect(screen.getByRole("status")).toHaveTextContent("Project roots saved.");
+    expect(screen.getByRole("status")).toHaveTextContent("Available when you add a project.");
   });
 
   it("rejects duplicate root IDs before sending an invalid configuration", async () => {
