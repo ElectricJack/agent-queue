@@ -369,11 +369,10 @@ class LayoutDriver:
     async def reflow(self, project_id: str, variant: str, claims: list[dict]) -> int:
         """Compact claimed active scopes without changing their ordering.
 
-        The normal ``incremental`` engine mode already preserves all stored
-        ordinals while flowing the remaining siblings into their now-smaller
-        geometry.  Starting it at only the claimed scopes (deepest first)
-        gives the deferred worker that compaction without turning it into a
-        Tidy/reorder operation.
+        The normal ``incremental`` engine mode preserves root ordinals and
+        uses canonical dependency/creation order inside task containers.
+        Starting it at only the claimed scopes (deepest first) compacts the
+        remaining siblings without applying the root's Tidy optimizer.
         """
         if variant != "active":
             raise ValueError("deferred reflow is only defined for the active variant")
