@@ -1,6 +1,8 @@
 # System spec: reviews and knowledge
 
-Status: describes the system as of 2026-10-20 (base `22cffd1b7`). This is system 11 of the
+Status: mechanisms and gaps audited against `52d2efe4c` (origin/dev, 2026-10-22).
+The original 2026-10-20 inventory, live observations and task-state snapshot below
+remain dated evidence, not current deployment or completion claims. This is system 11 of the
 eighteen in the agent-queue system inventory (vault
 `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`, review
 `rev-bright-rapids`, approved at revision 1). Written for epic eager-vault-55, task
@@ -221,8 +223,10 @@ operator or an elevated session may dispatch. A dispatch:
 
 The dispatched reviewer may read and comment only on its pinned revision, and every comment
 must be anchored with `--quote` or `--heading-path`. The opt-in cross-family loop of at most
-three rounds is a recipe in the skill and the guide, not a playbook, because
-`review_dispatch`, `review_show` and `review_decide` have no command contracts.
+three rounds is a recipe in the skill and guide. Generated contracts cover
+`review_dispatch`, `review_show` and `review_decide`; caller authorization still applies.
+A playbook cannot decide, and an ordinary `agent_task` is outside the dispatch ledger.
+`review.dispatched` has no registered event schema. See the guide's playbook boundary.
 
 **Attachments.** PNG, JPEG, GIF or WebP images up to 10 MiB may be added to the current
 `in_review` revision before it is dispatched. They are served from
@@ -247,12 +251,12 @@ and no check that the graph matches the document (§5).
 
 ### 2.6 Spec ingestion and held batches
 
-The draft [spec ingestion implementation](../implementation/spec-ingestion.md) describes the
-earlier, commit-immediately contract and is stale (§5). The current design is vault
+[Spec ingestion implementation](../implementation/spec-ingestion.md) describes the
+held-batch mechanisms and incomplete release wiring (§5). The approved design is vault
 `specs/2026-10-13-spec-ingestion-with-task-structure-review-before-release.md` (review
 `rev-bright-meadow`, approved at revision 2). Its implementation spec is vault
 `specs/2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md` (review
-`rev-agile-beacon`, approved at revision 1). What base `22cffd1b7` actually does:
+`rev-agile-beacon`, approved at revision 1). What the audited checkout implements:
 
 1. **Approval queues ingestion.** Approving a spec or plan queues the `ingestion` operation.
    `src/asks/ingestion.py` re-verifies the decision with `approved_packet()` (decision hash,
@@ -272,7 +276,8 @@ earlier, commit-immediately contract and is stale (§5). The current design is v
    every root must be an epic or an operational root with a `delivery-of` dependency.
    Structure checks are in `src/task_graph/batch_checks.py` (also callable as
    `task_batch_validate`), and the graph digest comes from `src/task_graph/batch_digest.py`.
-   - For a **design** spec the batch is fixed at two nodes: an epic plus one `deep-high`
+   - Missing `spec_kind` defaults to **design** in approved-packet loading.
+   - For a **design** spec the server fixes the batch at two nodes: an epic plus one `deep-high`
      child that writes the implementation spec. It is released at once by
      `service:design_authoring_shape`.
    - For an **implementation** spec the batch is **held**. Every member task is created with
@@ -416,7 +421,8 @@ on 2026-10-20:
 - off: `global_enabled`, `semantic`, `extraction`, `consolidation`, `export` and both
   `import` switches.
 
-That is past gates G2 to G4 and short of G5 to G7. The live database held 26 knowledge
+These historical flag values do not prove that operator gates were approved.
+On that observation date, the live database held 26 knowledge
 records with 48 revisions, 277 record rows in total, 45 link heads and 1,146 context
 deliveries. It had no proposals, import runs, extraction jobs or citations.
 
@@ -462,8 +468,9 @@ describe it. On base it is almost entirely inert:
   (`src/plugins/registry.py`) refuses them. Lifting that needs the K07 versioned read-only
   handshake, which exists only as the unused ports `src/knowledge/memory_port.py` and
   `generation_port.py`.
-- **Memory commands are paused centrally.** `handler.py:727-739` refuses every `memory_*`
-  command before dispatch with `MEMORY_PAUSED_ERROR` (`:209`). The
+- **Memory commands have a master pause.** When `memory.enabled` is false,
+  `handler.py` refuses `memory_*` commands before dispatch with `MEMORY_PAUSED_ERROR`.
+  Enabling it does not supply a legacy backend or lift the plugin-load fence. The
   [feature pauses](../design/feature-pauses.md) design explains why.
 - **The memory tiers are empty.** The L1 facts and L2 context builders in prime return
   empty bodies (`src/prime/sections.py:773-792`), and the launch prompt replaces them with
@@ -518,7 +525,7 @@ organised by which seat the agent is in (author, reviser, dispatched reviewer, d
 | `daemon-core` | The reconcilers, the review notifier, the record outbox and the generation loop as callables; the knowledge and review command mixins | Where they run in the cycle, start-up order, the command handler, the event bus, the schema and migrations |
 | `task-graph` | The review gate's meaning, `--after-review`, held-batch membership and the `delivery-of` root rule | Task states, hierarchy, gates and `task_gates` as tables, graph parsing and creation |
 | `scheduling-and-claims` | The `not_ingest_held` predicate and its ratchet | The frontier, claims and epochs; it applies the predicate |
-| `routing-and-profiles` | Which role a review, revision, dispatch, ingest or fidelity task asks for, and the intelligence-class hint | Profile files, rung derivation and routing; the shipped `spec-ingest` and `fidelity-reviewer` profiles |
+| `routing-and-profiles` | Which role a review, revision, dispatch, ingest or fidelity task asks for, and the intelligence-class hint | Profile files, rung derivation and routing; `spec-ingest` ships, `fidelity-reviewer` is still missing |
 | `projects-workspaces-git` | Nothing; reviewed documents are never committed | Workspaces and branches for the tasks this system files |
 | `integration-and-delivery` | Holding batch members out of the train and the delivery observer | The train, delivery, the integration outbox that carries `batch.*` events |
 | `playbooks` | The commands the `default-pipeline` rules call and the events they listen for | The playbook runtime and the shipped `default-pipeline`; playbook reviews pin compiled artifacts from it |
@@ -559,106 +566,95 @@ organised by which seat the agent is in (author, reviser, dispatched reviewer, d
   is recorded only after delivery is confirmed with the bundle hash.
 - **Fences are permanent.** A migrated legacy source stays read-only regardless of rollout
   flags, and nothing in code authorizes removing a legacy adapter.
-- **Mechanism here, policy in playbooks.** Turning `spec.approved` into an ingest task, and
-  `batch.held` into a fidelity review, are playbook rules. The commands only enforce shape.
+- **Mechanism here, policy in playbooks.** Turning `spec.approved` into an ingest task
+  is shipped policy. The intended `batch.held` to fidelity-review rule is still missing;
+  the command mechanism alone does not dispatch or release that work.
 
 ## 5. Known gaps
 
-These were found while writing this spec, at base `22cffd1b7`. Where an open task covers a
-gap it is named. Gaps without a named task have no filed work.
+The following source gaps remain at `52d2efe4c`. The dated task references in §6
+are historical planning context; this audit does not re-query other tasks or
+assert that their branch work has landed.
 
-**Held ingestion is not wired end to end.**
+### Held ingestion is not wired end to end
 
-1. Nothing consumes `batch.held` or `batch.receipt_recorded`. The shipped `default-pipeline`
-   still has only the three rules `spec-ingest-on-approve`, `proposal-ready-gate` and
-   `commit-on-gate-resolve`. An approved implementation spec therefore produces a held
-   graph that nobody can claim, and `batch_reconcile` keeps re-emitting the event. A
-   fidelity review starts only if someone calls `ensure_fidelity_review` by hand. This is
-   nimble-lantern-37.2.
-2. There is no release command. `ingest_batch_queries.release()` is called only from tests.
-   This is sharp-cascade-53.1, which is complete on its branch but not in base.
-3. No `fidelity-reviewer` profile is shipped, although routing and the playbook step already
-   name it. This is nimble-lantern-37.1, complete on its branch but not in base.
-4. The shipped `spec-ingest` profile still says "A successful proposal commits immediately"
-   and grants `task_batch_commit` (`src/profiles/defaults/spec-ingest/profile.md:42`, `:61`,
-   `:123`, `:145`). This is nimble-lantern-37.2.
-5. There are no `ingestion.held_batches` or `ingestion.legacy_proposals` doctor checks and no
-   `aq batch` command group. These are sharp-cascade-53.2 and calm-orbit-69.3.
-6. `aq task create --from-spec --root --after-review` files a graph without ingestion, so it
-   skips both the goal accounting and the fidelity review. No task covers this; the held
-   ingestion design does not mention the recipe.
+1. The reviewed `default-pipeline` still contains only `spec-ingest-on-approve`,
+   `proposal-ready-gate` and `commit-on-gate-resolve`. Nothing consumes
+   `batch.held` or `batch.receipt_recorded`. Reconciliation re-emits the event;
+   `ensure_fidelity_review` must currently be called explicitly.
+2. No `task_batch_release` command exists. The database `release()` primitive
+   in `ingest_batch_queries.py` is called only by tests. A review receipt does
+   not make implementation tasks claimable.
+3. No `fidelity-reviewer` profile ships. The role route and scoped review
+   commands exist, but do not supply an executable profile.
+4. The shipped `spec-ingest` profile still promises immediate commit and grants
+   `task_batch_commit`, which refuses held batches. This is a shipped-agent
+   instruction/policy mismatch, not permission to clear a hold.
+5. No `ingestion.held_batches` / `ingestion.legacy_proposals` doctor checks or
+   `aq batch` command group are present.
+6. The manual `aq task create --from-spec ... --after-review ...` path gates
+   approval but creates no ingestion batch, so it bypasses fidelity review and
+   ingest goal accounting. It is a separate mechanism, not an equivalent
+   implementation-ingestion recipe.
 
-**Documents that disagree with code.**
+### Knowledge and context discrepancies
 
-7. [Spec ingestion implementation](../implementation/spec-ingestion.md) still describes
-   commit-immediately ingestion, the old dedup key `spec-ingest:<path>`, and
-   `ReviewService.decide` as the emitter of `spec.approved`. nimble-lantern-37.3 rewrites it.
-8. [Reviews](../../guides/reviews.md) describes ingestion before held batches (`:94-97`) and
-   gives the old dedup key (`:52`). It omits the `rejected` state, the `reject`, `fold_in`
-   and `decline` decisions, and the `supervisor` decider. It says every dispatch excludes
-   the author's provider (`:156`), although that happens only when the provider is known.
-   Its source list (`:716-722`) cites `src/models/` and `src/scheduler/`, which do not
-   exist. nimble-lantern-37.3 covers the ingestion part only.
-9. [Knowledge context](../knowledge-context.md) says degraded prime names the
-   `knowledge_search` grant. The code checks `record_search` (`context.py:60-76`, `:298`).
-10. [Knowledge migration and restore](../../guides/knowledge-migration-restore.md) says an
-    elevated supervisor may redact. Redaction is local-operator only
-    (`redaction.py:64-65`).
-11. The vault copy of the knowledge runbook
-    (`specs/2026-10-03-k14-updated-knowledge-migration-and-rollout-runbook.md`, review
-    `rev-crisp-beacon`, approved) is older than the repository guide: it backs up with raw
-    `pg_dump` where the guide uses `aq db backup`. AGENTS.md's mirror rule covers only the
-    Discord spec, so nothing polices this drift.
-12. [Memory consolidation](../memory-consolidation.md) says "Implemented" for code that no
-    longer exists. [Memory scoping](../design/memory-scoping.md) and
-    [self-improvement](../design/self-improvement.md) name `MemoryManager`, and
-    [feature pauses](../design/feature-pauses.md) §8 names `src/reflection.py` and
-    `src/chat_observer.py`. [Reflection](../reflection.md) points at a reflection playbook
-    that does not exist. Feature pauses §4.2 says the semantic tool index stays on; it is
-    off here because `memsearch` is not installed.
+- Worker writes require the current claim epoch. The CLI injects it only for
+  `knowledge_propose` (`src/cli/auto_commands.py`), while create, update and other
+  worker mutations require explicit `--claim-epoch`. The guide and skill now
+  document this workaround; the inconsistent CLI behavior remains.
+- Supervisor launch records context transport `session_start`, outside the four
+  transports declared in `src/knowledge/delivery.py`. `observe_delivery_on`
+  validates only the transport string's length.
+- The session-spec knowledge payload transports (hook envelope, start-up
+  guidance file and memory-file pointer) have test coverage but no production
+  caller passing a payload. Current delivery uses the paths listed in §2.8.
+- Optional memory/generation adapter ports are defined but not installed by
+  core. `memory.enabled` alone cannot provide a backend. `finding` and
+  `research` are prose terms, not categories; use `reference` or `note` for
+  research findings.
 
-**Knowledge defects.**
+### Legacy surface still present in code
 
-13. Worker knowledge writes need a `claim_epoch` (`src/records/auth.py:172-179`), but the CLI
-    fills it in from `.aq/claim.json` only for `knowledge_propose`
-    (`src/cli/auto_commands.py:547-550`). The create and update examples in the aq-knowledge
-    skill and the user guide omit it, so a worker that follows them verbatim gets
-    `record.stale_claim`. Recorded as a comment on eager-vault-55.11.
-14. Supervisor start records delivery with transport `session_start`, which is not one of
-    the four transports declared in `src/knowledge/delivery.py:60-65`. `observe_delivery_on`
-    checks only the length of the value.
-15. The session-spec builder can carry a knowledge payload to the harness (hook envelope,
-    start-up guidance file, memory-file pointer; `src/sessions/spec.py:92`), but no
-    production caller passes one. Those transports are exercised only by tests.
-16. There is no `finding` or `research` category, although the design and the skill speak of
-    findings. Research is stored as `reference` or `note`.
-17. Context delivery depends on `memory.enabled`, a restart-required switch that otherwise
-    does almost nothing: it un-pauses memory commands that have no backend.
+- `src/prompts/memory_revision.py`, `memory_consolidation.py` and
+  `ProjectFactsheet` have no production consumers.
+- The notes plugin's promotion/profile-revision paths still call missing
+  `memory_store`; the files plugin's inspection path calls missing
+  `memory_kv_set` / `memory_kv_list`. These legacy calls cannot save canonical
+  knowledge. The `facts.md` change handler only logs.
+- Stale reflection references remain in execution/reconciliation code. No
+  reflection engine or periodic reflection policy is supplied.
 
-**Dead or misleading legacy surface.**
+### Review storage and automation
 
-18. `src/prompts/memory_revision.py` and `src/prompts/memory_consolidation.py` are
-    unreferenced, and `ProjectFactsheet` (`src/models.py:1168`) is unused.
-19. The notes plugin's `promote_note` and its profile-revision trigger call `memory_store`,
-    which no longer exists, and its module docstring names the wrong notes directory. The
-    files plugin's `record_file_inspection` writes through `memory_kv_set` and
-    `memory_kv_list` (`src/plugins/internal/files.py:1264`, `:1303`), which always fail with
-    a warning.
-20. Stale reflection references remain in `src/orchestrator/execution.py:2194-2199` and
-    `src/sessions/reconciler.py:1373`. The `facts.md` handler only logs (`core.py:2122-2124`).
-21. No `aq-memory` distribution is pinned or installed, and the plugin fence would refuse it.
+- `doc_review_revisions.playbook` and `doc_review_comments.heading_path` still
+  use plain SQLAlchemy `JSON` rather than PostgreSQL `JSONB`, contrary to the
+  repository's schema rule.
+- `review.dispatched` is emitted without a registered event schema. Review
+  commands do have generated contracts; missing contracts are not the reason
+  the opt-in loop is manual. Caller authority and dispatch ownership still
+  prevent treating an arbitrary playbook agent task as a deciding reviewer.
 
-**Smaller review gaps.**
+### Documentation reconciled by this audit
 
-22. `doc_review_revisions.playbook` and `doc_review_comments.heading_path` are `sa.JSON`,
-    not `JSONB`, against the migration rule in AGENTS.md.
-23. `review.dispatched` has no event schema, and `review_dispatch`, `review_show` and
-    `review_decide` have no command contracts. That is why the cross-family loop cannot be
-    a playbook.
+The reviews guide now covers current states, ask previews, frozen feedback,
+completion evidence and held ingestion. The ingestion spec describes the
+partial implementation. Knowledge context names `record_search`; the restore
+runbook correctly restricts redaction to local operators. Historical memory,
+consolidation, reflection and extraction designs carry explicit current
+boundaries. Shared profile/README text distinguishes canonical database records
+from editable policy and derived vault exports. These edits ship no missing
+commands, profiles, policy rules, adapters or migrations.
+
+The approved vault runbook `rev-crisp-beacon` was older than the repository
+runbook in the 2026-10-20 inventory. This audit updates repository docs only;
+it does not rewrite an approved review or claim the vault has been reconciled.
 
 ## 6. Planned work
 
-Task states were re-queried on 2026-10-20 just before writing.
+Historical snapshot: task states were queried on 2026-10-20 when this section
+was written. They are not a current queue view; source gaps above are verified
+independently against the audited checkout.
 
 ### 6.1 Held ingestion (epics sharp-cascade-53, nimble-lantern-37, calm-orbit-69)
 
