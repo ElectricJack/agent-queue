@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/jobs/adapters.py::PublisherJobs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/adapters.py::finite_command": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

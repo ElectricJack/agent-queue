@@ -121,19 +121,15 @@ async def test_sweep_deletes_proven_refs_and_keeps_held_unique_and_stashed_work(
 
 
 @pytest.mark.asyncio
-async def test_daily_sweep_scheduler_runs_only_when_git_first_is_active(tmp_path):
+async def test_daily_sweep_scheduler_runs_once_per_day_by_default(tmp_path):
     orchestrator = object.__new__(Orchestrator)
     orchestrator.config = SimpleNamespace(
-        data_dir=str(tmp_path), integration=SimpleNamespace(git_first="shadow")
+        data_dir=str(tmp_path), integration=SimpleNamespace()
     )
     orchestrator._last_git_branch_sweep_date = None
     orchestrator._git_branch_sweep_task = None
     orchestrator._run_daily_git_branch_sweep = AsyncMock()
 
-    orchestrator._schedule_daily_git_branch_sweep()
-    assert orchestrator._git_branch_sweep_task is None
-
-    orchestrator.config.integration.git_first = "active"
     orchestrator._schedule_daily_git_branch_sweep()
     await orchestrator._git_branch_sweep_task
     orchestrator._run_daily_git_branch_sweep.assert_awaited_once()
@@ -300,7 +296,9 @@ async def test_daily_retry_skips_projects_already_reported_before_restart(tmp_pa
 def _reporting_orchestrator(tmp_path, result):
     orchestrator = object.__new__(Orchestrator)
     orchestrator.db = SimpleNamespace(
-        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_projects=AsyncMock(return_value=[
+            SimpleNamespace(id="p", name="One", storage_binding=None),
+        ]),
         list_repos=AsyncMock(return_value=[]), list_workspaces=AsyncMock(return_value=[]),
     )
     orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
@@ -395,16 +393,104 @@ async def test_daily_backstop_resolves_linked_source_and_shared_origin(
     assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
 
 
+@pytest.mark.parametrize("has_base", [False, True])
+async def test_daily_backstop_skips_clean_detached_foreign_worktree(
+    guarded_repo, tmp_path, monkeypatch, has_base,
+):
+    db, git, checkout, origin = guarded_repo
+    foreign = tmp_path / "foreign-worker"
+    _git(checkout, "worktree", "add", "--detach", str(foreign), "main")
+    head = _git(foreign, "rev-parse", "HEAD")
+    if not has_base:
+        await db.update_repo("repo", checkout_base_path="")
+    # Put the foreign worktree first, ahead of the registered base's common dir.
+    monkeypatch.setattr(db, "list_workspaces", AsyncMock(return_value=[
+        SimpleNamespace(workspace_path=str(foreign), kind_id=None, is_slot=False),
+    ]))
+    fetch = git.afetch_origin
+
+    async def fetch_without_foreign(path, **kwargs):
+        assert path != str(foreign), "foreign worktree reached authenticated preparation"
+        return await fetch(path, **kwargs)
+
+    monkeypatch.setattr(git, "afetch_origin", fetch_without_foreign)
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-22")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "Failures" not in body
+    assert "Skipped clean detached non-slot worktrees (1): " + str(foreign) in body
+    assert ("Checkouts: 1;" if has_base else "Checkouts: 0;") in body
+    assert _git(foreign, "rev-parse", "HEAD") == head
+    assert _git(foreign, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert _git(foreign, "status", "--porcelain") == ""
+    assert foreign.is_dir()
+    # A skipped worktree must not suppress cleanup through the healthy base.
+    assert (await git.arev_parse(str(origin), "refs/heads/aq/candidate") is None) is has_base
+    assert (await git.arev_parse(str(checkout), "aq/candidate") is None) is has_base
+
+
+@pytest.mark.parametrize("state", ["dirty", "untracked", "attached", "slot", "unreadable"])
+async def test_daily_backstop_keeps_other_linked_worktree_failures_visible(
+    guarded_repo, tmp_path, monkeypatch, state,
+):
+    db, git, checkout, origin = guarded_repo
+    linked = tmp_path / "linked-worker"
+    _git(checkout, "worktree", "add", "--detach", str(linked), "main")
+    if state == "dirty":
+        (linked / "README").write_text("keep dirty work\n")
+    elif state == "untracked":
+        (linked / "untracked.txt").write_text("keep untracked work\n")
+    elif state == "attached":
+        _git(linked, "switch", "aq/candidate")
+    elif state == "unreadable":
+        monkeypatch.setattr(git, "aread_status_summary", AsyncMock(
+            side_effect=RuntimeError("worktree status unreadable"),
+        ))
+    await db.update_repo("repo", checkout_base_path="")
+    monkeypatch.setattr(db, "list_workspaces", AsyncMock(return_value=[
+        SimpleNamespace(workspace_path=str(linked), kind_id=None, is_slot=state == "slot"),
+    ]))
+    fetch = git.afetch_origin
+
+    async def failing_worktree_fetch(path, **kwargs):
+        if path == str(linked):
+            raise RuntimeError("authenticated Git push preparation failed")
+        return await fetch(path, **kwargs)
+
+    monkeypatch.setattr(git, "afetch_origin", failing_worktree_fetch)
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-22")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "Failures (1): " in body
+    assert str(linked) in body
+    assert "Skipped clean detached" not in body
+    expected_error = ("worktree status unreadable" if state == "unreadable"
+                      else "authenticated Git push preparation failed")
+    assert expected_error in body
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+    assert linked.is_dir()
+
+
 @pytest.mark.parametrize("has_workspace", [False, True])
-async def test_missing_link_notice_survives_restart_and_does_not_fail_sweep(
-    guarded_repo, tmp_path, has_workspace,
+@pytest.mark.parametrize("path_fields", ["source", "base", "both"])
+async def test_missing_repository_notice_survives_restart_and_does_not_fail_sweep(
+    guarded_repo, tmp_path, has_workspace, path_fields,
 ):
     db, git, checkout, origin = guarded_repo
     missing = tmp_path / "gone"
-    await db.create_repo(RepoConfig(
-        id="missing", project_id="p", url="", source_type=RepoSourceType.LINK,
-        source_path=str(missing),
-    ))
+    registration = dict(
+        id="missing", project_id="p", url="",
+        source_type=RepoSourceType.CLONE if path_fields == "base" else RepoSourceType.LINK,
+        source_path=str(missing) if path_fields != "base" else "",
+        checkout_base_path=str(missing) if path_fields != "source" else "",
+    )
+    await db.create_repo(RepoConfig(**registration))
     if has_workspace:
         await db.create_workspace(Workspace(
             id="missing-ws", project_id="p", workspace_path=str(missing),
@@ -421,6 +507,9 @@ async def test_missing_link_notice_survives_restart_and_does_not_fail_sweep(
     assert "Checkouts: 1;" in first
     assert "Failures" not in first
     assert str(missing) in first
+    assert first.count(str(missing)) == 1
+    if not has_workspace:
+        assert "repair-repository-checkout" in first
     assert "restore the directory" in first
     if has_workspace:
         assert "aq project remove-workspace --workspace-id missing-ws" in first
@@ -437,10 +526,7 @@ async def test_missing_link_notice_survives_restart_and_does_not_fail_sweep(
     if has_workspace:
         await db.delete_workspace("missing-ws")
     await run("2026-10-19")
-    await db.create_repo(RepoConfig(
-        id="missing", project_id="p", url="", source_type=RepoSourceType.LINK,
-        source_path=str(missing),
-    ))
+    await db.create_repo(RepoConfig(**registration))
     assert str(missing) in await run("2026-10-20")
 
 
@@ -458,6 +544,41 @@ async def test_missing_path_notice_retries_after_delivery_refusal(tmp_path):
     body = orch._command_handler.execute.call_args.args[1]["body"]
     assert "restore the directory" in body
     assert marker.exists()
+
+
+async def test_repointed_checkout_clears_warning_on_next_sweep(
+    guarded_repo, tmp_path, command_handler_factory,
+):
+    db, git, checkout, _ = guarded_repo
+    stale = str(tmp_path / "old-checkout")
+    await db.update_repo("repo", checkout_base_path=stale)
+    await db.create_workspace(Workspace(
+        id="live-ws", project_id="p", workspace_path=str(checkout),
+        source_type=RepoSourceType.CLONE,
+    ))
+    orch = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orch.db, orch.git = db, git
+    await orch._run_daily_git_branch_sweep("2026-10-17")
+    assert stale in orch._command_handler.execute.call_args.args[1]["body"]
+
+    handler = await command_handler_factory()
+    await handler.db.close()
+    handler.orchestrator.db, handler.orchestrator.git = db, git
+    args = dict(project_id="p", repository_id="repo", expected_path=stale,
+                replacement_path=str(checkout), reason="Checkout moved")
+    preview = await handler.execute("repair_repository_checkout", args)
+    assert preview["success"] and preview["before"]["checkout_base_path"] == stale
+    result = await handler.execute("repair_repository_checkout", {**args, "apply": True})
+    assert result["success"] and result["after"] == preview["after"]
+
+    restarted = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    restarted.db, restarted.git = db, git
+    await restarted._run_daily_git_branch_sweep("2026-10-18")
+    report = restarted._command_handler.execute.call_args.args[1]["body"]
+    assert "Checkouts: 1;" in report
+    assert "Failures" not in report and stale not in report
+    assert (await db.get_repo("repo")).checkout_base_path == str(checkout)
+    assert (tmp_path / "state/maintenance/git-branch-sweeps/p.missing-paths").read_text() == "[]\n"
 
 
 @pytest.mark.parametrize("origin_state", ["missing", "empty", "conflicting"])
@@ -654,11 +775,14 @@ async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origi
         SimpleNamespace(workspace_path=str(paths["second"]), kind_id=None, is_slot=False),
     ]
     registered = SimpleNamespace(id="repo", url=str(tmp_path / "registered.git"),
+                                 source_path="",
                                  checkout_base_path=str(tmp_path / "absent"),
                                  default_branch="main")
     orchestrator = object.__new__(Orchestrator)
     orchestrator.db = SimpleNamespace(
-        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_projects=AsyncMock(return_value=[
+            SimpleNamespace(id="p", name="One", storage_binding=None),
+        ]),
         list_repos=AsyncMock(return_value=[registered]),
         list_workspaces=AsyncMock(return_value=workspaces),
         resolve_workspace_kind=AsyncMock(side_effect=AssertionError("snapshot inspected")),
