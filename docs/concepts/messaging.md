@@ -1,8 +1,8 @@
 # Messaging, digests and escalations
 
 How text moves in and out of Agent Queue: messages between the daemon, its
-workers and you; one short activity digest an hour; and a durable escalation
-thread whenever a machine needs a human to decide something.
+workers and you; periodic activity reports; and durable human asks with verified
+decisions, plus retained legacy escalation threads.
 
 ## Why it exists
 
@@ -15,21 +15,20 @@ point-to-point, it must survive a session dying, and nobody should have to
 watch a chat window for it. AQ stores it as rows in a queue and delivers it
 into the recipient's terminal when the recipient is in a state to read it.
 
-The second is **attention traffic**: the small amount that a person genuinely
-has to see. AQ has exactly two shapes for it — a routine hourly summary that
-stays silent when nothing happened, and an escalation that names one decision
-and waits for an answer. Both go to one configured Discord channel and nowhere
-else.
+The second is **attention traffic**: routine summaries and questions requiring a
+human decision. The configured Discord channel can carry a deterministic digest,
+optional authored hourly and morning reports, and human asks. Legacy escalation
+threads remain available until their destination transfers to the ask channel.
+The dashboard keeps the durable records even without Discord.
 
-> **Discord is notification-only by default.** There are no AQ slash commands, no task
-> controls, no buttons and no per-project channels. The six former slash
-> commands were retired and the control views, the notification handler and
-> the Discord command mirror were deleted; the dashboard and the `aq` CLI own
-> the operational read and control surfaces. Escalation-thread replies reach
-> the owning project supervisor; the deliberate opt-in exception is
-> [supervisor conversations](../guides/discord-conversations.md), where an
-> allowlisted bot mention reaches the elevated global supervisor. See
-> [what Discord no longer does](#what-discord-no-longer-does).
+> **Discord has a bounded operator surface.** The six former slash commands,
+> general task controls and per-project channels were retired. `/delete-task`
+> remains an explicit authenticated operator action. Legacy escalation choices
+> and canonical human asks have decision buttons. Optional
+> [supervisor conversations](../guides/discord-conversations.md) route allowlisted
+> text to the project supervisor, falling back to the global supervisor.
+> [Ask channel mode](../guides/human-asks-rollout.md) takes precedence over both
+> conversation and legacy escalation intake.
 
 ## Vocabulary
 
@@ -44,32 +43,30 @@ terms this page leans on.
 | **Prime** | The context an agent is given at the start of a task (`aq prime`); pending messages ride in with it. |
 | **Supervisor** | A long-lived session that owns a project's judgement calls, addressed as `supervisor-<project-id>`. |
 | **Digest** | The periodic Discord activity summary — one message, silent when nothing durable happened. |
-| **Escalation** | A durable incident that needs a human decision; it gets one channel post and one thread. |
+| **Escalation** | A durable incident that needs a human decision; legacy delivery creates a channel post and thread, while the ask adapter supplies its canonical decision identity. |
 | **Delivery** | A row in an outbox recording one intended external send, and what happened to it. |
 | **Transport** | The narrow port that actually talks to a chat platform. Today there is one: Discord. |
 
 ## Optional supervisor conversations
 
-The `src/conversations/` package supports an opt-in Discord mention route to
-the global supervisor, controlled by `discord.conversation.enabled` (false by
-default). Intake classifies gateway-observed provenance and normalized text;
-the envelope validates Discord identifiers and the root mention. Replies in
-escalation threads stay with escalation intake.
+The `src/conversations/` package supports opt-in Discord conversation intake,
+controlled by `discord.conversation.enabled` (false by default). A non-empty
+explicit author allowlist, configured guild/channel, enabled messages and sessions,
+completed Discord cutover and a bound outbound queue are prerequisites.
 
-The route requires an explicit author allowlist, configured guild and channel,
-enabled messages and sessions, completed Discord cutover, and a bound outbound
-queue. Both the gateway and intake command check these prerequisites. The
-package supplies a refusing `UnboundOutbox` until a delivery implementation is
-bound, plus `RecordingOutbox` for tests. Shared constants define message sizes,
-rate windows and retention; pure renderers produce supervisor briefs, fixed
-notices and dashboard pointers. Conversation text does not resolve gates or
-approve work.
+`discord.project_id` selects the owning project; a sole project is inferred.
+Inputs reach its live named supervisor, then the live global supervisor. With
+several projects and no selected project, the global supervisor answers. Replies
+can stay in the main channel; existing bound threads remain supported.
+`require_mention` defaults to true, and `allow_dm` defaults to false. An operator
+can explicitly relax either. Intake does not cold-start supervisors.
 
-Enabling treats the allowlisted identities as trusted operator correspondents
-of the existing elevated session. There is no sandboxed chatbot: deployments
-requiring enforced read-only chat keep this feature off. See
-[Discord supervisor conversations](../guides/discord-conversations.md) for
-enabling, limits and diagnostics.
+When the destination is in ask channel mode, ask intake exclusively owns the
+input, including refusals; it never falls back into conversation intake.
+Conversation text cannot itself approve work. Enabling conversations makes the
+allowlisted identities correspondents of an elevated session, whose tools remain
+available. See [Discord supervisor conversations](../guides/discord-conversations.md)
+for the trust decision, limits and diagnostics.
 
 ## The three lanes
 
@@ -92,6 +89,9 @@ flowchart TD
   ESC["Escalation<br/>src/escalations/"] --> C
   C -- "reply in the thread" --> ESC
   ESC -- "queued message" --> Q
+  ASK["Human asks<br/>src/asks/"] --> C
+  C -- "channel reply / decision button" --> ASK
+  ASK -- "verified input" --> Q
 ```
 
 Three things to take from the picture:
@@ -100,8 +100,9 @@ Three things to take from the picture:
   into it, rather than by poking a process;
 * the **digest** and **escalations** share one channel and one transport but
   keep separate outboxes, so an outage in one cannot stall the other;
-* by default, the arrow back *into* AQ is an escalation-thread reply. The
-  opt-in conversation route also persists input through the message queue.
+* human asks, legacy escalation replies and opt-in conversations have separate
+  authority checks. Asks, conversations and morning reports use the shared
+  external outbox; digests use its scheduler while retaining `digest_windows`.
 
 ## A realistic example
 
@@ -113,7 +114,6 @@ Queue a message to your own session, read it, answer it, and consume it:
 
 ```bash
 aq message send --to "session:$AQ_SESSION_ID" \
-  --from-kind session --from-id "$AQ_SESSION_ID" \
   --project agent-queue \
   --subject "Docs example" --body "Reply here when you see this."
 ```
@@ -188,8 +188,10 @@ with `aq message send --to session:supervisor-<project>`.
 | Lane | Input | Output |
 |---|---|---|
 | Messages | `message_send` (`aq message send`), a playbook's `message_send` step, an escalation reply | A row in `messages`; a nudge typed into a session, a block in `aq prime`, or a `message.sent` event the dashboard renders |
-| Digest | Durable evidence recorded by other subsystems — completions, attempt starts, progress comments, `pr_url` | At most one Discord message per interval, ≤600 characters, or a persisted silence |
-| Escalation | `escalation_create` from a supervisor or trusted core source; `aq question escalate` | One channel post, one thread, and later an acknowledgement, relay or resolution in that thread |
+| Digest | Durable work, provider and reroute evidence from other subsystems | At most one Discord message per interval, ≤600 characters, or a persisted silence |
+| Human ask | A source-owned question and verified human input | One canonical identity, current context, immutable decision packet and application receipt |
+| Legacy escalation | `escalation_create` from a supervisor or trusted core source; `aq question escalate` | While legacy delivery is permitted, one channel post/thread with acknowledgement, relay or resolution |
+| Report | Frozen evidence and an optional supervisor author turn | Stored report, scoped deterministic fallback and a bounded external summary |
 
 ### Recipient kinds, and what each one means
 
@@ -198,19 +200,20 @@ with `aq message send --to session:supervisor-<project>`.
 
 | `to_kind` | `to_id` looks like | How it is delivered | Parked if undeliverable? |
 |---|---|---|---|
-| `session` | `supervisor-agent-queue`, or a session name | Nudged into the live terminal; a supervisor address is woken if asleep | Yes — after 24 h it is re-addressed to the sender |
-| `task` | a task id | Rides into the next `aq prime` for that task | No — it waits for the next session |
+| `session` | `supervisor-agent-queue`, or a session name | Nudged when idle; a supervisor address can be woken if asleep | After 24 h absent, the original is archived; only human-origin mail earns a return notice |
+| `task` | a task id | Nudges the active holder, or waits for the next inbox/prime | No — it waits for the next session |
 | `profile` | a profile id such as `standard-high-claude` | Consumed by `aq inbox` / prime; the engine never touches a session for it | No |
-| `user` | `dashboard` | Marked delivered immediately and emitted as `message.sent` for the dashboard chat | No |
+| `user` | `dashboard` | Marked delivered by the engine (`via=platform`); dashboard updates use `message.sent` | No |
 
 Senders (`from_kind`) are `session`, `user` or `system`. A message whose
 `project_id` is null is system chat and requires a global administrator.
 
 ## How a message reaches a worker
 
-Every orchestrator cycle (once per `messages.delivery_interval`, five seconds
-by default) the daemon runs one delivery pass. For each recipient with pending
-rows it asks the session runtime a single coarse question through
+The independent `MessageDeliveryService` runs a delivery pass on startup, on
+coalesced `message.sent` events and periodically (`messages.delivery_interval`,
+five seconds by default). It does not wait for a scheduler cycle. For each
+recipient with pending rows it asks the session runtime a single coarse question through
 [`src/messages/session_lens.py`](../../src/messages/session_lens.py) — *what
 is this recipient doing right now?* — and acts on the answer:
 
@@ -233,8 +236,8 @@ the global supervisor. The original stays pending; alerts do not recursively
 escalate. Attempt records and alert deduplication survive daemon restarts.
 
 Delivery receipts come from recipient reads (`via="read"`), replies, `aq prime`
-(`via="prime"`) or `aq inbox --inject` (`via="inject"`). These use a compare-and-set
-so racing body reads and injection record delivery only once. A delivery receipt
+(`via="prime"`) or `aq inbox --inject` (delivery stamp only; `via` and `read_at`
+remain unset). These use a compare-and-set so racing body reads and injection record delivery only once. A delivery receipt
 means the body was handed over; it does not prove the requested work was done.
 
 If a delivered message goes unanswered past `messages.reply_timeout` (120 s by
@@ -279,15 +282,35 @@ correlation, so the recipient must reply explicitly.
 
 Once per interval the daemon reserves a window row, asks the database what
 durably happened in it, and either renders one short message or records why it
-stayed silent. Only four things count as evidence — a task completion, an
-attempt that started, a task comment explicitly marked as progress, and a
-`pr_url` becoming available — plus a count of tasks with a live, non-stale
-attempt right now. Heartbeats, `updated_at` churn, retried notifications and
-elapsed time are not progress and never wake a window. The walkthrough,
+stayed silent. Work evidence includes a task completion, an attempt that started,
+a task comment explicitly marked as progress and a `pr_url` becoming available, plus a
+count of live, non-stale attempts. Provider availability and reroute events also
+feed the digest; human waits are attention facts, not progress. Heartbeats,
+`updated_at` churn, retried notifications and elapsed time are not progress and never wake a window. The walkthrough,
 including how to preview one without sending it, is in
 [Escalations and the hourly digest](../guides/escalations.md).
 
 ## When a machine needs a human
+
+A **human ask** is the canonical identity for a decision, with its source,
+ownership, current choices and immutable decision evidence. Dashboard **Needs you**
+and `aq ask list --view needs_you` show actionable asks. Use
+`aq ask show --ask-id <id>` for current context. Workers report blockers to their
+owning supervisor; they have no human-decision authority.
+
+The decision path prepares a preview against the exact source version, then
+records a decision with that preview and an idempotency key. Discussion and
+ambiguous text remain evidence; they do not become permission to act. Only
+verified human input can authorize the selected choice. The operation ledger
+records application, including unknown outcomes that require reconciliation.
+
+Ask channel mode posts roots in the channel without creating threads. Inputs
+are correlated and verified before interpretation or application. Legacy thread
+replies and buttons stop accepting decisions after ownership transfers. Inspect
+`aq ask cutover-status` for the destination's durable mode and blockers; the
+[rollout guide](../guides/human-asks-rollout.md) describes the operator-only switch.
+
+### Legacy escalation threads
 
 An **escalation** is a durable incident: a project supervisor has decided it
 cannot proceed without a person, and has recorded what is blocked, what it
@@ -297,8 +320,7 @@ at all.
 
 Delivery is a thin renderer over it: one post in the configured channel, one
 thread hanging off that post, and every follow-up inside that thread. The
-reply path is the interesting half, because it is the only way words travel
-from a chat platform into AQ's state:
+reply path below applies while the destination still permits legacy delivery:
 
 ```mermaid
 sequenceDiagram
@@ -330,8 +352,9 @@ Four properties of that path are worth knowing before you rely on it:
   human, an actor or a project is refused.
 * **The reply decides nothing by itself.** It is evidence. Resolving a gate,
   retrying a task or answering a question is the supervisor's call, made with
-  `escalation_apply_reply`, which binds the reply to one target and one
-  idempotency key.
+  the canonical ask prepare/decide path. Compatibility `escalation_apply_reply`
+  additionally requires current source/preview context and an exact stored
+  declared choice; a supervisor interpretation alone is insufficient.
 * **Refusals are silent.** The channel is shared with people; a message that
   does not correlate is dropped without an answer, because replying to every
   unrelated line would turn the channel into a chatbot.
@@ -344,10 +367,10 @@ tells you to use one, it is out of date.
 | Retired | Do this instead |
 |---|---|
 | The `/status`, `/tasks`, `/explain`, `/peek`, `/gates` and `/attach` slash commands | `aq task list`, `aq task explain`, `aq session peek`, `aq task gate-list`, or the dashboard |
-| Creating or controlling tasks from Discord | The `aq` CLI, the MCP tools or the dashboard |
+| General task browsing and controls from Discord | The `aq` CLI, MCP or dashboard; `/delete-task` is the explicit deletion exception |
 | Per-project channels, channel auto-creation and channel lookup helpers | One channel, set as `discord.channel_id` |
 | The lifecycle notification feed (task started / failed / PR opened cards) | The dashboard's live event stream, and the hourly digest for the summary |
-| Interactive approval buttons and gate views in Discord | The dashboard, `aq task gate-resolve`, and escalation threads for decisions |
+| The former gate view classes and callbacks | Canonical ask decisions in Needs you or ask buttons; legacy escalation choice buttons remain until transfer |
 
 Startup still *unregisters* the six retired command names so a stale
 registration cannot linger
@@ -370,12 +393,15 @@ Discord consumer that turned them into channel posts.
 | Escalation incidents and their immutable message history | `escalation_*` commands | `escalations`, `escalation_messages` tables |
 | One row per intended escalation send, with its receipt | [`EscalationDeliveryService`](../../src/escalations/dispatch.py) | `escalation_deliveries` table |
 | One row per digest window, sent or suppressed | [`DigestScheduleService`](../../src/digest/dispatch.py) | `digest_windows` table |
+| Ask identity, decisions, source operations and correspondence | `ask_*` commands and source-owned adapters | `human_asks`, immutable decision packets and operation ledger |
+| Shared external send and receipt | Domain adapters and `DeliveryScheduler` | `outbound_deliveries`; digest windows retain their own table |
+| Morning report and evidence coverage | Report commands and read-only collectors | `morning_reports`, `morning_report_coverage`, `morning_report_facts` |
 | Channel, digest and escalation settings | You, via the config file or Settings → Messaging | `~/.agent-queue/config.yaml`, `discord:` section |
 | Which account may reply, and who may be mentioned | You | `discord.authorized_users`, `discord.escalation.mention_user_ids` / `mention_role_ids` |
 
-Nothing in this subsystem keeps delivery state in memory. Every "have we
-already said this?" question is answered from a durable row: the outbox's
-unique `dedup_key` for an escalation, the window key for a digest, the
+Delivery reservations, receipts and decision deduplication are durable. Rate
+windows and intake diagnostics also have bounded in-memory counters. Durable
+"have we already said this?" checks use the outbox's unique `dedup_key` for an escalation, the window key for a digest, the
 `(transport, external_message_id)` uniqueness for an inbound reply.
 
 ## Common failures and recovery
@@ -384,7 +410,7 @@ unique `dedup_key` for an escalation, the window key for a digest, the
 |---|---|---|
 | `messages are disabled (messages.enabled=false)` from any message command | `aq system get-config` | Set `messages.enabled: true`; it ships enabled, so this is a local override |
 | `out of scope: message_list` (or `digest_status`, `escalation_list`) inside a worker session | Nothing is wrong — a worker token may read its own mailboxes only | Run the command from an operator shell or the dashboard |
-| A message to a session is never delivered | `aq message list --to-kind session --to-id <name>` and check `delivered` | The target is `absent`; after 24 h a `user`-sent row is re-addressed back to the sender as `[parked] …` |
+| A message to a session is never delivered | `aq message list --to-kind session --to-id <name>` and check `delivered` | The target is `absent`; after 24 h the original is archived and a `user` sender receives a `[parked] …` notice |
 | Nothing is posted in Discord at all | `aq digest status` — check `settings_errors`, `warnings` and `cutover` | Usually `discord.channel_id` is unset, or the cutover pass has not reported `complete` |
 | The channel is quiet but work is happening | `aq digest preview` and read `suppression_reason` | `idle_only` and `already_reported` are correct silence; `all_filtered` means `discord.digest.project_ids` excludes the work |
 | A delivery is stuck as `unknown` | `aq escalation get --escalation-id <id>`, or `delivery_health` in `aq digest status` | An external send was ambiguous and could not be reconciled; AQ refuses to repost. Read the thread, then resolve or re-raise the incident deliberately |
@@ -409,9 +435,12 @@ The implementation is
 [`src/messaging/`](../../src/messaging/),
 [`src/notifications/`](../../src/notifications/),
 [`src/digest/`](../../src/digest/),
-[`src/escalations/`](../../src/escalations/) and
+[`src/escalations/`](../../src/escalations/),
+[`src/asks/`](../../src/asks/), [`src/delivery/`](../../src/delivery/),
+[`src/conversations/`](../../src/conversations/), [`src/reports/`](../../src/reports/) and
 [`src/discord/`](../../src/discord/). The spec behind the current shape is
-[the Discord simplification implementation spec](../superpowers/specs/2026-09-08-discord-simplification-implementation.md).
+[the current messaging-and-human-asks system spec](../specs/systems/messaging-and-human-asks.md).
+The Discord simplification spec is a historical design record.
 
 ```bash
 aq test tests/test_message_delivery.py tests/test_session_lens.py \
