@@ -1,6 +1,8 @@
 # Table families
 
-All 98 tables, grouped by what they are for. Each family opens with what it is
+Selected table families, grouped by what they are for. This catalog is not an
+exhaustive inventory of the current schema; consult the owning
+[system spec](../../specs/systems/README.md) for newer domain tables. Each family opens with what it is
 *about*; the tables inside it are listed with their purpose, the columns that
 carry meaning, and any invariant the database itself enforces.
 
@@ -256,7 +258,6 @@ own. These tables are its control-plane identity, and they use **named
 | `integration_rollout_transitions` | Every change of a project's integration mode, with the operator, the reason and the blocker digest. Immutable. |
 | `integration_history_waivers` | An operator's explicit waiver of a history blocker, with a `sha256:`-prefixed digest of exactly what was waived. Immutable. |
 | `integration_history_waiver_consumptions` | Which transition consumed which waiver. One consumption per transition. |
-| `integration_legacy_gate_applicability` | Whether a legacy gate still applies to a project under the current rollout, and under which waiver. |
 | `integration_legacy_suppression` | The per-project projection of which legacy behaviours are suppressed. Deliberately the one reversible control in this group. |
 
 ## Related pages

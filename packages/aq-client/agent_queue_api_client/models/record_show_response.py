@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.record_edge import RecordEdge
     from ..models.record_show_response_snapshot import RecordShowResponseSnapshot
 
 
@@ -27,6 +28,7 @@ class RecordShowResponse:
         revision_id (None | str | Unset):
         sequence (int | Unset):  Default: 0.
         snapshot (RecordShowResponseSnapshot | Unset):
+        edges (list[RecordEdge] | Unset):
     """
 
     success: bool | Unset = True
@@ -37,6 +39,7 @@ class RecordShowResponse:
     revision_id: None | str | Unset = UNSET
     sequence: int | Unset = 0
     snapshot: RecordShowResponseSnapshot | Unset = UNSET
+    edges: list[RecordEdge] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,6 +77,13 @@ class RecordShowResponse:
         if not isinstance(self.snapshot, Unset):
             snapshot = self.snapshot.to_dict()
 
+        edges: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.edges, Unset):
+            edges = []
+            for edges_item_data in self.edges:
+                edges_item = edges_item_data.to_dict()
+                edges.append(edges_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -93,11 +103,14 @@ class RecordShowResponse:
             field_dict["sequence"] = sequence
         if snapshot is not UNSET:
             field_dict["snapshot"] = snapshot
+        if edges is not UNSET:
+            field_dict["edges"] = edges
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.record_edge import RecordEdge
         from ..models.record_show_response_snapshot import RecordShowResponseSnapshot
 
         d = dict(src_dict)
@@ -150,6 +163,15 @@ class RecordShowResponse:
         else:
             snapshot = RecordShowResponseSnapshot.from_dict(_snapshot)
 
+        _edges = d.pop("edges", UNSET)
+        edges: list[RecordEdge] | Unset = UNSET
+        if _edges is not UNSET:
+            edges = []
+            for edges_item_data in _edges:
+                edges_item = RecordEdge.from_dict(edges_item_data)
+
+                edges.append(edges_item)
+
         record_show_response = cls(
             success=success,
             outcome=outcome,
@@ -159,6 +181,7 @@ class RecordShowResponse:
             revision_id=revision_id,
             sequence=sequence,
             snapshot=snapshot,
+            edges=edges,
         )
 
         record_show_response.additional_properties = d

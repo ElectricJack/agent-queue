@@ -6,6 +6,8 @@ import { knowledgeCreate, recordShow } from "../../api/client";
 import TaskKnowledgePanel from "../../panes/knowledge/TaskKnowledgePanel";
 import Modal from "../../components/Modal";
 import { createLiveKnowledgeAdapter } from "./liveAdapter";
+import { knowledgeSelectionHref } from "../records/recordUrlState";
+import { randomUUID } from "../../randomUUID";
 
 export default function TaskKnowledgeSection({ projectId, taskId, selectedText, children }: {
   projectId: string; taskId: string; selectedText?: string; children?: ReactNode;
@@ -43,15 +45,15 @@ export default function TaskKnowledgeSection({ projectId, taskId, selectedText, 
       if (!data?.record_id) throw new Error("No receipt");
       setFinding(null);
       await client.invalidateQueries({ queryKey: ["knowledge"] });
-      navigate(`/projects/${encodeURIComponent(projectId)}/knowledge?record=${encodeURIComponent(data.record_id)}`);
+      navigate(knowledgeSelectionHref(projectId, data.record_id));
     } catch { setError("The finding could not be saved. Your selected text is retained."); }
     finally { setPending(false); }
   }
   return <>
     {description}
     <TaskKnowledgePanel taskId={taskId} adapter={adapter} selectedText={selectedText ?? selectionText}
-      onOpenRecord={(id, revision) => navigate(`/projects/${encodeURIComponent(projectId)}/knowledge?record=${encodeURIComponent(id)}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`)}
-      onSaveFinding={canSave ? ({ text }) => { observedToken.current = null; setFinding({ text, key: crypto.randomUUID() }); setTitle(""); setError(""); } : undefined} />
+      onOpenRecord={(id, revision) => navigate(knowledgeSelectionHref(projectId, id, revision))}
+      onSaveFinding={canSave ? ({ text }) => { observedToken.current = null; setFinding({ text, key: randomUUID() }); setTitle(""); setError(""); } : undefined} />
     <Modal open={finding !== null} onClose={() => { if (!pending) setFinding(null); }} title="Save finding">
       <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <label className="block text-sm">Finding title<input value={title} onChange={(e) => setTitle(e.target.value)} required maxLength={240} className="w-full rounded border border-gray-700 bg-gray-950 p-2" /></label>

@@ -25,6 +25,8 @@ def get_surface_schema() -> dict:
                 "depth",
                 "self_parent",
                 "container_closed",
+                "dependency_on_container",
+                "dependency_on_ancestor",
                 "has_children",
                 "open_children",
                 "open_descendants",
