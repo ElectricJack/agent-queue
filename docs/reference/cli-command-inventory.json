@@ -6417,6 +6417,38 @@
       }
     },
     {
+      "path": "aq integration store-maintenance",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_store_maintenance",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration supersede-completion",
       "registration": "handwritten",
       "owner_kind": "core",

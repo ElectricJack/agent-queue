@@ -865,7 +865,7 @@
       "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
-      "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
+      "_cmd_task_claim": "sha256:1817f29db45bf7b065d0c9bf5464d8d190446cfa808ab1024d8cff538c68c055",
       "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
       "_prepare_and_activate": "sha256:496091ca03be590f79bbf9f5d7980b564bb426c145da144293911527a28f860c",
       "_prepare_and_activate_locked": "sha256:c6e224e7cc34d67092a9fa110a549a75b3b3c66520af194a107d6a5dd722dd52",

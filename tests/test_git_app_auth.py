@@ -3882,6 +3882,32 @@ async def test_slow_full_fsck_outlives_caller_budget_and_is_reused(tmp_path, mon
     assert not manager._retained_verify_flights
 
 
+async def test_queued_full_check_skips_only_a_fresh_exact_clean_result(tmp_path, monkeypatch):
+    """sound-journey-54: a full check that waited on the store exclusion reuses
+    a clean result recorded meanwhile, but a refresh still rereads the store."""
+    work = tmp_path / "work"
+    _git(["init", "-q", str(work)], tmp_path)
+    (work / "a.txt").write_text("a\n")
+    _git(["add", "a.txt"], work)
+    _git(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "a"], work)
+    git_dir = str(work / ".git")
+    manager = GitManager()
+    await manager._averify_retained_objects(
+        git_dir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+    )
+    key = str((work / ".git").resolve())
+    fsck = AsyncMock(wraps=manager._afsck_retained_store)
+    monkeypatch.setattr(manager, "_afsck_retained_store", fsck)
+    fresh = manager._retained_verified[key]
+    assert await manager._retained_verification_flight(key) == fresh
+    assert fsck.await_count == 0
+    due = (fresh[0], fresh[1] - manager_module._RETAINED_REFRESH_AGE_SECONDS)
+    manager._retained_verified[key] = due
+    refreshed = await manager._retained_verification_flight(key)
+    assert fsck.await_count == 1 and refreshed[1] > due[1]
+    assert manager._retained_verified[key] == refreshed
+
+
 async def test_additions_verify_in_foreground_while_full_check_is_in_flight(tmp_path):
     """A resume with a clean baseline checks only what was added and never queues
     behind a store-wide fsck; a corrupt addition still falls back to that check."""
