@@ -241,14 +241,15 @@ async def development_lanes(world, tmp_path, monkeypatch, validation: str):
                                   default_branch="main")
     built, hosted = [], []
 
-    async def development_repository(primitives, repo_row, binding, settings):
+    async def development_repository(primitives, repo_row, binding, settings, *, fetch=True):
+        assert not fetch
         built.append(settings)
         return retained
 
     async def binding(repo_row):
         return None
 
-    monkeypatch.setattr("src.integration.development_runtime.development_repository",
+    monkeypatch.setattr("src.integration.repository_git.development_repository",
                         development_repository)
     orchestrator = SimpleNamespace(
         db=world.db, git=world.git, _command_handler=world.lanes.orchestrator._command_handler,
@@ -475,7 +476,7 @@ async def test_root_pr_gate_reads_the_selected_runner(world, monkeypatch, source
 @pytest.mark.parametrize("condition,code", [
     ("unapproved", "pr_review_missing"), ("old_approval", "pr_review_missing"),
     ("changes", "pr_changes_requested"), ("draft", "pr_draft"),
-    ("closed", "awaiting_pr"), ("wrong_base", "awaiting_pr"),
+    ("closed", "pr_closed"), ("wrong_base", "awaiting_pr"),
     ("approved", "awaiting_pr_checks"),
 ])
 @pytest.mark.parametrize("admission", ["reviewed", "authorized"])
@@ -506,8 +507,11 @@ async def test_local_pr_gate_checks_eligibility_and_approval_before_submitting_j
         "user": {"login": "human", "type": "User"},
     }]
     binding = GitHubRepositoryBinding(123, "test/repo")
+    # The gate verifies each approver's current write permission (epic A).
     client = SimpleNamespace(pull_request=AsyncMock(return_value=pull),
-                             paged_list=AsyncMock(return_value=reviews))
+                             paged_list=AsyncMock(return_value=reviews),
+                             request_json=AsyncMock(return_value={
+                                 "permission": "write", "user": {"login": "human"}}))
     resolver = AsyncMock(side_effect=lanes._pr_checks)
     gate = RootPullRequestGate(world.db,
         repository=AsyncMock(return_value=(binding, client)), checks=resolver)
