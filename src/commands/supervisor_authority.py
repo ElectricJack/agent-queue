@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+from src.commands.operator_authority import operator_grant
 
 
 LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
@@ -17,13 +18,19 @@ async def operator_or_supervisor(
     elevated, live, named supervisor for this project (or the global
     supervisor) before it may run a control.  The database row is consulted
     rather than trusting the request scope alone, so a stale token cannot keep
-    operating after its supervisor has stopped.  Every other principal -- a
-    worker or any other session token, a playbook step, a daemon service -- is
-    refused.  *subject* names the control in the cross-project refusal.
+    operating after its supervisor has stopped. A scoped operator worker is
+    admitted only by the exact request-local grant issued after its live claim
+    and audit checks. Other worker sessions, playbook steps and daemon services
+    are refused. *subject* names the control in the cross-project refusal.
     """
     principal = current_principal() or TRUSTED_LOCAL
     if principal.kind is PrincipalKind.LOCAL:
         return "human:local-operator", None
+    grant = operator_grant()
+    if (grant is not None and grant.project_id == project_id
+            and principal.kind is PrincipalKind.SESSION
+            and principal.session_id == grant.session_id):
+        return f"operator session:{grant.session_id} task:{grant.task_id}", None
     if principal.kind is not PrincipalKind.SESSION or not principal.elevated:
         return None, "a local operator or live supervisor session is required"
 
@@ -47,3 +54,22 @@ async def operator_or_supervisor(
 async def integration_operator(db, project_id: str | None) -> tuple[str | None, str | None]:
     """:func:`operator_or_supervisor` for an integration control."""
     return await operator_or_supervisor(db, project_id, subject="integration control")
+
+
+async def operator_or_global_supervisor(db) -> tuple[str | None, str | None]:
+    """A recovery hold release needs operator authority, not project elevation."""
+    from src.commands.principal import matches_session_instance
+
+    principal = current_principal() or TRUSTED_LOCAL
+    if principal.kind is PrincipalKind.LOCAL:
+        return "human:local-operator", None
+    if (principal.kind is not PrincipalKind.SESSION or not principal.elevated
+            or principal.project_id is not None):
+        return None, "a local operator or live global supervisor is required"
+    row = await db.get_session(principal.session_id) if principal.session_id else None
+    if (row is None or row.project_id is not None or row.profile_id != "supervisor"
+            or row.lifecycle != "named" or row.state not in LIVE_SESSION_STATES
+            or row.desired_state != "running"
+            or not matches_session_instance(principal, row.instance_token)):
+        return None, "a live global supervisor with matching session identity is required"
+    return f"supervisor session:{row.id}", None

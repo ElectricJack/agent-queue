@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/commands/contracts/__init__.py::register_builtin_contracts": {
+      "baseline_span": [
+        30,
+        36
+      ],
+      "landing_span": [
+        30,
+        36
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
