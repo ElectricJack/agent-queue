@@ -72,6 +72,19 @@ class BranchOwnership:
             return await self._acquire_on(owned_conn, target, owner_id, role)
 
     async def _acquire_on(self, conn, target: BranchKey, owner_id: str, role: str) -> Fence:
+        if role == "worker":
+            from src.database.tables import projects, tasks
+            from src.integration.train_policy import train_disabled_for_project
+
+            project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == owner_id))
+            if project_id is not None:
+                # Activation changes take repo then hierarchy; callers may already
+                # hold hierarchy, so never acquire the repo fence here.
+                await self._db.lock_hierarchy_project(conn, project_id)
+                if await conn.scalar(select(projects.c.id).where(
+                    projects.c.id == project_id, train_disabled_for_project(),
+                )):
+                    raise BranchBusy("train playbook is disabled")
         row = await self._locked_row(conn, target)
         if row is not None and row.get("fence") is not None:
             from src.integration.lock import BranchLock
