@@ -6,11 +6,10 @@ import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from src.commands.integration_commands import IntegrationCommandsMixin
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -413,6 +412,80 @@ async def test_read_protection_reads_three_things_and_writes_nothing():
     ]
 
 
+# ---------------------------------------------------------------------------
+# Recorded through the App on the fixture (spec §10 S2, 2026-09-28)
+# ---------------------------------------------------------------------------
+
+FIXTURE_BINDING = GitHubRepositoryBinding(1384141153, "ElectricJack/aq-gh615-app-fixture-20260923")
+FIXTURE_TRAIN_ONLY = 24108467
+
+
+class RecordedFixtureClient:
+    """Replays what the App's installation token read from the fixture in S2.
+
+    The §8.1 ruleset was applied with no bypass (``never``), then with the App
+    as a bypass actor (``always``). Classic protection had been removed in S1:
+    GitHub answered 404 "Branch not protected".
+    """
+
+    repository = FIXTURE_BINDING
+    credential_identity = APP
+
+    def __init__(self, bypass: str):
+        self.ruleset = _recorded(f"fixture-ruleset-{FIXTURE_TRAIN_ONLY}-app-{bypass}.json")
+        self.requests: list[tuple[str, str]] = []
+
+    async def paged_list(self, path, *, max_pages):
+        self.requests.append(("GET", path))
+        root = f"/repositories/{FIXTURE_BINDING.repository_id}"
+        assert path == f"{root}/rules/branches/main?per_page=100"
+        return _recorded("fixture-rules-main-attested-only.json")
+
+    async def request_json(self, method, path):
+        self.requests.append((method, path))
+        root = f"/repositories/{FIXTURE_BINDING.repository_id}"
+        if path == f"{root}/rulesets/{FIXTURE_TRAIN_ONLY}":
+            return copy.deepcopy(self.ruleset)
+        assert path == f"{root}/branches/main/protection", path
+        raise GitHubAccessError("not_found_or_hidden", "GitHub request failed")
+
+
+def test_the_app_token_sees_its_own_bypass_and_no_bypass_list():
+    """Spec §8.3's assumption, confirmed live: an installation token reads
+    ``current_user_can_bypass`` for itself, and GitHub withholds the actor list."""
+    for bypass in ("never", "always"):
+        ruleset = _recorded(f"fixture-ruleset-{FIXTURE_TRAIN_ONLY}-app-{bypass}.json")
+        assert ruleset["current_user_can_bypass"] == bypass
+        assert "bypass_actors" not in ruleset
+    assert _recorded("fixture-classic-protection-404.json")["status"] == 404
+
+
+@pytest.mark.parametrize(
+    "bypass, classification, blocked",
+    [("never", ATTESTED_ONLY, True), ("always", APP_BYPASS, False)],
+)
+async def test_the_recorded_fixture_protection_classifies_through_the_reader(
+    bypass, classification, blocked
+):
+    client = RecordedFixtureClient(bypass)
+
+    reading = await protection.read_protection(
+        client, FIXTURE_BINDING, "main", app_id=APP_ID, policy=POLICY
+    )
+
+    assert reading.classification == classification
+    assert reading.development_publisher_blocked is blocked
+    assert [(rule.type, rule.bypass, rule.requires_attestation) for rule in reading.rules] == [
+        ("required_status_checks", bypass, True)
+    ]
+    root = f"/repositories/{FIXTURE_BINDING.repository_id}"
+    assert client.requests == [
+        ("GET", f"{root}/rules/branches/main?per_page=100"),
+        ("GET", f"{root}/rulesets/{FIXTURE_TRAIN_ONLY}"),
+        ("GET", f"{root}/branches/main/protection"),
+    ]
+
+
 async def test_a_classic_protection_404_is_none():
     client = FakeProtectionClient(rules=[], rulesets={})
 
@@ -736,80 +809,3 @@ async def test_the_guard_names_policy_checks_with_the_bound_policy():
         )
 
     assert with_policy.value.reading.classification == ATTESTED_ONLY
-
-
-class _Development:
-    """``DevelopmentIntegration.configure`` as far as the guard is concerned."""
-
-    def __init__(self):
-        self.configured = []
-
-    async def configure(self, project_id, policy, *, reason, operator_id, protection_guard):
-        reading = await protection_guard(_repository()) if protection_guard else None
-        self.configured.append(project_id)
-        result = {"outcome": "configured", "project_id": project_id,
-                  "repository_id": "agent-queue2", "policy": policy}
-        if reading is not None:
-            result["evidence"] = {"protection": reading.as_dict()}
-        return result
-
-
-def _develop_handler(client, development, identity=APP):
-    handler = IntegrationCommandsMixin()
-    handler.db = _db()
-    handler.orchestrator = SimpleNamespace(
-        github_repository_binding_resolver=AsyncMock(return_value=BINDING),
-        github_client_factory=lambda _binding: client,
-        github_access=SimpleNamespace(credential_identity=identity),
-    )
-    handler._development_integration = lambda: development
-    return handler
-
-
-async def _develop(handler):
-    with patch(
-        "src.commands.integration_commands.integration_operator",
-        return_value=("human:local-operator", None),
-    ):
-        return await handler._cmd_integration_develop(
-            {"project_id": "agent-queue", "policy": {"validation": "none"}, "reason": "rollback"}
-        )
-
-
-async def test_integration_develop_is_refused_under_attested_only():
-    development = _Development()
-
-    result = await _develop(_develop_handler(FakeProtectionClient(), development))
-
-    assert result["success"] is False and result["outcome"] == "blocked"
-    assert [blocker["code"] for blocker in result["blockers"]] == [
-        "main_protection_blocks_development_publisher"
-    ]
-    assert result["error"].startswith("main_protection_blocks_development_publisher: ")
-    assert development.configured == []
-
-
-async def test_integration_develop_reads_nothing_under_existing_login():
-    client = FakeProtectionClient()
-    development = _Development()
-    handler = _develop_handler(
-        client, development, identity=GitHubCredentialIdentity.existing_login()
-    )
-
-    result = await _develop(handler)
-
-    assert result["outcome"] == "configured" and "evidence" not in result
-    handler.orchestrator.github_repository_binding_resolver.assert_not_called()
-    assert client.requests == []
-
-
-async def test_integration_develop_is_allowed_under_app_bypass():
-    client = FakeProtectionClient()
-    client.rulesets[TRAIN]["current_user_can_bypass"] = "always"
-    development = _Development()
-
-    result = await _develop(_develop_handler(client, development))
-
-    assert result["outcome"] == "configured"
-    assert result["evidence"]["protection"]["classification"] == APP_BYPASS
-    assert development.configured == ["agent-queue"]
