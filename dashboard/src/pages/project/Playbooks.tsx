@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { PauseIcon, PlayIcon } from "@heroicons/react/24/outline";
+import { PauseIcon, PlayIcon, TrashIcon } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
   useSetPlaybookEnabled,
   type PlaybookSummary,
 } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
+import DeletePlaybookModal from "../../components/DeletePlaybookModal";
 
 export default function ProjectPlaybooks() {
   const { projectId = "" } = useParams();
@@ -32,6 +34,7 @@ export default function ProjectPlaybooks() {
 
 function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }) {
   const setEnabled = useSetPlaybookEnabled();
+  const [pendingDelete, setPendingDelete] = useState<PlaybookSummary | null>(null);
 
   const togglePlaybook = (p: PlaybookSummary) => {
     setEnabled.mutate({ playbook_id: p.id, enabled: p.enabled === false });
@@ -132,6 +135,18 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
                         <PauseIcon className="h-3.5 w-3.5" />
                       )}
                     </button>
+                    <button
+                      onClick={() => setPendingDelete(p)}
+                      aria-label={`Delete playbook ${p.id}`}
+                      title={
+                        isPaused
+                          ? "Delete — remove this playbook from the installed catalog"
+                          : "Pause this playbook before deleting it"
+                      }
+                      className="rounded p-1 text-gray-400 transition-colors hover:bg-gray-800 hover:text-red-300"
+                    >
+                      <TrashIcon className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -139,6 +154,13 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
           })}
         </tbody>
       </table>
+      <DeletePlaybookModal
+        open={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        playbookId={pendingDelete?.id ?? ""}
+        scope={pendingDelete?.scope}
+        scopeIdentifier={pendingDelete?.scope_identifier ?? ""}
+      />
     </div>
   );
 }

@@ -4,9 +4,9 @@ Three independent layers, described in ``docs/guides/resource-gating.md``:
 
 1. :mod:`src.resources.limits` — per-session env caps (xdist/BLAS/libuv
    thread counts) and ``nice``, applied by the session launcher.
-2. :mod:`src.resources.semaphore` — a box-wide ``flock`` semaphore that
-   ``aq test`` takes before running pytest, bounding the *sum* of test
-   processes rather than each session's share.
+2. :mod:`src.resources.box_lock` — versioned box-wide ``flock`` admission,
+   using :mod:`src.resources.semaphore` for weighted capacity. ``aq test``
+   takes shared admission; operator database cleanup takes exclusive admission.
 3. :mod:`src.resources.limits` again — optional cgroup v2 scopes with hard
    ``CPUQuota``/``MemoryMax``, which need a one-time root step and degrade
    to layer 1 when the daemon's user has no delegation.
@@ -23,6 +23,7 @@ from src.resources.limits import (
     session_env_caps,
     wrap_session_argv,
 )
+from src.resources.box_lock import BoxLock, IncompatibleLockClient
 from src.resources.procs import (
     ProcInfo,
     load_average,
@@ -30,16 +31,24 @@ from src.resources.procs import (
     scan_processes,
     summarize_by_session,
 )
-from src.resources.semaphore import SlotTimeout, SlotSemaphore, default_lock_dir
+from src.resources.semaphore import (
+    SlotSemaphore,
+    SlotTimeout,
+    default_lock_dir,
+    full_suite_lock_dir,
+)
 
 __all__ = [
+    "BoxLock",
     "CgroupDelegation",
+    "IncompatibleLockClient",
     "ProcInfo",
     "ResourceBudget",
     "SlotTimeout",
     "SlotSemaphore",
     "cgroup_delegation",
     "default_lock_dir",
+    "full_suite_lock_dir",
     "load_average",
     "pytest_processes",
     "resolve_budget",

@@ -4,22 +4,32 @@ tags: [design, formulas, task-graph, vault, swarm-work-model]
 
 # Formulas — Reusable Task-Graph Templates
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Implemented (swarm-work-model §13, Plan 3)
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #9 simple interfaces)
-**Related:** [[work-graph]], `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §13 and §18 (P7)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #9 simple interfaces)
+**Related:** [work-graph](work-graph.md), `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §13 and §18 (P7)
 
 ---
 
 ## 1. Purpose
 
-A formula is a reusable [[work-graph|task graph]] template — a parameterised
+A formula is a reusable [task graph](work-graph.md) template — a parameterised
 `aq-graph` document authored once in the vault and *cooked* (resolved,
 substituted, validated, and created) as many times as needed, each time with
 different variable values. It is the Agent Queue answer to "workflows as
 data" (parity property P7): instead of an agent re-typing the same
 review→fix→verify graph for every branch, an operator writes it once as
-`vault/formulas/review-and-fix.md` and any caller — human, CLI, or another
-agent via `formula_cook` — instantiates it with `--var branch=feat/x`.
+`vault/formulas/review-and-fix.md` and an authorised operator or supervisor
+instantiates it with
+`--var branch=feat/x`. Ordinary workers may list/show formulas; cook requires
+elevated authority, unlike graph creation granted to planners.
 
 Formulas compose through single inheritance (`extends`): a project can
 shadow or specialise a system formula by name, and a formula can extend
@@ -38,7 +48,7 @@ A formula file lives at:
   profiles and MCP servers)
 
 Structure: YAML frontmatter, then exactly one fenced ` ```aq-graph ` block
-(the same fence language [[work-graph|task-graph documents]] use elsewhere —
+(the same fence language [task-graph documents](work-graph.md) use elsewhere —
 `create_task_graph --graph`, spec-embedded graphs).
 
 Frontmatter keys:
@@ -96,10 +106,13 @@ substitution `create_task_graph` uses for any graph with a `vars` block).
 2. **`merge_documents`** — fold the chain's raw authored documents
    (never `TaskGraph.to_dict()` defaults — only what each file's author
    actually wrote) into one document: `defaults` merged key-wise (child
-   wins), `parent` merged field-wise, `nodes` merged by `key` (a child node
+   wins), `parent` merged field-wise, `phases` and `nodes` merged by `key` (a
+   child node
    replaces the fields it authors on the same-keyed parent node; `needs`,
    `labels`, `acceptance`, `context` are replaced wholesale when authored,
-   never concatenated).
+   never concatenated). A same-keyed phase is amended; new child phases append
+   after inherited phases, preserving gate order. Node `phase` and `subtasks`
+   fields participate in the same authored-field merge.
 3. **`validate_vars`** — declared vars (`merged_var_decls`, child
    redeclaration wins) against supplied values: `formula.var_required`,
    `formula.var_enum`, `formula.var_unknown`. These are returned as
@@ -111,13 +124,20 @@ substitution `create_task_graph` uses for any graph with a `vars` block).
    `{var}` substitution (`src/task_graph/validator.py`, shared with
    `create_task_graph`).
 6. **`validate_graph`** — the same structural/semantic validation
-   `create_task_graph` runs (profile existence, dependency shape, cycle
-   detection, ...).
+   `create_task_graph` runs (routing-choice refusal, dependency shape, cycle
+   detection, phase ordering, spec references, ...).
 7. **`create_graph`** (cook only) — `build_plan` / `write_plan` in one
    transaction, with a `FormulaProvenance` attached.
 
 `formula_show` stops after step 6 (or step 3, if var validation already
 failed) — it never writes. `formula_cook` continues to step 7.
+
+The reserved `object` and `variation` recipes additionally run transactional
+admission guards (`src/object_loop/formulas.py`) during creation, including
+dry runs. A project shadow cannot bypass them: object creation requires its
+approved proposal identity/hash and a new root; variation creation requires
+the active object, exact approved candidate/render profile and bounded inputs.
+These guards narrow admission; cooking does not grant approval authority.
 
 ## 4. Provenance
 

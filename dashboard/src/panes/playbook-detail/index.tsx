@@ -4,6 +4,7 @@ import { useIsMutating } from "@tanstack/react-query";
 import { usePlaybooks, usePlaybookRuns, useRunPlaybook, useSetPlaybookEnabled, type PlaybookSummary } from "../../api/hooks";
 import { useEventStream } from "../../ws/useEventStream";
 import { manualPlaybookEvent, playbookRunning, playbookScope, playbookState } from "../../pages/command-center/playbooks";
+import DeletePlaybookModal from "../../components/DeletePlaybookModal";
 import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
 import type { PlaybookDetailArgs } from "./manifest";
@@ -28,6 +29,7 @@ function Definition({ playbook: p, close }: { playbook: PlaybookSummary; close: 
   const [eventText, setEventText] = useState('{"type":"manual"}');
   const [runForm, setRunForm] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const active = playbookRunning(p);
   const earlierPaused = (runs ?? []).filter(r => r.status === "paused" && r.run_id !== p.last_run?.run_id).length;
   const disabled = p.enabled === false || active || pending || run.isPending || toggle.isPending;
@@ -49,8 +51,17 @@ function Definition({ playbook: p, close }: { playbook: PlaybookSummary; close: 
     <div className="flex flex-wrap gap-2">
       <button className={buttonClass} disabled={disabled} onClick={() => setRunForm(!runForm)}>{pending || run.isPending ? "Running…" : p.last_run ? "Run again" : "Run now"}</button>
       <button className={buttonClass} disabled={toggle.isPending} onClick={() => toggle.mutate({ playbook_id: p.id, enabled: p.enabled === false })}>{p.enabled === false ? "Resume triggers" : "Pause triggers"}</button>
+      {/* Both links reuse the one playbook route; the graph link only names
+          the tab it wants, so selecting a playbook here reaches its graph in a
+          single click instead of landing on Source. */}
+      <Link className={buttonClass} to={`/playbooks/${encodeURIComponent(p.id)}?tab=graph`} state={{ from: `${location.pathname}${location.search}` }} onClick={close}>View graph</Link>
       <Link className={buttonClass} to={`/playbooks/${encodeURIComponent(p.id)}`} state={{ from: `${location.pathname}${location.search}` }} onClick={close}>Edit definition</Link>
+      <button className={buttonClass} aria-label={`Delete playbook ${p.id}`} onClick={() => setConfirmDelete(true)}>Delete playbook</button>
     </div>
+    {/* Deleting from the graph removes the node this pane describes, so the
+        pane closes with it rather than describing a definition that is gone. */}
+    <DeletePlaybookModal open={confirmDelete} onClose={() => setConfirmDelete(false)} playbookId={p.id}
+      scope={p.scope} scopeIdentifier={p.scope_identifier ?? ""} onDeleted={close} />
     {p.enabled === false && <p className="text-xs text-amber-300">Triggers are paused. Existing runs continue; resume triggers before starting another run.</p>}
     {earlierPaused > 0 && <p className="text-xs text-amber-300">{earlierPaused} earlier runs in this history are paused. Starting a new run does not resume or cancel them; inspect them below.</p>}
     {runForm && <form className="space-y-2 rounded border border-gray-700 p-3" onSubmit={e => { e.preventDefault(); if (!disabled) start(); }}>
