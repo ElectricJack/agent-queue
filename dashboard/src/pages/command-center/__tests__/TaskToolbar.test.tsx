@@ -1,13 +1,18 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ShortcutsProvider } from "../../../shell/hotkeys/useShortcuts";
 import { TaskWorkspaceProvider, useTaskWorkspace } from "../TaskWorkspace";
 import TaskToolbar from "../TaskToolbar";
+import { resetGraphStateFallback, useGraphState } from "../useGraphHierarchy";
+import { publishAppliedVariant } from "../layout-v2/appliedVariant";
+import { clearRunningWorkJump, publishRunningWorkNotice } from "../layout-v2/runningWork";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
+  running: vi.fn(async () => ({ task_id: "g0", project_id: "alpha", parent_task_id: "pkg", ancestors: ["pkg"], observed_at: 1, layout_version: 1 })),
   locate: vi.fn(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })),
   error: null as Error | null,
   projects: [{ id: "alpha", name: "Alpha" }, { id: "beta", name: "Beta" }],
@@ -30,27 +35,71 @@ vi.mock("../../../api/hooks", () => ({
 }));
 vi.mock("../../../api/graphLayout", () => ({
   useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false, isError: mocks.tidyFailed }),
+  fetchRunningTarget: mocks.running,
   locate: mocks.locate,
 }));
+vi.mock("../../../api/knowledge", () => ({ useKnowledgeCapabilities: () => ({ data: { available: false } }) }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open }) }));
 vi.mock("../useGraphLive", () => ({ useGraphLive: mocks.live }));
+vi.mock("../useGraphHierarchy", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../useGraphHierarchy")>(),
+  // Task-toolbar controls do not own graph-state loading; keep this route
+  // fixture focused on their behavior rather than requiring a query client.
+  GraphStateProvider: ({ children }: { children: ReactNode }) => children,
+}));
 
-function Probe() {
+function Probe({ onCreated }: { onCreated?: (taskId: string) => void }) {
   const workspace = useTaskWorkspace();
   const location = useLocation();
-  return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output><output data-testid="query">{location.search}</output></>;
+  const { density } = useGraphState();
+  return <><TaskToolbar onCreated={onCreated} /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
+    <output data-testid="query">{location.search}</output>
+    <output data-testid="density">{density}</output></>;
 }
-function mount(path = "/projects/alpha/graph") {
+function mount(path = "/projects/alpha/graph", onCreated?: (taskId: string) => void) {
   return render(<MemoryRouter initialEntries={[path]}><ShortcutsProvider><Routes>
-    <Route path="projects/:projectId/*" element={<TaskWorkspaceProvider><Probe /></TaskWorkspaceProvider>} />
+    <Route path="projects/:projectId/*" element={<TaskWorkspaceProvider><Probe onCreated={onCreated} /></TaskWorkspaceProvider>} />
     <Route path="command-center/*" element={<TaskWorkspaceProvider><Probe /></TaskWorkspaceProvider>} />
   </Routes></ShortcutsProvider></MemoryRouter>);
 }
 afterEach(cleanup);
 beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = false;
+  resetGraphStateFallback();
+  publishAppliedVariant(null);
+  clearRunningWorkJump();
+  publishRunningWorkNotice(null);
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
+  it("hides completed work by default, on the graph route same as anywhere else", () => {
+    mount("/projects/alpha/graph");
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).not.toBeChecked();
+  });
+
+  it("treats a stale completed=0 from the old graph default as harmless, same as no param", () => {
+    mount("/projects/alpha/graph?completed=0");
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).not.toBeChecked();
+  });
+
+  it("preserves an explicit completed opt-in when another filter changes", async () => {
+    mount("/projects/alpha/graph");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Show completed" }));
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search tasks" }), "open");
+
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
+    expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "open", "", null));
+  });
+
+  it("re-enables completed work when a finished status is selected", async () => {
+    mount("/projects/alpha/graph");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Task status" }), "COMPLETED");
+
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
+    expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "", "COMPLETED", null));
+  });
+
   it("uses sidebar route scope and stores search/status in the URL", async () => {
     mount();
     expect(screen.getByTestId("scope")).toHaveTextContent("alpha");
@@ -81,6 +130,24 @@ describe("shared Command Center task controls", () => {
     await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
     expect(screen.getByTestId("query")).not.toHaveTextContent("window");
     expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("");
+  });
+
+  it("offers Held by provider on the Tasks tab only, stored as held=1 and cleared with the rest", async () => {
+    mount("/projects/alpha/tasks");
+    const held = screen.getByRole("checkbox", { name: "Held by provider" });
+    expect(held).not.toBeChecked();
+    await userEvent.click(held);
+    expect(screen.getByTestId("query")).toHaveTextContent("held=1");
+    expect(held).toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
+    expect(screen.getByTestId("query")).not.toHaveTextContent("held");
+    expect(screen.getByRole("checkbox", { name: "Held by provider" })).not.toBeChecked();
+  });
+
+  it("keeps Held by provider off the graph, which has no such filter", () => {
+    mount("/projects/alpha/graph?held=1");
+    expect(screen.queryByRole("checkbox", { name: "Held by provider" })).not.toBeInTheDocument();
   });
 
   it("uses all projects in the global route without a second project selector", () => {
@@ -122,6 +189,18 @@ describe("shared Command Center task controls", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("lets the combined workspace own navigation after task creation", async () => {
+    const onCreated = vi.fn();
+    mocks.create.mockImplementationOnce((_body, options) => options.onSuccess({ created: "new-task" }));
+    mount("/projects/alpha/tasks-knowledge?kind=task", onCreated);
+    await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "New work");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "fast-low");
+    fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
+    expect(onCreated).toHaveBeenCalledWith("new-task");
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
   it("reports creation errors and leaves the draft available", async () => {
     mocks.error = new Error("Project is unavailable");
     mount();
@@ -141,7 +220,7 @@ describe("layout-aware task controls", () => {
   it("offers Tidy and Next result and confirms before tidying", async () => {
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
-    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", []);
+    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", null);
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));
@@ -151,11 +230,63 @@ describe("layout-aware task controls", () => {
     expect(mocks.tidy).toHaveBeenCalledOnce();
   });
 
-  it("disables Show completed while a container is focused", () => {
+  it("offers no Focus active button: there is no inline expansion to re-open", () => {
+    mount("/projects/alpha/graph");
+    expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
+  });
+
+  it("enters running work in one URL navigation and clears the old filters", async () => {
+    mount("/projects/alpha/graph?q=needle&status=READY&completed=1&window=24h&held=1&focus=old");
+
+    await userEvent.click(screen.getByRole("button", { name: "Running work" }));
+
+    await waitFor(() => expect(mocks.running).toHaveBeenCalledWith("alpha"));
+    const query = screen.getByTestId("query");
+    expect(query).toHaveTextContent("focus=pkg");
+    expect(query).not.toHaveTextContent("needle");
+    expect(query).not.toHaveTextContent("status");
+    expect(query).not.toHaveTextContent("completed");
+    expect(query).not.toHaveTextContent("window");
+    expect(query).not.toHaveTextContent("held");
+  });
+
+  it("leaves navigation stable and reports a clear notice when no work is running", async () => {
+    mocks.running.mockResolvedValueOnce(null as never);
+    mount("/projects/alpha/graph?focus=old");
+
+    await userEvent.click(screen.getByRole("button", { name: "Running work" }));
+
+    await waitFor(() => expect(screen.getByText("No running work")).toBeInTheDocument());
+    expect(screen.getByTestId("query")).toHaveTextContent("focus=old");
+  });
+
+  it("puts Density in the toolbar, immediately left of Tidy layout", () => {
+    mount("/projects/alpha/graph");
+    const density = screen.getByRole("combobox", { name: "Graph density" });
+    const tidyButton = screen.getByRole("button", { name: "Tidy layout" });
+    expect(density.parentElement?.parentElement).toBe(tidyButton.parentElement);
+    expect(density.parentElement?.nextElementSibling).toBe(tidyButton);
+  });
+
+  it("changing Density updates it", async () => {
+    mount("/projects/alpha/graph");
+    expect(screen.getByTestId("density")).toHaveTextContent("comfortable");
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Graph density" }), "compact");
+
+    expect(screen.getByTestId("density")).toHaveTextContent("compact");
+  });
+
+  it("keeps Density off the Tasks tab, which draws no graph", () => {
+    mount("/projects/alpha/tasks");
+    expect(screen.queryByRole("combobox", { name: "Graph density" })).not.toBeInTheDocument();
+  });
+
+  it("leaves Show completed alone (off, and usable) inside a container", () => {
     mount("/projects/alpha/graph?focus=parent");
     const checkbox = screen.getByRole("checkbox", { name: "Show completed" });
-    expect(checkbox).toBeDisabled();
-    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeEnabled();
+    expect(checkbox).not.toBeChecked();
   });
 
   it("keeps Next result off the Tasks tab and issues no locate there", () => {
@@ -164,6 +295,19 @@ describe("layout-aware task controls", () => {
     expect(mocks.locate).not.toHaveBeenCalled();
     // Tidy is not tab-specific and stays available.
     expect(screen.getByRole("button", { name: "Tidy layout" })).toBeInTheDocument();
+  });
+
+  it("locates in the variant the canvas was actually served, and in its scope", async () => {
+    // Entering a container the active layout dropped is served from `all`;
+    // searching it against `active` finds nothing.
+    publishAppliedVariant("all");
+    mount("/projects/alpha/graph?focus=done&q=child");
+    await waitFor(() => expect(mocks.locate).toHaveBeenCalledWith("alpha", "all", "child", "", "done"));
+  });
+
+  it("falls back to the filter's own variant before the canvas has answered", async () => {
+    mount("/projects/alpha/graph?q=child");
+    await waitFor(() => expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "child", "", null));
   });
 
   it("never locates with empty filters (the endpoint rejects that request)", () => {
@@ -175,5 +319,34 @@ describe("layout-aware task controls", () => {
     mocks.tidyFailed = true;
     mount("/projects/alpha/graph");
     expect(screen.getByRole("alert")).toHaveTextContent("Tidy failed");
+  });
+});
+
+
+describe("compact filter disclosure", () => {
+  it("keeps active secondary filters visible in its label and can be opened by keyboard", async () => {
+    const original = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true,
+      value: () => ({ matches: true }) });
+    try {
+      mount("/projects/alpha/tasks?window=24h&held=1");
+      const toggle = screen.getByRole("button", { name: "Filters (2 active)" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByRole("combobox", { name: "Time range" })).not.toBeInTheDocument();
+      expect(screen.getByRole("searchbox", { name: "Search tasks" })).toBeInTheDocument();
+      toggle.focus();
+      await userEvent.keyboard("{Enter}");
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("24h");
+      expect(screen.getByRole("checkbox", { name: "Held by provider" })).toBeChecked();
+      await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
+      expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
+      expect(screen.getByTestId("query")).toBeEmptyDOMElement();
+      await userEvent.click(toggle);
+      expect(toggle).toHaveFocus();
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original });
+    }
   });
 });

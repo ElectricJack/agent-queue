@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -16,17 +16,45 @@ class DeleteTaskRequest:
     """
     Attributes:
         task_id (str): Task ID to delete
-        cascade (bool | Unset):  Default: False.
+        recursive (bool | Unset):  Default: False.
+        cascade (bool | None | Unset): Deprecated alias for recursive
+        branches (str | Unset): Keep branches or delete their local/remote refs and worktrees Default: 'keep'.
+        stop_running (bool | Unset): Acknowledge stopping running work; selected writers always stop Default: False.
+        confirmed (bool | Unset): False previews; true executes the deletion Default: False.
+        reason (None | str | Unset): Optional audit reason
     """
 
     task_id: str
-    cascade: bool | Unset = False
+    recursive: bool | Unset = False
+    cascade: bool | None | Unset = UNSET
+    branches: str | Unset = "keep"
+    stop_running: bool | Unset = False
+    confirmed: bool | Unset = False
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
 
-        cascade = self.cascade
+        recursive = self.recursive
+
+        cascade: bool | None | Unset
+        if isinstance(self.cascade, Unset):
+            cascade = UNSET
+        else:
+            cascade = self.cascade
+
+        branches = self.branches
+
+        stop_running = self.stop_running
+
+        confirmed = self.confirmed
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -35,8 +63,18 @@ class DeleteTaskRequest:
                 "task_id": task_id,
             }
         )
+        if recursive is not UNSET:
+            field_dict["recursive"] = recursive
         if cascade is not UNSET:
             field_dict["cascade"] = cascade
+        if branches is not UNSET:
+            field_dict["branches"] = branches
+        if stop_running is not UNSET:
+            field_dict["stop_running"] = stop_running
+        if confirmed is not UNSET:
+            field_dict["confirmed"] = confirmed
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -45,11 +83,40 @@ class DeleteTaskRequest:
         d = dict(src_dict)
         task_id = d.pop("task_id")
 
-        cascade = d.pop("cascade", UNSET)
+        recursive = d.pop("recursive", UNSET)
+
+        def _parse_cascade(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        cascade = _parse_cascade(d.pop("cascade", UNSET))
+
+        branches = d.pop("branches", UNSET)
+
+        stop_running = d.pop("stop_running", UNSET)
+
+        confirmed = d.pop("confirmed", UNSET)
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
 
         delete_task_request = cls(
             task_id=task_id,
+            recursive=recursive,
             cascade=cascade,
+            branches=branches,
+            stop_running=stop_running,
+            confirmed=confirmed,
+            reason=reason,
         )
 
         delete_task_request.additional_properties = d

@@ -1,5 +1,11 @@
 # Review: Hierarchical Delivery and Integration Trains
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Reviewed:** `2026-09-04-hierarchical-integration-trains-design.md`
 **Date:** 2026-09-04
 **Stance:** Adversarial. The review lens is the stated goal that orchestration
