@@ -535,6 +535,11 @@ class MetricsSampler:
 
     async def _collect_slow(self, now: float) -> dict[str, Any]:
         """The tier that range-scans append-only tables.  Cached between ticks."""
+        from src.metrics.waits import with_wait_policy
+
+        waits = with_wait_policy(
+            await self.db.metrics_waits_snapshot(now, _HOUR), self.config.wait_policy,
+        )
         if self._perf_enabled():
             started = time.perf_counter()
             self._host_last = self._host.sample()
@@ -641,6 +646,7 @@ class MetricsSampler:
         attributed_total = sum(totals.values())
         recent_attributed_total = sum(recent_totals.values())
         return {
+            "waits": waits,
             "subagents": {
                 # ``complete`` is the conjunction over live sessions, matching
                 # ``flock_rollup``: one session launched without hooks makes
@@ -867,7 +873,10 @@ def _fold_sessions(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 
 #: Statuses the tab graphs explicitly.  Anything else is summed into
 #: ``other`` rather than dropped, so the totals still add up.
-_GRAPHED_STATUSES = ("READY", "IN_PROGRESS", "ASSIGNED", "PAUSED", "BLOCKED", "WAITING_INPUT")
+_GRAPHED_STATUSES = (
+    "READY", "IN_PROGRESS", "ASSIGNED", "PAUSED", "BLOCKED", "WAITING_INPUT",
+    "WAITING", "HIBERNATED", "RESUME_PENDING",
+)
 
 
 def _fold_tasks(counts: Mapping[str, int]) -> dict[str, int]:
