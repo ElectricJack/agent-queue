@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from src.commands.principal import ExecutionPrincipal
 from src.playbooks.definition import canonical_bytes, load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
+from src.playbooks.profiles import shipped_profile_lookup
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -39,7 +41,7 @@ def _json_bytes(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def test_captured_baseline_and_executable_graph_are_unchanged():
+def test_captured_baseline_and_existing_executable_rules_are_unchanged():
     before = load_definition_json(BEFORE.read_text())
     after = load_definition_json(AFTER.read_text())
     assert "sha256:" + hashlib.sha256(BEFORE.read_bytes()).hexdigest() == (
@@ -48,11 +50,32 @@ def test_captured_baseline_and_executable_graph_are_unchanged():
     assert canonical_bytes(before) == BEFORE.read_bytes()
     assert before.source_hash == SCENARIOS["baseline_source_sha256"]
 
+    original_rules = {rule.id for rule in before.rules}
+    assert {rule.id for rule in after.rules} == original_rules | {
+        "fidelity-review-on-held", "release-on-receipt",
+    }
+    # Held-batch rules and their exact refusal handling are pinned independently
+    # by test_default_playbook_v2_artifacts and the real intake tests.
+    policy = shipped_profile_lookup().policy("spec-ingest")
+    assert {"wait_checkpoint", "wait_get", "wait_register"} <= policy.aq_commands
+    assert after.compiled_against.profiles["spec-ingest"] == policy.fingerprint()
+
     def executable(artifact):
         body = json.loads(canonical_bytes(artifact))
         # Compilation provenance changes with the source; executable fields do not.
         for field in ("source_hash", "compiled_at", "trusted_execution"):
             body.pop(field, None)
+        body["rules"] = [rule for rule in body["rules"] if rule["id"] in original_rules]
+        body["steps"] = {
+            name: step for name, step in body["steps"].items() if step["rule"] in original_rules
+        }
+        body["compiled_against"]["commands"] = {
+            name: body["compiled_against"]["commands"][name]
+            for name in before.compiled_against.commands
+        }
+        # Role instructions now describe held batches; their fingerprints are
+        # checked against the shipped profiles by the artifact suite.
+        body["compiled_against"].pop("profiles")
         for item in [*body["rules"], *body["steps"].values()]:
             item.pop("source")
         return _json_bytes(body)
@@ -60,10 +83,45 @@ def test_captured_baseline_and_executable_graph_are_unchanged():
     assert executable(after) == executable(before)
     assert set(after.trusted_execution.required_capabilities) == {
         "ensure_spec_ingest", "gate_create", "task_batch_commit",
+        "ensure_fidelity_review", "task_batch_release",
     }
     assert not after.required_features
     assert not after.trusted_execution.scripts
     assert after.trusted_execution.state_schema_version is None
+
+
+@pytest.mark.parametrize("composed", [False, True], ids=["original", "held-batch-composition"])
+def test_wait_grant_refresh_preserves_the_complete_previous_artifact(composed):
+    evidence = json.loads(Path(
+        "tests/fixtures/contracts/default-pipeline-wait-grants-changes.json"
+    ).read_text())
+    if composed:
+        evidence = json.loads(Path(
+            "tests/fixtures/contracts/default-pipeline-wait-grants-composition.json"
+        ).read_text())
+    current_path = AFTER if composed else FIXTURES / "wait-grants.artifact.json"
+    change = evidence["playbook_fixtures"][AFTER.as_posix()]
+    previous_bytes = Path(change["preserved_previous_path"]).read_bytes()
+    assert hashlib.sha256(previous_bytes).hexdigest() == change["previous_sha256"]
+    assert hashlib.sha256(current_path.read_bytes()).hexdigest() == change["sha256"]
+    previous = json.loads(previous_bytes)
+    current = json.loads(current_path.read_bytes())
+    grants = evidence["profile_grants"]["spec-ingest"]
+    assert grants["added_aq_commands"] == ["wait_checkpoint", "wait_get", "wait_register"]
+    assert previous["compiled_against"]["profiles"]["spec-ingest"] == grants["previous_fingerprint"]
+    assert current["compiled_against"]["profiles"]["spec-ingest"] == grants["fingerprint"]
+    policy = shipped_profile_lookup().policy("spec-ingest")
+    if not composed:
+        # The original wait-grant branch predates the held-batch grant removal.
+        policy = replace(policy, aq_commands=policy.aq_commands | {"task_batch_commit"})
+    assert policy.fingerprint() == grants["fingerprint"]
+    assert replace(
+        policy, aq_commands=policy.aq_commands - set(grants["added_aq_commands"]),
+    ).fingerprint() == grants["previous_fingerprint"]
+    previous["compiled_against"]["profiles"] = current["compiled_against"]["profiles"]
+    previous.pop("compiled_at")
+    current.pop("compiled_at")
+    assert current == previous
 
 
 async def _execute(path, scenario):

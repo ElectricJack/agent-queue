@@ -543,6 +543,21 @@ reads `slot_reset: BranchLockTimeout: branch fence critical section exceeded
 30s on <repo>:<branch>; caused by TimeoutError (no message) …; caused by
 CancelledError (no message) at <the interrupted frame>`.
 
+Pool preparation refreshes origin before entering that 30 s branch mutation
+section. A preserved child's mutable refs are refreshed once; an immutable
+origin already present locally needs no refresh. A reset fence timeout counts
+toward the preparation failure ladder below. A checkout whose attached ownership
+cannot be safely released keeps its claim and records the failure for supervisor
+recovery instead of silently returning `no_ready_work`.
+
+The authenticated origin fetch log's `elapsed` covers the entire acquisition,
+including lender integrity verification and local imports. It also reports
+`prepare` (isolated-repository setup, tip seeding and integrity verification),
+`network` (authenticated fetch, including negotiation), and `import` (local object
+and ref import plus verification). `received_objects=0` measures download size,
+not network latency. Compare those phases before attributing a long no-op fetch
+to negotiation or pruning refs; the distinct seeded tip inventory is capped at 512.
+
 The attempt counter is the important part. The first two failures release the
 task back to `READY` with an exponential preparation backoff, so AQ retries on
 its own. **On the third**, the task goes to `BLOCKED` and the retry becomes
