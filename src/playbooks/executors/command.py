@@ -15,6 +15,7 @@ has no code path to ``registration.invoke`` at all.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
@@ -50,7 +51,7 @@ def _attempt_key(ctx: StepContext) -> str:
     second iteration's side effect as a duplicate.
     """
     iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
-    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt)
+    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt, ctx.iteration_path)
 
 
 def _fail(
@@ -391,8 +392,13 @@ class PreviewCommandExecutor:
             return _fail(
                 "input_resolution_failed", operation=operation, diagnostics=(error or "",), key=key
             )
+        from src.playbooks.state_preview import StatePreviewUnresolved, preview_context
+
         try:
-            result = await registration.preview(args, ctx.principal)
+            with preview_context(ctx):
+                result = await registration.preview(args, ctx.principal)
+        except StatePreviewUnresolved as exc:
+            return _unresolved(step, registration, operation, str(exc))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6: any executor
@@ -404,11 +410,11 @@ class PreviewCommandExecutor:
 
 
 class ShadowCommandExecutor:
-    """Shadow: records the intended call and invokes nothing.
+    """Shadow: records intended calls and simulates run-local state.
 
-    Not even the preview adapter — a preview may read a database snapshot,
-    and shadow mode runs against production.  What it records is what
-    Package 6's parity harness compares.
+    Only the database-free state overlay runs a preview adapter. Other previews
+    may read production snapshots, so they remain unresolved. Recorded arguments
+    feed the parity harness and never contain private values.
     """
 
     step_type: ClassVar[str] = "command"
@@ -416,6 +422,12 @@ class ShadowCommandExecutor:
     no_side_effects: ClassVar[bool] = True
 
     async def execute(self, step: CommandStep, ctx: StepContext) -> ExecutorResult:
+        from src.commands.resource_authorization import STATE_PREVIEW_COMMANDS
+
+        if step.command in STATE_PREVIEW_COMMANDS:
+            # Simulate only in this path's overlay; there is no live handler here.
+            result = await PreviewCommandExecutor().execute(step, ctx)
+            return replace(result, recorded_command_args={name: "(redacted)" for name in ctx.inputs})
         operation = f"command:{step.command}"
         registration = _lookup(step, ctx.services)
         if registration is None:

@@ -198,6 +198,9 @@ class StepContext:
     mode: ExecutionMode = ExecutionMode.LIVE
     attempt: int = 1
     iteration_index: int | None = None
+    iteration_path: str = ""
+    loop_stack: tuple[LoopFrame, ...] = ()
+    iteration_entries: int = 0
     run_deadline_at: float | None = None
     step_deadline_at: float | None = None
     cancel_requested: bool = False
@@ -209,6 +212,8 @@ class StepContext:
     #: resolution failure is an outcome *before* any executor runs.
     inputs: Mapping[str, Any] = field(default_factory=dict)
     private_inputs: bool = False
+    #: Ephemeral state for this symbolic run/path; never persisted or used live.
+    state_preview: dict = field(default_factory=dict)
     #: Resolved ``CommandStep.idempotency_key``, the step-level override of
     #: the contract's key field (``definition.py``: "overrides the contract
     #: default").  Resolved by the engine for the same reason

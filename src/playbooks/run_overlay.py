@@ -8,11 +8,11 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from src.api.models.playbook_v2 import PlaybookRunOverlayResponse, ReceiptDTO
+from src.api.models.playbook_v2 import PlaybookRunOverlayResponse, ReceiptDTO, ScriptExecutionDTO
 from src.event_schemas import event_field_is_sensitive
 from src.playbooks.definition import PlaybookDefinition
 from src.playbooks.graph_projection import project_value, _registration
-from src.playbooks.private_values import contains_reference, private_result_fields
+from src.playbooks.private_values import REFERENCE_KEY, contains_reference, private_result_fields
 
 
 def _plain(value: Any) -> dict[str, Any]:
@@ -66,6 +66,16 @@ def _receipt(raw: Any) -> dict[str, Any]:
             }
         )
     result_map = dict(data.get("result") or {})
+    script = None
+    if data.get("step_kind") == "script" and result_map.get("job_id"):
+        script = {name: result_map[name] for name in ScriptExecutionDTO.model_fields
+                  if name in result_map and name != "output_refs"}
+        script["output_refs"] = {
+            name: reference[REFERENCE_KEY]
+            for name, reference in result_map.get("output_refs", {}).items()
+            if name in {"stdout", "stderr"} and isinstance(reference, Mapping)
+            and isinstance(reference.get(REFERENCE_KEY), str)
+        }
     result = None
     if result_map:
         redacted = contains_reference(result_map) or "__redacted__" in result_map or any(
@@ -116,6 +126,8 @@ def _receipt(raw: Any) -> dict[str, Any]:
             "step_kind": data["step_kind"],
             "attempt": int(data.get("attempt", 1)),
             "iteration_index": iteration if iteration >= 0 else None,
+            "iteration_path": data.get("iteration_path", ""),
+            "script": script,
             "outcome": exact_outcome,
             "selected_edge_id": selected,
             "started_at": started,

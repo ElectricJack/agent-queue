@@ -148,6 +148,19 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
                 "field_changes": changes,
             }
         )
+    # As with integration policy, project artifact-level execution changes onto
+    # the existing review field rows so API and dashboard reviewers see the pins.
+    before_metadata = base.model_dump(mode="json", exclude_none=True) if base else {}
+    after_metadata = target.model_dump(mode="json", exclude_none=True)
+    changes = [change for name in ("required_features", "trusted_execution")
+               for change in _fields(before_metadata.get(name), after_metadata.get(name),
+                                     f"/{name}")]
+    if changes:
+        rows.append({
+            "rule_id": "execution-metadata", "change": "modified",
+            "event_type_before": None, "event_type_after": None,
+            "step_ids_added": [], "step_ids_removed": [], "field_changes": changes,
+        })
     return rows
 
 
@@ -279,6 +292,13 @@ def diff_artifacts(
                     "source": None,
                 }
             )
+    from src.playbooks.features import unsupported_feature_message, unsupported_features
+
+    diagnostics.extend({
+        "severity": "error", "code": "unsupported_feature",
+        "message": unsupported_feature_message(feature),
+        "rule_id": None, "step_id": None, "source": None,
+    } for feature in unsupported_features(target, contracts=contracts))
     blockers = [item["message"] for item in diagnostics]
     response = {
         "success": True,

@@ -224,7 +224,7 @@ class TestConditions:
 class TestEngineContext:
     """§4.2.1 — a closed schema; there is no dynamic context."""
 
-    def test_the_schema_is_the_eight_declared_paths(self):
+    def test_the_schema_is_the_ten_declared_paths(self):
         assert set(ENGINE_CONTEXT_SCHEMA) == {
             "run_id",
             "dispatch_id",
@@ -234,7 +234,11 @@ class TestEngineContext:
             "now",
             "attempt",
             "iteration_index",
+            "observed_at",
+            "observation_id",
         }
+        assert ENGINE_CONTEXT_SCHEMA["observed_at"] == "number"
+        assert ENGINE_CONTEXT_SCHEMA["observation_id"] == "string"
 
     def test_iteration_index_is_loop_scoped(self):
         assert E.LOOP_ONLY_CONTEXT_PATHS == frozenset({"iteration_index"})

@@ -28,12 +28,14 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import and_, cast, delete, func, insert, or_, select, text, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.config import PENDING_EVENT_OVERFLOW_POLICIES
+from src.waits.sources import execute_playbook_wait_mutation
+
 from src.database.tables import (
     archived_tasks,
     playbook_artifacts,
@@ -100,6 +102,7 @@ def _receipt_row(receipt: StepReceipt) -> dict:
         "turn_index": receipt.turn_index,
         "operator_decision_id": receipt.operator_decision_id,
         "iteration": receipt.iteration,
+        "iteration_path": receipt.iteration_path,
         "attempt": receipt.attempt,
         "idempotency_key": receipt.idempotency_key,
         "snapshot_version": receipt.snapshot_version,
@@ -181,6 +184,7 @@ def _wait_row(wait: WaitSpec, snapshot_version: int) -> dict:
         "run_id": wait.run_id,
         "step_id": wait.step_id,
         "iteration": wait.iteration,
+        "iteration_path": wait.iteration_path,
         "kind": wait.kind,
         "event_type": wait.event_type,
         "correlation_key": wait.correlation_key,
@@ -203,6 +207,7 @@ def _row_to_wait(row) -> WaitSpec:
         run_id=row["run_id"],
         step_id=row["step_id"],
         iteration=int(row["iteration"]),
+        iteration_path=row.get("iteration_path", ""),
         kind=row["kind"],
         event_type=row["event_type"],
         match=json.loads(row["match"]),
@@ -217,6 +222,7 @@ def _row_to_claim(row, event: _InboxEvent | None, now: float, *, expired: bool) 
         run_id=row["run_id"],
         step_id=row["step_id"],
         iteration=int(row["iteration"]),
+        iteration_path=row.get("iteration_path", ""),
         kind=row["kind"],
         snapshot_version=int(row["snapshot_version"]),
         claimed_event_id=event.event_id if event is not None else None,
@@ -298,6 +304,7 @@ def _row_to_receipt(row) -> StepReceipt:
         started_at=row["started_at"],
         snapshot_version=int(row["snapshot_version"]),
         iteration=int(row["iteration"]),
+        iteration_path=row.get("iteration_path", ""),
         attempt=int(row["attempt"]),
         idempotency_key=row["idempotency_key"],
         contract_fingerprint=row["contract_fingerprint"],
@@ -679,7 +686,7 @@ class PlaybookRunQueryMixin:
         if wait_changes.clear_run_waits:
             await self.clear_for_run(run_id, conn=conn)
         if wait_ids:
-            await conn.execute(
+            await execute_playbook_wait_mutation(conn,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.wait_id.in_(wait_ids),
@@ -911,6 +918,9 @@ class PlaybookRunQueryMixin:
         limit: int = 500,
         offset: int = 0,
         receipt_kinds: Collection[str] | None = None,
+        step_id: str | None = None,
+        iteration: int | None = None,
+        iteration_path: str | None = None,
     ) -> list[StepReceipt]:
         stmt = (
             select(playbook_step_receipts)
@@ -926,6 +936,10 @@ class PlaybookRunQueryMixin:
         )
         if receipt_kinds is not None:
             stmt = stmt.where(playbook_step_receipts.c.receipt_kind.in_(list(receipt_kinds)))
+        for name, value in (("step_id", step_id), ("iteration", iteration),
+                            ("iteration_path", iteration_path)):
+            if value is not None:
+                stmt = stmt.where(playbook_step_receipts.c[name] == value)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [_row_to_receipt(row) for row in rows]
@@ -1135,7 +1149,7 @@ class PlaybookRunQueryMixin:
             if not matches(wait, event):
                 continue
             claimed_at = event.received_at
-            result = await conn.execute(
+            result = await execute_playbook_wait_mutation(conn,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.wait_id == wait.wait_id,
@@ -1153,6 +1167,7 @@ class PlaybookRunQueryMixin:
                     run_id=wait.run_id,
                     step_id=wait.step_id,
                     iteration=wait.iteration,
+                    iteration_path=wait.iteration_path,
                     kind=wait.kind,
                     snapshot_version=snapshot_version,
                     claimed_event_id=event.event_id,
@@ -1233,7 +1248,10 @@ class PlaybookRunQueryMixin:
                 playbook_artifacts.c.scope == event.scope,
                 playbook_artifacts.c.scope_identifier == event.scope_identifier,
                 or_(body["private_bindings"] != {}, body["sensitive"] != {},
-                    body["llm_turns"] != []),
+                    body["llm_turns"] != [],
+                    func.jsonb_path_exists(
+                        body, cast('$.loop_stack[*] ? (@.private == true)', JSONPATH)
+                    )),
             ).limit(1)
         ))
         fields = dict(event.fields)
@@ -1332,15 +1350,22 @@ class PlaybookRunQueryMixin:
                             snapshot_version,
                         )
                 playbook_id = current["playbook_id"] if current is not None else ""
-                if current is not None and any(json.loads(current["snapshot"]).get(key) for key in ("private_bindings", "sensitive", "llm_turns")):
+                if current is not None and RunSnapshot.from_body(json.loads(current["snapshot"])).has_private_data:
                     from src.playbooks.private_values import PrivateOwner
 
                     batch = self.playbook_private_values().batch(PrivateOwner(
                         "run", wait.run_id, current["scope"],
                         current["scope_identifier"] or "system",
                     ))
-                    values["match"] = _dumps({name: batch.protect(value)
-                                               for name, value in wait.match.items()})
+                    # A child wait's task id stays joinable: settled_child_waits
+                    # finds the run through it, and the snapshot's
+                    # agent_task_ids already records it in plain text.
+                    values["match"] = _dumps({
+                        name: value if (wait.kind == "agent_task" and name == "task_id")
+                        or (wait.event_type == "job.completed" and name == "job_id")
+                        else batch.protect(value)
+                        for name, value in wait.match.items()
+                    })
                     values["correlation_key"] = "private:" + uuid.uuid4().hex
                     await batch.persist(active)
                 if playbook_id:
@@ -1463,7 +1488,7 @@ class PlaybookRunQueryMixin:
                     )
                     if not matches(replace(wait, match=match), canonical):
                         continue
-                    result = await conn.execute(
+                    result = await execute_playbook_wait_mutation(conn,
                         update(playbook_waits)
                         .where(
                             playbook_waits.c.wait_id == row["wait_id"],
@@ -1539,7 +1564,7 @@ class PlaybookRunQueryMixin:
                         )
                     )
                     continue
-                result = await conn.execute(
+                result = await execute_playbook_wait_mutation(conn,
                     update(playbook_waits)
                     .where(
                         playbook_waits.c.wait_id == row["wait_id"],
@@ -1551,6 +1576,33 @@ class PlaybookRunQueryMixin:
                     continue
                 claims.append(_row_to_claim(row, None, now, expired=True))
         return claims
+
+    async def settled_script_waits(self, *, limit: int = 100) -> list[WaitSpec]:
+        """Terminal job truth survives missed events and registration races."""
+        from src.database.tables import jobs
+        from src.jobs.policy import TERMINAL
+
+        job_ref = func.jsonb_extract_path_text(cast(playbook_waits.c.match, JSONB), "job_id")
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(
+                select(playbook_waits).join(jobs, jobs.c.id == job_ref).join(
+                    playbook_v2_runs, playbook_v2_runs.c.run_id == playbook_waits.c.run_id,
+                ).where(
+                    playbook_v2_runs.c.lifecycle == "paused",
+                    playbook_v2_runs.c.error_code.is_(None),
+                    func.jsonb_extract_path_text(
+                        cast(playbook_v2_runs.c.snapshot, JSONB), "wait", "wait_id"
+                    ) == playbook_waits.c.wait_id,
+                    playbook_waits.c.state.in_(("active", "claimed")),
+                    playbook_waits.c.event_type == "job.completed",
+                    jobs.c.owner_kind == "playbook",
+                    jobs.c.playbook_run_id == playbook_waits.c.run_id,
+                    jobs.c.playbook_step_id == playbook_waits.c.step_id,
+                    jobs.c.iteration_path == playbook_waits.c.iteration_path,
+                    jobs.c.state.in_(TERMINAL), jobs.c.cleanup_blocked.is_(False),
+                ).order_by(playbook_waits.c.created_at).limit(max(0, limit))
+            )).mappings().all()
+        return [WaitSpec.from_dict({**row, "match": json.loads(row["match"])}) for row in rows]
 
     async def settled_child_waits(self, *, limit: int = 100) -> list[SettledChildWait]:
         """Every active ``agent_task`` wait whose awaited task has settled.
@@ -1622,7 +1674,7 @@ class PlaybookRunQueryMixin:
     async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int:
         """Deactivate every active wait of one run; returns how many moved."""
         async with self._wait_conn(conn) as active:
-            result = await active.execute(
+            result = await execute_playbook_wait_mutation(active,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.run_id == run_id,

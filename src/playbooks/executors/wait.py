@@ -64,7 +64,9 @@ SUSPENDED_OUTCOME = "waiting"
 UNRESOLVED_REASON = "wait_not_persisted"
 
 
-def wait_id_for(run_id: str, step_id: str, iteration: int, attempt: int) -> str:
+def wait_id_for(
+    run_id: str, step_id: str, iteration: int, attempt: int, iteration_path: str = "",
+) -> str:
     """A wait id that is a *function* of the attempt that opens it.
 
     Restart safety depends on this being deterministic.  A crash between the
@@ -74,7 +76,11 @@ def wait_id_for(run_id: str, step_id: str, iteration: int, attempt: int) -> str:
     collides on the primary key instead of opening a second wait for one
     suspension.
     """
-    digest = hashlib.sha256(f"{run_id}|{step_id}|{iteration}|{attempt}".encode()).hexdigest()
+    from src.playbooks.receipts import idempotency_key
+
+    identity = (idempotency_key(run_id, step_id, iteration, attempt, iteration_path)
+                if iteration_path else f"{run_id}|{step_id}|{iteration}|{attempt}")
+    digest = hashlib.sha256(identity.encode()).hexdigest()
     return f"w-{digest[:30]}"
 
 
@@ -210,10 +216,11 @@ class LiveWaitExecutor:
         now = ctx.services.clock()
         iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
         spec = WaitSpec(
-            wait_id=wait_id_for(ctx.run_id, ctx.step_id, iteration, ctx.attempt),
+            wait_id=wait_id_for(ctx.run_id, ctx.step_id, iteration, ctx.attempt, ctx.iteration_path),
             run_id=ctx.run_id,
             step_id=ctx.step_id,
             iteration=iteration,
+            iteration_path=ctx.iteration_path,
             kind=WAIT_KIND_STORAGE[step.wait_kind],
             event_type=str(awaited) if step.wait_kind == "event" and awaited else "",
             match=match,
