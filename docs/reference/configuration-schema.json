@@ -3654,6 +3654,8 @@
             "expected_duration_seconds": null
           }
         },
+        "listener_lag_alert_minutes": 15,
+        "listener_lag_events": 500,
         "loop_window_registrations": 3,
         "loop_window_seconds": 3600,
         "metrics": {
@@ -3761,6 +3763,14 @@
             }
           },
           "type": "object"
+        },
+        "listener_lag_alert_minutes": {
+          "default": 15,
+          "type": "integer"
+        },
+        "listener_lag_events": {
+          "default": 500,
+          "type": "integer"
         },
         "loop_window_registrations": {
           "default": 3,

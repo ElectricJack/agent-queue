@@ -36,7 +36,8 @@ Where the work did land, but under other commits (a salvage, repair or squash
 re-landing), :func:`record_relanding` records the operator-named landing commit
 as a ``superseded`` row once git shows that commit on the default branch. An
 abandoned or re-landed task's branches are then queued for retirement, which
-bundles every unmerged tip before deleting it.
+bundles every unmerged tip before deleting it. Abandonment may explicitly keep
+the branches instead, recording that choice in the decision's audit reason.
 """
 
 from __future__ import annotations
@@ -315,6 +316,7 @@ async def _attest(db, provenance, request, target, identity, verdict) -> str:
 
 async def abandon_epic(db, project_id: str, epic_id: str, *, dry_run: bool = True,
                        operator_id: str = "operator", reason: str = "",
+                       keep_branch: bool = False,
                        snapshot=project_snapshot, clock=time.time) -> dict:
     """Preview or record an explicit decision that a completed epic is superseded.
 
@@ -326,14 +328,17 @@ async def abandon_epic(db, project_id: str, epic_id: str, *, dry_run: bool = Tru
     and no row yet; a container that never had a branch of its own is decided
     the same way. Refused when git already proves the work on the default branch
     (then the ordinary backfill records that proof), when the container is not
-    completed, or when it has no children. Nothing is deleted.
+    completed, or when it has no children. Branches are queued for retirement
+    unless ``keep_branch`` explicitly preserves them.
     """
     return await _abandon(db, project_id, epic_id, dry_run=dry_run, operator_id=operator_id,
-                          reason=reason, snapshot=snapshot, clock=clock, require_children=True)
+                          reason=reason, keep_branch=keep_branch, snapshot=snapshot,
+                          clock=clock, require_children=True)
 
 
 async def abandon_task(db, project_id: str, task_id: str, *, dry_run: bool = True,
                        operator_id: str = "operator", reason: str = "",
+                       keep_branch: bool = False,
                        snapshot=project_snapshot, clock=time.time) -> dict:
     """Preview or record an explicit decision that one completion is superseded.
 
@@ -344,13 +349,15 @@ async def abandon_task(db, project_id: str, task_id: str, *, dry_run: bool = Tru
     :func:`abandon_epic` records for that one completed task, and, when the task
     is a container, for its undelivered descendants. Refused when git already
     proves the work on the default branch or the task is not completed.
+    ``keep_branch`` preserves selected branches instead of queuing retirement.
     """
     return await _abandon(db, project_id, task_id, dry_run=dry_run, operator_id=operator_id,
-                          reason=reason, snapshot=snapshot, clock=clock, require_children=False)
+                          reason=reason, keep_branch=keep_branch, snapshot=snapshot,
+                          clock=clock, require_children=False)
 
 
 async def _abandon(db, project_id: str, task_id: str, *, dry_run: bool, operator_id: str,
-                   reason: str, snapshot, clock, require_children: bool) -> dict:
+                   reason: str, keep_branch: bool, snapshot, clock, require_children: bool) -> dict:
     """The audited decision behind both abandon surfaces, one named task wide."""
     if not dry_run and not reason.strip():
         raise ValueError("abandoning undelivered work requires a nonblank reason")
@@ -399,10 +406,11 @@ async def _abandon(db, project_id: str, task_id: str, *, dry_run: bool, operator
         elif not dry_run:
             verdict.outcome = await _record(
                 db, request, target, snap.target_oid, verdict, operator_id=operator_id,
-                reason=f"abandon {task_id}: {reason}", now=clock())
+                reason=f"abandon {task_id}: {reason}", now=clock(), keep_branch=keep_branch)
         results.append(verdict.as_dict())
     return {"outcome": "preview" if dry_run else "recorded", "task_id": task_id,
             "branch_tip": tip, "target_sha": snap.target_oid, "dry_run": dry_run,
+            "keep_branch": keep_branch,
             "results": results}
 
 
@@ -526,7 +534,8 @@ def _answered_by_row(request) -> bool:
         request.completion_id == request.legacy_generation)
 
 
-async def _record(db, request, target, target_oid, verdict, *, operator_id, reason, now) -> str:
+async def _record(db, request, target, target_oid, verdict, *, operator_id, reason, now,
+                  keep_branch=False) -> str:
     """Insert one row if the task and completion are still the proven ones."""
     async with db._engine.begin() as conn:
         row = (await conn.execute(
@@ -544,10 +553,11 @@ async def _record(db, request, target, target_oid, verdict, *, operator_id, reas
             target_ref=target.target_ref, target_sha=target_oid,
             delivered_sha=verdict.delivered_sha, proof=verdict.proof,
             development_delivery_id=None, operator_id=operator_id,
-            reason=f"{reason.strip()} [via {verdict.via} {verdict.delivered_sha}]",
+            reason=(f"{reason.strip()} [via {verdict.via} {verdict.delivered_sha}]"
+                    + (" [branches: keep]" if keep_branch else "")),
             created_at=now,
         ).on_conflict_do_nothing(index_elements=[integration_legacy_deliveries.c.task_id]))
-        if verdict.proof in _RETIRING_PROOFS:
+        if verdict.proof in _RETIRING_PROOFS and not keep_branch:
             from src.integration.branch_retirement import request_task_retirement_on
 
             await request_task_retirement_on(

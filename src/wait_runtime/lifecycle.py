@@ -4,6 +4,7 @@ import time
 import json
 import asyncio
 import logging
+from collections import OrderedDict
 
 from sqlalchemy import Float, Integer, and_, cast, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -33,6 +34,7 @@ class WaitLifecycle:
         self._resume_tasks = {}
         self._resume_graph_busy = {}
         self._hibernate_tasks = {}
+        self._turn_token_cache = OrderedDict()
 
     async def register(self, args, *, principal, scope, handler):
         watermark = await self.db.wait_source_watermark()
@@ -112,6 +114,7 @@ class WaitLifecycle:
 
     async def sleep_decide(self, args, *, principal, scope, handler):
         from src.waits.conditions import Condition
+        from src.waits.recovery import retire_terminal_task_waits
         from src.wait_runtime.measurements import capture_costs
 
         await capture_costs(self, args['wait_id'])
@@ -122,7 +125,21 @@ class WaitLifecycle:
                 select(wait_records).where(wait_records.c.id == args['wait_id']))).mappings().first()
             if wait is None:
                 raise WaitError('wait.source_unresolved', 'wait disappeared')
+            # Historical holds can outlive the owner's terminal source event.
+            # Retire them before the cleared-wait shortcut or writer-stop fences;
+            # neither path would otherwise remove them from tick's retry query.
+            if wait['owner_kind'] == 'task' and await retire_terminal_task_waits(
+                conn, wait['owner_id'], now=self.clock(),
+            ):
+                return {'success': True, 'retired': True}
             if wait['cleared_at'] is not None:
+                if wait['owner_kind'] == 'task':
+                    from src.database.queries.continuation_queries import retire_task_waits
+
+                    await retire_task_waits(
+                        conn, wait['owner_id'], wait_id=wait['id'],
+                        reason='wait_cleared', now=self.clock(),
+                    )
                 return {'success': True, 'measurements_updated': True}
             evicted = wait['decision_reason'] == 'evicted'
             if wait['sleep_decision'] == 'in_place':
