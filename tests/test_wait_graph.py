@@ -466,3 +466,107 @@ async def test_busy_graph_lock_refuses_within_bound_then_admits(env):
             assert asyncio.get_running_loop().time() - started < 5
     async with env.db._engine.begin() as waiter:
         await lock_graph(waiter, timeout=0.2)
+
+
+@pytest.mark.parametrize("end", ["commit", "rollback"])
+async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
+    env, monkeypatch, caplog, end,
+):
+    from src.waits import graph
+
+    monkeypatch.setattr(graph, "GRAPH_LOCK_WARN_SECONDS", 0.01)
+    async with env.db._engine.connect() as conn:
+        transaction = await conn.begin()
+        await graph.lock_graph(conn)
+        await graph.lock_graph(conn)  # Nested helpers share one watchdog.
+        await asyncio.sleep(0.03)
+        assert len(caplog.records) == 1
+        assert "wait.graph_lock_slow" in caplog.text
+        assert "test_graph_watchdog_names_idle_holder" in caplog.text
+        await getattr(transaction, end)()
+        assert not graph.graph_locked(conn)
+        assert "wait_graph_timer" not in conn.info
+        # A quick subsequent transaction must not inherit the holder's timer.
+        async with conn.begin():
+            await graph.lock_graph(conn)
+        await asyncio.sleep(0.03)
+        assert len(caplog.records) == 1
+
+
+async def test_graph_reacquires_after_savepoint_rollback(env):
+    from src.waits.graph import lock_graph
+
+    async with env.db._engine.begin() as owner:
+        savepoint = await owner.begin_nested()
+        await lock_graph(owner)
+        await savepoint.rollback()
+        async with env.db._engine.begin() as other:
+            await lock_graph(other, timeout=0.05)
+            with pytest.raises(WaitError) as refused:
+                await lock_graph(owner, timeout=0.05)
+            assert refused.value.code == 'wait.graph_busy'
+        await lock_graph(owner, timeout=0.05)
+
+async def test_graph_contender_releases_pool_connection_needed_by_holder(env):
+    """Two connections reproduce the fleet convoy without timing live queries."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from src.waits.graph import background_graph_work, lock_graph
+
+    engine = create_async_engine(env.db._engine.url, pool_size=2, max_overflow=0)
+    entered = asyncio.Event()
+
+    async def contender():
+        async with background_graph_work(), engine.begin() as conn:
+            entered.set()
+            with pytest.raises(WaitError) as refused:
+                await lock_graph(conn)
+            assert refused.value.code == "wait.graph_busy"
+
+    try:
+        async with engine.begin() as holder:
+            await lock_graph(holder)
+            waiter = asyncio.create_task(contender())
+            try:
+                await entered.wait()
+                # The holder cannot finish until a contender releases a slot.
+                async with asyncio.timeout(5):
+                    async with engine.connect() as extra:
+                        assert await extra.scalar(select(tasks.c.id).limit(1))
+                    await waiter
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+        async with engine.begin() as conn:
+            await lock_graph(conn)  # no leaked fence after the holder commits
+    finally:
+        await engine.dispose()
+
+
+async def test_resource_edges_do_not_load_semantic_graph():
+    from unittest.mock import AsyncMock
+    from src.waits.graph import would_create_cycle
+
+    conn = AsyncMock()
+    assert not await would_create_cycle(conn, [])
+    assert not await would_create_cycle(conn, [
+        Edge(NodeKey("task:a", "p"), NodeKey("task:b", "p"), "resource"),
+        Edge(NodeKey("task:b", "p"), NodeKey("task:a", "p"), "resource"),
+    ])
+    conn.execute.assert_not_awaited()
+
+
+async def test_background_fence_budget_does_not_shorten_foreground_writes(monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.waits import graph
+
+    monkeypatch.setattr(graph, "track_graph_lock", lambda conn: None)
+    stamps = iter((0.0, 0.3, 0.0, 0.3))
+    monkeypatch.setattr(graph, "time", SimpleNamespace(monotonic=lambda: next(stamps)))
+    monkeypatch.setattr(graph.asyncio, "sleep", AsyncMock())
+    async with graph.background_graph_work():
+        with pytest.raises(WaitError, match="within 0.25s"):
+            await graph.lock_graph(SimpleNamespace(scalar=AsyncMock(return_value=False)))
+    # The same contention interval remains admissible outside reconciliation.
+    foreground = SimpleNamespace(scalar=AsyncMock(side_effect=[False, True]))
+    await graph.lock_graph(foreground)
+    assert foreground.scalar.await_count == 2
