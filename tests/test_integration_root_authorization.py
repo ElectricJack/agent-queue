@@ -26,6 +26,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.root_authorization import RootAuthorization
+from tests.test_epic_pr_review_evidence import review_git_template as review_git_template
 from tests.test_epic_pr_review_evidence import (
     _continuous_policy,
     _git,

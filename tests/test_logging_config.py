@@ -236,6 +236,11 @@ def test_exception_logging_never_renders_locals(output_format, native, capsys, t
         assert len(output) < 4_000
 
 
+def _records_from(lines, logger_name):
+    records = [json.loads(line) for line in lines if line.strip()]
+    return [record for record in records if record.get("logger") == logger_name]
+
+
 @pytest.mark.parametrize("output_format", ["dev", "plain", "json"])
 def test_deep_exception_logging_has_bounded_frames(output_format, capsys, tmp_path):
     log_file = tmp_path / "logs" / "deep.jsonl"
@@ -257,8 +262,11 @@ def test_deep_exception_logging_has_bounded_frames(output_format, capsys, tmp_pa
         assert output.count('File "deep_traceback.py"') == 20
         assert len(output.splitlines()) < 100
     else:
-        assert json.loads(output)["exception"].count('File "deep_traceback.py"') <= 20
-    record = json.loads(log_file.read_text().splitlines()[-1])
+        # Other loggers (the loop watchdog under a loaded runner) may share the
+        # stream, so select this test's record rather than parsing all output.
+        (emitted,) = _records_from(output.splitlines(), "test.deep")
+        assert emitted["exception"].count('File "deep_traceback.py"') <= 20
+    (record,) = _records_from(log_file.read_text().splitlines(), "test.deep")
     assert record["exception"].count('File "deep_traceback.py"') == 20
     assert "RuntimeError: deep failure" in record["exception"]
 
