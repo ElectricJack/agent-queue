@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="AskCutoverRequest")
 
@@ -16,11 +18,19 @@ class AskCutoverRequest:
         project_id (str):
         mode (str):
         expected_generation (int):
+        inventory_sha256 (None | str | Unset):
+        evidence (None | str | Unset):
+        legacy_controls_disabled (bool | Unset):  Default: False.
+        aliases_redirected (bool | Unset):  Default: False.
     """
 
     project_id: str
     mode: str
     expected_generation: int
+    inventory_sha256: None | str | Unset = UNSET
+    evidence: None | str | Unset = UNSET
+    legacy_controls_disabled: bool | Unset = False
+    aliases_redirected: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -29,6 +39,22 @@ class AskCutoverRequest:
         mode = self.mode
 
         expected_generation = self.expected_generation
+
+        inventory_sha256: None | str | Unset
+        if isinstance(self.inventory_sha256, Unset):
+            inventory_sha256 = UNSET
+        else:
+            inventory_sha256 = self.inventory_sha256
+
+        evidence: None | str | Unset
+        if isinstance(self.evidence, Unset):
+            evidence = UNSET
+        else:
+            evidence = self.evidence
+
+        legacy_controls_disabled = self.legacy_controls_disabled
+
+        aliases_redirected = self.aliases_redirected
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -39,6 +65,14 @@ class AskCutoverRequest:
                 "expected_generation": expected_generation,
             }
         )
+        if inventory_sha256 is not UNSET:
+            field_dict["inventory_sha256"] = inventory_sha256
+        if evidence is not UNSET:
+            field_dict["evidence"] = evidence
+        if legacy_controls_disabled is not UNSET:
+            field_dict["legacy_controls_disabled"] = legacy_controls_disabled
+        if aliases_redirected is not UNSET:
+            field_dict["aliases_redirected"] = aliases_redirected
 
         return field_dict
 
@@ -51,10 +85,36 @@ class AskCutoverRequest:
 
         expected_generation = d.pop("expected_generation")
 
+        def _parse_inventory_sha256(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        inventory_sha256 = _parse_inventory_sha256(d.pop("inventory_sha256", UNSET))
+
+        def _parse_evidence(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        evidence = _parse_evidence(d.pop("evidence", UNSET))
+
+        legacy_controls_disabled = d.pop("legacy_controls_disabled", UNSET)
+
+        aliases_redirected = d.pop("aliases_redirected", UNSET)
+
         ask_cutover_request = cls(
             project_id=project_id,
             mode=mode,
             expected_generation=expected_generation,
+            inventory_sha256=inventory_sha256,
+            evidence=evidence,
+            legacy_controls_disabled=legacy_controls_disabled,
+            aliases_redirected=aliases_redirected,
         )
 
         ask_cutover_request.additional_properties = d
