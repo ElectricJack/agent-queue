@@ -37,6 +37,7 @@ if os.name != "posix":  # pragma: no cover - the registry's gate
     raise ImportError("the tmux session provider requires a POSIX host")
 
 from src.sessions import proctable
+from src.metrics.perf import timed_operation
 from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal
 from src.sessions.provider import (
     Cap,
@@ -248,6 +249,7 @@ class TmuxProvider(SessionProvider):
 
     # -- plumbing ----------------------------------------------------------
 
+    @timed_operation("session.tmux")
     async def _tmux(self, *args: str, timeout: float = 30.0, stdin: bytes | None = None) -> str:
         """Run ``tmux -u -L <socket> <args…>`` and return stdout.
 
@@ -322,6 +324,7 @@ class TmuxProvider(SessionProvider):
 
     # -- lifecycle ---------------------------------------------------------
 
+    @timed_operation("provider.tmux.start")
     async def start(self, spec: SessionSpec) -> SessionHandle:
         require_session_executable(spec)
         work_dir = Path(spec.work_dir)
@@ -335,12 +338,23 @@ class TmuxProvider(SessionProvider):
 
         # ``exec`` so the agent *is* the pane process, not a child of a
         # lingering shell — process discovery and signalling depend on it.
-        # tmux replaces a pane's PATH with the client's PATH even when
-        # new-session -e PATH=... set the session environment. Restore the
-        # same lookup context used by preflight at exec time; quote it as
-        # literal data, including relative entries and shell metacharacters.
-        launch_path = shlex.quote(spec.env.get("PATH", os.defpath))
-        shell_cmd = f"PATH={launch_path} exec " + " ".join(shlex.quote(a) for a in spec.command)
+        # -e overlays the persistent tmux server's environment; omitted keys
+        # can still leak from the shell that originally started that server.
+        # Start the agent with exactly the scrubbed env plus tmux's terminal
+        # metadata. Reapply PATH too: tmux substitutes the client's PATH even
+        # when -e set a different, preflight-validated value.
+        launch_env = {"PATH": os.defpath, **spec.env}
+        terminal_env = " ".join(
+            f'{key}="${key}"' for key in ("TERM", "TMUX", "TMUX_PANE")
+            if key not in launch_env
+        )
+        shell_cmd = "exec /usr/bin/env -i " + terminal_env + " " + " ".join(
+            shlex.quote(arg)
+            for arg in (
+                *(f"{key}={value}" for key, value in launch_env.items()),
+                *spec.command,
+            )
+        )
 
         args = ["new-session", "-d", "-s", spec.session_name, "-c", str(work_dir)]
         for key, value in spec.env.items():
@@ -539,6 +553,7 @@ class TmuxProvider(SessionProvider):
             # since, so look for it again on the remaining budget.
             ready_deadline = max(ready_deadline, time.monotonic() + dialog_budget.remaining())
 
+    @timed_operation("provider.tmux.stop")
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:
         if await self._fenced(h):
             pid = await self._pane_pid(h.name)
@@ -740,6 +755,7 @@ class TmuxProvider(SessionProvider):
                             await self._tmux("delete-buffer", "-b", buffer)
             self._last_input_at[h.name] = time.monotonic()
 
+    @timed_operation("provider.tmux.nudge")
     async def nudge(self, h: SessionHandle, text: str) -> None:
         lock = self._nudge_locks[h.name]
         async with lock:
