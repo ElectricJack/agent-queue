@@ -115,6 +115,7 @@ async def test_managed_validation_uses_two_worker_calls_and_detects_failure_on_s
         harness_tools=[], plugin_tools=[],
     ))
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Explicit legacy rollback transport coverage.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)
@@ -260,6 +261,7 @@ async def test_scoped_submit_commands_return_wait_pointer_and_preserve_replay(se
         )
     )
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # This transport checks legacy wait records below.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)
@@ -313,6 +315,7 @@ async def test_pool_scope_resolves_live_claim_for_submit_and_reads(setup, tmp_pa
         )
     )
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Preserve the legacy rollback scope contract.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)
@@ -994,12 +997,15 @@ async def test_run_outcome_commits_through_service_command_and_refusal_stays_due
         row("unit", "success", run_id="77", run_url="https://ci/runs/77", observed_at=20),
     ]
     key = f"ci_run:repo:{HEAD}:77"
-    # v2 off: the service commit is refused, nothing is written, the head stays due.
-    watched.config.wait_policy.v2_enabled = False
+    # A transport refusal must leave this exact head due for retry.
+    commit = watched.watcher.commit
+    watched.watcher.commit = AsyncMock(return_value={"success": False})
     assert await watched.watcher.tick() == 0
     assert not await source_events(watched.db, key)
     assert not watched.watcher._due
-    watched.config.wait_policy.v2_enabled = True
+    # Rollback flags must still allow source events for existing subscriptions.
+    watched.watcher.commit = commit
+    watched.config.wait_policy.v2_enabled = False
     assert await watched.watcher.tick() == 1
     rows = await source_events(watched.db, key)
     assert len(rows) == 1 and rows[0]["outcome_ref"] == "https://ci/runs/77"

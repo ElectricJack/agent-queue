@@ -19,12 +19,13 @@ _OPEN_STATES = ("reserved", "requested")
 
 class ReportQueriesMixin(MorningReportQueriesMixin):
     async def collect_morning_report_sources(
-        self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None
+        self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None,
+        channel_id: str | None = None
     ) -> dict[str, Any]:
         from src.reports.queries import read_morning_snapshot
 
         return await read_morning_snapshot(
-            self._engine, since=since, until=until, project_ids=project_ids
+            self._engine, since=since, until=until, project_ids=project_ids, channel_id=channel_id
         )
 
     async def reserve_hourly_report_in_transaction(

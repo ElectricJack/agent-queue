@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitAckArgs,
 ) -> Response[WaitAckResponse | WaitAckResponse422]:
-    """Wait ack.
+    """Acknowledge a verified wait outcome for the held claim.
 
-     Wait ack.
+     Acknowledge a verified wait outcome for the held claim.
 
     Args:
         body (WaitAckArgs):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitAckArgs,
 ) -> WaitAckResponse | WaitAckResponse422 | None:
-    """Wait ack.
+    """Acknowledge a verified wait outcome for the held claim.
 
-     Wait ack.
+     Acknowledge a verified wait outcome for the held claim.
 
     Args:
         body (WaitAckArgs):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitAckArgs,
 ) -> Response[WaitAckResponse | WaitAckResponse422]:
-    """Wait ack.
+    """Acknowledge a verified wait outcome for the held claim.
 
-     Wait ack.
+     Acknowledge a verified wait outcome for the held claim.
 
     Args:
         body (WaitAckArgs):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitAckArgs,
 ) -> WaitAckResponse | WaitAckResponse422 | None:
-    """Wait ack.
+    """Acknowledge a verified wait outcome for the held claim.
 
-     Wait ack.
+     Acknowledge a verified wait outcome for the held claim.
 
     Args:
         body (WaitAckArgs):

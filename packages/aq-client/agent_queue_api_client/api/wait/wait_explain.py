@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitExplainArgs,
 ) -> Response[WaitExplainResponse | WaitExplainResponse422]:
-    """Wait explain.
+    """Explain a verified wait's condition, evidence and outcome.
 
-     Wait explain.
+     Explain a verified wait's condition, evidence and outcome.
 
     Args:
         body (WaitExplainArgs):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitExplainArgs,
 ) -> WaitExplainResponse | WaitExplainResponse422 | None:
-    """Wait explain.
+    """Explain a verified wait's condition, evidence and outcome.
 
-     Wait explain.
+     Explain a verified wait's condition, evidence and outcome.
 
     Args:
         body (WaitExplainArgs):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitExplainArgs,
 ) -> Response[WaitExplainResponse | WaitExplainResponse422]:
-    """Wait explain.
+    """Explain a verified wait's condition, evidence and outcome.
 
-     Wait explain.
+     Explain a verified wait's condition, evidence and outcome.
 
     Args:
         body (WaitExplainArgs):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitExplainArgs,
 ) -> WaitExplainResponse | WaitExplainResponse422 | None:
-    """Wait explain.
+    """Explain a verified wait's condition, evidence and outcome.
 
-     Wait explain.
+     Explain a verified wait's condition, evidence and outcome.
 
     Args:
         body (WaitExplainArgs):

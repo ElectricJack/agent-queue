@@ -2,6 +2,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { GraphNodeDTO, OutcomeExplanationDTO } from "../../api/client";
 import { keyData, secondaryLine } from "./IntentSections";
 import {
+  valueDisplay,
   NODE_HEIGHT,
   NODE_RUN_STATE_LABELS,
   NODE_RUN_STATE_RINGS,
@@ -102,19 +103,19 @@ export function StepNodeCard({ data, selected = false }: CardProps) {
               key={`${row.label}:${index}`}
               role="listitem"
               data-input={row.label}
-              title={`${row.label}: ${row.value.display}`}
+              title={`${row.label}: ${valueDisplay(row.value)}`}
               className="flex min-w-0 items-baseline gap-1 rounded bg-black/25 px-1 text-[9px]"
             >
               <span className="shrink-0 opacity-60">{row.label}</span>
               <span className={`truncate ${row.value.redacted ? "font-mono text-rose-300" : ""}`}>
-                {row.value.display}
+                {valueDisplay(row.value)}
               </span>
             </span>
           ))}
           {summary.hidden.length > 0 && (
             <span
               role="listitem"
-              title={summary.hidden.map((row) => `${row.label}: ${row.value.display}`).join("\n")}
+              title={summary.hidden.map((row) => `${row.label}: ${valueDisplay(row.value)}`).join("\n")}
               className="shrink-0 rounded bg-black/25 px-1 text-[9px] opacity-70"
             >
               +{summary.hidden.length} more
