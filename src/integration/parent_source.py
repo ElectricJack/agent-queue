@@ -20,8 +20,8 @@ from src.integration.cancelled_collection_recovery import CancelledCollectionRec
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.ownership import BranchOwnership
 from src.integration.records import ParentEpisodeRecords
-from src.integration.parent_engine import parent_engine_guard
-from src.integration.review_evidence import ReviewEvidenceProducer
+from src.integration.owner_guards import parent_engine_guard
+from src.integration.reviews import ReviewEvidenceProducer
 from src.models import TaskStatus
 
 _OID = re.compile(r"^[0-9a-f]{40}$")

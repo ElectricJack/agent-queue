@@ -24,6 +24,10 @@ them. Import requires an empty target apart from Alembic bookkeeping and the imm
 `record_installation` identity seed created with the schema. That installation identity
 is preserved. Any other target data, including record scopes or knowledge, refuses import.
 Task record backfill and knowledge import remain separate, explicit operations.
+Revision `a00000000091` also excludes its seven human ask audit tables from legacy
+imports. Older review and escalation rows retain their data: missing nullable ask
+references become SQL NULL, and new version, entry-kind and lease fields receive
+their PostgreSQL defaults.
 
 The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [specs/models-and-state-machine](models-and-state-machine.md)). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
@@ -425,6 +429,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `credit_weight` | REAL | NOT NULL DEFAULT 1.0 | Scheduler weight |
 | `max_concurrent_agents` | INTEGER | NOT NULL DEFAULT 2 | Cap on parallel agents |
 | `status` | TEXT | NOT NULL DEFAULT 'ACTIVE' | One of: ACTIVE, PAUSED, ARCHIVED |
+| `supervisor_enabled` | BOOLEAN | NOT NULL DEFAULT false | Opt-in project supervisor; false for new and existing projects. Disabled projects route supervisor messages to the global supervisor, and reconciliation stops their live project supervisor after its current turn. Added by Alembic `a00000000094` ([project supervisor contract](../superpowers/specs/2026-10-12-project-supervisor-opt-in.md)) |
 | `total_tokens_used` | INTEGER | NOT NULL DEFAULT 0 | Cumulative token counter |
 | `budget_limit` | INTEGER | nullable | Max tokens allowed (NULL = unlimited) |
 | `workspace_path` | TEXT | nullable | **Deprecated/unused.** Legacy column kept for backward compatibility; workspace paths are now managed via the `workspaces` table. |
@@ -438,6 +443,9 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
 | `integration_repository_id` | TEXT | nullable | The one `repos.id` designated as the hierarchical-integration repository (child branches, candidate trains and root promotion all target it). NULL leaves the project `repository_not_designated` and blocks every mode above `disabled`. Added by Alembic `c7a1e5d92f40` |
 | `hierarchical_integration_policy` | JSON | nullable | Frozen policy pins (required checks, repair tiers, source-branch retention, legacy-route suppression) snapshotted into each batch and repair operation; NULL uses config defaults. Added by Alembic `e4c6a8b20d31` |
+| `promotion_flow` | JSONB | nullable | Validated ordered promotion steps, configured separately from hierarchical policy pins; NULL means no promotion flow. Added by Alembic `a00000000085` |
+| `default_branch_cutover` | JSONB | nullable | Generation-fenced cutover binding: repository ID, old and new defaults, activated generation and cutover time. Resolves pre-cutover top-level origins to the current default without rewriting immutable provenance; nested and later origins keep their recorded targets. Reverse clears the binding in the same transaction. Added by Alembic `a00000000086` |
+| `storage_binding` | JSONB | nullable | The project's current storage generation, written only by `aq project relocate` (`src/projects/relocation.py`) in one fenced transaction: `generation` (monotone), `paths` (old physical root → relocated root), `plan_digest`, `receipt`, `cache` and the `previous` binding. Readers map recorded paths through it (`src/projects/storage_binding.py`); NULL means configuration paths apply unchanged ([storage relocation runbook](../guides/matter-engine-storage-relocation.md)). Added by Alembic `a00000000118` |
 | `hierarchical_integration_desired_mode` | TEXT | NOT NULL DEFAULT 'disabled' | Mode the operator asked for with `integration_enable`; same value set as `hierarchical_integration_mode`. Differs from the effective mode while a drain is in progress. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
@@ -550,7 +558,9 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `title` | TEXT | NOT NULL | Short display name |
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
+| `effective_priority` | INTEGER | NOT NULL DEFAULT 100 | Derived wait-graph priority; revision a00000000110 backfills existing rows from priority once |
 | `status` | TEXT | NOT NULL DEFAULT 'DEFINED' | See task state machine |
+| `held_batch_id` | TEXT | nullable, indexed by `ix_tasks_held_batch_id` | Independent ingestion admission hold; cleared by atomic batch release. Added by revision `a00000000100` |
 | `verification_type` | TEXT | NOT NULL DEFAULT 'auto_test' | One of: auto_test, qa_agent, human |
 | `retry_count` | INTEGER | NOT NULL DEFAULT 0 | How many times this task has been retried |
 | `max_retries` | INTEGER | NOT NULL DEFAULT 3 | |
@@ -601,10 +611,10 @@ Directed edge: "`task_id` depends on `depends_on_task_id`" (i.e., `depends_on_ta
 |---|---|---|---|
 | `task_id` | TEXT | NOT NULL REFERENCES tasks(id) | The waiting task |
 | `depends_on_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Must complete first |
-| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. |
+| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `delivery-of`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. `delivery-of` represents a landed delivery obligation independently of task completion. |
 | (composite PK) | | PRIMARY KEY (task_id, depends_on_task_id, dep_type) | No duplicate edges *of the same type* |
 | (check) | | CHECK (task_id != depends_on_task_id) | No self-dependencies |
-| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the eight known types |
+| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the nine known types |
 
 Partial unique index `uq_task_deps_single_parent` on `task_id` where
 `dep_type = 'parent-child'` (swarm-work-model §4): enforces exactly one
@@ -1311,6 +1321,7 @@ sentinel for system-wide kinds.
 | `auto_attach` | BOOLEAN | NOT NULL DEFAULT false | Attached without being declared |
 | `mode` | TEXT | NOT NULL DEFAULT 'worktree' | Git provisioning strategy: worktree, exclusive-clone, or directory-isolated |
 | `worktree_setup` | TEXT | NOT NULL DEFAULT '[]' | JSON array of setup commands — **operator-authored, trusted** |
+| `max_slots` | INTEGER | nullable, CHECK max_slots > 0 | Additive revision a00000000102 prerequisite; limit enforcement is outside this schema leaf |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -1328,11 +1339,38 @@ acquires one workspace per declared kind, all-or-nothing, in canonical lock orde
 
 ### Table: `task_proposals`
 
-A batch of tasks and dependency edges proposed as one reviewable graph, before
-anything exists in the live work graph. Written by spec ingest and by agents via
-`task_batch_propose`; `task_batch_commit` materialises the whole batch atomically
-and flips `status` to `committed` in a single conditional update, so two
-concurrent commits cannot both win.
+A task change set proposed as one reviewable graph: new tasks, edits to existing
+tasks, dependency additions/removals, reparenting, lifecycle controls and comments.
+Written by spec ingest and supervisors via `task_batch_propose`. Propose/update
+validate the same connection-scoped implementation as commit in a rolled-back
+savepoint; no task or comment becomes visible until an approved commit.
+
+`task_batch_commit` locks the proposal row and applies the approved operations,
+the receipt and one
+`task.change_set_committed` audit event in a single transaction. It takes the
+fleet routing lock, project hierarchy lock and task/graph table write locks, so
+scheduler, routing and claim writes serialize with commit. The final graph's
+blocked projection and container settlement are computed before publishing;
+listeners run after commit. A stale scheduler promotion repeats its observed
+status, timestamp and unblocked predicate in the guarded write.
+
+An approved proposal is immutable once a human gate awaits it and cannot be
+discarded. Task versions, status/claim churn, metadata, gates and later edits do
+not invalidate its approval. Approved fields overwrite later values; fields
+outside the proposal retain their current values. Subsequent changes belong in
+a subsequent batch, without rebasing or requesting approval again.
+
+If a referenced task has disappeared, commit the remaining operations and
+report `missing_task_ids` and `skipped_operations` in the response, stored receipt
+and audit. Each skipped entry identifies the operation list, its zero-based
+index in the approved payload, and the missing task ids. Creates whose parent
+is missing (including descendants of a skipped create) are skipped rather than
+silently becoming roots. Operations involving those skipped creates are skipped
+too. Even an entirely skipped batch becomes committed with an empty receipt.
+A committed proposal replays its stored receipt, including omissions, even
+after its tasks have been archived.
+Live-holder controls, integration-owned placement/disposition and invalid state
+transitions are refused rather than bypassing existing lifecycle guards.
 
 `payload` is a JSON blob rather than normalised rows on purpose: a proposal is
 reviewed and committed or discarded as a unit, never queried edge-by-edge, and
@@ -1343,13 +1381,94 @@ its tasks do not have real ids until the commit creates them.
 | `id` | TEXT | PRIMARY KEY | `"prop-"` + uuid4[:12] |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
-| `payload` | TEXT | NOT NULL | JSON: `{"tasks":[{tempId,title,description,priority?},...], "edges":[{from,to,dep_type},...]}` |
-| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
+| `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, and committed `receipt`; legacy `expected` snapshots are ignored at commit; see [task change sets](../guides/task-change-sets.md) |
+| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, held, committed, discarded |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
 Index: `idx_task_proposals_project_status` on (`project_id`, `status`) — the
 review surface lists pending proposals per project.
+
+### Table: `ingest_batches`
+
+Held ingestion batch identity and release evidence, added by revision `a00000000100`.
+The source approval identity is unique per project; the optional design lineage
+must be entirely present or entirely absent (`ck_ingest_batches_design_lineage`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY REFERENCES task_proposals(id) | Existing proposal identity |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `source_review_id` | TEXT | NOT NULL | Immutable source review identity |
+| `source_revision` | INTEGER | NOT NULL | Approved source revision |
+| `source_content_sha256` | TEXT | NOT NULL | Approved content hash |
+| `decision_id` | TEXT | NOT NULL | Approval decision identity |
+| `design_review_id` | TEXT | nullable | Optional design ancestor review |
+| `design_revision` | INTEGER | nullable | Design ancestor revision |
+| `design_content_sha256` | TEXT | nullable | Design ancestor content hash |
+| `lineage_kind` | TEXT | NOT NULL, `ck_ingest_batches_lineage_kind` | `resolved` or `none` |
+| `idempotency_key` | TEXT | NOT NULL | Request replay identity |
+| `structure_revision` | INTEGER | NOT NULL DEFAULT 1 | Version of the proposed graph |
+| `structure_digest` | TEXT | NOT NULL | Canonical digest of that graph |
+| `state` | TEXT | NOT NULL DEFAULT 'held', `ck_ingest_batches_state` | `held`, `reviewing`, `needs_scope`, `released` or `retired` |
+| `check_results` | JSONB | nullable | Structural validation results |
+| `reviewer_task_id` | TEXT | nullable | Assigned fidelity reviewer task |
+| `reviewer_session_id` | TEXT | nullable | Reviewer session identity |
+| `reviewer_claim_epoch` | INTEGER | nullable | Reviewer claim fence |
+| `release_actor` | TEXT | nullable | Principal that released the batch |
+| `release_revision` | INTEGER | nullable | Released structure revision |
+| `release_digest` | TEXT | nullable | Released structure digest |
+| `released_at` | FLOAT | nullable | Release timestamp |
+| `release_receipt` | JSONB | nullable | Durable release evidence |
+| `created_at` | FLOAT | NOT NULL | Creation timestamp |
+| `updated_at` | FLOAT | NOT NULL | Last update timestamp |
+
+Unique constraint `uq_ingest_batches_source` covers (`project_id`,
+`source_review_id`, `source_revision`, `source_content_sha256`).
+
+### Table: `ingest_batch_members`
+
+Task membership and retirement history for an ingestion batch (revision
+`a00000000100`). Task identities are soft references so archival preserves the record.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY REFERENCES ingest_batches(batch_id) | Owning batch |
+| `task_id` | TEXT | PRIMARY KEY | Task identity, retained after archival |
+| `member_key` | TEXT | NOT NULL | Stable key within the batch |
+| `role` | TEXT | NOT NULL, `ck_ingest_batch_members_role` | `container`, `leaf` or `operational_root` |
+| `section_anchor` | TEXT | NOT NULL | Source section covered by this task |
+| `primary_outcome` | TEXT | NOT NULL | Intended task outcome |
+| `state` | TEXT | NOT NULL DEFAULT 'active', `ck_ingest_batch_members_state` | `active` or `retired` |
+| `retired_reason` | TEXT | nullable | Reason membership was retired |
+| `created_revision` | INTEGER | NOT NULL | Structure revision that introduced membership |
+| `retired_revision` | INTEGER | nullable | Structure revision that retired membership |
+
+Unique constraint `uq_ingest_batch_members_key` covers (`batch_id`, `member_key`).
+
+### Table: `ingest_batch_receipts`
+
+Fidelity review receipts bound to a batch's structure revision and digest
+(revision `a00000000100`). Reviewer identities survive task archival.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `receipt_id` | TEXT | PRIMARY KEY | Receipt identity |
+| `batch_id` | TEXT | NOT NULL REFERENCES ingest_batches(batch_id) | Reviewed batch |
+| `structure_revision` | INTEGER | NOT NULL | Reviewed structure version |
+| `structure_digest` | TEXT | NOT NULL | Reviewed graph digest |
+| `reviewer_task_id` | TEXT | NOT NULL | Reviewer task identity |
+| `reviewer_session_id` | TEXT | NOT NULL | Reviewer session identity |
+| `passing` | BOOLEAN | NOT NULL DEFAULT false | Whether the review passed |
+| `section_verdicts` | JSONB | NOT NULL | Verdict per source section |
+| `reverse_coverage_verdict` | TEXT | NOT NULL | Reverse coverage assessment |
+| `walkthrough_verdict` | TEXT | NOT NULL | Graph walkthrough assessment |
+| `structural_findings` | JSONB | NOT NULL | Structural review findings |
+| `created_at` | FLOAT | NOT NULL | Receipt timestamp |
+
+Partial unique index `uq_ingest_batch_receipts_passing` covers (`batch_id`,
+`structure_revision`) where `passing`: several failed receipts may be retained,
+but only one passing receipt exists for each structure revision.
 
 ### Table: `merge_slots`
 
@@ -2052,6 +2171,59 @@ are materialized so a crash between the two leaves an auditable row.
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `materialized_at` | REAL | nullable | When the remote branch appeared |
 
+### Table: `branch_retirements`
+
+Explicit branch retirement decisions and their reconciliation state
+(`docs/specs/design/branch-retirement.md`). A cancel, failed or abandoned
+close, obsolete close, container abandon or aborted batch queues a row in the
+same transaction; the retirement drain deletes the remote, local and
+origin-tracking refs under owner fences and SHA leases, preserving unmerged
+work in a verified bundle first. No foreign keys: the decision and its audit
+outlive tasks and repositories.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Retirement id |
+| `request_id` | TEXT | NOT NULL | Idempotency key of the deciding transition; UNIQUE with `repository_id`, `branch` |
+| `project_id` | TEXT | NOT NULL | Owning project (logical reference) |
+| `repository_id` | TEXT | NOT NULL | Repository the branch lives in |
+| `task_id` | TEXT | nullable | Task whose branch is retired, NULL for batch candidates |
+| `branch` | TEXT | NOT NULL | Branch name to retire |
+| `reason` | TEXT | NOT NULL | Why the branch is retired (cancel, failed close, superseded, …) |
+| `claim_epoch` | INTEGER | nullable | Claim epoch the decision was made under |
+| `requested_at` | REAL | NOT NULL | Unix timestamp |
+| `state` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, complete, conflict, withdrawn (`ck_branch_retirements_state`) |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Reconcile attempts (`ck_branch_retirements_attempts`) |
+| `next_attempt_at` | REAL | NOT NULL DEFAULT 0 | Next reconcile time; `ix_branch_retirements_due` indexes `(state, next_attempt_at)` |
+| `last_error` | TEXT | nullable | Last reconcile failure |
+| `evidence` | JSONB | NOT NULL DEFAULT '{}' | Pre-delete SHAs, bundle identities and per-ref outcomes |
+
+### Table: `branch_deletion_audit`
+
+Retained predecessor audit history: the name and head SHA of every abandoned
+branch, recorded before anything was deleted, so an unmerged branch stays
+identifiable and restorable from its verified bundle after the ref is gone.
+Unfinished rows are imported once into `branch_retirements` with their
+original SHA as a deletion precondition. No foreign key to `tasks`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Audit id |
+| `project_id` | TEXT | NOT NULL | Owning project; `ix_branch_deletion_audit_branch` indexes `(project_id, branch)` |
+| `repository_id` | TEXT | nullable | Repository the branch lived in |
+| `task_id` | TEXT | nullable | Task whose branch was abandoned |
+| `branch` | TEXT | NOT NULL | Branch name |
+| `head_sha` | TEXT | NOT NULL | 40-character lowercase SHA (`ck_branch_deletion_audit_head_sha`) |
+| `reason` | TEXT | NOT NULL | One of: obsolete_close, cancel, fail_close, supersede, abort, delete (`ck_branch_deletion_audit_reason`) |
+| `detail` | TEXT | nullable | Human explanation from the deciding transition |
+| `outcome` | TEXT | NOT NULL | One of: pending, deleted, held, failed, moved (`ck_branch_deletion_audit_outcome`) |
+| `detail_reason` | TEXT | nullable | Why a held/failed/moved row was not deleted |
+| `backup_path` | TEXT | nullable | Bundle holding the tip when it was not reachable from the default branch |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Delete attempts (`ck_branch_deletion_audit_attempts`) |
+| `next_attempt_at` | REAL | nullable | Next retry; `ix_branch_deletion_audit_due` is partial on `outcome = 'pending'` |
+| `recorded_at` | REAL | NOT NULL | Unix timestamp |
+| `deleted_at` | REAL | nullable | When the ref was confirmed gone |
+
 ### Table: `integration_branch_owners`
 
 Exclusive, fenced ownership of a ref in the integration repository.  Every
@@ -2071,6 +2243,7 @@ a stale owner's push is rejected before it reaches the remote.
 | `workspace_id` | TEXT | nullable | Workspace the owner works in |
 | `confirmed_workspace_id` | TEXT | nullable | Workspace whose checkout was verified to match the ref |
 | `expires_at` | REAL | nullable | Lease expiry for time-bounded owners |
+| `delegation` | JSONB | nullable | Publication delegation binding and audit while `owner_id` is `publication-delegation:<id>`; cleared by the next acquisition ([delegated-integration-publication.md](design/delegated-integration-publication.md)) |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
 
@@ -2079,6 +2252,34 @@ a stale owner's push is rejected before it reaches the remote.
 Exact source CI observation and durable repair lineage. Source identity is the
 composite primary key; policy generation fences admission. Logical task IDs retain
 history after archive and refuse hard deletion through the integration guard.
+
+Discarding a task's completion (including reopen with feedback) atomically
+retires its source-CI repairs, including previous attempts and repairs of those
+repairs. Open and completed repairs become terminal failures with no retry,
+their branch origins retire, and a comment plus `source_ci_retirement` metadata
+names the source head and reopen context. Retained lineage remains audit history.
+The train checks that every repair ancestor still has the bound current completion
+head before admission and publication; otherwise it reports
+`source_ci_repair_superseded`. A repair of the current head remains deliverable,
+including when that source has already delivered.
+
+Admission withholds a repair that is superseded *or* terminal — it reports
+`source_ci_repair_failed` for a repair whose own task is FAILED, which owes no
+target any delivery — however the repair reached it, including as a frozen batch
+member re-added to the candidate window. A repair that cannot publish therefore
+never holds a batch, and never holds a target: the open batch carrying one is
+released by the same automatic supersession a refreshed stack uses, so the
+corrected source the repair was filed against is admitted on the next visit
+instead of waiting behind it. An explicitly paused batch is never released this
+way, and a member whose task identity cannot be resolved to exactly one project
+names the operator abort instead.
+
+Only `red` files a repair. `cancelled` — every non-success required check
+cancelled, nothing pending, no required check failed — is infrastructure: the
+observation waits, re-requests the cancelled check suites of that exact head
+under bounded backoff (`infra_*`), and files no task; after
+`root.repair.source_ci_infra_attempts` consecutive such observations it names
+`source_ci_infrastructure` instead of looping.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
@@ -2094,6 +2295,9 @@ history after archive and refuse hard deletion through the integration guard.
 | `repair_attempt` | INTEGER | NOT NULL, default 0, `>= 0` | Successor count |
 | `repair_history` | JSONB | NOT NULL, default `[]` | Previous repair task/attempt identities |
 | `observed_at` | REAL | NOT NULL | Unix timestamp |
+| `infra_observations` | INTEGER | NOT NULL, default 0, `>= 0`, `a00000000079` | Consecutive infrastructure-only (cancellation-only) observations of this exact head; reset by any other observation |
+| `infra_rerun_at` | REAL | nullable, `a00000000079` | Earliest time a re-run of this exact head may be requested again (bounded exponential backoff) |
+| `infra_reruns` | INTEGER | NOT NULL, default 0, `>= 0`, `a00000000079` | Re-run requests issued for this exact head |
 
 ### Table: `integration_root_authorizations`
 
@@ -2354,6 +2558,11 @@ that will be built into a candidate and promoted to `main` together.
 | `pr_url` | TEXT | nullable | Audit PR for the candidate |
 | `repair_stage_ordinal` | INTEGER | nullable, `>= 0` | Active repair stage |
 | `tested_candidate_sha` | TEXT | nullable | Candidate head CI ran on |
+| `baseline_candidate_sha` | TEXT | nullable, `a00000000080` | Exact candidate whose failing required checks the target also failed, or has not decided |
+| `baseline_generation` | INTEGER | NOT NULL DEFAULT 0, `>= 0`, `a00000000080` | Repair generation those counters describe |
+| `baseline_observations` | INTEGER | NOT NULL DEFAULT 0, `>= 0`, `a00000000080` | Consecutive unrepairable red observations of that exact candidate; reset by any other candidate or repair generation |
+| `baseline_reruns` | INTEGER | NOT NULL DEFAULT 0, `>= 0`, `a00000000080` | Re-requests issued for that exact candidate |
+| `baseline_rerun_at` | REAL | nullable, `a00000000080` | Earliest time the candidate's failing suites may be re-requested again (bounded exponential backoff) |
 | `ci_evidence_id` | TEXT | nullable | Green `integration_check_evidence` |
 | `final_main_sha` | TEXT | nullable | `main` after promotion |
 | `human_abort_reason` | TEXT | nullable | Operator abort reason |
@@ -2364,7 +2573,68 @@ that will be built into a candidate and promoted to `main` together.
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
 
 Partial unique index `uq_integration_batches_active_project` allows one
-non-terminal batch per project.
+non-terminal batch per project over `target_ref IS NULL` rows only. A row with a
+`target_ref` is the Git-first train's additive input/intent shape, advanced
+solely by that train: it is never mutually exclusive with a legacy batch, never
+reads as busy to the legacy scheduler, and never holds its members out of the
+legacy frontier — so a rollback to `integration.git_first: shadow` leaves it
+inert rather than blocking. See
+[the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
+
+A red Git-first candidate is repaired only where the target commit it was built
+on does not also fail the same required check. An epic whose only failures are
+proven pre-existing may receive one ordinary sync repair to merge the current
+default branch's exact head, when that head is train-produced or attested and
+its own trusted checks pass every failing name. The repair input pins the
+default ref, SHA, check names and provenance. Its ordinary filing dedup key
+(`repair:<batch-id>:sync-default-branch`) bounds sync to one task per batch across
+candidate generations, restarts and archival. Hierarchical frontier admission
+recognizes this key as well as the numeric ordinary repair key. The sync task
+must still be the deterministic filing for the batch's current allocation,
+with its exact repair input and managed branch reservation in the designated
+repository; it receives no canonical task origin. A released reservation or a
+mismatched batch, allocation, repository or branch does not authorize admission.
+Candidate observation restores a detached reservation only through the existing
+allocator recovery and fresh exact publication proof, without filing another
+task or refreshing an active writer's fence. The worker retains every frozen
+member, resolves source conflicts and regenerates generated files; publication
+still requires trusted checks and attestation on the repaired exact candidate.
+The train inspects the pinned merge without changing refs or resolving code,
+and passes conflicting filenames through the existing conflict repair brief.
+A completed epic with every required child already contained can freeze a
+`train-epic-sync-` batch over those exact retained completion sources and the
+collected head. Retired origins and archived children are allowed; tasks are
+never reopened and no new child is filed. This batch owes its own tested
+candidate publication despite the children's prior inclusion. Its identity
+does not change when the default branch moves, so spent or aborted syncs do
+not become new attempts against the same collected head.
+Root targets, unproven failures, and default heads with red, missing, pending or
+untrusted evidence keep the existing behavior. The `baseline_*` columns bound the
+re-requests of that candidate's own suites and name
+`candidate_pre_existing_failure` for a human once three consecutive observations
+were unrepairable.
+
+Only an observed `FAILURE` on the exact target commit establishes a pre-existing
+failure. A `MISSING` required target check makes the baseline unavailable: the
+target may never have run the required workflow, as with a hand-pushed `main`.
+Without a comparable baseline, candidate failures remain repairable. This does
+not satisfy any candidate check or change the trusted evidence needed to publish.
+Train status retains the baseline decision on both repair and re-request visits.
+Before classifying a red candidate, refresh the exact target's checks even when
+the cache has a final verdict. A rerun can supersede that verdict without moving
+the target SHA; a stale red must never suppress repair after the target turns green.
+An undecided target still receives a request before that refresh.
+
+For a `train-epic-refresh-` batch, compare against the default-branch SHA in
+its single frozen member, using the repository's default ref. The epic's own
+red checks cannot establish a pre-existing default-branch failure. Later default
+commits do not replace this frozen baseline. A check the default passes remains
+repairable even after the repair budget is exhausted; it never permits red
+candidate publication. Status names the default baseline and the supervisor's
+action to repair the refresh candidate or abort the batch. Exhaustion sends one
+supervisor incident with those actions; ejecting the frozen default input is
+not a recovery action for a refresh. Publication still needs trusted checks and
+attestation on the exact candidate.
 
 ### Table: `integration_batch_members`
 
@@ -2643,6 +2913,32 @@ policy, writer and deadline.
 | `dossier` | JSON | nullable | Debug dossier handed to the next stage / human |
 | `state` | TEXT | NOT NULL | One of: pending, active, awaiting_completion, passed, failed, expired, cancelled |
 | `completed_at` | REAL | nullable | Unix timestamp |
+
+### Table: `operator_decisions`
+
+Shared, durable operator instructions on an integration object (a task, batch or
+repair operation), written by `src/operator_decisions.py`. Rows are append-only:
+a `hold` stays active until a later `release` row names it, and the integration
+engine refuses to advance a held object. Any supervisor reads the same history,
+so no instruction lives only in one session's local state.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PK | Decision id |
+| `project_id` | TEXT | NOT NULL | Owning project of the object |
+| `object_kind` | TEXT | NOT NULL | `task`, `batch` or `operation` (`ck_operator_decisions_object_kind`) |
+| `object_id` | TEXT | NOT NULL | Id of the object the decision targets |
+| `effect` | TEXT | NOT NULL | `note`, `hold` or `release` (`ck_operator_decisions_effect`) |
+| `operator` | TEXT | NOT NULL | Who made the decision |
+| `decision` | TEXT | NOT NULL | The instruction text |
+| `source` | TEXT | NOT NULL | Where the decision came from |
+| `source_ref` | TEXT | NOT NULL | Reference within that source |
+| `recorded_by` | TEXT | NOT NULL | Who recorded the row |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `idempotency_key` | TEXT | NOT NULL | Unique per project (`uq_operator_decisions_request`) |
+| `releases` | TEXT | FK operator_decisions.id, nullable, UNIQUE | Set exactly when `effect = 'release'` (`ck_operator_decisions_release`); a hold is released at most once |
+
+Index `ix_operator_decisions_object` on (`project_id`, `object_kind`, `object_id`).
 
 ### Table: `integration_delegate_releases`
 
@@ -2961,21 +3257,6 @@ it was issued against.  Append-only.
 | `consumed_by` | TEXT | NOT NULL, non-empty | Actor |
 | `consumed_at` | REAL | NOT NULL | Unix timestamp |
 
-### Table: `integration_legacy_gate_applicability`
-
-Per-gate evidence of whether a pre-rollout legacy gate still applies after a
-waived transition.  Append-only.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `project_id` | TEXT | PK (with `gate_id`), REFERENCES projects(id) ON DELETE RESTRICT | Project |
-| `gate_id` | TEXT | PK, REFERENCES gates(id) ON DELETE RESTRICT | Legacy gate |
-| `waiver_id` | TEXT | NOT NULL REFERENCES integration_history_waivers(id) ON DELETE RESTRICT | Waiver |
-| `transition_id` | TEXT | NOT NULL REFERENCES integration_rollout_transitions(id) ON DELETE RESTRICT | Transition |
-| `blocker_digest` | TEXT | NOT NULL | `sha256:` digest |
-| `applicable` | BOOLEAN | NOT NULL | Gate still applies |
-| `created_at` | REAL | NOT NULL | Unix timestamp |
-
 ### Table: `integration_legacy_suppression`
 
 The one deliberately mutable rollout projection: which legacy routes (merge
@@ -3088,6 +3369,44 @@ values.
  | `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
  | `created_at` | REAL | NOT NULL | Unix timestamp |
 
+### Table: `integration_close_attempts`
+
+Author-assisted close proposals (`src/integration/close_merge.py`): one row per
+close generation that merges a worker's source into its parent branch through a
+retained candidate ref.  A row describes retained work, never delivery: every
+resume re-observes Git, current policy and the live claim, including after an
+uncertain push, and only the publisher transports parent writes.  Each save is a
+compare-and-set on `version` and records a `close_merge:<id>` wait source event,
+so author budgets are verified waits (`wait_records.condition_kind`
+`close_merge`).  Revision `a00000000117` creates the table conditionally and
+widens `ck_wait_records_condition_kind`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Operation id (UUID); names the candidate ref |
+| `project_id` | TEXT | NOT NULL, FK `projects.id` | Project |
+| `task_id` | TEXT | NOT NULL | Closing task; with `session_id`, `claim_epoch`, `source_oid` and `target_ref`: UNIQUE (`uq_integration_close_generation`), so a repeated close resumes the same proposal |
+| `session_id` | TEXT | NOT NULL | Session that proposed the close |
+| `claim_epoch` | INTEGER | NOT NULL | Claim epoch of the proposing claim |
+| `repository_id` | TEXT | NOT NULL | Integration repository |
+| `target_task_id` | TEXT | NOT NULL | Parent task whose branch receives the merge |
+| `target_ref` | TEXT | NOT NULL | Parent branch ref (`refs/heads/…`) |
+| `source_oid` | TEXT | NOT NULL | Worker source commit being merged |
+| `base_oid` | TEXT | nullable | Parent tip the candidate was built on; a rewritten parent defers the close |
+| `candidate_oid` | TEXT | nullable | Candidate merge commit |
+| `candidate_path` | TEXT | nullable | Checkout holding the candidate while the author resolves it |
+| `candidate_ref` | TEXT | NOT NULL | `refs/heads/aq/close/<id>` |
+| `state` | TEXT | NOT NULL | One of: preparing, needs_author, checking, publish_uncertain, finished, deferred, cancelled (`ck_integration_close_state`); `cancelled` when the source or policy changed |
+| `version` | INTEGER | NOT NULL DEFAULT 0 | Compare-and-set counter (`ck_integration_close_counters`: `>= 0`) |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0 | Rebuilds after parent movement; the limit defers to the publisher |
+| `policy_digest` | TEXT | nullable | Digest of the close policy the candidate was checked under |
+| `evidence` | JSONB | NOT NULL | Exact-check evidence for the candidate |
+| `close_args` | JSONB | NOT NULL | The original close arguments, replayed on completion |
+| `budget_wait_id` | TEXT | nullable | Verified wait bounding the author's budget while `needs_author` |
+| `last_failure` | TEXT | nullable | Last deferral or cancellation reason |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
 ### Table: `test_selections`
 
 Immutable smart-test-selection record: one row per selection request, capturing the exact change snapshot, the provenance digests (catalogue, rules, policy), the module decision with its stage breakdown, and the execution/usage metadata.  Result evidence (local runs, CI, replays) is never amended into it — it is appended to `test_selection_observations` instead.  `task_id` is a soft reference (no foreign key): archive removes the live task row, so the selection history is preserved until retention expires, as escalation audit rows are.  `src/database/queries/test_selection_queries.py` is the sole reader/writer.  Revision `a00000000028` creates the table.
@@ -3173,6 +3492,48 @@ Append-only (except revocation) record of an omission policy a project earned: t
 | `revoked_at` | REAL | nullable | NULL while active |
 | `revoke_reason` | TEXT | nullable | Why it was revoked |
 
+### Table: `agent_cron`
+
+Session-owned recurring prompts introduced by PostgreSQL revision `a00000000086`
+([recurrence design](design/agent-cron.md)). A registration belongs to one live
+session instance; worker registrations also bind to their task claim. Projectless
+supervisors retain NULL project scope. Session, task and pending-message references
+are soft so history survives owner turnover. This table stores prompt scheduling
+and message delivery diagnostics; it does not record code integration or retain a
+worker claim as a durable wait does.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Stable schedule id |
+| `project_id` | TEXT | nullable, FK → projects | NULL for projectless supervisors |
+| `session_id` | TEXT | NOT NULL | Registering session |
+| `session_instance_token` | TEXT | NOT NULL | Owning live session instance |
+| `owner_task_id` | TEXT | nullable | Held task for a worker registration |
+| `claim_epoch` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Worker claim fence |
+| `idempotency_key` | TEXT | NOT NULL | Unique with session id and instance token |
+| `prompt` | TEXT | NOT NULL | Prompt to deliver to the owner |
+| `recurrence` | JSONB | NOT NULL | Validated interval or restricted cron expression and timezone |
+| `state` | TEXT | NOT NULL DEFAULT 'active', CHECK: active, cancelled, expired | Schedule lifecycle |
+| `created_at` | REAL | NOT NULL | Registration time |
+| `next_fire_at` | REAL | NOT NULL | Next strictly future tick |
+| `checked_at` | REAL | NOT NULL DEFAULT 0 | Last bounded daemon scan |
+| `stopped_at` | REAL | nullable | Cancellation or owner-expiry time |
+| `tick_count` | INTEGER | NOT NULL DEFAULT 0 | Emitted prompt count |
+| `coalesced_count` | INTEGER | NOT NULL DEFAULT 0 | Missed ticks coalesced instead of replayed |
+| `pending_message_id` | TEXT | nullable | At most one pending prompt message |
+| `pending_until` | REAL | nullable | Pending prompt expiry |
+| `delivery_attempts` | INTEGER | NOT NULL DEFAULT 0, `0 <= value <= 5` | Terminal submission attempts |
+| `next_attempt_at` | REAL | NOT NULL DEFAULT 0 | Retry backoff deadline |
+| `last_delivery_at` | REAL | nullable | Last successful submission time |
+| `last_delivery_status` | TEXT | nullable | Prompt delivery diagnostic |
+| `last_error` | TEXT | nullable | Last delivery failure |
+
+`uq_agent_cron_idempotency` covers `(session_id, session_instance_token,
+idempotency_key)`. `ck_agent_cron_state` bounds lifecycle values and
+`ck_agent_cron_attempts_epoch` bounds attempts and claim epoch.
+`idx_agent_cron_scan` indexes `(state, checked_at, next_fire_at)`.
+Legacy SQLite files predate this table and have no schedules to import.
+
 ### Table: `agent_waits`
 
 One row per durable condition an agent keeps open while it stays blocked on
@@ -3214,6 +3575,249 @@ updates against the epoch.
 | `idempotency_key` | TEXT | NOT NULL | Registration key (`uq_agent_waits_idempotency`) |
 | `result_message_id` | TEXT | nullable | Message that carried the result to the owner |
 
+
+### Table: `wait_bridge_progress`
+
+Durable legacy-wait migration receipts, independent of source and timer listener
+cursors. Per-object receipts survive partial passes; identity `*` records guarded
+phase completion. A held object prevents its phase from completing.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY (composite), FK → projects.id |
+| `phase` | TEXT | PRIMARY KEY (composite), CHECK: project, agent-waits, audit, sessionless |
+| `identity` | TEXT | PRIMARY KEY (composite) |
+| `state` | TEXT | NOT NULL, CHECK: pending, complete, held |
+| `evidence` | JSONB | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `wait_records`
+
+Verified typed conditions, their source watermark, evidence, sleep decision and immutable outcome. Agent commentary lives in claimed separately from verified evidence. Partial unique indexes admit one pending non-scheduler wait per owner, deduplicate registrations and legacy translations, and allow multiple distinct scheduler blockers.
+
+Added by revision `a00000000110`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, FK → projects.id |
+| `owner_kind` | TEXT | NOT NULL |
+| `owner_id` | TEXT | NOT NULL |
+| `origin` | TEXT | NOT NULL |
+| `session_id` | TEXT | nullable |
+| `claim_epoch` | INTEGER | nullable |
+| `condition_kind` | TEXT | NOT NULL |
+| `condition` | JSONB | NOT NULL |
+| `source_key` | TEXT | NOT NULL |
+| `source_generation` | INTEGER | NOT NULL |
+| `source_watermark_seq` | BIGINT | NOT NULL |
+| `verification_state` | TEXT | NOT NULL |
+| `evidence_ref` | TEXT | NOT NULL |
+| `verified_at` | FLOAT | NOT NULL |
+| `created_at` | FLOAT | NOT NULL |
+| `escalate_at` | FLOAT | nullable |
+| `due_at` | FLOAT | nullable |
+| `ceiling_anchor_at` | FLOAT | nullable |
+| `sleep_decision` | TEXT | nullable |
+| `decision_reason` | TEXT | nullable |
+| `decision_inputs` | JSONB | nullable |
+| `idempotency_key` | TEXT | nullable |
+| `request_hash` | TEXT | NOT NULL |
+| `claimed` | TEXT | nullable |
+| `outcome` | TEXT | NOT NULL, DEFAULT pending |
+| `resolved_at` | FLOAT | nullable |
+| `result_ref` | TEXT | nullable |
+| `blocking` | BOOLEAN | NOT NULL, DEFAULT false |
+| `cleared_at` | FLOAT | nullable |
+| `legacy_kind` | TEXT | nullable |
+| `legacy_id` | TEXT | nullable |
+| `wake_delivered_at` | FLOAT | nullable |
+| `version` | INTEGER | NOT NULL, DEFAULT 1 |
+
+### Table: `wait_edges`
+
+Semantic and resource edges in the wait graph. Waiter and blocker keys identify tasks, batches, slots, branches or sessions; only active edges participate in priority inheritance.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `waiter_key` | TEXT | NOT NULL |
+| `waiter_project_id` | TEXT | NOT NULL |
+| `blocker_key` | TEXT | NOT NULL |
+| `blocker_project_id` | TEXT | NOT NULL |
+| `relation` | TEXT | NOT NULL |
+| `source_revision` | TEXT | NOT NULL |
+| `active` | BOOLEAN | NOT NULL, DEFAULT true |
+| `created_at` | FLOAT | NOT NULL |
+| `cleared_at` | FLOAT | nullable |
+
+### Table: `wait_source_events`
+
+Transactional source outbox. The identity sequence is the registration watermark; the unique source key, generation and revision make repeated source writes idempotent. The undispatched partial index drives recovery after a listener restart.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `seq` | BIGINT | PRIMARY KEY, IDENTITY |
+| `id` | TEXT | NOT NULL |
+| `source_key` | TEXT | NOT NULL |
+| `source_generation` | INTEGER | NOT NULL |
+| `source_revision` | TEXT | NOT NULL |
+| `occurred_at` | FLOAT | NOT NULL |
+| `committed_at` | FLOAT | NOT NULL |
+| `outcome_ref` | TEXT | NOT NULL |
+| `payload_hash` | TEXT | NOT NULL |
+| `payload` | JSONB | NOT NULL |
+| `dispatched_at` | FLOAT | nullable |
+
+### Table: `wait_listener_cursors`
+
+Durable source and timer listener cursors. Lease owner and expiry elect one dispatcher; last_seq records the dispatched watermark.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `listener_key` | TEXT | PRIMARY KEY |
+| `last_seq` | BIGINT | NOT NULL |
+| `lease_owner` | TEXT | nullable |
+| `lease_expires_at` | FLOAT | nullable |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `wait_deadlines`
+
+Generation-fenced due, escalation, ceiling, transition and reservation deadlines. The due index excludes fired or cancelled rows; the wait/type/generation unique key prevents duplicate firing intents.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `deadline_type` | TEXT | NOT NULL |
+| `due_at` | FLOAT | NOT NULL |
+| `generation` | INTEGER | NOT NULL |
+| `fired_at` | FLOAT | nullable |
+| `cancelled_at` | FLOAT | nullable |
+
+### Table: `wait_escalations`
+
+Wait-specific supervisor decisions linked to the authoritative escalation. Original age and prior escalation identity preserve history when a deadline is extended; nullable decision fields represent an unanswered incident.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `generation` | INTEGER | NOT NULL |
+| `escalation_id` | TEXT | NOT NULL, FK → escalations.id |
+| `raised_at` | FLOAT | NOT NULL |
+| `original_age_seconds` | FLOAT | NOT NULL |
+| `supervisor_session_id` | TEXT | nullable |
+| `decision` | TEXT | nullable |
+| `decided_at` | FLOAT | nullable |
+| `note` | TEXT | nullable |
+| `prior_escalation_id` | TEXT | nullable |
+
+### Table: `continuations`
+
+Saved hibernation state and fresh-session resume intents. Summary size is bounded to 8 KiB of UTF-8 bytes. One active continuation per task and one intent per wait/suspension generation prevent duplicate writable resumes. A failed transition preserves branch, facts and hold reason.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `task_id` | TEXT | NOT NULL, no FK; retained suspension audit after task removal |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `suspension_generation` | INTEGER | NOT NULL |
+| `summary` | TEXT | nullable |
+| `summary_sha256` | TEXT | nullable |
+| `summary_degraded` | BOOLEAN | NOT NULL, DEFAULT false |
+| `facts` | JSONB | NOT NULL |
+| `branch` | TEXT | NOT NULL |
+| `saved_head` | TEXT | nullable |
+| `prior_status` | TEXT | NOT NULL |
+| `held_cursor_seq` | BIGINT | NOT NULL |
+| `resume_state` | TEXT | NOT NULL |
+| `hold_reason` | TEXT | nullable |
+| `launch_attempts` | INTEGER | NOT NULL, DEFAULT 0 |
+| `new_session_id` | TEXT | nullable |
+| `envelope_id` | TEXT | nullable |
+| `created_at` | FLOAT | nullable |
+| `stopped_at` | FLOAT | nullable |
+| `resumed_at` | FLOAT | nullable |
+| `acknowledged_at` | FLOAT | nullable |
+| `version` | INTEGER | NOT NULL, DEFAULT 1 |
+
+### Table: `admission_reservations`
+
+Priority and FIFO admission intent for branch blockers, resumes and train repairs. An identity sequence orders arrivals. A partial unique expression index on COALESCE(task_id, continuation_id) admits one pending, overdue or granted reservation per subject.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, FK → projects.id |
+| `task_id` | TEXT | nullable, FK → tasks.id |
+| `continuation_id` | TEXT | nullable, FK → continuations.id |
+| `scope` | JSONB | NOT NULL |
+| `effective_priority` | INTEGER | NOT NULL |
+| `provenance` | TEXT | NOT NULL |
+| `deadline_at` | FLOAT | NOT NULL |
+| `fifo_seq` | BIGINT | NOT NULL, IDENTITY |
+| `state` | TEXT | NOT NULL |
+| `lease_owner` | TEXT | nullable |
+| `lease_expires_at` | FLOAT | nullable |
+| `consumed_by_session_id` | TEXT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `granted_at` | FLOAT | nullable |
+| `consumed_at` | FLOAT | nullable |
+
+### Table: `wait_measurements`
+
+Recorded wait durations and hibernation costs, bucketed by project, condition kind and source class. Nullable token and timing measurements preserve missing observations instead of reporting zero.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, FK → projects.id |
+| `condition_kind` | TEXT | NOT NULL |
+| `source_class` | TEXT | NOT NULL |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `decision` | TEXT | NOT NULL |
+| `waited_seconds` | FLOAT | NOT NULL |
+| `hibernated` | BOOLEAN | NOT NULL |
+| `evicted` | BOOLEAN | NOT NULL |
+| `summary_tokens` | INTEGER | nullable |
+| `resume_tokens` | INTEGER | nullable |
+| `teardown_seconds` | FLOAT | nullable |
+| `setup_seconds` | FLOAT | nullable |
+| `rebuild_seconds` | FLOAT | nullable |
+| `recorded_at` | FLOAT | NOT NULL |
+
+### Table: `wait_priority_projection`
+
+Derived-priority provenance per task: donor identity, donor path, graph version and computation time. Base priority remains operator input on tasks.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY, FK → tasks.id |
+| `donor_task_id` | TEXT | nullable |
+| `donor_path` | JSONB | NOT NULL |
+| `graph_version` | BIGINT | NOT NULL |
+| `computed_at` | FLOAT | NOT NULL |
+
 ### Table: `jobs`
 
 One row per managed job: a detached, harness-independent command with an
@@ -3237,21 +3841,27 @@ output-reservation contract visible on the row.
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
 | `id` | TEXT | PRIMARY KEY | Job id |
-| `project_id` | TEXT | NOT NULL | Project (soft reference, no foreign key) |
+| `project_id` | TEXT | nullable for system/profile playbook jobs | Project (soft reference, no foreign key) |
 | `task_id` | TEXT | nullable | Owning task when `owner_kind = 'task'` |
-| `owner_kind` | TEXT | NOT NULL, CHECK: task, integration | Submission owner |
-| `owner_id` | TEXT | NOT NULL | Owner's task or integration operation id |
+| `owner_kind` | TEXT | NOT NULL, CHECK: task, integration, playbook | Submission owner |
+| `owner_id` | TEXT | NOT NULL | Owner's task, integration operation or playbook run id |
 | `submitter_session_id` | TEXT | nullable | Session that submitted, if any |
 | `claim_epoch` | INTEGER | nullable | Claim epoch the submission belonged to |
 | `integration_operation_id` | TEXT | nullable | Integration operation for `owner_kind = 'integration'` |
+| `playbook_run_id` | TEXT | nullable, FK → playbook_v2_runs (RESTRICT) | Actual script run owner |
+| `playbook_step_id` | TEXT | nullable | Pinned script step |
+| `iteration_path` | TEXT | nullable | Full nested iteration identity |
+| `attempt` | INTEGER | nullable, positive for playbook jobs | Original script attempt |
+| `artifact_digest` | TEXT | nullable | Reviewed script artifact digest |
+| `input_root` | TEXT | nullable | Retained immutable input storage |
 | `idempotency_key` | TEXT | NOT NULL | Submission key (`uq_jobs_owner_key`) |
 | `request_hash` | TEXT | NOT NULL | Digest of the exact submission request |
 | `preset` | TEXT | NOT NULL | Preset id the job runs under |
 | `preset_version` | INTEGER | NOT NULL | Preset generation at submission |
 | `argv` | JSON | NOT NULL | The command to run |
 | `contract` | JSON | NOT NULL | Admission contract (budgets, limits, expectations) |
-| `workspace_id` | TEXT | NOT NULL | Workspace the job runs in |
-| `workspace_generation` | INTEGER | NOT NULL | Workspace generation pinned for the run |
+| `workspace_id` | TEXT | nullable for playbook jobs | Workspace the job runs in |
+| `workspace_generation` | INTEGER | nullable for playbook jobs | Workspace generation pinned for the run |
 | `input_mode` | TEXT | NOT NULL, CHECK: live, snapshot | Whether inputs are live or a pinned snapshot |
 | `input_ref` | TEXT | nullable | Snapshot reference in `snapshot` mode |
 | `input_fingerprint` | TEXT | nullable | Fingerprint of the pinned inputs |
@@ -3283,6 +3893,21 @@ output-reservation contract visible on the row.
 | `output_reservation_bytes` | BIGINT | NOT NULL DEFAULT 67108864 | Reserved output budget (default 64 MiB) |
 | `cleanup_blocked` | BOOLEAN | NOT NULL DEFAULT false | Cleanup blocked on an unresolved receipt |
 | `retry_of` | TEXT | nullable | Job id this job is a retry of |
+
+### Table: `job_input_pins`
+
+One retention pin per script job. `job_id` restricts job deletion until the
+immutable input pin is retired with its protected outputs. These are playbook
+execution inputs, not integration ref history or workspace leases. Script job
+ownership fields satisfy `ck_jobs_owner_fields`; the partial unique index
+`uq_jobs_playbook_operation` binds run, step, full iteration path and attempt.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `job_id` | TEXT | PRIMARY KEY, FK → jobs (RESTRICT) | Script job retaining inputs |
+| `input_root` | TEXT | NOT NULL | Immutable input storage root |
+| `input_digest` | TEXT | NOT NULL | Pinned input digest |
+| `created_at` | REAL | NOT NULL | Admission time |
 
 ### Table: `job_workspace_pins`
 
@@ -3355,6 +3980,16 @@ what makes a delivery sent — `idx_outbound_deliveries_due`
 | `last_error` | TEXT | nullable | Last dispatch error, if any |
 | `created_at` | REAL | NOT NULL | When the row was written |
 | `updated_at` | REAL | NOT NULL | Last state change |
+
+Revision 98 adds nullable ask-transport pins: `ask_id` (FK human_asks),
+`binding_id` (FK ask_external_bindings), `project_id` (FK projects),
+`decision_generation`, `display_version`, `mode_generation`, `root_generation`,
+`send_kind`, `write_started_at` and `attempt_token`. All foreign keys restrict
+deletion. `send_kind` is root, root_edit, reply, move_notice or redirect.
+`ck_outbound_deliveries_ask` requires the identity and generation pins for ask-owned
+rows; the ask, binding and mode indexes support scoped transport recovery.
+The upgrade creates missing foreign keys independently of column additions, so
+replaying an incomplete upgrade also restores references on existing columns.
 
 ### Table: `morning_reports`
 
@@ -4465,3 +5100,359 @@ actuals and the operation id; every other state carries no actuals
 | `provider_operation_id` | TEXT | nullable | Stable operation id, required once unknown or settled |
 | `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Reservation time |
 | `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last settlement time |
+
+### Table: `playbook_private_values`
+
+Encrypted private values owned by a playbook run, a state namespace or an
+observation snapshot. Plaintext never reaches this table: only AEAD ciphertext,
+its 12-byte nonce (`ck_playbook_private_values_nonce`) and the key id are stored,
+and safe projections reference a value by id and digest. Expired rows are
+collected by `expires_at` (`idx_private_values_expiry`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `value_id` | TEXT | PRIMARY KEY | Private value identity |
+| `owner_kind` | TEXT | NOT NULL | run, namespace or snapshot (`ck_playbook_private_values_owner_kind`) |
+| `owner_id` | TEXT | NOT NULL, non-blank | Owning run, namespace or snapshot id (`ck_playbook_private_values_owner`) |
+| `scope_kind` | TEXT | NOT NULL | system, project or profile (`ck_playbook_private_values_scope_kind`) |
+| `scope_owner` | TEXT | NOT NULL, non-blank | Scope owner id |
+| `format_version` | INTEGER | NOT NULL, > 0 | Envelope format (`ck_playbook_private_values_format_version`) |
+| `content_type` | TEXT | NOT NULL | Plaintext content type |
+| `ciphertext` | BYTEA | NOT NULL | Encrypted value |
+| `key_id` | TEXT | NOT NULL | Encryption key identity |
+| `nonce` | BYTEA | NOT NULL, 12 bytes | AEAD nonce |
+| `digest` | TEXT | NOT NULL | Plaintext digest used by safe projections |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Plaintext size (`ck_playbook_private_values_byte_count`) |
+| `expires_at` | FLOAT | nullable | Expiry (Unix seconds); NULL lives with its owner |
+
+Indexed by owner (`idx_private_values_owner`) and expiry.
+
+### Table: `observation_snapshots`
+
+Immutable, protected observation snapshots behind opt-in `pagination: snapshot`
+reads (`list_tasks`, `list_projects`, `get_stuck_tasks`, `doctor_run`). One row is
+the snapshot header: the producer, the authority fingerprint and scope it was
+materialised for, the request hash, its coverage and identity manifest, and the
+expiry after which `observation_snapshot_cleanup` collects it. See
+[guides/observation-snapshots.md](../guides/observation-snapshots.md).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `snapshot_id` | TEXT | PRIMARY KEY | Snapshot identity |
+| `producer` | TEXT | NOT NULL | Producing command |
+| `producer_version` | INTEGER | NOT NULL, > 0 | Producer schema version (`ck_observation_snapshots_version`) |
+| `authority_fingerprint` | TEXT | NOT NULL | Principal authority the snapshot is bound to |
+| `scope_kind` | TEXT | NOT NULL | system, project or profile (`ck_observation_snapshots_scope`) |
+| `scope_owner` | TEXT | NOT NULL, non-blank | Scope owner id |
+| `run_id` | TEXT | nullable | Playbook run that requested it (`idx_observation_snapshots_run`) |
+| `request_hash` | TEXT | NOT NULL | Hash of the normalised request |
+| `observed_at` | FLOAT | NOT NULL | Observation time (Unix seconds) |
+| `materialized_at` | FLOAT | NOT NULL | Materialisation time |
+| `expires_at` | FLOAT | NOT NULL, > materialized_at | Expiry (`ck_observation_snapshots_expiry`, `idx_observation_snapshots_expiry`) |
+| `manifest` | JSONB | NOT NULL | Identity manifest |
+| `coverage` | JSONB | NOT NULL | Coverage records |
+| `envelope` | JSONB | NOT NULL | Response envelope without page bodies |
+| `complete` | BOOLEAN | NOT NULL | Whether the observation covered everything |
+| `page_count` | INTEGER | NOT NULL, >= 0 | Number of pages |
+| `content_digest` | TEXT | NOT NULL | Digest over all pages |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Total size (`ck_observation_snapshots_sizes`) |
+
+Indexed by scope (`idx_observation_snapshots_scope`).
+
+### Table: `observation_snapshot_pages`
+
+The pages of one snapshot. Page bodies live in `playbook_private_values` (owner
+kind `snapshot`) and are referenced here; callers hold only an opaque page token,
+stored as a hash.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `snapshot_id` | TEXT | PK, FK observation_snapshots.snapshot_id, CASCADE | Owning snapshot |
+| `ordinal` | INTEGER | PK, >= 0 | Page index |
+| `kind` | TEXT | NOT NULL | Page kind (rows, artifact, ...) |
+| `token_hash` | TEXT | NOT NULL, UNIQUE | Hash of the opaque page token |
+| `private_reference` | JSONB | NOT NULL | Reference to the encrypted page body |
+| `content_digest` | TEXT | NOT NULL | Page digest |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Page size |
+| `row_count` | INTEGER | NOT NULL, >= 0 | Rows in the page (`ck_observation_snapshot_pages_sizes`) |
+| `artifact` | BOOLEAN | NOT NULL | Whether the page is an artifact rather than rows |
+
+### Table: `playbook_state_namespaces`
+
+Durable playbook state namespaces, one per scope, owner, playbook and state schema
+version (`uq_playbook_state_namespace_identity`). Deliberately no FK to mutable
+playbook or source rows. `revision` is the namespace CAS counter; the accounting
+columns enforce quotas. See [guides/playbook-state.md](../guides/playbook-state.md).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `namespace_id` | TEXT | PRIMARY KEY | Namespace identity |
+| `scope_kind` | TEXT | NOT NULL | system, project or profile; system owner is `system` (`ck_playbook_state_namespace_scope`) |
+| `scope_owner` | TEXT | NOT NULL, non-blank | Scope owner id |
+| `playbook_id` | TEXT | NOT NULL, non-blank | Owning playbook |
+| `state_schema_version` | INTEGER | NOT NULL, > 0 | State schema version (`ck_playbook_state_namespace_version`) |
+| `revision` | BIGINT | NOT NULL, DEFAULT 0 | Namespace revision |
+| `key_count` | INTEGER | NOT NULL, DEFAULT 0 | Live keys |
+| `value_bytes` | BIGINT | NOT NULL, DEFAULT 0 | Stored value bytes |
+| `journal_bytes` | BIGINT | NOT NULL, DEFAULT 0 | Operation journal bytes (`ck_playbook_state_namespace_accounting`) |
+| `replay_floor` | FLOAT | nullable | Reset fence: older operations never replay |
+| `created_at` | FLOAT | NOT NULL | Creation time (Unix seconds) |
+| `updated_at` | FLOAT | NOT NULL | Last change |
+
+### Table: `playbook_state_entries`
+
+Keys in a namespace, in two record spaces: `kv` values and `notification`
+episodes (`ck_playbook_state_entry_identity`). Values live in
+`playbook_private_values` and are referenced. Deletes leave tombstones, which are
+never active (`ck_playbook_state_tombstone_inactive`); notification records never
+expire (`ck_playbook_state_notification_no_expiry`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `namespace_id` | TEXT | PK, FK playbook_state_namespaces.namespace_id | Owning namespace |
+| `record_space` | TEXT | PK | kv or notification |
+| `key` | TEXT | PK, non-blank | Entry key |
+| `value_reference` | JSONB | nullable | Reference to the encrypted value |
+| `value_bytes` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Value size |
+| `revision` | BIGINT | NOT NULL, > 0 | Entry revision (`ck_playbook_state_entry_counters`) |
+| `tombstone` | BOOLEAN | NOT NULL, DEFAULT false | Deleted marker |
+| `expires_at` | FLOAT | nullable | TTL expiry for kv entries |
+| `created_at` | FLOAT | NOT NULL | Creation time |
+| `updated_at` | FLOAT | NOT NULL | Last change |
+| `episode` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Notification episode counter |
+| `active` | BOOLEAN | NOT NULL, DEFAULT false | Notification condition is present |
+| `source_partition` | JSONB | nullable | Observation partition that owns the condition |
+| `first_seen` | FLOAT | nullable | Episode start |
+| `last_seen` | FLOAT | nullable | Latest presence observation |
+| `last_notified` | FLOAT | nullable | Latest notification sent |
+| `last_observation_id` | TEXT | nullable | Latest observation applied |
+| `last_observed_at` | FLOAT | nullable | Its observation time |
+| `message_id` | TEXT | nullable | Latest enqueued notification message |
+| `replay_floor` | FLOAT | nullable | Observations older than this are ignored |
+
+### Table: `playbook_state_operations`
+
+The idempotency journal: one row per committed `operation_key` in a namespace, so a
+retried mutation with the same request digest replays its recorded result instead
+of applying twice.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `namespace_id` | TEXT | PK, FK playbook_state_namespaces.namespace_id | Owning namespace |
+| `operation_key` | TEXT | PK, non-blank | Caller idempotency key (`ck_playbook_state_operation_identity`) |
+| `request_digest` | TEXT | NOT NULL | Digest of the original request |
+| `result_reference` | JSONB | NOT NULL | Reference to the recorded result |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Recorded result size |
+| `revision` | BIGINT | NOT NULL, > 0 | Namespace revision it committed |
+| `message_id` | TEXT | nullable | Notification message enqueued with it |
+| `committed_at` | FLOAT | NOT NULL | Commit time |
+## Human ask and decision ledgers (revision `a00000000091`)
+
+The ask ledger separates a human decision from its later application. Task and
+session identities in source packets remain soft references. Durable ask, review,
+discussion and operation evidence uses restrictive foreign keys; deleting an
+incident sets its discussion/action incident references to NULL and preserves that
+evidence. All timestamps below are FLOAT epoch seconds. JSON fields use JSONB.
+
+### Table: `human_asks`
+
+One canonical ask per `(project_id, source_kind, source_key)`, protected by
+`uq_human_asks_source`. The pending index covers project, next actor, decision state,
+creation time and id. Named checks bound identity lengths, versions, state values,
+severity and context size. Complete context requires a title, why, waiting effect
+and between one and twenty choices.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK; also unique with project_id |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `source_kind`, `source_key` | TEXT | NOT NULL, canonical source identity |
+| `source_identity` | JSONB | NOT NULL, retained source identity |
+| `source_fingerprint`, `generation_fingerprint` | TEXT | NOT NULL, source and decision generation pins |
+| `feedback_version` | INTEGER | NOT NULL, DEFAULT 0, >= 0 |
+| `decision_generation`, `display_version` | INTEGER | NOT NULL, DEFAULT 1, >= 1 |
+| `context`, `audience`, `decider` | JSONB | NOT NULL, context, visibility and decision authority |
+| `logical_owner` | TEXT | NOT NULL, 1-512 characters |
+| `next_actor` | TEXT | DEFAULT human; human, agent or none |
+| `decision_state` | TEXT | DEFAULT pending; pending, approved, changes_requested, declined, withdrawn, superseded or answered |
+| `application_state` | TEXT | DEFAULT not_started; not_started, applying, applied, failed or unknown |
+| `context_state` | TEXT | DEFAULT complete; complete, context_needed or quarantined |
+| `severity` | TEXT | DEFAULT medium; critical, high, medium or low |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_source_aliases`
+
+Maps legacy source handles to their canonical ask without discarding provenance.
+`fk_ask_source_aliases_ask` restricts deletion through the composite project/ask
+identity; `idx_ask_source_aliases_ask` supports reverse lookup.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `project_id`, `legacy_kind`, `legacy_id` | TEXT | Composite PK |
+| `ask_id` | TEXT | NOT NULL; composite FK with project_id to human_asks |
+| `source_generation` | INTEGER | NOT NULL, >= 1 |
+| `source_reference`, `provenance` | JSONB | NOT NULL, retained source and mapping evidence |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `ask_decision_previews`
+
+A bounded preview packet pins the actor, source and feedback versions before a
+decision. `ck_ask_decision_previews_expiry` limits its lifetime to 600 seconds;
+the expiry index supports cleanup.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id` | TEXT | NOT NULL, FK human_asks.id, RESTRICT |
+| `decision_generation`, `feedback_version` | INTEGER | NOT NULL, >= 1 and >= 0 respectively |
+| `actor_id`, `source_fingerprint`, `packet_sha256` | TEXT | NOT NULL, exact preview pins |
+| `input_id` | TEXT | Nullable durable input identity |
+| `packet` | JSONB | NOT NULL, retained decision packet |
+| `created_at`, `expires_at` | FLOAT | NOT NULL; creation < expiry <= creation + 600 |
+| `consumed_at` | FLOAT | Nullable, successful consumption time |
+
+### Table: `approved_document_snapshots`
+
+Retains approved document bytes when there is no review revision to pin. The
+`tr_approved_document_snapshots_immutable` trigger rejects UPDATE and DELETE on
+both fresh metadata and Alembic-created schemas.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `source_path`, `body_sha256` | TEXT | NOT NULL, original path and exact content hash |
+| `title` | TEXT | NOT NULL, 1-200 characters |
+| `body` | BYTEA | NOT NULL, at most 262144 bytes |
+| `spec_kind` | TEXT | NOT NULL, design or implementation |
+| `approval_provenance` | JSONB | NOT NULL, retained approval evidence |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `ask_decisions`
+
+An immutable audit row for one decision generation. Unique constraints cover
+`(ask_id, decision_generation)` and `(ask_id, actor_id, idempotency_key)`; the
+history index orders by ask, creation time and id. `tr_ask_decisions_immutable`
+rejects UPDATE and DELETE. A document can pin either a review revision or an
+approved snapshot. Review id and revision must be supplied together.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id` | TEXT | NOT NULL, FK human_asks.id, RESTRICT |
+| `decision_generation`, `feedback_version` | INTEGER | NOT NULL, >= 1 and >= 0 respectively |
+| `option_key`, `adapter`, `adapter_version`, `actor_id` | TEXT | NOT NULL, chosen adapter operation and actor |
+| `actor`, `packet` | JSONB | NOT NULL, actor evidence and exact decision packet |
+| `evidence_entry_id` | TEXT | NOT NULL, FK escalation_messages.id, RESTRICT |
+| `idempotency_key` | TEXT | NOT NULL, 1-512 characters |
+| `request_sha256`, `source_fingerprint`, `packet_sha256` | TEXT | NOT NULL, request and packet pins |
+| `review_id`, `review_revision` | TEXT, INTEGER | Nullable composite FK to doc_review_revisions, RESTRICT |
+| `content_sha256`, `attachment_manifest_sha256` | TEXT | Nullable review content and attachment pins |
+| `snapshot_id` | TEXT | Nullable FK approved_document_snapshots.id, RESTRICT |
+| `overall_note` | TEXT | NOT NULL, DEFAULT empty string, <= 16000 characters |
+| `accepted_dispositions` | JSONB | NOT NULL, DEFAULT [] |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `review_feedback_obligations`
+
+Retains each accepted feedback obligation, unique per `(decision_id, feedback_key)`.
+The owner/progress index supports follow-up. Completed obligations require retained
+completion evidence (`ck_review_feedback_obligations_evidence`).
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `decision_id` | TEXT | NOT NULL, FK ask_decisions.id, RESTRICT |
+| `feedback_key` | TEXT | NOT NULL, identity within the decision |
+| `comment_id` | TEXT | Nullable FK doc_review_comments.id, RESTRICT |
+| `original_text`, `acceptance_text` | TEXT | NOT NULL, 1-16000 characters each |
+| `original_anchor`, `accepted_by` | JSONB | NOT NULL, original anchor and accepting actor |
+| `original_author`, `logical_owner` | TEXT | NOT NULL |
+| `original_revision` | INTEGER | Nullable source revision |
+| `disposition` | TEXT | NOT NULL; follow_up, fold_in, applied, no_change or withdrawn |
+| `required_before_release` | BOOLEAN | NOT NULL, DEFAULT false |
+| `operation_id` | TEXT | Nullable FK escalation_actions.id, RESTRICT |
+| `task_id` | TEXT | Nullable soft task reference |
+| `progress` | TEXT | DEFAULT pending; pending, filed, in_progress, completed or failed |
+| `completion_evidence` | JSONB | Nullable until completion |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_reconciliation_cases`
+
+Retains conflicting source evidence for explicit repair, unique per project and
+conflict key. The owner index covers project, logical owner and status. Resolving a
+case requires a repair receipt (`ck_ask_reconciliation_cases_receipt`).
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `conflict_key`, `logical_owner`, `reason` | TEXT | NOT NULL |
+| `source_evidence` | JSONB | NOT NULL, retained conflict evidence |
+| `affected_aliases`, `affected_deliveries` | JSONB | NOT NULL, DEFAULT [] |
+| `status` | TEXT | DEFAULT open; open or resolved |
+| `repair_receipt` | JSONB | Nullable until resolution |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+Revision 91 also adds `feedback_version`, `decision_generation` and the restrictive
+`pending_decision_id` lock to `doc_reviews`; discussion provenance and responder
+dispositions to `doc_review_comments`; ask/input/version/entry-kind/reply references
+to `escalation_messages`; and ask decision, operation dependency, lease, retry and
+receipt fields to `escalation_actions`. Legacy incident action kinds remain valid.
+
+### Table: `human_communication_modes`
+
+Revision 93 records the communication mode and generation per project and
+destination. A migrated destination cannot return to legacy mode.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `project_id`, `destination` | TEXT | Composite PK; project FK projects.id, RESTRICT |
+| `generation` | INTEGER | NOT NULL, DEFAULT 1, > 0 |
+| `mode` | TEXT | NOT NULL, DEFAULT legacy; legacy, shadow, dashboard, transferring, channel or delivery_disabled |
+| `migrated` | BOOLEAN | NOT NULL, DEFAULT false; true requires a non-legacy mode |
+| `config_fingerprint` | TEXT | NOT NULL, destination configuration pin |
+| `compatibility_deadline` | FLOAT | Nullable end of compatibility window |
+| `inventory` | JSONB | NOT NULL, DEFAULT {}, cutover evidence |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_external_bindings`
+
+Revision 93 binds an ask to its external root and retains transport receipts and
+display generations. A partial unique index permits one active binding per ask
+and destination. Root identity is unique per transport and channel; confirmed
+roots require both an external id and receipt. The project/ask composite FK
+prevents cross-project bindings, and the mode index supports destination scans.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id`, `project_id` | TEXT | NOT NULL; ask FK human_asks.id and composite FK human_asks(project_id, id), RESTRICT |
+| `destination`, `guild_id`, `channel_id` | TEXT | NOT NULL, external destination |
+| `transport` | TEXT | NOT NULL, DEFAULT discord |
+| `mode_generation`, `root_generation` | INTEGER | NOT NULL, > 0; root generation DEFAULT 1 |
+| `external_root_id`, `legacy_thread_id` | TEXT | Nullable external references |
+| `alternate_roots` | JSONB | NOT NULL, DEFAULT [] |
+| `receipt` | JSONB | Nullable, required for confirmed roots |
+| `desired_display_version`, `applied_display_version` | INTEGER | NOT NULL, DEFAULT 1 and 0; > 0 and >= 0 respectively |
+| `root_state` | TEXT | NOT NULL, DEFAULT pending; pending, confirmed, unknown, missing or retired |
+| `active` | BOOLEAN | NOT NULL, DEFAULT true |
+| `inflight_id` | TEXT | Nullable durable external-write fence |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_action_tokens`
+
+Revision 93 stores opaque, expiring button capabilities pinned to an ask, binding,
+root, audience and decision/display generations. Binding/display and expiry
+indexes support revocation and cleanup; token length is 20–80 characters and
+expiry must follow creation.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `token` | TEXT | PK |
+| `ask_id`, `binding_id` | TEXT | NOT NULL, FKs human_asks.id and ask_external_bindings.id, RESTRICT |
+| `decision_generation`, `feedback_version`, `display_version`, `mode_generation`, `root_generation` | INTEGER | NOT NULL, captured version pins |
+| `source_fingerprint`, `root_message_id`, `option_key` | TEXT | NOT NULL, source and action pins |
+| `audience` | JSONB | NOT NULL, authorized audience snapshot |
+| `created_at`, `expires_at` | FLOAT | NOT NULL |
+| `revoked_at` | FLOAT | Nullable revocation time |

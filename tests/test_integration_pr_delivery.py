@@ -10,19 +10,21 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database.tables import events, tasks
-from src.git.manager import GitManager
+from src.database.tables import agents, events, sessions, tasks, workspaces
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError, GitManager
 from src.integration.pr_delivery import (
     PR_CLOSED_DELIVERED_EVENT,
     DeliveredPullRequestClosure,
 )
-from src.integration.promotion import PromotionService
+from src.integration.repository_git import RepositoryGit
 from src.models import Project, RepoConfig, RepoSourceType
 
 
@@ -109,7 +111,9 @@ async def env(reuse_database, tmp_path, monkeypatch):
 
     monkeypatch.setattr(git, "bind_github_repository", binding)
     monkeypatch.setattr(git, "_github_client", lambda _binding: github)
-    promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=git)
+    # The bare remote on disk stands in for the GitHub repository.
+    monkeypatch.setattr("src.integration.pr_cleanup.lacks_pull_request_host", lambda _url: False)
+    promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=git)
     clock = iter(float(n) for n in range(1000, 2000))
     yield SimpleNamespace(
         db=db, work=work, github=github,
@@ -179,6 +183,119 @@ async def test_a_head_already_on_main_is_proven_by_ancestry_and_closed_once(env)
     async with env.db._engine.connect() as conn:
         assert (await conn.execute(select(tasks.c.status).where(tasks.c.id == "legacy"))
                 ).scalar_one() == "COMPLETED"
+
+
+@pytest.mark.parametrize("status", ["READY", "IN_PROGRESS", "PAUSED", "BLOCKED", "WAITING_INPUT"])
+@pytest.mark.parametrize("tracking", ["pr_url", "branch"])
+async def test_a_live_task_keeps_its_pr_open_even_when_its_head_is_already_on_main(
+    env, status, tracking,
+):
+    _branch(env, "aq/live")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/live")
+    env.github.open(14, "aq/live", head)
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="live", project_id="p", repo_id="repo", title="Live", description="",
+            status=status, created_at=1.0, updated_at=1.0,
+            pr_url="https://github.com/o/r/pull/14" if tracking == "pr_url" else None,
+            branch_name="aq/live" if tracking == "branch" else None,
+        ))
+    for dry_run in (True, False):
+        held = await env.control.run(
+            "p", 14, dry_run=dry_run, expected_head_sha=head, reason="already equivalent",
+        )
+        assert held["outcome"] == "not_eligible"
+        assert held["task_ids"] == held["live_task_ids"] == ["live"]
+    assert env.github.closed == [] and env.github.comments == {}
+    assert await _events(env) == []
+
+
+@pytest.mark.parametrize("attachment", ["session", "workspace", "assigned_agent"])
+async def test_a_completed_task_with_an_attached_writer_keeps_its_pr_open(env, attachment):
+    _branch(env, "aq/attached")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/attached")
+    env.github.open(15, "aq/attached", head)
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="attached", project_id="p", repo_id="repo", title="Attached", description="",
+            status="COMPLETED", branch_name="aq/attached", created_at=1.0, updated_at=1.0,
+        ))
+        if attachment == "session":
+            await conn.execute(insert(sessions).values(
+                id="writer", task_id="attached", project_id="p", profile_id="worker",
+                harness="codex", provider="fake", name="writer", lifecycle="pool",
+                state="running", desired_state="running", work_dir=str(env.work),
+                epoch="e", instance_token="writer-token", started_at=1.0,
+            ))
+        elif attachment == "workspace":
+            await conn.execute(insert(workspaces).values(
+                id="writer", project_id="p", workspace_path=str(env.work),
+                locked_by_task_id="attached", created_at=1.0,
+            ))
+        else:
+            await conn.execute(insert(agents).values(
+                id="writer", name="writer", profile_id="worker", created_at=1.0,
+            ))
+            await conn.execute(update(tasks).where(tasks.c.id == "attached").values(
+                assigned_agent_id="writer",
+            ))
+    held = await env.control.run("p", 15)
+    assert held["outcome"] == "not_eligible" and held["live_task_ids"] == ["attached"]
+    assert env.github.closed == [] and env.github.comments == {}
+
+
+async def test_task_reopening_during_apply_invalidates_delivery_proof_before_any_write(
+    env, monkeypatch,
+):
+    _branch(env, "aq/reopened")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/reopened")
+    env.github.open(16, "aq/reopened", head)
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="reopened", project_id="p", repo_id="repo", title="Reopened", description="",
+            status="COMPLETED", branch_name="refs/heads/aq/reopened",
+            created_at=1.0, updated_at=1.0,
+        ))
+    assert (await env.control.run("p", 16))["outcome"] == "would_close"
+    observe = env.control._observe
+
+    async def reopen_after_observation(*args):
+        observed, client = await observe(*args)
+        assert observed["outcome"] == "would_close"
+        async with env.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "reopened").values(
+                status="READY", updated_at=2.0,
+            ))
+        return observed, client
+
+    monkeypatch.setattr(env.control, "_observe", reopen_after_observation)
+    result = await env.control.run(
+        "p", 16, dry_run=False, expected_head_sha=head, reason="stale cleanup preview",
+    )
+    assert result["outcome"] == "not_eligible" and result["live_task_ids"] == ["reopened"]
+    assert env.github.closed == [] and env.github.comments == {}
+    assert await _events(env) == []
+
+
+async def test_a_live_branch_in_another_repository_does_not_hold_this_pr(env):
+    _branch(env, "aq/shared-name")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/shared-name")
+    env.github.open(17, "aq/shared-name", head)
+    await env.db.create_repo(RepoConfig(
+        id="other", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/o/other",
+    ))
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="other-task", project_id="p", repo_id="other", title="Other", description="",
+            status="IN_PROGRESS", branch_name="aq/shared-name", created_at=1.0, updated_at=1.0,
+        ))
+    dry = await env.control.run("p", 17)
+    assert dry["outcome"] == "would_close" and dry["task_ids"] == []
 
 
 async def test_a_cherry_picked_series_main_later_edited_is_patch_equivalent(env):
@@ -347,7 +464,7 @@ async def test_periodic_sweep_uses_real_delivery_proof_and_retries_failed_close(
     class Handler(IntegrationCommandsMixin):
         db = env.db
 
-        def _integration_promotion_service(self):
+        def _integration_repository_git(self):
             return env.control.promotion
 
         async def execute(self, command, args):
@@ -442,7 +559,7 @@ async def test_periodic_service_authority_is_named_and_limited_to_aq_prs(env):
     class Handler(IntegrationCommandsMixin):
         db = env.db
 
-        def _integration_promotion_service(self):
+        def _integration_repository_git(self):
             return env.control.promotion
 
     handler = Handler()
@@ -583,3 +700,46 @@ async def test_old_orphan_prs_exclude_live_tasks_reservations_and_batch_members(
     assert [item["pr_number"] for item in findings] == [41]
     assert findings[0]["age_seconds"] > 24 * 3600
     assert env.github.closed == [] and env.github.comments == {}
+
+
+async def test_inventory_skips_a_repository_that_cannot_host_a_pull_request():
+    """fresh-quest-25: a bare remote on disk has no PRs to inventory, so no bind is tried."""
+    from unittest.mock import AsyncMock
+
+    from src.integration.pr_cleanup import open_aq_pull_requests
+
+    repo = SimpleNamespace(
+        id="repo", project_id="p", url="/home/u/.agent-queue/local-remotes/web.git",
+    )
+    db = SimpleNamespace(
+        get_project=AsyncMock(return_value=SimpleNamespace(integration_repository_id="repo")),
+        get_repo=AsyncMock(return_value=repo),
+    )
+    git = SimpleNamespace(bind_github_repository=AsyncMock(side_effect=AssertionError("bound")))
+    assert await open_aq_pull_requests(db, git, "p") == []
+    git.bind_github_repository.assert_not_awaited()
+
+
+async def test_periodic_sweep_logs_a_classified_inventory_failure_on_one_line(
+    env, monkeypatch, caplog,
+):
+    from src.integration import pr_cleanup
+
+    async def refused(*_args):
+        try:
+            raise GitHubAccessError("transient", "GitHub request failed (transient, HTTP 502)",
+                                    http_status=502)
+        except GitHubAccessError as cause:
+            raise GitError(str(cause)) from cause
+
+    monkeypatch.setattr(pr_cleanup, "open_aq_pull_requests", refused)
+    caplog.set_level(logging.INFO, logger="src.integration.pr_cleanup")
+    sweep = pr_cleanup.PullRequestReconciler(env.db, env.control.git, commands=object)
+    await sweep.tick(1000)
+
+    [record] = [r for r in caplog.records if "inventory" in r.getMessage()]
+    assert record.levelno == logging.WARNING and record.exc_info is None
+    assert record.getMessage() == (
+        "Could not inventory PRs for p: GitError: GitHub request failed (transient, HTTP 502) "
+        "[code=transient, http=502]"
+    )
