@@ -7,6 +7,7 @@ archive semantics, and ``since`` filtering.
 from __future__ import annotations
 
 import time
+from importlib import import_module
 
 import pytest
 
@@ -15,12 +16,49 @@ from src.models import Message, Project
 from tests.db_fixtures import lease_dsn
 
 
+async def test_notification_migration_recovers_only_unread_legacy_nudges(db, monkeypatch):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration = import_module("migrations.versions.a00000000092_message_notification_receipts")
+    unread = await _send(db)
+    read = await _send(db)
+    archived = await _send(db)
+    injected = await _send(db)
+    pending = await _send(db)
+    for msg in (unread, read, archived):
+        await db.mark_delivered(msg.id, via="nudge")
+    await db.mark_read(read.id)
+    await db.archive_messages([archived.id])
+    await db.mark_delivered(injected.id, via="prime")
+    old_stamp = (await db.get_message(unread.id)).delivered_at
+
+    def upgrade_legacy(connection):
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
+        migration.downgrade()
+        migration.upgrade()
+        migration.upgrade()
+
+    async with db._engine.begin() as connection:
+        await connection.run_sync(upgrade_legacy)
+    recovered = await db.get_message(unread.id)
+    assert recovered.delivered_at is None and recovered.read_at is None
+    assert recovered.last_notified_at == old_stamp and recovered.notification_attempts == 1
+    for msg in (read, archived, injected):
+        assert (await db.get_message(msg.id)).delivered_at is not None
+    untouched = await db.get_message(pending.id)
+    assert untouched.last_notified_at is None and untouched.notification_attempts == 0
+    assert {msg.id for msg in await db.get_pending_messages("session", "supervisor-p1")} == {
+        unread.id, pending.id,
+    }
+
+
 @pytest.fixture
 async def db(tmp_path):
     database = Database(lease_dsn("messages.db"))
     await database.initialize()
-    await database.create_project(Project(id="p1", name="p1"))
-    await database.create_project(Project(id="p2", name="p2"))
+    await database.create_project(Project(id="p1", name="p1", supervisor_enabled=True))
+    await database.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
     yield database
     await database.close()
 
@@ -313,3 +351,29 @@ async def test_system_only_is_distinct_from_all_projects(db):
     assert {m.id for m in await db.list_messages()} == {system.id, project.id}
     assert [m.id for m in await db.list_messages(system_only=True)] == [system.id]
     assert [m.id for m in await db.list_messages(project_id="p1")] == [project.id]
+
+
+async def test_inbound_project_view_keeps_other_filters_and_pagination(db):
+    own = await _send(db, project_id=None, to_id="own-uuid", thread_id="directive")
+    cross_project = await _send(db, project_id="p2", to_id="supervisor-p1", thread_id="directive")
+    await _send(db, project_id=None, to_id="foreign", thread_id="directive")
+    await _send(db, project_id="p2", to_id="foreign", thread_id="directive")
+    addresses = ["own-uuid", "supervisor-p1"]
+    rows = await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses,
+        to_kind="session", recipient_ids=addresses, thread_id="directive", limit=2,
+    )
+    assert [m.id for m in rows] == [cross_project.id, own.id]
+    assert (await db.get_message(own.id)).delivered_at is None
+    rows = await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses,
+        since=own.created_at, thread_id="directive", limit=1,
+    )
+    assert [m.id for m in rows] == [cross_project.id]
+    await db.archive_messages([own.id])
+    assert [m.id for m in await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses,
+    )] == [cross_project.id]
+    assert {m.id for m in await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses, include_archived=True,
+    )} == {own.id, cross_project.id}

@@ -98,6 +98,7 @@ def _assert_schema(conn):
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         "attempt",
         "turn_index",
         "receipt_kind",

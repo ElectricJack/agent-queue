@@ -27,6 +27,7 @@ vi.mock("../../panes/registry", () => ({ PANE_REGISTRY: {} }));
 vi.mock("../../api/agents", () => ({
   useAgentFlock: () => ({ data: [], isLoading: false, error: null, refetch: vi.fn() }),
   useFlockSubagents: () => ({ data: undefined }),
+  useFlockSessions: () => ({ data: [] }),
   useEditAgent: () => ({ mutate: vi.fn(), isPending: false, variables: undefined, error: null }),
 }));
 vi.mock("../../api/hooks", () => ({

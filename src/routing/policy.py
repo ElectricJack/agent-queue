@@ -17,8 +17,11 @@ Two kinds of lane share the ``lanes`` map:
 * a **narrow lane** (``narrow``, ``narrow-unverified-model``) has a
   ``classes`` map and ``requires`` flags, and is reached only through a kind
   marked ``narrow: true`` whose classification satisfies every flag.  It may
-  also cap the classified risk (``max_risk``) and the task's priority
-  (``below_priority``); an unknown risk does not meet the cap.
+  also cap the classified risk (``max_risk``); an unknown risk does not meet
+  the cap.
+
+A task's priority is not a routing input: no lane and no ``local_models``
+gate reads it, so priority never decides which model runs a task.
 
 The optional ``risk`` map (keyed by :data:`RISK_LEVELS`) is a safety floor
 for a classified risk: ``min_class`` raises the task's class (``relax`` names
@@ -44,7 +47,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import yaml
 from pydantic import (
@@ -86,6 +89,14 @@ def selector_matches(harness: str, selector: str) -> bool:
     return harness == selector
 
 
+#: Priority once gated the cheap lanes and the local models; it no longer
+#: routes at all (rev-wise-impact, 2026-10-09).
+_PRIORITY_RETIRED = (
+    "a task's priority does not route it; delete the key (a lane admits work "
+    "by its class, flags and risk)"
+)
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
@@ -93,6 +104,18 @@ class _Strict(BaseModel):
     #: empty), so a policy that does not use them keeps the canonical JSON, and
     #: so the digest, it had before they existed.
     _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ()
+    #: Keys a policy may no longer write -> what replaced them.  Refused by
+    #: name, so an old policy fails loudly instead of reading as unknown keys.
+    _RETIRED: ClassVar[dict[str, str]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key, replacement in cls._RETIRED.items():
+                if key in data:
+                    raise ValueError(f"'{key}' is retired: {replacement}")
+        return data
 
     @model_serializer(mode="wrap")
     def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -103,6 +126,13 @@ class _Strict(BaseModel):
         return data
 
 
+class Escalation(_Strict):
+    """Try the kind's default class before raising it after substantive failures."""
+
+    after_failures: int = Field(ge=1, strict=True)
+    to_class: str
+
+
 class KindRule(_Strict):
     """``kinds.<kind>``: the class a kind gets without a hint, and its bounds."""
 
@@ -111,6 +141,9 @@ class KindRule(_Strict):
     lane: str | None = None
     narrow: bool = False
     prefer_harnesses: tuple[str, ...] = ()
+    escalate: Escalation | None = None
+
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("escalate",)
 
 
 class OriginRule(_Strict):
@@ -149,11 +182,9 @@ class Lane(_Strict):
     #: Narrow lanes only: the riskiest classified risk the lane admits.  An
     #: unknown risk does not meet it, exactly like a missing flag.
     max_risk: str | None = None
-    #: Narrow lanes only: the lane admits a task whose priority is below this
-    #: (an unknown priority is admitted, as by ``local_models``).
-    below_priority: int | None = Field(default=None, ge=1)
 
-    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("max_risk", "below_priority")
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("max_risk",)
+    _RETIRED: ClassVar[dict[str, str]] = {"below_priority": _PRIORITY_RETIRED}
 
     @property
     def narrow(self) -> bool:
@@ -185,8 +216,6 @@ class Lane(_Strict):
                 raise ValueError("a design lane's 'prefer' lists harnesses")
             if self.max_risk is not None:
                 raise ValueError("'max_risk' belongs to a narrow lane")
-            if self.below_priority is not None:
-                raise ValueError("'below_priority' belongs to a narrow lane")
             unknown = {
                 harness for harness in self.preferred_harnesses
                 if harness.endswith("*") or not self.admits(harness)
@@ -260,10 +289,19 @@ class Balance(_Strict):
     """``balance``: the weights of the load score (§6.4 step 5)."""
 
     harness_weights: dict[str, float] = Field(default_factory=dict)
+    usage_mode: Literal["soft_limit", "headroom"] = "soft_limit"
     usage_soft_percent: float = Field(default=80.0, ge=0, lt=100)
     usage_floor_factor: float = Field(default=0.1, gt=0, le=1)
     degraded_factor: float = Field(default=0.5, gt=0, le=1)
     tie_order: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        # Adding an opt-in mode must not invalidate existing reviewed digests.
+        if self.usage_mode == "soft_limit":
+            data.pop("usage_mode", None)
+        return data
 
     @model_validator(mode="after")
     def _weights(self) -> Balance:
@@ -282,16 +320,16 @@ class LocalModels(_Strict):
     A profile is local when its harness declares a local provider
     (:data:`src.routing.planner.LOCAL_MODEL_PROVIDERS`) or its harness is
     named under ``harnesses``.  A local profile is a candidate only for a task
-    whose priority is below ``below_priority``, that is not one of the
-    ``train_kinds`` delivered through an integration train, and that no other
-    task waits on (unless ``allow_blocking``).  A policy without the block
-    gets these defaults.
+    that is not one of the ``train_kinds`` delivered through an integration
+    train and that no other task waits on (unless ``allow_blocking``).  A
+    policy without the block gets these defaults.
     """
 
     harnesses: tuple[str, ...] = ()
-    below_priority: int = Field(default=150, ge=1)
     train_kinds: tuple[str, ...] = ("bugfix",)
     allow_blocking: bool = False
+
+    _RETIRED: ClassVar[dict[str, str]] = {"below_priority": _PRIORITY_RETIRED}
 
 
 class RoutingPolicy(_Strict):
@@ -344,6 +382,14 @@ class RoutingPolicy(_Strict):
             check_lane(f"kinds.{name}.lane", rule.lane)
             if rule.max_class is not None and self.rank(rule.class_) > self.rank(rule.max_class):
                 raise ValueError(f"kinds.{name}: class ranks above max_class")
+            if rule.escalate is not None:
+                check_class(f"kinds.{name}.escalate.to_class", rule.escalate.to_class)
+                if self.rank(rule.escalate.to_class) <= self.rank(rule.class_):
+                    raise ValueError(f"kinds.{name}: escalation must raise the default class")
+                if rule.max_class and self.rank(rule.escalate.to_class) > self.rank(rule.max_class):
+                    raise ValueError(f"kinds.{name}: escalation ranks above max_class")
+                if rule.lane:
+                    raise ValueError(f"kinds.{name}: escalation belongs to a kind without a lane")
         for name, rule in self.origins.items():
             check_class(f"origins.{name}.class", rule.class_)
             check_class(f"origins.{name}.max_class", rule.max_class)
