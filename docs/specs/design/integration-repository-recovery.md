@@ -1,5 +1,12 @@
 # Retained integration repository recovery
 
+Retained integration stores always bind `origin` to the configured repository URL,
+including stores initialized for branch-discard backups. Acquisition and the daily
+branch backstop restore a missing or empty origin on a known retained-store path
+from that repository's configuration. A conflicting nonempty origin is never
+replaced; acquisition refuses it and the backstop reports it without sweeping it.
+Unregistered checkouts do not acquire a remote from a guessed project identity.
+
 The retained development checkout, delivery observer and repository reader enable
 `core.fsync=committed` and `core.fsyncMethod=fsync`. Local Git cancellation kills
 and reaps the subprocess before the repository transaction releases. These are
@@ -84,3 +91,17 @@ budget in place.
 The train separately checks sealed open batches for 60 minutes without progress.
 Its stall incident mechanism remains independent of cache recovery and never
 changes batch intent, validation or publication gates.
+
+Snapshot target absence is `target_ref_missing`, distinct from an unavailable
+object store. After an object-integrity acquisition refusal, an authorized remote-ref
+read may establish that the requested target no longer exists. That answer proves
+no delivery and supplies no fetched repository inventory: another target must
+retain the acquisition failure rather than inherit an absence verdict. Failed
+remote reads never establish absence, and acquisition diagnostics remain available.
+
+Discovery omits a completed container's absent target after a fresh remote
+observation, including routes from its historical children. Open batches retain
+their targets for recovery; active containers and unreadable refs retain their
+diagnostics. Once discovery retires a target, the train drops its finished visit
+from status, preserving any running visit until it settles. Retirement changes
+no task, branch, batch or delivery evidence.
