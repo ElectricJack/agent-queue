@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
+from typing import Any
 
 from src.config import (
     MAX_DIGEST_CATCHUP_HOURS,
@@ -32,6 +34,7 @@ from src.config import (
     MIN_DIGEST_CATCHUP_HOURS,
     MIN_DIGEST_INTERVAL_MINUTES,
     DiscordConfig,
+    ReportQuietHoursConfig,
 )
 from src.digest.facts import CATEGORIES, DigestWindow
 
@@ -52,6 +55,11 @@ def config_generation(config: DiscordConfig) -> int:
         {
             "channel_id": config.channel_id,
             "interval_minutes": digest.interval_minutes,
+            # Phase P3 (2026-10-03 §4.1) redefines the window grid when the
+            # supervisor authors the digest, so the cadence that is actually in
+            # force -- not merely the flag -- is what rolls the generation.
+            "cadence_minutes": digest.cadence_minutes if digest.supervisor_authored else None,
+            "supervisor_authored": digest.supervisor_authored,
             "project_ids": sorted(digest.project_ids),
             "categories": sorted(digest.categories),
             "catchup_hours": digest.catchup_hours,
@@ -74,6 +82,12 @@ class DigestSchedule:
     catchup_seconds: float
     project_ids: tuple[str, ...]
     categories: frozenset[str]
+    #: Phase P3 (2026-10-03 §4): the window is held for the supervisor, posted
+    #: from ``aq digest post`` or by the deterministic fallback at the deadline.
+    supervisor_authored: bool = False
+    author_fallback_seconds: float = 0.0
+    quiet_hours: ReportQuietHoursConfig | None = None
+    quiet_line_after_skips: int = 3
 
     def window_for(self, now: float, *, last_window_end: float | None = None) -> DigestWindow:
         """The window ending at ``now``'s boundary.
@@ -91,6 +105,39 @@ class DigestSchedule:
         since = max(last_window_end, now - self.catchup_seconds)
         return DigestWindow(since=since, until=now, catchup=True)
 
+    def boundary_at(self, now: float) -> float:
+        """The most recent UTC interval boundary at or before ``now``.
+
+        Window bounds are snapped to this grid so that two daemons evaluating
+        the same interval compute *byte-identical* bounds and collide on
+        ``uq_digest_windows_schedule`` instead of each reserving a window of
+        its own.  Without it the window key would carry each process's own
+        ``now`` and the uniqueness constraint would never fire.
+        """
+        return math.floor(now / self.interval_seconds) * self.interval_seconds
+
+    def due_window(self, now: float, *, anchor: float) -> DigestWindow | None:
+        """The grid-aligned window that is due at ``now``, or ``None``.
+
+        ``anchor`` is where this generation's coverage currently ends: the
+        newest persisted window's end, or -- for a generation nothing has been
+        written for yet -- the boundary at which it was first observed.  §9's
+        "a configuration change starts a new schedule generation at the change
+        time" is exactly that second case: a new generation anchors at the
+        change and never reaches back over windows the old one owned.
+
+        A gap wider than one interval coalesces into a single ``catchup``
+        window bounded by the configured horizon, which is §8's "at most one
+        labelled catch-up message, never one per missed hour".
+        """
+        boundary = self.boundary_at(now)
+        if boundary <= anchor:
+            return None
+        if boundary - anchor <= self.interval_seconds:
+            return DigestWindow(since=anchor, until=boundary)
+        since = max(anchor, boundary - self.catchup_seconds)
+        return DigestWindow(since=since, until=boundary, catchup=True)
+
     def next_evaluation_at(self, now: float, *, last_window_end: float | None = None) -> float:
         """When the next evaluation is due, in epoch seconds."""
         if last_window_end is None:
@@ -102,15 +149,38 @@ class DigestSchedule:
 def schedule_for(config: DiscordConfig) -> DigestSchedule:
     """Project the configured settings onto the durable schedule identity."""
     digest = config.digest
+    # Phase P3: with the supervisor authoring the digest, the cadence replaces
+    # the deterministic interval.  The flag off keeps §8's hourly grid exactly
+    # as it was, which is what makes rollback a flag and not a migration.
+    interval = digest.cadence_minutes if digest.supervisor_authored else digest.interval_minutes
     return DigestSchedule(
         destination=destination_id(config),
         generation=config_generation(config),
         enabled=digest.enabled,
-        interval_seconds=digest.interval_minutes * 60.0,
+        interval_seconds=interval * 60.0,
         catchup_seconds=digest.catchup_hours * 3600.0,
         project_ids=tuple(sorted(digest.project_ids)),
         categories=frozenset(digest.categories),
+        supervisor_authored=digest.supervisor_authored,
+        author_fallback_seconds=digest.author_fallback_minutes * 60.0,
+        quiet_hours=digest.quiet_hours,
+        quiet_line_after_skips=digest.quiet_line_after_skips,
     )
+
+
+def provider_facts_enabled(app_config: Any) -> bool:
+    """Whether provider half changes belong in the digest (provider-failover D19).
+
+    ``provider_failover.notify.digest``, and never with availability tracking
+    ``off``.  Read off the whole application config: a caller holding only the
+    ``discord`` section gets the default, which is on.
+    """
+    failover = getattr(app_config, "provider_failover", None)
+    if failover is None:
+        return True
+    if getattr(failover, "mode", "enforce") == "off":
+        return False
+    return bool(getattr(getattr(failover, "notify", None), "digest", True))
 
 
 def validate_settings(config: DiscordConfig, known_project_ids: frozenset[str]) -> list[str]:

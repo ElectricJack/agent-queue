@@ -86,6 +86,18 @@ function renderPage() {
 }
 
 describe("Messaging settings", () => {
+  it("links to supervisor conversations only when the server feature flag is enabled", () => {
+    api.config = { config: { discord: baseDiscord({ conversation: { enabled: true } }) } };
+    renderPage();
+    expect(screen.getByRole("link", { name: "Supervisor conversations" })).toHaveAttribute("href", "/conversations");
+  });
+
+  it.each([undefined, { enabled: false }])("keeps the conversation entry point off for %j", (conversation) => {
+    api.config = { config: { discord: baseDiscord({ conversation }) } };
+    renderPage();
+    expect(screen.queryByRole("link", { name: "Supervisor conversations" })).not.toBeInTheDocument();
+  });
+
   it("saves independent digest and escalation settings to the discord config section", async () => {
     renderPage();
     fireEvent.change(screen.getByLabelText("Interval (minutes)"), { target: { value: "120" } });
@@ -97,7 +109,14 @@ describe("Messaging settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save messaging settings" }));
 
     await waitFor(() => expect(api.update).toHaveBeenCalledTimes(1));
-    const payload = api.update.mock.calls[0][0] as { section: string; data: Record<string, any> };
+    const payload = api.update.mock.calls[0]![0] as {
+      section: string;
+      data: {
+        bot_token: string;
+        digest: Record<string, unknown>;
+        escalation: { enabled: boolean };
+      };
+    };
     expect(payload.section).toBe("discord");
     expect(payload.data.digest).toMatchObject({
       enabled: false,

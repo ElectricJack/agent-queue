@@ -1,5 +1,12 @@
 # Wave 4 · Discord E2E — Manual live-test checklist
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 Companion to `2026-08-21-wave4-discord-e2e.md` (Task 7). Run this list on
 a fresh clone/branch after Tasks 1-6 merge, against a real Discord guild.
 Discord.py interactions cannot be automated in-process, so this checklist

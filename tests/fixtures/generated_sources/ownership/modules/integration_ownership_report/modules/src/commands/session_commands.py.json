@@ -1,0 +1,54 @@
+{
+  "exclusions": {
+    "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_obsolete": {
+      "baseline_span": [
+        803,
+        887
+      ],
+      "landing_span": [
+        724,
+        808
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary": {
+      "reason": "Coordinates accepted completion, retained source evidence and integration handoff before claim release; the full ordinary-close body remains charged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_logs": {
+      "baseline_span": [
+        381,
+        506
+      ],
+      "landing_span": [
+        357,
+        482
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_prune": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": {
+      "landing_span": [
+        738,
+        784
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close": {
+      "baseline_span": [
+        888,
+        1682
+      ],
+      "landing_span": [
+        809,
+        1603
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

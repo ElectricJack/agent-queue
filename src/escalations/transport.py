@@ -13,15 +13,25 @@ An external send can never be transactionally exactly-once with the database
 * :class:`TransportUnavailable` is a missing channel or a missing permission:
   an actionable delivery fault, never a reason to create a channel;
 * :class:`TransportMissing` means the post or thread this incident is bound to
-  is gone, which is the only thing that earns a replacement generation.
+  is gone, which is the only thing that earns a replacement generation;
+* :class:`TransportRejected` means the platform refused the request itself (a
+  Discord 400 such as error code 50035): the same request gets the same answer
+  every time, so it is never retried.
+
+Every send path fits its content under :data:`MAX_CONTENT_CHARS` with
+:func:`bound_content`, which keeps the last line -- the delivery marker or the
+dashboard link -- intact.
 
 Tests use :class:`SinkTransport`; no test may touch a real Discord client.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from src.escalations.interactions import ButtonSpec
 
 
 class TransportError(Exception):
@@ -42,6 +52,67 @@ class TransportUnavailable(TransportError):
 
 class TransportMissing(TransportError):
     """The bound root message or thread no longer exists."""
+
+
+class TransportRejected(TransportError):
+    """The platform refused this exact request; sending it again cannot succeed."""
+
+
+#: Discord's hard per-message ceiling.
+MAX_CONTENT_CHARS = 2000
+#: Appended where :func:`bound_content` cut the text.
+TRUNCATION_NOTICE = "… (truncated; full text in dashboard)"
+_FENCE = "```"
+
+
+def _units(text: str) -> int:
+    """Length in UTF-16 code units, never less than Python's ``len``.
+
+    Whether Discord counts code points or UTF-16 units, a text this short in
+    units is short enough.
+    """
+    return len(text) + sum(1 for char in text if ord(char) > 0xFFFF)
+
+
+#: Room a cut keeps for the notice and for closing a code block it left open.
+_RESERVE = _units(TRUNCATION_NOTICE) + len(_FENCE) + 2
+
+
+def _cut(text: str, budget: int) -> str:
+    """The longest prefix of ``text`` that fits ``budget`` UTF-16 units."""
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > budget:
+            return text[:index]
+    return text
+
+
+def _cut_body(body: str, budget: int) -> str:
+    """Cut ``body`` and mark the cut, closing a code block the cut left open."""
+    kept = _cut(body, max(0, budget - _RESERVE)).rstrip()
+    if kept.count(_FENCE) % 2:
+        kept += f"\n{_FENCE}\n"
+    return kept + TRUNCATION_NOTICE
+
+
+def bound_content(content: str, *, limit: int = MAX_CONTENT_CHARS) -> str:
+    """Fit ``content`` into one message without losing its last line.
+
+    The last line is the one a reader or a reconciliation pass needs: the
+    dashboard link of a review notice, the ``aq-esc``/``aq-dig`` marker of an
+    escalation or digest post.  So the text above it is cut from its end, which
+    keeps the heading and gives up the long free-text note first, and a visible
+    notice says the full text is in the dashboard.  A last line too long to
+    keep leaves no room for anything else, so then the whole text is cut.
+    """
+    if _units(content) <= limit:
+        return content
+    body, newline, last = content.rstrip().rpartition("\n")
+    budget = limit - _units(last) - 1
+    if not newline or budget < _RESERVE:
+        return _cut_body(content, limit)
+    return f"{_cut_body(body, budget)}\n{last}"
 
 
 @dataclass(frozen=True)
@@ -69,9 +140,30 @@ class ThreadHandle:
 
 
 class EscalationTransport(Protocol):
-    """Everything §7 needs from a chat platform, and nothing else."""
+    """Everything §7 needs from a chat platform, and nothing else.
 
-    async def post_root(self, *, channel_id: str, content: str) -> SendOutcome: ...
+    ``buttons`` (§5.3) is the post's *current* set, not a delta: an edit
+    carries exactly the buttons it names, so passing none removes them.  That is
+    what lets an answered or collapsed post drop a choice row without a second
+    mechanism for un-attaching one.
+    """
+
+    async def post_root(
+        self,
+        *,
+        channel_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
+    ) -> SendOutcome:
+        """Post one ordinary message in *channel_id*.
+
+        ``reference_message_id`` renders the post as a reply to an existing
+        message in the same channel, which is how a channel conversation keeps
+        its context without a thread.  It never pings: the allowed-mention
+        policy decides that, and it declines to notify.
+        """
+        ...
 
     async def ensure_thread(
         self, *, channel_id: str, root_message_id: str, name: str
@@ -81,9 +173,37 @@ class EscalationTransport(Protocol):
 
     async def post_thread_message(self, *, thread_id: str, content: str) -> SendOutcome: ...
 
-    async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None: ...
+    async def edit_root(
+        self,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> None: ...
+
+    async def edit_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
+    ) -> None:
+        """Replace one already-posted message wherever it lives (§2.4).
+
+        ``thread_id`` picks the thread the message is in; ``None`` means the
+        channel itself.  A message that no longer exists is
+        :class:`TransportMissing`, never a silent success.
+        """
+        ...
+
+    async def delete_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str
+    ) -> None:
+        """Remove one already-posted message, idempotently by intent."""
+        ...
 
     async def archive_thread(self, *, thread_id: str) -> None: ...
+
+    async def read_root(self, *, channel_id: str, root_message_id: str) -> str:
+        """Fetch this exact root; a history miss never proves deletion."""
+        ...
 
     async def find_marker(
         self, *, channel_id: str, thread_id: str | None, marker: str
@@ -101,6 +221,11 @@ class SinkMessage:
     content: str
     thread_id: str | None = None
     archived: bool = False
+    #: The §5.3 buttons currently attached, by custom id.  An edit replaces the
+    #: set, so a post that stopped offering choices carries none.
+    buttons: tuple[str, ...] = ()
+    #: The message this one replies to, when the caller asked for a reference.
+    reference_message_id: str | None = None
 
 
 @dataclass
@@ -130,17 +255,39 @@ class SinkTransport:
                 self.faults.pop(index)
                 raise error
 
-    def record(self, where: str, content: str, *, thread_id: str | None = None) -> SinkMessage:
+    def record(
+        self,
+        where: str,
+        content: str,
+        *,
+        thread_id: str | None = None,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
+    ) -> SinkMessage:
         message = SinkMessage(
-            id=self._next_id("msg"), where=where, content=content, thread_id=thread_id
+            id=self._next_id("msg"),
+            where=where,
+            content=content,
+            thread_id=thread_id,
+            buttons=tuple(spec.custom_id for spec in buttons),
+            reference_message_id=reference_message_id,
         )
         self.messages[message.id] = message
         return message
 
-    async def post_root(self, *, channel_id: str, content: str) -> SendOutcome:
+    async def post_root(
+        self,
+        *,
+        channel_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
+    ) -> SendOutcome:
         self.calls.append("post_root")
         self._maybe_fail("post_root")
-        message = self.record(channel_id, content)
+        message = self.record(
+            channel_id, content, buttons=buttons, reference_message_id=reference_message_id
+        )
         return SendOutcome(receipt_id=message.id, channel_id=channel_id, root_message_id=message.id)
 
     async def ensure_thread(
@@ -162,18 +309,46 @@ class SinkTransport:
         self._maybe_fail("post_thread_message")
         if thread_id not in self.threads:
             raise TransportMissing(f"thread {thread_id} is gone")
-        if thread_id in self.archived:
-            raise TransportMissing(f"thread {thread_id} is archived")
+        # Archived is not gone.  Discord un-archives an unlocked thread when a
+        # message is sent to it, and ``DiscordEscalationTransport`` does that
+        # explicitly, so the sink must too: the closed-state guidance a late
+        # reply earns is posted into a thread §7 already archived.
+        self.archived.discard(thread_id)
         message = self.record(thread_id, content, thread_id=thread_id)
         return SendOutcome(receipt_id=message.id, thread_id=thread_id)
 
-    async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None:
+    async def edit_root(
+        self,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> None:
         self.calls.append("edit_root")
         self._maybe_fail("edit_root")
         if root_message_id not in self.messages:
             raise TransportMissing(f"root {root_message_id} is gone")
         self.messages[root_message_id].content = content
+        self.messages[root_message_id].buttons = tuple(spec.custom_id for spec in buttons)
         self.edits.append((root_message_id, content))
+
+    async def edit_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
+    ) -> None:
+        self.calls.append("edit_message")
+        self._maybe_fail("edit_message")
+        if message_id not in self.messages:
+            raise TransportMissing(f"message {message_id} is gone")
+        self.messages[message_id].content = content
+        self.edits.append((message_id, content))
+
+    async def delete_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str
+    ) -> None:
+        self.calls.append("delete_message")
+        self._maybe_fail("delete_message")
+        self.messages.pop(message_id, None)
 
     async def archive_thread(self, *, thread_id: str) -> None:
         self.calls.append("archive_thread")
@@ -181,6 +356,14 @@ class SinkTransport:
         if thread_id not in self.threads:
             raise TransportMissing(f"thread {thread_id} is gone")
         self.archived.add(thread_id)
+
+    async def read_root(self, *, channel_id: str, root_message_id: str) -> str:
+        self.calls.append("read_root")
+        self._maybe_fail("read_root")
+        message = self.messages.get(root_message_id)
+        if message is None or message.where != channel_id:
+            raise TransportMissing("root is gone")
+        return message.content
 
     async def find_marker(
         self, *, channel_id: str, thread_id: str | None, marker: str
