@@ -1,6 +1,14 @@
 # Completed-source development conflict repair
 
-Tasks: `bright-flare`, 2026-09-26; `wise-bridge`, 2026-09-27.
+Tasks: `bright-flare`, 2026-09-26; `wise-bridge`, `solid-horizon`, 2026-09-27.
+
+> **Retired (2026-10-22, `azure-ridge-72`).** The Development publishers that
+> filed these repairs were retired on 2026-10-12. The repair-filing code they
+> called (`ensure_repair`, `repair_chain`) and its task templates were deleted
+> once nothing called them. Historical repair rows keep their
+> `development_repair_sources` and `development_repair_evidence` metadata, and
+> branch cleanup still recognises `development-repair-*` identities. The rest of
+> this page records the retired behaviour.
 
 A development publisher merge conflict on a completed source must journal the
 exact source revision and conflicting paths, then create or reuse one bounded
@@ -34,7 +42,19 @@ The target can move again before a closed repair is published, so the repair's
 own publication can park on a new conflict. That row gets a repair of its own
 (generation 2, rooted, discovered-from the first repair), and so on up to three
 generations. The source is carried by the whole chain, not by the first repair
-alone. `repair_chain` in `src/integration/development.py` follows it from a
+alone.
+
+No repair ever `blocks` on another repair. A repaired repair's parked row is what
+waits for the next generation's delivery, and the next generation's contract
+already names it, so a blocking edge back would be a dependency cycle. Chains
+filed before this rule (`solid-horizon`, 2026-09-27) carry those edges. The
+publisher supersedes such a cycle with its newest repair when the chain's
+contracts, followed repair to repair, name every older member's exact revision.
+It publishes that repair onto the current target and lists the older ones as
+`superseded_by` it. Before this, only a two-repair cycle qualified, and a
+three-repair chain was held every tick.
+
+`repair_chain` in `src/integration/development.py` follows the chain from a
 parked row to the repair still carrying it:
 
 * `open`: a repair in the chain is DEFINED, READY, ASSIGNED, IN_PROGRESS,
@@ -76,4 +96,7 @@ Verify with real Git and private PostgreSQL:
   fails.
 * A merged repair whose publication conflicts again is carried by its
   generation-2 repair to a delivery that contains the original revision.
+* A generation-3 chain reaches the target, whether it was filed with no repair
+  blocking on another or with the pre-fix edges, which the newest repair
+  supersedes.
 * The generation budget records its diagnostic, and doctor lists the batch.

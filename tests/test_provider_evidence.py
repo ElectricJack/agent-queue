@@ -1,26 +1,30 @@
 """Provider availability collectors and the service around the reducer.
 
 ``docs/specs/provider-failover.md`` D2 (evidence sources), D4 (recovery and
-the canary), D5 (the auth probe), D6 (override), D7 (state that survives a
-restart, the transition log, ``provider.state_changed``) and D19's state
+the canary), D5 and D5a (the auth probe), D6 (override), D7 (state that
+survives a restart, the transition log, ``provider.state_changed``) and D19's state
 half (one idempotent message per change of half).  Real PostgreSQL, a fake
 clock and an injected auth probe -- no CLI, no LLM.
 """
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from src.config import AppConfig
-from src.database import Database
 from src.models import AgentProfile, Project, SessionRecord
 from src.providers.availability import (
+    AUTH_PROBE,
     AVAILABLE,
     DEGRADED,
     DISABLED,
     EXHAUSTED,
     LAUNCH_FAILURE,
     LAUNCH_SUCCESS,
+    PROBE_AUTHENTICATED,
+    PROBE_NOT_AUTHENTICATED,
     RECOVERING,
     STARTUP_DIALOG,
     UNAUTHENTICATED,
@@ -30,9 +34,12 @@ from src.providers.snapshot import ProviderUsageSnapshot
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionDiedDuringStartup
-from tests.db_fixtures import lease_dsn
 
 T0 = 1_789_958_640.0
+
+#: The real D5 probe, captured at import time: the autouse conftest fixture
+#: replaces the class attribute for every other test in the tree.
+REAL_LOGIN_PROBE = ProviderAvailabilityService._login_probe
 
 
 class Clock:
@@ -70,13 +77,11 @@ class Probe:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("provider-evidence.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("provider-evidence.db")
     await database.create_profile(AgentProfile(id="std-codex", name="c", harness="codex"))
     await database.create_profile(AgentProfile(id="std-claude", name="c", harness="claude"))
     yield database
-    await database.close()
 
 
 def registry() -> HarnessRegistry:
@@ -243,7 +248,7 @@ async def test_state_changes_are_announced_and_evidence_is_not_news(env):
 
 
 async def test_notification_is_idempotent_per_generation(env):
-    await env.db.create_project(Project(id="p1", name="p1", default_profile_id="std-codex"))
+    await env.db.create_project(Project(id="p1", name="p1"))
     env.probe.answer = "not_authenticated"
     await env.service.record_startup_death(login_death(), harness="codex", project_id="p1")
     await env.service.wait_for_probes()
@@ -328,6 +333,131 @@ async def test_a_sessions_first_authenticated_call_is_launch_success_once(env):
     assert len(successes) == 1
     assert successes[0]["session_id"] == "sess-1"
     assert env.service.row("codex").last_success_at == T0
+
+
+async def _running_session(env, sid: str, *, started_at: float) -> None:
+    await env.db.create_session(SessionRecord(
+        id=sid, project_id="p1", profile_id="std-codex", harness="codex",
+        provider="fake", name=sid, lifecycle="pool", state="running",
+        work_dir="/tmp", epoch="e", instance_token="i", started_at=started_at,
+    ))
+
+
+async def _codex_usage(env, percent: float, *, resets_at: float | None) -> None:
+    await env.db.record_provider_usage([
+        ProviderUsageSnapshot(
+            provider="codex", window="primary", used_percent=percent,
+            observed_at=env.clock.now, source="transcript", resets_at=resets_at,
+        )
+    ])
+
+
+async def _restarted(env) -> ProviderAvailabilityService:
+    """A new daemon run: a fresh service on the same database, initialised."""
+    env.clock.tick(60)
+    fresh = ProviderAvailabilityService(
+        db=env.db, config_getter=lambda: env.config, harness_registry=registry(),
+        probe=env.probe, clock=env.clock,
+    )
+    await fresh.initialize()
+    await fresh.wait_for_probes()
+    return fresh
+
+
+def _launch_successes(service, session_id: str) -> int:
+    return sum(
+        1 for e in service.row("codex").evidence
+        if e["kind"] == LAUNCH_SUCCESS and e.get("session_id") == session_id
+    )
+
+
+async def test_restarts_do_not_flap_an_exhausted_provider_through_adopted_sessions(env):
+    """The 2026-10-01 replay: codex at 100 %, two restarts, two adopted sessions."""
+    await env.db.create_project(Project(id="p1", name="p1"))
+    for sid in ("supervisor", "worker"):
+        await _running_session(env, sid, started_at=env.clock.now)
+        await env.service.note_session_authenticated(sid)
+    reset = T0 + 200_000
+    await _codex_usage(env, 100.0, resets_at=reset)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED
+    trips = len(await env.db.list_provider_transitions("codex"))
+    generation = env.service.row("codex").generation
+
+    service = env.service
+    for _ in range(2):
+        service = await _restarted(env)
+        for sid in ("supervisor", "worker"):
+            await service.note_session_authenticated(sid)
+            await service.tick()
+            assert service.effective_state("codex") == EXHAUSTED
+            # Adopted across the restart: an existing session's call, not a launch.
+            assert _launch_successes(service, sid) == 1
+        await _codex_usage(env, 100.0, resets_at=reset)
+        await service.tick()
+
+    assert len(await env.db.list_provider_transitions("codex")) == trips
+    row = service.row("codex")
+    assert (row.state, row.generation, row.until) == (EXHAUSTED, generation, reset)
+
+
+async def test_a_launch_after_a_restart_still_counts_and_recovers_on_a_fresher_reading(env):
+    await env.db.create_project(Project(id="p1", name="p1"))
+    await _codex_usage(env, 100.0, resets_at=T0 + 200_000)
+    await env.service.tick()
+    service = await _restarted(env)
+
+    # A session this run launched: its first call counts, but cannot outrank
+    # the provider's own fresh reading.
+    await _running_session(env, "late", started_at=env.clock.now)
+    await service.note_session_authenticated("late")
+    assert _launch_successes(service, "late") == 1
+    assert service.effective_state("codex") == EXHAUSTED
+
+    env.clock.tick(30)
+    await _codex_usage(env, 10.0, resets_at=T0 + 200_000)
+    await service.tick()
+    row = service.row("codex")
+    assert (row.state, row.reason_code) == (DEGRADED, RECOVERING)
+    await _running_session(env, "canary", started_at=env.clock.now)
+    await service.note_session_authenticated("canary")
+    assert service.effective_state("codex") == AVAILABLE
+
+
+async def test_a_stale_exhausted_reading_lets_a_launch_start_probation(env):
+    await env.db.create_project(Project(id="p1", name="p1"))
+    await _codex_usage(env, 100.0, resets_at=T0 + 200_000)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED
+
+    env.clock.tick(env.config.providers.codex_stale_after_seconds + 60)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED  # recovers on the clock...
+    await _running_session(env, "s-new", started_at=env.clock.now)
+    await env.service.note_session_authenticated("s-new")
+    row = env.service.row("codex")  # ...or on a launch, once the number is stale
+    assert (row.state, row.reason_code) == (DEGRADED, RECOVERING)
+
+
+async def test_an_override_over_a_held_exhaustion_is_honoured_then_rederived(env):
+    await env.db.create_project(Project(id="p1", name="p1"))
+    await _codex_usage(env, 100.0, resets_at=T0 + 200_000)
+    await env.service.tick()
+    await env.service.set_state(
+        "codex", "available", by="human:cli", reason="false positive", until=T0 + 600
+    )
+    assert env.service.effective_state("codex") == AVAILABLE
+    await _running_session(env, "s-1", started_at=env.clock.now)
+    await env.service.note_session_authenticated("s-1")
+    assert env.service.row("codex").state == EXHAUSTED  # derived underneath
+    transitions = len(await env.db.list_provider_transitions("codex"))
+
+    result = await env.service.set_state("codex", "auto", by="human:cli")
+    assert result.transition is not None
+    assert (result.transition.from_state, result.transition.to_state) == (AVAILABLE, EXHAUSTED)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED
+    assert len(await env.db.list_provider_transitions("codex")) == transitions + 1
 
 
 async def test_the_token_store_hook_reports_each_validated_session(env):
@@ -440,6 +570,116 @@ async def test_recheck_runs_the_probe_now(env):
     result = await env.service.recheck("codex")
     assert result["probe"] == "not_authenticated"
     assert env.service.row("codex").last_probe_at == T0
+
+
+def _claude_with_an_expired_login(tmp_path, monkeypatch, *, signed_in: bool, answer: str = ""):
+    """A home whose ``claude`` answers ``auth status``, over a stale credential.
+
+    *answer* is what the CLI says when the exit status is non-zero: empty for
+    the ordinary denial, and the words of a build that has no such subcommand.
+    """
+    credentials = tmp_path / ".claude" / ".credentials.json"
+    credentials.parent.mkdir(parents=True, exist_ok=True)
+    credentials.write_text('{"claudeAiOauth": {"accessToken": "sk-not-real"}}', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    import src.install.providers as providers_module
+    import src.providers.availability_service as service_module
+
+    def where(name):
+        return "/opt/bin/claude"
+
+    def auth_status(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0 if signed_in else 1, "", answer)
+
+    monkeypatch.setattr(providers_module, "user_bin_aware_which", lambda: where)
+    monkeypatch.setattr(service_module.subprocess, "run", auth_status)
+
+
+async def test_a_present_but_expired_login_is_auth_needed_and_never_relaunched(env, tmp_path, monkeypatch):
+    """The 2026-10-03 report, end to end: the file is there, the login is not.
+
+    Readiness used to answer ``authenticated`` from the credential file, so the
+    ``claude`` provider stayed launchable, the pool kept reporting idle workers
+    and every relaunch died on the same ``Login expired`` pane.
+    """
+    _claude_with_an_expired_login(tmp_path, monkeypatch, signed_in=False)
+
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+
+    assert (signal, detail) == (
+        PROBE_NOT_AUTHENTICATED,
+        {"stale_credential_store": "Claude Code credential file"},
+    )
+
+    # Rule (c): one probe is a suspect, two probes ≥ 60 s apart trip on their own.
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert env.service.row("claude").reason_code == "probe_not_authenticated"
+    env.clock.tick(61)
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    row = env.service.row("claude")
+    assert (row.state, row.reason_code) == (UNAUTHENTICATED, "probe_not_authenticated")
+    # Nothing launches into a login that has to be fixed by a human.
+    assert env.service.suppresses("claude")
+    assert env.service.admit_launch("claude")[0] is False
+    assert "claude auth login" in env.service.remediation("claude", UNAUTHENTICATED)
+
+
+async def test_a_build_without_the_status_subcommand_does_not_suppress_claude(
+    env, tmp_path, monkeypatch
+):
+    """The 2026-10-03 follow-up: the same store, a CLI that cannot be asked.
+
+    An installed build from before ``claude auth status`` existed complains
+    about the command and exits non-zero — the same shape as the denial above.
+    Read as a denial it would suppress a provider whose login is fine and stop
+    every launch into it; D5a says only an *answer* may do that.
+    """
+    _claude_with_an_expired_login(
+        tmp_path,
+        monkeypatch,
+        signed_in=False,
+        answer="error: unknown command 'status'",
+    )
+
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+
+    assert (signal, detail) == (
+        PROBE_AUTHENTICATED,
+        {"method": "provider-login", "source": "Claude Code credential file"},
+    )
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert not env.service.suppresses("claude")
+    assert env.service.admit_launch("claude")[0] is True
+
+
+async def test_the_same_store_recovers_once_the_human_confirms_a_fresh_login(env, tmp_path, monkeypatch):
+    _claude_with_an_expired_login(tmp_path, monkeypatch, signed_in=False)
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    env.clock.tick(61)
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert env.service.effective_state("claude") == UNAUTHENTICATED
+
+    # The human ran `claude auth login`.  The credential file did not change;
+    # the answer from the CLI did.
+    _claude_with_an_expired_login(tmp_path, monkeypatch, signed_in=True)
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+    assert (signal, detail) == (
+        PROBE_AUTHENTICATED,
+        {"method": "provider-login", "source": "claude auth status"},
+    )
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert env.service.row("claude").state == DEGRADED
+
+    # Probation admits one canary; its success completes the recovery.
+    assert env.service.admit_launch("claude") == (True, None)
+    await env.service.record("claude", LAUNCH_SUCCESS, project_id="p1")
+    assert env.service.effective_state("claude") == AVAILABLE
+    assert env.service.admit_launch("claude") == (True, None)
 
 
 async def test_the_background_probe_runs_on_its_interval_while_launchable(env):

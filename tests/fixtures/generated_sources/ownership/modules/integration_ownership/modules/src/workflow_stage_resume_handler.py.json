@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/workflow_stage_resume_handler.py::WorkflowStageResumeHandler": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

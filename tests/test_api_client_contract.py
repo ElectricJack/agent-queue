@@ -192,6 +192,61 @@ async def test_generated_client_models_round_trip_real_typed_route(live_app):
         assert "no-such-task" in str(err.error)
 
 
+@pytest.mark.parametrize("status", ["held", "released", None])
+def test_generated_propose_response_preserves_ingestion_and_ordinary_results(status):
+    _import_repo_client()
+    from agent_queue_api_client.models.task_batch_propose_response import TaskBatchProposeResponse
+
+    payload = {"success": True, "proposal_id": "prop"}
+    if status:
+        payload.update(
+            status=status, state=status, batch_id="prop", members={"leaf": "task"},
+            structure_revision=2, structure_digest="digest", replayed=True,
+            lineage={"lineage_kind": "none"}, reviewer_task_id=None,
+            release_receipt={"kind": "design_authoring_shape"} if status == "released" else None,
+        )
+    parsed = TaskBatchProposeResponse.from_dict(payload)
+    assert parsed.to_dict() == payload
+    assert parsed.additional_properties == {}
+    if status:
+        assert parsed.status.value == status
+        assert parsed.members.to_dict() == {"leaf": "task"}
+        assert parsed.lineage.to_dict() == {"lineage_kind": "none"}
+
+
+async def test_generated_client_reads_design_batch_from_default_router(live_app):
+    _import_repo_client()
+    from agent_queue_api_client.api.default import get_ingest_batch
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.ingest_batch_detail import IngestBatchDetail
+
+    from src.database.queries import ingest_batch_queries as batches
+    from src.database.queries.proposal_queries import insert_proposal
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p1", name="p1"))
+    batch_id = await insert_proposal(db, project_id="p1", source="spec:design", payload={})
+    async with db._engine.begin() as conn:
+        await batches.create_batch(
+            conn, batch_id=batch_id, project_id="p1", source_review_id="rev",
+            source_revision=1, source_content_sha256="sha", decision_id="decision",
+            lineage={"lineage_kind": "none"}, idempotency_key="key", state="released",
+            release_actor="service:design_authoring_shape",
+            release_receipt={"kind": "design_authoring_shape"},
+        )
+    client = Client(base_url="http://test")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        parsed = await get_ingest_batch.asyncio(client=client, project_id="p1", batch_id=batch_id)
+    assert isinstance(parsed, IngestBatchDetail)
+    assert parsed.batch_id == batch_id
+    assert parsed.state.value == "released"
+    assert parsed.release_receipt.to_dict() == {"kind": "design_authoring_shape"}
+
+
 async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
     """``graph_reflow_status`` is operator-only and read-only.
 
@@ -239,6 +294,63 @@ async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
     assert status.failed_scopes == []
 
 
+async def test_generated_client_round_trips_repository_binding_and_repeat(live_app, monkeypatch):
+    """The typed client preserves the binding audit and unchanged repeat result."""
+    from unittest.mock import AsyncMock
+
+    _import_repo_client()
+    from agent_queue_api_client.api.project import bind_project_repository
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.bind_project_repository_request import (
+        BindProjectRepositoryRequest,
+    )
+    from agent_queue_api_client.models.bind_project_repository_response import (
+        BindProjectRepositoryResponse,
+    )
+
+    from src.api.dependencies import get_command_handler
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p-bind", name="Existing project"))
+    github = AsyncMock()
+    monkeypatch.setattr(get_command_handler(), "_github_client", lambda: github)
+    url = "https://github.com/acme/existing-project.git"
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        first = await bind_project_repository.asyncio(
+            client=client,
+            body=BindProjectRepositoryRequest(
+                project_id="p-bind", repo_url=url, expected_repo_url="", reason="Authorized",
+            ),
+        )
+        repeat = await bind_project_repository.asyncio(
+            client=client,
+            body=BindProjectRepositoryRequest(
+                project_id="p-bind", repo_url=url, expected_repo_url=url, reason="Repeat",
+            ),
+        )
+
+    audit = await db.get_recent_events(event_type="project.repository_bound", project_id="p-bind")
+    assert isinstance(first, BindProjectRepositoryResponse), first
+    assert first.success is True
+    assert first.project_id == "p-bind"
+    assert first.repo_url == url
+    assert first.changed is True
+    assert len(audit) == 1
+    assert first.event_id == audit[0]["id"]
+    assert isinstance(repeat, BindProjectRepositoryResponse), repeat
+    assert repeat.success is True
+    assert repeat.project_id == first.project_id
+    assert repeat.repo_url == first.repo_url
+    assert repeat.changed is False
+    assert repeat.event_id is None
+    github.validate_repository.assert_awaited_once_with(url.removesuffix(".git"))
+
+
 async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     """``max: null`` is a meaningful unbounded-pool request, not omission."""
     from src.models import AgentProfile, Project
@@ -266,7 +378,19 @@ async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     ]
 
 
-def test_codegen_routes_keep_execute_exclusions_off_every_live_router():
+@pytest.fixture
+def offline_contract_snapshot():
+    """Route the offline descriptor snapshot even when an earlier test on this
+    worker left a live handler (with qualified plugin commands) installed."""
+    from src.commands.contracts import builtin
+
+    previous = builtin._handler_provider
+    builtin.set_handler_provider(None)
+    yield
+    builtin.set_handler_provider(previous)
+
+
+def test_codegen_routes_keep_execute_exclusions_off_every_live_router(offline_contract_snapshot):
     """Plan 3: one route per discovered command; excluded commands get none."""
     from src.api.codegen import API_EXCLUDED, build_category_routers
     from src.mcp_registration import _discover_all_commands

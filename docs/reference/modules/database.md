@@ -1,13 +1,13 @@
 # Module catalog — database
 
-Schema, query modules, migrations and data lifecycle: the 61 production modules
-that own every durable row in an AQ install, plus the 20 supporting files that
-define and migrate the schema.
+Schema, query modules, migrations and data lifecycle. This catalog covers
+selected modules; the source directories and owning [system specs](../../specs/systems/README.md)
+provide the current inventory as domains grow.
 
 Prose for everything here lives on five pages:
 
 * [The database](../database/README.md) — concepts, layering, entity diagrams, write ownership.
-* [Table families](../database/tables.md) — all 98 tables, grouped.
+* [Table families](../database/tables.md) — selected table families.
 * [Query modules](../database/queries.md) — the query layer in prose.
 * [Migrations](../database/migrations.md) — Alembic, scope policy, backup and restore.
 * [Data lifecycle](../database/data-lifecycle.md) — close, archive, delete, retention.
@@ -17,7 +17,7 @@ Prose for everything here lives on five pages:
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [`src/database/__init__.py`](../../../src/database/__init__.py) | Builds the one backend from config, refuses a non-PostgreSQL DSN outright, and redacts passwords out of any DSN that reaches a log. | [reference/database/README.md](../database/README.md) | `Database` is an alias for the PostgreSQL adapter, kept so existing imports work. `tests/test_database_backend_selection.py` |
-| [`src/database/tables.py`](../../../src/database/tables.py) | The schema's source of truth: 98 SQLAlchemy Core `Table` objects with their columns, named check constraints and indexes. | [reference/database/tables.md](../database/tables.md) | Migrations follow this file, never the reverse. Every `CheckConstraint` must be named or autogenerate emits a spurious drop. `tests/test_database.py` |
+| [`src/database/tables.py`](../../../src/database/tables.py) | The schema's source of truth: SQLAlchemy Core `Table` objects with their columns, named check constraints and indexes. | [reference/database/tables.md](../database/tables.md) | Migrations follow this file, never the reverse. Every `CheckConstraint` must be named or autogenerate emits a spurious drop. `tests/test_database.py` |
 | [`src/database/base.py`](../../../src/database/base.py) | The `DatabaseBackend` protocol — the full read/write contract a backend must satisfy, organised by domain. | [reference/database/queries.md](../database/queries.md) | What type checkers see; adding a query method means adding it here too. |
 | [`src/database/engine.py`](../../../src/database/engine.py) | Async engine creation and the schema lifecycle: the already-at-head fast path, the Alembic preflight, the legacy-stamp path, and the idempotent startup row normalisations. | [reference/database/migrations.md](../database/migrations.md) | Uses `engine.connect()`, not `begin()`, so Alembic owns per-revision transaction boundaries. `tests/test_database_engine.py` |
 | [`src/database/migration_guard.py`](../../../src/database/migration_guard.py) | Who may migrate which database: `current_scope()` (who is asking) × `is_production_database()` (what they point at) → migrate or verify. | [reference/database/migrations.md](../database/migrations.md) | Exists because of the 2026-09-02 incident; `AQ_DB_SCOPE` in the environment deliberately outranks a process-declared scope. `tests/test_migration_guard.py`, `tests/test_migration_guard_restoration.py` |
@@ -31,7 +31,7 @@ Prose for everything here lives on five pages:
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [`src/database/adapters/__init__.py`](../../../src/database/adapters/__init__.py) | Exports the one adapter. PostgreSQL is the only backend. | [reference/database/README.md](../database/README.md) | `tests/test_sqlite_removal.py` is the ratchet that keeps it that way. |
-| [`src/database/adapters/postgresql.py`](../../../src/database/adapters/postgresql.py) | Composes the 47 query mixins into the single object every caller uses; owns engine lifecycle, schema setup and the test-only truncate. | [reference/database/queries.md](../database/queries.md) | `reset_for_tests` refuses unless the DSN is `POSTGRES_TEST_DSN` or `AQ_ALLOW_DB_RESET=1`. `tests/test_database_postgresql.py` |
+| [`src/database/adapters/postgresql.py`](../../../src/database/adapters/postgresql.py) | Composes the domain query mixins into the single object every caller uses; owns engine lifecycle, schema setup and the test-only truncate. | [reference/database/queries.md](../database/queries.md) | `reset_for_tests` refuses unless the DSN is `POSTGRES_TEST_DSN` or `AQ_ALLOW_DB_RESET=1`. `tests/test_database_postgresql.py` |
 
 ## Query modules — tasks and the work graph
 
@@ -104,6 +104,7 @@ Prose for everything here lives on five pages:
 | [`src/database/queries/integration_train_queries.py`](../../../src/database/queries/integration_train_queries.py) | The projections used to seal an integration train atomically. | [reference/database/tables.md](../database/tables.md) | `tests/test_integration_sealing.py` |
 | [`src/database/queries/integration_schedule_queries.py`](../../../src/database/queries/integration_schedule_queries.py) | Per-project sweep schedules and their outstanding/catch-up requests. | [reference/database/tables.md](../database/tables.md) | Sequence monotonicity is enforced by trigger. `tests/test_migration_integration_service.py` |
 | [`src/database/queries/integration_reconciliation_queries.py`](../../../src/database/queries/integration_reconciliation_queries.py) | Bounded read-only selectors for one reconciliation tick. | [reference/database/tables.md](../database/tables.md) | Bounded on purpose: a tick must not scan the whole control plane. `tests/test_integration_completion_recovery.py` |
+| [`src/database/queries/integration_subject_queries.py`](../../../src/database/queries/integration_subject_queries.py) | Integration subjects and their journal: idempotent creation by natural key, keyset due pages, versioned visit writes, event wakes and replay-safe journal appends. | [reference/database/tables.md](../database/tables.md) | A wake pulls the due time forward without bumping the version, so it never invalidates a visit in flight; the never-blocked rule, the pinned policy artifact and the append-only journal are enforced by CHECK and trigger. `tests/test_integration_subjects.py` |
 | [`src/database/queries/metrics_queries.py`](../../../src/database/queries/metrics_queries.py) | The per-second aggregates the sampler folds, and the idempotent store, range read and retention sweep for `metrics_samples`. | [reference/database/tables.md](../database/tables.md) | Nothing here interprets a sample; shape and roll-up arithmetic belong to the sampler. `tests/test_metrics_sampler.py`, `tests/test_api_metrics.py` |
 | [`src/database/queries/provider_availability_queries.py`](../../../src/database/queries/provider_availability_queries.py) | `provider_availability` rows, the append-only `provider_availability_transitions` log, and the once-per-generation notification claim. | [reference/database/tables.md](../database/tables.md) | The availability service is the only writer and serialises per provider, so an upsert needs no compare-and-swap. `tests/test_provider_availability.py` |
 | [`src/database/queries/provider_usage_queries.py`](../../../src/database/queries/provider_usage_queries.py) | Append-only provider quota readings from a transcript line and a probe. | [reference/database/tables.md](../database/tables.md) | A duplicate reading bumps `last_seen_at` rather than inserting, but is still recorded as evidence the probe ran. `tests/test_provider_usage_queries.py` |
@@ -144,4 +145,4 @@ what each one does and why.
 | [`a00000000009_durable_escalation_state.py`](../../../migrations/versions/a00000000009_durable_escalation_state.py) | The escalation and digest tables. |
 | [`a0000000000a_add_task_comment_kind.py`](../../../migrations/versions/a0000000000a_add_task_comment_kind.py) | `task_comments.kind`. |
 | [`a0000000000b_escalation_actions.py`](../../../migrations/versions/a0000000000b_escalation_actions.py) | Verified-reply action reservations. |
-| [`a0000000000c_development_integration.py`](../../../migrations/versions/a0000000000c_development_integration.py) | The development delivery journal. Current head. |
+| [`a0000000000c_development_integration.py`](../../../migrations/versions/a0000000000c_development_integration.py) | The development delivery journal, retired by `a00000000038_retire_development_deliveries.py`. |

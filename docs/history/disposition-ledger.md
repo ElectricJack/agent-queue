@@ -24,8 +24,8 @@ happened to the page I remember" and "is this file still true".
 | `archive` | Describes a procedure or component that no longer exists, and has no direct replacement page. | Kept at its path with a **Retired** banner naming what to read instead. Delisted from navigation. |
 | `historical` | Design history or audit evidence, preserved on purpose as the record of how AQ got here. | Kept, with a banner giving its genre and saying it is not current documentation. Bodies of evidence bundles were not edited at all. |
 
-Counts: `current` 121, `update` 3, `redirect` 7,
-`archive` 8, `historical` 369.
+Counts: `current` 117, `update` 3, `redirect` 7,
+`archive` 8, `historical` 373.
 
 ## What "immutable evidence" means here
 
@@ -545,10 +545,10 @@ This repository's own configured policy, recorded as immutable reviewed bundles.
 | [`docs/playbooks/integration-only/default-pipeline/artifact.sha256`](../playbooks/integration-only/default-pipeline/artifact.sha256) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
 | [`docs/playbooks/integration-only/default-pipeline/manifest.md`](../playbooks/integration-only/default-pipeline/manifest.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
 | [`docs/playbooks/integration-only/default-pipeline/source.md`](../playbooks/integration-only/default-pipeline/source.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.json`](../playbooks/standard-high-default/default-assignment-routing/artifact.json) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.sha256`](../playbooks/standard-high-default/default-assignment-routing/artifact.sha256) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/manifest.md`](../playbooks/standard-high-default/default-assignment-routing/manifest.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/source.md`](../playbooks/standard-high-default/default-assignment-routing/source.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.json`](../playbooks/standard-high-default/default-assignment-routing/artifact.json) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.sha256`](../playbooks/standard-high-default/default-assignment-routing/artifact.sha256) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/manifest.md`](../playbooks/standard-high-default/default-assignment-routing/manifest.md) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/source.md`](../playbooks/standard-high-default/default-assignment-routing/source.md) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
 
 ## `docs/default_rules/` and `docs/example_playbooks/` — samples
 

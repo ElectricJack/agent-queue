@@ -4,10 +4,16 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
+import TaskDetailBody from "../TaskDetailBody";
 import { rememberTaskPreview } from "../preview";
 import type { Task } from "../../../api/hooks";
+import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
 
 const mockUseAgentFlock = vi.fn();
+vi.mock("../../../api/waits", () => ({
+  useWaitExplain: () => ({ data: { waits: [] }, isPending: false, error: null }),
+}));
+
 vi.mock("../../../api/agents", () => ({ useAgentFlock: () => mockUseAgentFlock() }));
 
 const mockUseTask = vi.fn();
@@ -36,6 +42,7 @@ vi.mock("../../../api/hooks", async () => {
     useUploadTaskAttachment: (...args: unknown[]) => mockUseUploadTaskAttachment(...args),
     useDeleteTaskAttachment: (...args: unknown[]) => mockUseDeleteTaskAttachment(...args),
     useDeleteTask: (...args: unknown[]) => mockUseDeleteTask(...args),
+    useDeleteTaskPreview: () => ({ data: { task_ids: ["t1"], tasks: [] }, isFetching: false }),
   };
 });
 
@@ -125,6 +132,30 @@ beforeEach(() => {
 });
 
 describe("TaskDetailPane — screenshot attachments", () => {
+  it("shows a durable ingestion hold and opens its batch evidence with project scope", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, held_batch: {
+      batch_id: "batch", state: "needs_scope", source: "spec:approved", structure_revision: 4,
+      lineage: { lineage_kind: "none" }, reviewer_task_id: "reviewer",
+    } } });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getAllByText("Held for fidelity review")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Ingestion batch" })).toHaveTextContent("Structure revision 4");
+    fireEvent.click(screen.getByRole("button", { name: "View batch review and release evidence" }));
+    expect(mockOpen).toHaveBeenCalledWith("proposal-preview", { proposalId: "batch", batchProjectId: "demo" });
+  });
+
+  it("shows operational roots' delivery prerequisites and current owner", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, parent_task_id: null, assigned_agent: "ops-owner",
+      delivery_condition: { kind: "delivery-of", targets: ["code-source"] },
+      depends_on: [{ id: "code-source", title: "Land API", status: "COMPLETED", dep_type: "delivery-of", reason: "Wait for deployment" }] } });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    const section = screen.getByRole("region", { name: "Operational delivery condition" });
+    expect(section).toHaveTextContent("Owner: ops-owner");
+    expect(section).toHaveTextContent("Completion alone does not satisfy delivery");
+    expect(section).toHaveTextContent("Land API (code-source)");
+    expect(section).toHaveTextContent("Recorded delivery condition");
+  });
+
   it("uploads an image pasted from the clipboard", async () => {
     const mutateAsync = vi.fn().mockResolvedValue({ success: true });
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
@@ -205,6 +236,22 @@ describe("TaskDetailPane — screenshot attachments", () => {
 });
 
 describe("TaskDetailPane — header, description, actions", () => {
+  it("lets URL-owned detail leave without closing its selection history", () => {
+    const leave = vi.fn();
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, status: "IN_PROGRESS" } });
+    mockUseAgentFlock.mockReturnValue({ data: [{
+      id: "agent-1", name: "Solar Eagle", current_task_id: "t1", current_project_id: "demo",
+      session_id: "session-1", session_state: "running", session_provider: "tmux",
+    }] });
+    renderWithRouter(<TaskDetailBody taskId="t1" onOpenTask={vi.fn()} onClose={mockClose} onLeave={leave} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open agent terminal" }));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      { pathname: "/agents", search: "agent=agent-1" },
+      { state: { agentSelection: "replace", terminalFocus: "agent-1" } },
+    );
+    expect(leave).toHaveBeenCalledOnce();
+    expect(mockClose).not.toHaveBeenCalled();
+  });
   it("jumps from a selected task to its current worker and closes the pane", () => {
     mockUseTask.mockReturnValue({ data: { ...fixtureTask, status: "IN_PROGRESS" } });
     mockUseAgentFlock.mockReturnValue({ data: [{
@@ -351,6 +398,64 @@ describe("TaskDetailPane — metadata, PR link, relationships", () => {
   });
 });
 
+describe("TaskDetailPane — epic implementation and delivery", () => {
+  const epic = (delivery: Task["delivery_status"]): Task => ({
+    ...fixtureTask,
+    id: "calm-grove-25",
+    title: "Phase 1 epic",
+    status: "PAUSED",
+    delivery_status: delivery,
+  });
+
+  it("separates 5/5 implementation from an integration-held, blocked delivery", () => {
+    mockUseTask.mockReturnValue({ data: epic(EPIC_DELIVERY.missingReceipt), isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getByText("Delivery blocked")).toBeInTheDocument();
+    expect(screen.getByText("held by integration")).toBeInTheDocument();
+    expect(screen.queryByText(/^paused$/i)).not.toBeInTheDocument();
+    // The raw lifecycle field still shows the stored value, with whose hold it is.
+    expect(screen.getByText("PAUSED (integration hold)")).toBeInTheDocument();
+    expect(screen.getByText("5/5 tasks complete")).toBeInTheDocument();
+    expect(screen.getAllByText("Integration blocked - final fix not collected").length).toBeGreaterThan(0);
+    expect(screen.getByText("aq integration reopen-collection calm-grove-25")).toBeInTheDocument();
+  });
+
+  it("opens the task a delivery blocker names in the pane", () => {
+    mockUseTask.mockReturnValue({ data: epic(EPIC_DELIVERY.strandedReservation), isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Repair stage 13" }));
+    expect(mockOpen).toHaveBeenCalledWith("task-detail", { taskId: "repair-op-13" });
+  });
+
+  it("heads an idle IN_PROGRESS epic with its rolled-up waiting state and child counts", () => {
+    mockUseTask.mockReturnValue({ data: { ...epic(EPIC_DELIVERY.implementing), status: "IN_PROGRESS",
+      display_state: "waiting", display_reason: "Waiting on clear-crest-48.1",
+      child_state_counts: { completed: 1, waiting: 2 }, descendant_state_counts: { COMPLETED: 1, DEFINED: 2 } },
+    isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+    expect(screen.getByText("1 completed · 2 waiting")).toBeInTheDocument();
+    expect(screen.getByText("Waiting on clear-crest-48.1")).toBeInTheDocument();
+    expect(screen.queryByText("Implementing")).not.toBeInTheDocument();
+  });
+
+  it("keeps the delivery headline while an epic batch is in flight", () => {
+    mockUseTask.mockReturnValue({ data: { ...epic(EPIC_DELIVERY.activeIntegration), status: "IN_PROGRESS",
+      display_state: "waiting", display_reason: "Waiting for a worker", child_state_counts: { completed: 3 } },
+    isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.queryByText("Waiting")).not.toBeInTheDocument();
+    expect(screen.getByText("3 completed")).toBeInTheDocument();
+  });
+
+  it("keeps the stored status badge and no delivery section for a leaf task", () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getByText("WAITING INPUT")).toBeInTheDocument();
+    expect(screen.queryByTestId("epic-delivery")).not.toBeInTheDocument();
+  });
+});
+
 describe("TaskDetailPane — gates", () => {
   it("links reviews waiting on and submitted by this task", () => {
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
@@ -477,22 +582,21 @@ describe("TaskDetailPane — toolbar and shortcuts", () => {
     act(() => {
       bindings.find((b: { key: string }) => b.key === "c").onFire();
     });
-    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Deletion scope")).toBeInTheDocument();
   });
 
-  it("deletes the task subtree after confirmation", () => {
-    const mutate = vi.fn();
-    mockUseDeleteTask.mockReturnValue({ mutate, isPending: false });
+  it("uses the shared dialog to choose subtree deletion after confirmation", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ warnings: [] });
+    mockUseDeleteTask.mockReturnValue({ mutateAsync, isPending: false });
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
     const setShortcuts = vi.fn();
     renderWithRouter(<TaskDetailPane {...noopProps()} setShortcuts={setShortcuts} />);
     const bindings = setShortcuts.mock.calls[setShortcuts.mock.calls.length - 1]?.[0];
     act(() => bindings.find((b: { key: string }) => b.key === "c").onFire());
-    screen.getByRole("button", { name: "Delete task and descendants" }).click();
-    expect(mutate).toHaveBeenCalledWith(
-      { task_id: "t1", cascade: true },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    fireEvent.change(screen.getByLabelText("Deletion scope"), { target: { value: "recursive" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete selected tasks" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ task_id: "t1", recursive: true,
+      branches: "keep", confirmed: true, stop_running: true, reason: "" }));
   });
 
   it("shows a cascade deletion failure in the confirmation dialog", () => {
