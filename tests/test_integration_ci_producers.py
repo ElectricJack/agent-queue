@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,9 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from src.git.github_contracts import GitHubCredentialIdentity
+from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
 from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
-from src.integration.ci_adapters import CIAdapters, bind_ci_adapters
 from src.integration.ci_producers import (
     HostedCIProducer,
     LocalCIProducer,
@@ -21,14 +19,8 @@ from src.integration.ci_producers import (
     ProducerRequest,
     digest,
 )
-from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
-from src.integration.subjects import (
-    CIAttestArgs,
-    CIObserveArgs,
-    CIRequestArgs,
+from src.integration.runtime_contracts import (
     CIState,
-    Primitive,
-    PrimitivePorts,
     Subject,
     SubjectSchedule,
 )
@@ -59,30 +51,6 @@ def subject(**overrides):
             **overrides,
         }
     )
-
-
-class SubjectDB:
-    def __init__(self, current):
-        self.row = current.to_row()
-        self.entries = {}
-        self._engine = self
-
-    @asynccontextmanager
-    async def begin(self):
-        yield self
-
-    async def get_integration_subject(self, _):
-        return deepcopy(self.row)
-
-    async def lock_integration_subject_on(self, *_):
-        return deepcopy(self.row)
-
-    async def append_integration_subject_journal_on(self, _, values):
-        key = values["idempotency_key"]
-        created = key not in self.entries
-        if created:
-            self.entries[key] = {**deepcopy(values), "seq": len(self.entries) + 1}
-        return self.entries[key], created
 
 
 class JobClient:
@@ -299,6 +267,32 @@ async def test_app_credentials_cannot_replace_subject_manifest_with_policy_only_
     requester.assert_not_awaited()
 
 
+@pytest.mark.parametrize("manifest", [False, True])
+@pytest.mark.parametrize("aggregate", [None, "failure", "cancelled", "timed_out"])
+async def test_hosted_required_job_succeeds_independently_of_unrequired_jobs(manifest, aggregate):
+    client, trust = github(app=manifest, manifest=manifest)
+    client.workflows[0].update(
+        status="queued" if aggregate is None else "completed", conclusion=aggregate,
+    )
+    client.checks.append({**client.checks[0], "id": 99, "name": "waived-windows",
+                          "status": "queued", "conclusion": None})
+    client.jobs.append({**client.jobs[0], "id": 99, "name": "waived-windows",
+                       "status": "queued", "conclusion": None})
+    s = subject()
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+    assert result.state is CIState.GREEN
+    assert result.checks == {"unit": "success"}
+    assert result.details["receipt"]["workflow_runs"][0]["conclusion"] == aggregate
+    assert result.details["checks"][0]["job_url"].endswith("/actions/runs/31/job/51")
+    assert "job_url" not in result.details["receipt"]["checks"][0]
+
+    # A workflow rerun cannot borrow the previous attempt's successful job.
+    client.workflows[0]["run_attempt"] = 2
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+    assert result.state is not CIState.GREEN
+    assert result.classification == "superseded"
+
+
 @pytest.mark.parametrize("change", ["head", "app", "newer-pending", "older-attempt"])
 async def test_hosted_never_uses_wrong_head_foreign_app_or_superseded_success(change):
     client, trust = github(app=False)
@@ -328,6 +322,17 @@ async def test_hosted_pending_absence_and_transport_failure_are_distinct():
     assert (await producer.observe(s, s.head)).classification == "none"
     client.paged_items.side_effect = OSError("network")
     assert (await producer.observe(s, s.head)).classification == "infra"
+
+
+async def test_hosted_rate_limit_preserves_retry_after_for_train_pause():
+    client, trust = github(app=False)
+    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
+    client.paged_items.side_effect = error
+    with pytest.raises(GitHubAccessError) as caught:
+        await HostedCIProducer(client, trust).observe(subject(), subject().head)
+    assert caught.value is error and caught.value.retry_at == 1900
+
+
 
 
 async def test_hosted_request_uses_existing_owner_without_running_git():
@@ -458,152 +463,18 @@ async def test_local_request_identity_binds_plan_head_generation_policy_and_atte
     assert retry.request_identity(s, s.head) != original
 
 
-async def test_adapters_register_all_ci_ports_and_journal_replays_do_not_count_attempts():
-    client, s = JobClient(), subject()
-    db, producer = SubjectDB(s), local(client)
-    adapters = CIAdapters(db, lambda _: producer, clock=lambda: 1002)
-    ports = bind_ci_adapters(PrimitivePorts(), adapters)
-    assert ports.bound == {Primitive.CI_REQUEST, Primitive.CI_OBSERVE, Primitive.CI_ATTEST}
-    await ports.invoke(s, CIRequestArgs(head=s.head))
-    client.complete()
-    one = await ports.invoke(s, CIObserveArgs(head=s.head, required_check_version="v1"))
-    two = await ports.invoke(s, CIObserveArgs(head=s.head, required_check_version="v1"))
-    assert one == two and one.outcome == "green" and one.detail["is_attempt"]
-    assert len(db.entries) == 2
-    assert all(entry["entry_kind"] == "action" for entry in db.entries.values())
-    assert (await ports.invoke(s, CIAttestArgs(head=s.head))).outcome == "refused"
 
 
-async def test_observation_age_advances_without_appending_another_attempt():
-    client, s = JobClient(), subject()
-    producer, db = local(client), SubjectDB(s)
-    await producer.request(s, s.head)
-    times = iter((1010, 1050))
-    producer.clock = lambda: next(times)
-    adapters = CIAdapters(db, lambda _: producer, clock=lambda: 1002)
-    first = await adapters.observe(s, CIObserveArgs(head=s.head))
-    second = await adapters.observe(s, CIObserveArgs(head=s.head))
-    assert first.detail["evidence"]["age_seconds"] == 9
-    assert second.detail["evidence"]["age_seconds"] == 49
-    assert first.detail["evidence"]["evidence_id"] == second.detail["evidence"]["evidence_id"]
-    assert first.detail["journal_seq"] == second.detail["journal_seq"]
-    assert len(db.entries) == 1 and not second.detail["is_attempt"]
 
 
-async def test_request_replay_preserves_original_requested_at():
-    s = subject()
-    client, trust = github(app=False)
-    producer = HostedCIProducer(
-        client,
-        trust,
-        requester=AsyncMock(
-            return_value=ProducerRequest(
-                outcome="requested",
-                request_id="durable-dispatch",
-            )
-        ),
-    )
-    times = iter((1000, 1001, 1100, 1101))
-    db = SubjectDB(s)
-    adapters = CIAdapters(db, lambda _: producer, clock=lambda: next(times))
-    first = await adapters.request(s, CIRequestArgs(head=s.head))
-    second = await adapters.request(s, CIRequestArgs(head=s.head))
-    assert first.detail["requested_at"] == second.detail["requested_at"] == 1000
-    assert len(db.entries) == 1
 
 
-@pytest.mark.parametrize("change", ["version", "head", "generation", "legacy", "gate", "done"])
-async def test_adapter_refuses_stale_feature_off_and_human_held_subject_without_work(change):
-    s, client = subject(), JobClient()
-    db, producer = SubjectDB(s), local(client)
-    db.row.update(
-        {
-            "version": {"version": 1},
-            "head": {"head_sha": OTHER},
-            "generation": {"generation": 2},
-            "legacy": {"engine": "legacy"},
-            "gate": {"gate_id": "human", "next_due_at": None},
-            "done": {"phase": "done", "next_due_at": None, "closed_reason": "delivered"},
-        }[change]
-    )
-    resolver = AsyncMock(return_value=producer)
-    adapters = CIAdapters(db, resolver)
-    for args, call in [
-        (CIRequestArgs(head=s.head), adapters.request),
-        (CIObserveArgs(head=s.head), adapters.observe),
-        (CIAttestArgs(head=s.head), adapters.attest),
-    ]:
-        result = await call(s, args)
-        assert result.detail["classification"] == "superseded"
-        assert not result.detail["is_attempt"]
-    resolver.assert_not_awaited()
-    assert not client.calls and not db.entries
 
 
-async def test_late_green_is_superseded_before_evidence_append():
-    s, client = subject(), JobClient()
-    db, producer = SubjectDB(s), local(client)
-    await producer.request(s, s.head)
-    client.complete()
-    observe = producer.observe
-
-    async def moved(*args):
-        result = await observe(*args)
-        db.row.update(head_sha=OTHER, generation=2, version=1)
-        return result
-
-    producer.observe = moved
-    result = await CIAdapters(db, lambda _: producer).observe(s, CIObserveArgs(head=s.head))
-    assert result.outcome == "infra" and result.detail["classification"] == "superseded"
-    assert not db.entries
 
 
-async def test_required_check_version_mismatch_cannot_observe():
-    s, client = subject(), JobClient()
-    producer = local(client)
-    producer.observe = AsyncMock()
-    result = await CIAdapters(SubjectDB(s), lambda _: producer).observe(
-        s, CIObserveArgs(head=s.head, required_check_version="wrong")
-    )
-    assert result.outcome == "untrusted"
-    producer.observe.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ("published", "expected"),
-    [
-        ("published", "attested"),
-        ("already_published", "already"),
-        ("configuration_blocked", "refused"),
-    ],
-)
-async def test_attestation_delegates_to_existing_journaled_service(published, expected):
-    s = subject()
-    client, trust = github(manifest=True)
-    target = RootAttestationSubject(
-        repository_numeric_id=123,
-        repository_full_name="acme/widgets",
-        operation_id="op",
-        batch_id="batch",
-        revision=1,
-        candidate_sha=HEAD,
-        required_check_version="v1",
-    )
-    proof = RootAttestationProof(
-        **target.model_dump(), check_run_id=77, external_id="aq-attestation-v1:" + "2" * 64
-    )
-    service = SimpleNamespace(
-        publish=AsyncMock(return_value=SimpleNamespace(outcome=published, proof=proof))
-    )
-    adapters = CIAdapters(
-        SubjectDB(s),
-        lambda _: HostedCIProducer(client, trust),
-        attestation_service=service,
-        attestation_subject_for=lambda _: target,
-    )
-    result = await adapters.attest(s, CIAttestArgs(head=s.head))
-    assert result.outcome == expected
-    service.publish.assert_awaited_once_with(target)
 
 
 def test_typed_green_cannot_claim_failure_cancellation_or_untrusted_evidence():
@@ -628,14 +499,11 @@ def test_typed_green_cannot_claim_failure_cancellation_or_untrusted_evidence():
 
 
 @pytest.fixture
-async def ci_producer_db():
+async def ci_producer_db(reuse_database):
     from sqlalchemy import insert
-    from src.database import Database
     from src.database.tables import playbook_artifacts
-    from tests.db_fixtures import lease_dsn
 
-    db = Database(lease_dsn("ci-producers"))
-    await db.initialize()
+    db = await reuse_database("ci-producers")
     pin = subject().policy
     async with db._engine.begin() as conn:
         await conn.execute(
@@ -650,23 +518,8 @@ async def ci_producer_db():
             )
         )
     yield db
-    await db.close()
 
 
-async def test_real_journal_replay_is_append_only_and_never_counts_budget(ci_producer_db):
-    s, client = subject(batch_id=None), JobClient()
-    await ci_producer_db.ensure_integration_subject(s.to_row())
-    producer = local(client)
-    await producer.request(s, s.head)
-    client.complete()
-    adapters = CIAdapters(ci_producer_db, lambda _: producer, clock=lambda: 1002)
-    first = await adapters.observe(s, CIObserveArgs(head=s.head))
-    second = await adapters.observe(s, CIObserveArgs(head=s.head))
-    entries = await ci_producer_db.list_integration_subject_journal(s.id)
-    assert first == second and len(entries) == 1
-    assert entries[0]["head_sha"] == HEAD and entries[0]["generation"] == s.generation
-    row = await ci_producer_db.get_integration_subject(s.id)
-    assert row["version"] == s.version and row["budget_attempts"] == 0
 
 
 async def test_real_internal_submission_detaches_from_production_clone(ci_producer_db, tmp_path):
