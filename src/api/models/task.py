@@ -1259,6 +1259,19 @@ class TaskClaimResponse(BaseModel):
     instructions: str | None = None
 
 
+class TaskClaimAbortResponse(BaseModel):
+    """Exact preparation cancellation, including cleanup still in progress."""
+
+    success: bool
+    outcome: Literal["cleanup_pending", "settled"] | None = None
+    task_id: str | None = None
+    session_id: str | None = None
+    claim_epoch: int | None = None
+    claim_phase: str | None = None
+    result: str | None = None
+    error: str | None = None
+
+
 class TaskBatchCommitResponse(BaseModel):
     """The ids of the tasks the commit created, in batch order.
 
@@ -1610,6 +1623,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_retire": TaskBatchRetireResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
+    "task_claim_abort": TaskClaimAbortResponse,
     "pool_status": PoolStatusResponse,
     "pool_rename": PoolRenameResponse,
     "pool_delete": PoolDeleteResponse,
