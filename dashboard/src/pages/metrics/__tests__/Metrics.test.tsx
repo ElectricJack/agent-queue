@@ -157,6 +157,82 @@ describe("pure sample readers", () => {
 });
 
 describe("Metrics page", () => {
+  it("orders the expanded sections with graphs before provider usage and delivery last", async () => {
+    render(page());
+    await screen.findByTestId("chart-Running agents");
+    const sections = ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"];
+    const headers = sections.map((name) => screen.getByRole("button", { name }));
+    for (const [index, header] of headers.entries()) {
+      expect(header).toHaveAttribute("aria-expanded", "true");
+      if (index > 0) expect(headers[index - 1]!.compareDocumentPosition(header))
+        .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    expect(within(screen.getByRole("region", { name: "Stat tiles" }))
+      .getByText("Agents now")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Graphs" }))
+      .getByTestId("chart-Running agents")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Provider usage" }))
+      .getByText("No provider usage recorded yet")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Delivery latency" }))
+      .getByTestId("delivery-latency")).toBeVisible();
+  });
+
+  it.each([
+    ["Stat tiles", "Agents now"],
+    ["Graphs", "Running agents"],
+    ["Provider usage", "No provider usage recorded yet"],
+    ["Delivery latency", null],
+  ])("toggles %s independently", async (name, text) => {
+    render(page());
+    await screen.findByTestId("chart-Running agents");
+    const header = screen.getByRole("button", { name: name! });
+    const content = text ? screen.getByText(text) : screen.getByTestId("delivery-latency");
+    fireEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    expect(content).not.toBeVisible();
+    for (const other of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
+      if (other !== name) expect(screen.getByRole("button", { name: other }))
+        .toHaveAttribute("aria-expanded", "true");
+    }
+    fireEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    expect(content).toBeVisible();
+  });
+
+  it("starts every section expanded on each load", async () => {
+    const first = render(page());
+    await screen.findByTestId("chart-Running agents");
+    for (const name of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
+    }
+    first.unmount();
+
+    render(page());
+    for (const name of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "true");
+    }
+  });
+
+  it("keeps history errors and sustained lag above closed sections", async () => {
+    api.response = { ...api.response!, samples: lagRows() };
+    render(page());
+    const banner = await screen.findByRole("status", { name: "Event-loop lag" });
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    for (const name of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+    }
+    api.detail = Promise.reject(new Error("history unavailable"));
+    void api.detail.catch(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Reload history" }));
+    const error = await screen.findByText(/Could not load metrics history/);
+    expect(error).toBeVisible();
+    expect(banner).toBeVisible();
+    const first = screen.getByRole("button", { name: "Stat tiles" });
+    expect(error.compareDocumentPosition(banner)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(banner.compareDocumentPosition(first)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("renders the persisted fault-matrix accounting without summing overlapping samples", async () => {
     api.response = { ...api.response!, samples: [
       sample(1000, { waits: waitFaultAccounting }),
@@ -353,6 +429,9 @@ describe("Metrics page", () => {
     void api.detail.catch(() => {});
     render(page());
     await screen.findByText(/Could not load 1-second detail/);
+    fireEvent.click(screen.getByRole("button", { name: "Graphs" }));
+    expect(screen.getByText(/Could not load 1-second detail/)).toBeVisible();
+    expect(screen.getByTestId("chart-Running agents")).not.toBeVisible();
     expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "3");
     expect(screen.getByText(/1-minute averages/)).toBeInTheDocument();
     expect(screen.queryByText(/loading 1-second detail/)).not.toBeInTheDocument();

@@ -1,0 +1,46 @@
+{
+  "source_base": "8333fd66a4a58abe6396a2841df4a63a6e7532f4",
+  "implementation_commit": "ac6db1f25c361fabdc42f6983a5fd487370f5dc1",
+  "command": "recover_retained_holder",
+  "contract_fingerprint": "sha256:3afde88f354d2f60e15a7d4bb981bbe7535b52ff970f0fe756f1adf05d82572e",
+  "explicit_entry": {
+    "name": "recover_retained_holder",
+    "description": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "expected_proof": {
+          "type": "string"
+        },
+        "apply": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "project_id",
+        "task_id",
+        "session_id",
+        "reason"
+      ]
+    }
+  },
+  "tool_category": "project",
+  "previous_cli_catalogue_sha256": "9bdba69a2656181a1f707d27fb272d2e17b736caf8cab3353b70262054185f29",
+  "cli_catalogue_sha256": "3afcb048bc1c63354c5f4df87ed688cd046cc6669de2876d446d577cdb46a1e2"
+}

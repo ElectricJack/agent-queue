@@ -230,6 +230,18 @@ the task stays in the frontier. The lock itself is one atomic `UPDATE … WHERE
 unlocked AND unpinned` in `acquire_one_unlocked`
 (`workspace_queries.py`), which also increments `generation`.
 
+Before launching a taskless pool process, `normalize_pool_slot` checks a
+reserved slot left on an `aq/` branch. It detaches at the existing HEAD only
+when the tree is clean, no current or archived task names the branch or its
+sentinel attribution, and HEAD has zero commits outside the freshly fetched
+remote default branch. The agent and workspace acquisition are rechecked
+under row locks and the repository mutex; claims, live sessions or processes,
+integration owners, job pins and unverifiable evidence prevent normalization.
+The local branch and file contents are preserved. Dirty or unproved slots
+remain available for fenced recovery. Binding-audit notices describe the
+current generation, but changing only the pool agent or generation does not
+repeat an unresolved recovery notice.
+
 **Reset for the task.** `reset_slot_for_task` (`worktree_manager.py`)
 first refuses a slot whose sentinel names another owner (`ForeignSlotClaim`).
 With `worktrees.salvage_dirty: true` (the default), it attempts to capture
