@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import case, delete, insert, null, or_, select, update
+from sqlalchemy import case, delete, func, insert, literal_column, null, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 
-from src.database.tables import agent_profiles, agents, projects, tasks
+from src.database.tables import agent_profiles, agents, task_metadata, tasks
 from src.models import AgentProfile, TaskStatus
 
 
@@ -125,15 +126,18 @@ class ProfileQueryMixin:
             return self._row_to_profile(row) if row else None
         async with self._engine.begin() as owned:
             row = (await owned.execute(stmt)).mappings().fetchone()
-            return self._row_to_profile(row) if row else None
+        return self._row_to_profile(row) if row else None
 
-    async def list_profiles(self) -> list[AgentProfile]:
+    async def list_profiles(self, *, conn=None) -> list[AgentProfile]:
         """List all agent profiles ordered by name."""
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(agent_profiles).order_by(agent_profiles.c.name.asc())
-            )
+        stmt = select(agent_profiles).order_by(agent_profiles.c.name.asc())
+        if conn is not None:
+            result = await conn.execute(stmt)
             return [self._row_to_profile(r) for r in result.mappings().fetchall()]
+        async with self._engine.begin() as owned:
+            result = await owned.execute(stmt)
+            rows = result.mappings().fetchall()
+        return [self._row_to_profile(r) for r in rows]
 
     async def update_profile(self, profile_id: str, **kwargs) -> None:
         """Update arbitrary profile fields."""
@@ -207,22 +211,66 @@ class ProfileQueryMixin:
             return "created"
 
     async def delete_profile(self, profile_id: str) -> None:
-        """Delete a profile and clear foreign-key references.
+        """Delete a profile and clear the task references to it.
 
         A task that loses its profile loses its provider intent with it
         (provider-failover D17): ``pinned``/``preferred`` named a provider
         that no longer has a profile, so the row becomes ``class_only``; and a
         ``rerouted_from`` naming the deleted profile is cleared, because
-        there is nothing left to undo back to.  One statement, so no reader
+        there is nothing left to undo back to. One transaction, so no reader
         sees a pinned row with no profile.
+
+        The same statement sends every such task back to its router
+        (mandatory-routing spec §9.2): ``route_source`` becomes ``unrouted``,
+        as ``ck_tasks_route_source_profile`` requires of a row with no
+        profile, and the lost route is kept in ``route.legacy``.  A queued
+        task is then routed again; a finished one keeps its audit trail.
         """
         named = tasks.c.profile_id == profile_id
+
+        def key(name: str):
+            return literal_column(f"'{name}'")
+
+        lost_route = func.jsonb_build_object(
+            key("profile_id"), tasks.c.profile_id,
+            key("intelligence_class"), tasks.c.intelligence_class,
+            key("provider_intent"), tasks.c.provider_intent,
+            type_=JSONB,
+        )
+        kept_route = func.coalesce(
+            tasks.c.route, literal_column("'{}'::jsonb", type_=JSONB)
+        ).op("||", return_type=JSONB)(
+            func.jsonb_build_object(key("legacy"), lost_route, type_=JSONB)
+        )
         async with self._engine.begin() as conn:
+            # A provider backoff on a route that no longer exists cannot
+            # recover through provider failover. Resume only automatic,
+            # provider-attributed pauses; manual pauses remain operator-owned.
+            provider_paused = (await conn.execute(
+                select(tasks.c.id).where(
+                    named,
+                    tasks.c.status == TaskStatus.PAUSED.value,
+                    tasks.c.resume_after.is_not(None),
+                    select(task_metadata.c.task_id).where(
+                        task_metadata.c.task_id == tasks.c.id,
+                        task_metadata.c.key == "provider_pause",
+                    ).exists(),
+                ).with_for_update()
+            )).scalars().all()
+            transitions = []
+            for task_id in provider_paused:
+                transitions.append(await self._apply_transition(
+                    conn, task_id, TaskStatus.READY,
+                    context="provider_failover_resume",
+                    assigned_agent_id=None, resume_after=None,
+                ))
             await conn.execute(
                 update(tasks)
                 .where(or_(named, tasks.c.rerouted_from == profile_id))
                 .values(
                     profile_id=case((named, null()), else_=tasks.c.profile_id),
+                    route_source=case((named, "unrouted"), else_=tasks.c.route_source),
+                    route=case((named, kept_route), else_=tasks.c.route),
                     provider_intent=case((named, "class_only"), else_=tasks.c.provider_intent),
                     rerouted_from=case(
                         (tasks.c.rerouted_from == profile_id, null()),
@@ -230,12 +278,11 @@ class ProfileQueryMixin:
                     ),
                 )
             )
-            await conn.execute(
-                update(projects)
-                .where(projects.c.default_profile_id == profile_id)
-                .values(default_profile_id=None)
-            )
             await conn.execute(delete(agent_profiles).where(agent_profiles.c.id == profile_id))
+        for transition in transitions:
+            await self.log_blocked_flips(transition.flipped)
+            await self._notify_settled(transition.settled)
+            await self._notify_ready(transition.ready)
 
     @staticmethod
     def _row_to_profile(row) -> AgentProfile:

@@ -1,16 +1,17 @@
 """The narrow outbox port conversation commands enqueue through (mention-routing spec §4.2).
 
-Every Discord side effect of a conversation -- the thread-open ack, a reply,
-a bounded notice -- is a row in the shared ``outbound_deliveries`` outbox
-owned by the supervisor narrative spec (§4.1), leased and sent by its
-escalation-first dispatcher through a typed ``conversation`` adapter.  That
-library is a separate plan, so commands depend only on this port:
+Every Discord side effect of a conversation -- the thread-open ack, a reply, a
+bounded notice, the offline status line -- is a row in the shared
+``outbound_deliveries`` outbox owned by the supervisor narrative spec (§4.1),
+leased and sent by its escalation-first dispatcher through a typed
+``conversation`` adapter. Commands depend only on this port:
 
 * :class:`ConversationOutbox` is what ``supervisor_inbox_post``,
   ``supervisor_inbox_reply`` and the maintenance sweep call.  ``enqueue`` is
   idempotent on ``dedup_key`` and returns the outbox row id.
-* :class:`UnboundOutbox` is the daemon's binding until the shared library is
-  wired: ``bound`` is ``False``, so the preconditions report
+* The daemon binds ``DurableConversationOutbox`` after Discord cutover completes.
+* :class:`UnboundOutbox` is the daemon's binding before transport readiness:
+  ``bound`` is ``False``, so the preconditions report
   ``outbox_unbound`` and the route refuses every message before anything
   would be enqueued -- the feature cannot half-work.
 * :class:`RecordingOutbox` is the in-memory binding tests use.
@@ -25,6 +26,19 @@ from typing import Any, Protocol, runtime_checkable
 #: Default priority of a conversation delivery.  Escalations outrank it in the
 #: shared dispatcher, which orders escalation-first regardless.
 DEFAULT_PRIORITY = 20
+
+#: Every conversation action the daemon may reserve.  A producer cannot invent
+#: one: the delivery adapter renders and posts exactly these.
+ACTION_THREAD_OPEN = "thread_open"
+ACTION_REPLY = "reply"
+ACTION_NOTICE = "notice"
+#: The one post per conversation saying whether a supervisor is live (§2.4).
+#: It is edited in place, never appended.
+ACTION_STATUS_LINE = "status_line"
+STATUS_LINE_ACTION = ACTION_STATUS_LINE
+CONVERSATION_ACTIONS = frozenset(
+    {ACTION_THREAD_OPEN, ACTION_REPLY, ACTION_NOTICE, ACTION_STATUS_LINE}
+)
 
 
 @runtime_checkable
