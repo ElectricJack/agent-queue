@@ -2,8 +2,12 @@
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
+from src.database.queries.claim_queries import (
+    CLAIM_PHASE_IN_FLIGHT,
+    CLAIMED_BY_SESSION_KEY,
+)
 from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     agents,
@@ -23,6 +27,7 @@ from src.database.tables import (
 from src.git.manager import RemoteRefState
 from src.integration.finished_owners import _stop_proof_blocker
 from src.integration.repair_lineage import introduced_repair_commits_on
+from src.integration.row_query import select_row
 
 
 async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
@@ -45,26 +50,16 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
         raise ValueError(
             "parent is not an unassigned aggregate under this operation's collector fence"
         )
-    holders = (
-        (
-            await conn.execute(
-                select(sessions).where(sessions.c.task_id == parent_id).with_for_update()
-            )
-        )
-        .mappings()
-        .all()
-    )
-    if len(holders) != 1:
-        raise ValueError("stale parent leaf claim has no unique holder")
-    holder = holders[0]
+    holder = await _stopped_claim_record_holder_on(conn, parent_id)
     if (
         holder["state"] != "stopped"
         or holder["desired_state"] != "stopped"
         or holder["lifecycle"] != "pool"
-        or holder["claim_phase"] != "active"
+        or holder["claim_phase"] in CLAIM_PHASE_IN_FLIGHT
         or not holder["instance_token"]
         or not holder["last_claim_epoch"]
         or holder["last_claim_epoch"] != parent["claim_epoch"]
+        or holder["task_id"] not in (None, parent_id)
     ):
         raise ValueError("stale parent holder is live or its exact claim epoch is unavailable")
     if await conn.scalar(
@@ -82,15 +77,7 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
     ):
         raise ValueError("stale parent holder still has a workspace or lock")
     if holder["agent_id"]:
-        agent = (
-            (
-                await conn.execute(
-                    select(agents).where(agents.c.id == holder["agent_id"]).with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        agent = await select_row(conn, agents, agents.c.id == holder['agent_id'], lock=True)
         if agent and agent["current_task_id"] not in {None, parent_id}:
             raise ValueError("stale parent holder's agent has different work")
     children = (
@@ -122,6 +109,53 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
     }
 
 
+async def _stopped_claim_record_holder_on(conn, task_id: str):
+    """The one stopped session the task's own ``claimed_by_session`` record names.
+
+    The same holder :func:`src.database.queries.claim_queries._exact_stopped_pool_holder`
+    selects for the shipped stale-claim release, read the same way
+    (fleet-delta-97): a real session stop clears ``sessions.task_id`` and leaves
+    the claim record as the only statement of it, so selecting
+    ``sessions.task_id == parent_id`` finds nothing at all and the whole
+    green-noop recovery is unreachable on a live row.  The proof below is the
+    same, clause for clause, so the two repairs cannot disagree about who holds
+    the claim.
+    """
+    record = (
+        await conn.execute(
+            select(task_metadata.c.value)
+            .where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    try:
+        session_id = json.loads(record) if record is not None else None
+    except ValueError:
+        session_id = None
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("stale parent leaf claim has no recorded holder")
+    holder = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
+    if holder is None:
+        raise ValueError("stale parent leaf claim names a holder that is gone")
+    # The record names one holder; which of two sessions claiming the parent
+    # owns it would otherwise be a guess. A pointer a restart is about to
+    # revive is not a dead one.
+    if await conn.scalar(
+        select(sessions.c.id)
+        .where(
+            sessions.c.task_id == task_id,
+            sessions.c.id != session_id,
+            or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped"),
+        )
+        .limit(1)
+    ):
+        raise ValueError("another live session still claims the parent aggregate")
+    return holder
+
+
 def names_only_the_confirmed_head(recorded, head_sha):
     """An unchanged close names no commits, or only the head it confirmed.
 
@@ -143,15 +177,7 @@ async def delegate_proof_on(
         raise ValueError("current repair stage introduced commits")
     task = None
     for table in (tasks, archived_tasks):
-        task = (
-            (
-                await conn.execute(
-                    select(table).where(table.c.id == stage["repair_task_id"]).with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        task = await select_row(conn, table, table.c.id == stage['repair_task_id'], lock=True)
         if task is not None:
             break
     if (
@@ -251,24 +277,12 @@ async def delegate_proof_on(
         )
         if count != 1:
             raise ValueError("archived repair has ambiguous completion history")
-    owner = (
-        (
-            await conn.execute(
-                select(integration_branch_owners)
-                .where(
-                    integration_branch_owners.c.repository_id == task["repo_id"],
-                    integration_branch_owners.c.ref.in_(
-                        (
-                            task["branch_name"].removeprefix("refs/heads/"),
-                            "refs/heads/" + task["branch_name"].removeprefix("refs/heads/"),
-                        )
-                    ),
-                )
-                .with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
+    owner = await select_row(
+        conn,
+        integration_branch_owners,
+        integration_branch_owners.c.repository_id == task['repo_id'],
+        integration_branch_owners.c.ref.in_((task['branch_name'].removeprefix('refs/heads/'), 'refs/heads/' + task['branch_name'].removeprefix('refs/heads/'))),
+        lock=True,
     )
     if (
         owner is None

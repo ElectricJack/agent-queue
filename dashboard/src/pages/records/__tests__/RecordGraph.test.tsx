@@ -15,6 +15,12 @@ vi.mock("../../../panes/knowledge/KnowledgePane", () => ({ default: ({ recordId:
   <button type="button" onClick={() => onRevisionChange("earlier-revision")}>Pin earlier</button>
 </div> }));
 
+
+vi.mock("../../../panes/task-detail/TaskDetailBody", () => ({ default: ({ taskId, onOpenTask }: { taskId: string; onOpenTask: (id: string) => void }) => <div>Task detail {taskId}<button onClick={() => onOpenTask("task-2")}>Related task</button></div> }));
+vi.mock("../../command-center/TaskToolbar", () => ({ default: ({ onCreated }: { onCreated: (id: string) => void }) =>
+  <div>Task filters<button onClick={() => onCreated("new-task")}>Create task</button></div> }));
+vi.mock("../../command-center/Tasks", () => ({ default: ({ selection }: { selection: { selectedTaskId: string | null; selectTask: (task: { id: string }) => void } }) => <div role="region" aria-label="Task list"><button data-task-row="task-1" aria-pressed={selection.selectedTaskId === "task-1"} onClick={() => selection.selectTask({ id: "task-1" })}>Fallback task</button></div> }));
+
 const nodes: RecordNode[] = [
   { kind: "task", recordId: "task-record", taskId: "task-1", title: "Do work", status: "READY", archived: false },
   { kind: "task", recordId: "dependent-record", taskId: "task-2", title: "Follow up", status: "DEFINED", archived: false },
@@ -81,10 +87,10 @@ describe("record URL state", () => {
     expect(readRecordSelection(params)).toEqual({ kind: "task", recordId: "r", revisionId: null });
     expect(readRecordFilters(new URLSearchParams("kind=unknown")).kind).toBe("all");
   });
-  it("keeps All records as the task origin and leaves Work as default", () => {
-    expect(projectNavigation("/projects/p/records").tab).toBe("records");
+  it("keeps Tasks & Knowledge as the task origin and leaves Graph as default", () => {
+    expect(projectNavigation("/projects/p/tasks-knowledge").tab).toBe("tasks-knowledge");
     expect(projectNavigation("/projects/p").tab).toBe("graph");
-    expect(workspaceNavigation({ pathname: "/tasks/t", search: "", state: { from: "/projects/p/records?view=graph&kind=all" } })).toMatchObject({ tab: "records", projectId: "p", search: "?view=graph&kind=all" });
+    expect(workspaceNavigation({ pathname: "/tasks/t", search: "", state: { from: "/projects/p/tasks-knowledge?view=graph&kind=all" } })).toMatchObject({ tab: "tasks-knowledge", projectId: "p", search: "?view=graph&kind=all" });
   });
 });
 
@@ -96,11 +102,11 @@ function NavigationProbe() {
     <button type="button" onClick={() => navigate(-1)}>Back</button>
     <button type="button" onClick={() => navigate(1)}>Forward</button></>;
 }
-function route(path = "/projects/p/records") {
+function route(path = "/projects/p/tasks-knowledge") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>
     <NavigationProbe /><Routes>
-      <Route path="/projects/:projectId/records" element={<RecordsRoute />} />
+      <Route path="/projects/:projectId/tasks-knowledge" element={<RecordsRoute />} />
       <Route path="/tasks/:taskId" element={<div>Existing task detail</div>} />
     </Routes>
   </MemoryRouter></QueryClientProvider>);
@@ -116,10 +122,21 @@ function mixedSDK() {
 }
 
 describe("All records live route", () => {
+  it("opens newly created tasks and clears stale task filters in one URL update", async () => {
+    mixedSDK(); route("/projects/p/tasks-knowledge?kind=task&q=old&status=FAILED&window=week&held=1&completed=1&focus=container");
+    fireEvent.click(await screen.findByRole("button", { name: "Create task" }));
+    expect(await screen.findByText("Task detail new-task")).toBeInTheDocument();
+    const url = new URL(screen.getByTestId("url").textContent!, "http://aq.local");
+    expect(url.searchParams.get("task")).toBe("new-task");
+    expect(url.searchParams.get("kind")).toBe("task");
+    expect(url.searchParams.get("focus")).toBe("container");
+    for (const key of ["q", "status", "window", "held", "completed"]) expect(url.searchParams.has(key)).toBe(false);
+  });
   it("is inert when UI activation is disabled", async () => {
     sdk.recordCapabilities.mockResolvedValue({ data: { capabilities: { enabled: true, ui_enabled: false, enabled_projects: ["p"] } } });
     route();
-    expect(await screen.findByText("All records is unavailable for this project.")).toBeInTheDocument();
+    expect(await screen.findByText("Knowledge is unavailable for this project. Tasks remain available.")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Task list" })).toBeInTheDocument();
     expect(sdk.recordSearch).not.toHaveBeenCalled();
     expect(sdk.recordShow).not.toHaveBeenCalled();
   });
@@ -134,14 +151,17 @@ describe("All records live route", () => {
     expect(sdk.recordShow).not.toHaveBeenCalled();
   });
   it("opens task detail with the exact originating workspace", async () => {
-    mixedSDK(); route("/projects/p/records?q=work");
+    mixedSDK(); route("/projects/p/tasks-knowledge?q=work");
     fireEvent.click(await screen.findByRole("button", { name: /Do work/ }));
-    expect(await screen.findByText("Existing task detail")).toBeInTheDocument();
-    expect(screen.getByTestId("url")).toHaveTextContent("/tasks/task-1");
-    expect(screen.getByTestId("origin")).toHaveTextContent("/projects/p/records?q=work");
+    expect(await screen.findByText("Task detail task-1")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Record results" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Do work/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("link", { name: "Open full page" })).toHaveAttribute("href", "/tasks/task-1");
+    expect(screen.getByTestId("url")).toHaveTextContent("/projects/p/tasks-knowledge?q=work&task=task-1");
+
   });
   it("restores exact knowledge selections with Back and Forward", async () => {
-    mixedSDK(); route("/projects/p/records?view=graph");
+    mixedSDK(); route("/projects/p/tasks-knowledge?view=graph");
     fireEvent.click(await screen.findByRole("button", { name: /^Retained finding/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Pin earlier" }));
     expect(screen.getByTestId("url")).toHaveTextContent("recordKind=knowledge");
@@ -159,3 +179,76 @@ describe("All records live route", () => {
     expect(screen.queryByText(/private server/)).toBeNull();
   });
 });
+
+ describe("combined detail interaction", () => {
+  it("closes with Escape and keeps the mounted list scroll, filters and query", async () => {
+    mixedSDK(); const view = route("/projects/p/tasks-knowledge?q=work&category=incident&status=READY&drawer=gates");
+    const row = await screen.findByRole("button", { name: /Do work/ });
+    const scroll = view.container.querySelector("[data-record-scroll]")!;
+    scroll.scrollTop = 150;
+    fireEvent.click(row);
+    expect(await screen.findByText("Task detail task-1")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("complementary", { name: "Record detail" })).toBeNull();
+    expect(screen.getByTestId("url")).toHaveTextContent("q=work&category=incident&status=READY&drawer=gates");
+    expect(screen.getByTestId("url")).not.toHaveTextContent("task=");
+    expect(view.container.querySelector("[data-record-scroll]")).toBe(scroll);
+    expect(scroll.scrollTop).toBe(150);
+  });
+  it("moves selection with arrows and J/K, preserving editable field behavior", async () => {
+    mixedSDK(); route();
+    const task = await screen.findByRole("button", { name: /Do work/ });
+    task.focus(); fireEvent.keyDown(task, { key: "j" });
+    expect(screen.getByRole("button", { name: /Retained finding/ })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+    expect(task).toHaveAttribute("aria-pressed", "true");
+    fireEvent.keyDown(task, { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "k" });
+    expect(task).toHaveAttribute("aria-pressed", "true");
+    const search = screen.getByRole("searchbox", { name: "Search records" });
+    fireEvent.keyDown(search, { key: "j" });
+    expect(task).toHaveAttribute("aria-pressed", "true");
+  });
+  it("restores a task selection from a shared URL and browser history", async () => {
+    mixedSDK(); route("/projects/p/tasks-knowledge?q=work&task=task-1");
+    expect(await screen.findByText("Task detail task-1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Related task" }));
+    expect(await screen.findByText("Task detail task-2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("Task detail task-1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close detail" }));
+    expect(screen.getByTestId("url")).not.toHaveTextContent("task=");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("Task detail task-1")).toBeInTheDocument();
+  });
+  it("resolves legacy task record identities before exposing a full-page link", async () => {
+    mixedSDK(); sdk.recordShow.mockResolvedValue({ data: { kind: "task", task: { id: "task-1" } } });
+    route("/projects/p/tasks-knowledge?record=opaque-record&recordKind=task");
+    expect(await screen.findByText("Task detail task-1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open full page" })).toHaveAttribute("href", "/tasks/task-1");
+  });
+  it("keeps the exact knowledge revision in its full-page URL and close removes only selection", async () => {
+    mixedSDK(); route("/projects/p/tasks-knowledge?record=finding&recordKind=knowledge&revision=exact&q=needle");
+    expect(await screen.findByText(/Selected knowledge finding/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open full page" })).toHaveAttribute("href", "/projects/p/knowledge/finding?revision=exact");
+    fireEvent.click(screen.getByRole("button", { name: "Close detail" }));
+    expect(screen.getByTestId("url")).toHaveTextContent("/projects/p/tasks-knowledge?q=needle");
+  });
+  it("uses a modal sheet with a Back button at narrow widths", async () => {
+    const original = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: (query: string) => ({
+      matches: query.includes("1023"), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }) });
+    try {
+      mixedSDK(); const view = route("/projects/p/tasks-knowledge?q=work&task=task-1");
+      const sheet = await screen.findByRole("dialog", { name: "Record detail" });
+      expect(sheet).toHaveAttribute("aria-modal", "true");
+      expect(sheet).toHaveAttribute("data-layout", "sheet");
+      expect(view.container.querySelector("[data-record-list]")).toHaveAttribute("inert");
+      expect(screen.queryByRole("separator")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Back to list" }));
+      expect(screen.queryByRole("dialog", { name: "Record detail" })).toBeNull();
+      expect(screen.getByTestId("url")).toHaveTextContent("q=work");
+    } finally { Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }); }
+  });
+ });
