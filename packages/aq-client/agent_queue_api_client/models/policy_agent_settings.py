@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.agent_config import AgentConfig
     from ..models.capabilities import Capabilities
+    from ..models.pool_settings import PoolSettings
 
 
 T = TypeVar("T", bound="PolicyAgentSettings")
@@ -24,6 +25,7 @@ class PolicyAgentSettings:
         extends (str | Unset):  Default: ''.
         template (bool | Unset):  Default: False.
         config (AgentConfig | Unset):
+        pool (None | PoolSettings | Unset):
         capabilities (Capabilities | None | Unset):
         role (str | Unset):  Default: ''.
         rules (str | Unset):  Default: ''.
@@ -36,6 +38,7 @@ class PolicyAgentSettings:
     extends: str | Unset = ""
     template: bool | Unset = False
     config: AgentConfig | Unset = UNSET
+    pool: None | PoolSettings | Unset = UNSET
     capabilities: Capabilities | None | Unset = UNSET
     role: str | Unset = ""
     rules: str | Unset = ""
@@ -44,6 +47,7 @@ class PolicyAgentSettings:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.capabilities import Capabilities
+        from ..models.pool_settings import PoolSettings
 
         name = self.name
 
@@ -56,6 +60,14 @@ class PolicyAgentSettings:
         config: dict[str, Any] | Unset = UNSET
         if not isinstance(self.config, Unset):
             config = self.config.to_dict()
+
+        pool: dict[str, Any] | None | Unset
+        if isinstance(self.pool, Unset):
+            pool = UNSET
+        elif isinstance(self.pool, PoolSettings):
+            pool = self.pool.to_dict()
+        else:
+            pool = self.pool
 
         capabilities: dict[str, Any] | None | Unset
         if isinstance(self.capabilities, Unset):
@@ -90,6 +102,8 @@ class PolicyAgentSettings:
             field_dict["template"] = template
         if config is not UNSET:
             field_dict["config"] = config
+        if pool is not UNSET:
+            field_dict["pool"] = pool
         if capabilities is not UNSET:
             field_dict["capabilities"] = capabilities
         if role is not UNSET:
@@ -107,6 +121,7 @@ class PolicyAgentSettings:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.agent_config import AgentConfig
         from ..models.capabilities import Capabilities
+        from ..models.pool_settings import PoolSettings
 
         d = dict(src_dict)
         name = d.pop("name")
@@ -125,6 +140,23 @@ class PolicyAgentSettings:
             config = UNSET
         else:
             config = AgentConfig.from_dict(_config)
+
+        def _parse_pool(data: object) -> None | PoolSettings | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                pool_type_0 = PoolSettings.from_dict(data)
+
+                return pool_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PoolSettings | Unset, data)
+
+        pool = _parse_pool(d.pop("pool", UNSET))
 
         def _parse_capabilities(data: object) -> Capabilities | None | Unset:
             if data is None:
@@ -157,6 +189,7 @@ class PolicyAgentSettings:
             extends=extends,
             template=template,
             config=config,
+            pool=pool,
             capabilities=capabilities,
             role=role,
             rules=rules,

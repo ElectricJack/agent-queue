@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/sessions/provider.py::DialogRule": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/provider.py::SessionDiedDuringStartup": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/provider.py::SessionHandle": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/provider.py::SessionSpec": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

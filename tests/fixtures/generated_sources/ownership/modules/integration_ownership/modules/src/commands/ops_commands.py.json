@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/ops_commands.py::OpsCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

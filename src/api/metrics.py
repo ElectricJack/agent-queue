@@ -1,5 +1,8 @@
 """``GET /api/metrics/series`` — history for the dashboard Metrics tab.
 
+``GET /api/metrics/delivery-latency`` is the delivery panel's cohort read
+(spec section 10); it aggregates telemetry events and changes nothing.
+
 The tab loads history once per range change and then follows the
 ``metrics.tick`` WebSocket frames, so this route is a cold-start and zoom
 path, not a poll.  It mirrors the router-factory shape of :mod:`src.api.graph`
@@ -13,6 +16,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Query
 
+from src.api.models.delivery_latency import DeliveryLatencyResponse
 from src.api.models.metrics import MetricsSeriesResponse
 from src.metrics.sampler import RESOLUTIONS
 
@@ -74,6 +78,16 @@ async def _series(db, from_ts: float | None, to_ts: float | None, step: str):
     )
 
 
+async def _delivery_latency(db, window: str, project_id: str | None, until: float | None):
+    from src.metrics.delivery_latency import WINDOWS
+
+    if window not in WINDOWS:
+        raise HTTPException(status_code=422, detail=f"window must be 24h or 7d (got {window!r})")
+    return DeliveryLatencyResponse.model_validate(await db.metrics_delivery_latency(
+        window=window, project_id=project_id or None, until=until,
+    ))
+
+
 def build_metrics_router(*, db) -> APIRouter:
     """Router bound to an explicit ``db`` — the seam tests use."""
     router = APIRouter()
@@ -85,6 +99,14 @@ def build_metrics_router(*, db) -> APIRouter:
         step: str = Query("auto"),
     ) -> MetricsSeriesResponse:
         return await _series(db, from_ts, to_ts, step)
+
+    @router.get("/api/metrics/delivery-latency", response_model=DeliveryLatencyResponse)
+    async def get_delivery_latency(
+        window: str = Query("24h"),
+        project_id: str | None = Query(None),
+        until: float | None = Query(None),
+    ) -> DeliveryLatencyResponse:
+        return await _delivery_latency(db, window, project_id, until)
 
     return router
 
@@ -105,6 +127,17 @@ def _build_default_router() -> APIRouter:
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         return await _series(orch.db, from_ts, to_ts, step)
+
+    @router.get("/api/metrics/delivery-latency", response_model=DeliveryLatencyResponse)
+    async def get_delivery_latency(
+        window: str = Query("24h"),
+        project_id: str | None = Query(None),
+        until: float | None = Query(None),
+    ) -> DeliveryLatencyResponse:
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        return await _delivery_latency(orch.db, window, project_id, until)
 
     return router
 
