@@ -18,7 +18,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
-from src.database import Database
 from src.database.tables import (
     integration_check_evidence,
     playbook_artifacts,
@@ -57,7 +56,6 @@ from src.sessions.harness_registry import HarnessRegistry, load_from_vault
 from src.sessions.reconciler import DRAIN_ACK_KEY, SessionReconciler
 from src.sessions.spec import SessionSpecBuilder
 from src.sessions.provider import SessionHandle
-from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -258,12 +256,10 @@ def config(tmp_path):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("t.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("t.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -633,7 +629,25 @@ class TestDesiredStateCommands:
         # Still running: sleep is a statement of intent, not a signal.
         assert [h.name for h in await provider.list_running("s-")] == ["s-t1"]
 
+    async def test_sleep_named_session_is_carried_out_on_next_tick(
+        self, handler, db, provider, providers, config
+    ):
+        await _make_task(db)
+        await db.update_project("p1", supervisor_enabled=True)
+        row = await _make_session(
+            db, provider, sid="n1", task_id=None, name="n-supervisor--p1", lifecycle="named",
+        )
+        result = await handler.execute("session_sleep", {"session_id": row.id})
+        assert result["success"]
+        assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+        reconciler = SessionReconciler(db, config, providers)
+        await reconciler.tick()
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "sleeping")
+        assert not await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+
     async def test_wake_marks_a_named_session_wanted(self, handler, db, provider):
+        await db.update_project("p1", supervisor_enabled=True)
         await _make_session(
             db,
             provider,
@@ -665,6 +679,132 @@ class TestDesiredStateCommands:
         await handler.execute("session_sleep", {"session_id": "sess-1"})
         entry = (await handler.execute("session_list", {}))["sessions"][0]
         assert entry["state"] == "running" and entry["desired_state"] == "sleeping"
+
+
+@pytest.mark.parametrize("blocker", [
+    "live", "provider_unavailable", "probe_failed", "process_probe_failed", "marked_process",
+    "missing_token",
+    "task", "claim", "preparation", "running_intent",
+])
+async def test_stopped_pool_sleep_preserves_unproven_history(
+    handler, db, provider, monkeypatch, blocker,
+):
+    from unittest.mock import AsyncMock
+
+    from src.sessions.proctable import ProcEntry
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    if blocker != "live":
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+    if blocker == "provider_unavailable":
+        monkeypatch.setattr(handler, "_provider_for_session", lambda _: None)
+    elif blocker == "probe_failed":
+        monkeypatch.setattr(
+            provider, "confirm_instance_stopped", AsyncMock(side_effect=RuntimeError("partial probe")),
+        )
+    elif blocker == "marked_process":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[
+            ProcEntry(42, 1, "codex", 1, row.instance_token),
+        ]))
+    elif blocker == "process_probe_failed":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(
+            side_effect=RuntimeError("incomplete process scan"),
+        ))
+    fields = {
+        "missing_token": {"instance_token": ""},
+        "task": {"task_id": "t1"},
+        "claim": {"claim_phase": "preparing"},
+        "preparation": {"failed_preparation": {"reason": "preserve evidence"}},
+        "running_intent": {"desired_state": "running"},
+    }.get(blocker, {})
+    if fields:
+        await db.update_session(row.id, **fields)
+    before = await db.get_session(row.id)
+    stop = AsyncMock(side_effect=AssertionError("sleep must not signal"))
+    monkeypatch.setattr(provider, "stop", stop)
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    assert await db.get_session(row.id) == before
+    assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+    stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [
+    {"instance_token": "revived-token"}, {"provider": "tmux"}, {"name": "successor"},
+    {"started_at": 200.0}, {"last_claim_epoch": 2}, {"claim_phase": "active"},
+    {"task_id": "t1"}, {"failed_preparation": {"reason": "retained"}},
+    {"desired_state": "running"}, {"state": "running"},
+], ids=[
+    "instance", "provider", "name", "generation", "epoch", "claim", "task", "prepare", "intent",
+    "revived",
+])
+async def test_stopped_pool_sleep_rechecks_identity_and_work_after_provider_proof(
+    handler, db, provider, monkeypatch, change,
+):
+    from unittest.mock import AsyncMock
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+
+    async def confirm_then_change(_handle):
+        if "state" in change:
+            # Supported transitions never revive stopped rows. Fail closed
+            # even if legacy/corrupt metadata changes during provider proof.
+            from sqlalchemy import update
+
+            from src.database.tables import sessions
+
+            async with db.immediate() as conn:
+                await conn.execute(update(sessions).where(sessions.c.id == row.id).values(**change))
+        else:
+            await db.update_session(row.id, **change)
+        return True
+
+    monkeypatch.setattr(provider, "confirm_instance_stopped", confirm_then_change)
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    current = await db.get_session(row.id)
+    for key, value in change.items():
+        assert getattr(current, key) == value
+    assert current.desired_state == change.get("desired_state", "sleeping")
+
+
+async def test_live_pool_sleep_racing_completed_teardown_preserves_stopped_intent(
+    handler, db, provider, monkeypatch,
+):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool")
+    request_sleep = db.request_session_sleep
+
+    async def stop_then_sleep(observed, **kwargs):
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+        await db.update_session(row.id, state="stopped", desired_state="stopped")
+        return await request_sleep(observed, **kwargs)
+
+    monkeypatch.setattr(db, "request_session_sleep", stop_then_sleep)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == ("stopped", "stopped")
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining"])
+async def test_pool_sleep_keeps_live_session_attached(handler, db, provider, state):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool", state=state)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == (state, "sleeping")
+    assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
 
 
 class TestDrainAckCommand:
@@ -959,6 +1099,60 @@ class TestSessionToken:
         assert await store.validate(first) is not None
         assert await store.validate(second) is not None
 
+    @pytest.mark.parametrize("project_id", [None, "p1"])
+    async def test_supervisor_remint_preserves_launch_scope(
+        self, handler, db, provider, store, project_id,
+    ):
+        from src.api.auth import SessionTokenStore
+        from src.api.scope import check_command_scope
+
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", project_id=project_id)
+        result = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert result["success"] is True
+        # Reload from durable storage rather than relying on the minter's cache.
+        scope = await SessionTokenStore(db).validate(result["token"])
+        assert scope.elevated is True
+        assert scope.project_id == project_id
+        assert scope.task_id is None
+        assert scope.session_instance_token == "tok-1"
+        args = {}
+        assert check_command_scope("session_list", args, scope) is None
+        assert args.get("project_id") == project_id
+        if project_id is not None:
+            assert check_command_scope("session_list", {"project_id": "other"}, scope)
+
+    async def test_project_supervisor_cannot_remint_global_supervisor(
+        self, handler, db, provider, store,
+    ):
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", project_id=None)
+        handler._current_scope = {
+            "kind": "session", "session_id": "project-sup", "task_id": None,
+            "project_id": "p1", "elevated": True,
+        }
+        try:
+            result = await handler._cmd_session_token({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+        assert result["success"] is False
+        assert "another project" in result["error"]
+        assert "token" not in result
+
+    @pytest.mark.parametrize("changes", [
+        {"state": "stopped"}, {"state": "draining"}, {"desired_state": "sleeping"},
+        {"ended_at": 1}, {"instance_token": ""},
+    ])
+    async def test_cannot_remint_inactive_supervisor(
+        self, handler, db, provider, store, changes,
+    ):
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", **changes)
+        result = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert result["success"] is False
+        assert "live named supervisor" in result["error"]
+        assert "token" not in result
+
     async def test_unknown_session(self, handler, store):
         assert "error" in await handler.execute("session_token", {"session_id": "nope"})
 
@@ -1250,6 +1444,18 @@ class TestTaskClose:
     async def test_missing_task_id(self, handler):
         assert "error" in await handler.execute("task_close", {"outcome": "pass"})
 
+    async def test_close_without_failure_class_clears_previous_transient_metadata(
+        self, handler, db, provider,
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        await db.set_task_meta("t1", "failure_class", "transient")
+        result = await handler.execute("task_close", {
+            "task_id": "t1", "outcome": "fail", "summary": "Worker could not fix the bug",
+        })
+        assert result["success"] is True
+        assert await db.get_task_meta("t1", "failure_class") is None
+
     async def test_invalid_outcome_is_rejected(self, handler, db, provider):
         await _make_task(db)
         r = await handler.execute("task_close", {"task_id": "t1", "outcome": "maybe"})
@@ -1468,6 +1674,8 @@ class TestEndToEndOnFakeProvider:
         from sqlalchemy import insert
         from src.database.tables import task_branch_origins
         from src.integration.batches import BatchService, BatchStore
+        from src.integration.delivery_observer import DeliveryObserver
+        from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
         from src.integration.git_truth import GitTruth
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -1478,6 +1686,10 @@ class TestEndToEndOnFakeProvider:
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
+        db.set_prerequisite_observer(DeliveryObserver(
+            db, git=git, data_dir=tmp_path / "observer",
+            truth=GitTruth(git, contract_version=CONTAINMENT_CONTRACT_VERSION),
+        ))
         await db.update_project("p1", hierarchical_integration_mode=mode)
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_branch_origins).values(
@@ -1787,6 +1999,107 @@ class TestEndToEndOnFakeProvider:
         record = await GitProvenance(git, wd, repository_url=repo.url).read_completion(
             CompletionIdentity("p1", "repo", "t1", completion.id))
         assert record["source_oid"] == base and record["artifact"] is False
+
+    async def _setup_spec_ingest(self, db, real_orch, real_handler, tmp_path):
+        """A spec-ingest task holding a development slot, after its batch commit.
+
+        Its whole output is the committed graph: database rows, no source
+        commit. The role holds no ``git_push`` grant, so its task branch stays
+        local at the target tip, and development mode records no branch
+        origin to bind an unchanged base against.
+        """
+        from types import MethodType
+
+        from src.orchestrator.git_ops import GitOpsMixin
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        await db.create_profile(AgentProfile(
+            id="spec-ingest", name="Spec Ingest", harness="claude", lifecycle="task",
+            needs_workspace=False,
+        ))
+        await db.update_task("t1", profile_id="spec-ingest", route_source="role")
+        proposal = await real_handler.execute("task_batch_propose", {
+            "project_id": "p1", "source": "spec:/specs/ingested.md",
+            "tasks": [{"tempId": "epic", "title": "Ingested epic", "description": "d"}],
+            "edges": [],
+        })
+        gate = await real_handler.execute("gate_create", {
+            "project_id": "p1", "gate_type": "human", "title": "Approve?",
+            "await_id": proposal["proposal_id"],
+        })
+        await db.resolve_gate(gate["gate_id"], resolved_by="human:test", resolution="approved")
+        committed = await real_handler.execute(
+            "task_batch_commit", {"proposal_id": proposal["proposal_id"]},
+        )
+        assert committed["success"], committed
+        # The development branch of the real completion pipeline is what
+        # demanded the push; only its result is stubbed elsewhere.
+        real_orch._run_completion_pipeline = MethodType(
+            GitOpsMixin._run_completion_pipeline, real_orch,
+        )
+        return wd, git, base
+
+    async def test_spec_ingest_task_closes_pass_after_committing_its_batch(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "committed the ingested graph",
+        })
+
+        assert close["success"] and close["status"] == "COMPLETED", str(close)
+        completion = await db.get_task_completion("t1")
+        assert completion.outcome == "pass" and completion.commits == []
+        repo = await db.get_repo("repo")
+        record = await GitProvenance(git, wd, repository_url=repo.url).read_completion(
+            CompletionIdentity("p1", "repo", "t1", completion.id))
+        assert record["source_oid"] == base and record["artifact"] is False
+        assert not await git._arun(["ls-remote", "--heads", "origin", "aq/t1"], cwd=wd)
+
+    @pytest.mark.parametrize("work", ["dirty", "commit", "diverged_remote"])
+    async def test_spec_ingest_close_still_refuses_unpublished_source_work(
+        self, db, real_orch, real_handler, tmp_path, work
+    ):
+        from pathlib import Path
+
+        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        if work == "dirty":
+            (Path(wd) / "notes.md").write_text("uncommitted")
+        elif work == "commit":
+            (Path(wd) / "notes.md").write_text("committed, never pushed")
+            await git.acommit_all(wd, "stray source work")
+        else:
+            # Someone published work on the task branch the slot never saw.
+            await git._arun(["commit", "--allow-empty", "-m", "remote work"], cwd=wd)
+            await git._arun(["push", "origin", "HEAD:refs/heads/aq/t1"], cwd=wd)
+            await git._arun(["reset", "--hard", base], cwd=wd)
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "committed the ingested graph",
+        })
+
+        assert close["result"] == "verification_failed", close
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_completion("t1") is None
+
+    async def test_unpushed_code_task_branch_still_refuses_close(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        """No-code recognition is the role's, not any clean slot's."""
+        await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        await db.update_task("t1", profile_id="claude-opus", route_source="legacy")
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "done",
+        })
+
+        assert close["result"] == "verification_failed", close
+        assert "exactly pushed" in str(close)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
 
     async def _setup_development_repair(self, db, real_orch, tmp_path, source_id, *,
                                         parent=None, failure=None, filing="legacy"):
@@ -2110,6 +2423,23 @@ class TestEndToEndOnFakeProvider:
         await real_orch._execute_task(action)
         return wd
 
+    async def _setup_task_publication(self, db, real_orch, tmp_path, wd, *, publish=True):
+        """Give a successful live close a real task branch and a local bare origin."""
+        from src.git.manager import GitManager
+
+        git = real_orch.git = GitManager()
+        remote = str(tmp_path / "origin.git")
+        await git._arun(["init", "--bare", remote], cwd=str(tmp_path))
+        await git._arun(["init", "-b", "aq/t1"], cwd=wd)
+        await git._arun(["config", "user.name", "Tester"], cwd=wd)
+        await git._arun(["config", "user.email", "test@example.com"], cwd=wd)
+        await git._arun(["commit", "--allow-empty", "-m", "task work"], cwd=wd)
+        await git._arun(["remote", "add", "origin", remote], cwd=wd)
+        await db.update_task("t1", branch_name="aq/t1")
+        if publish:
+            await git.apush_branch(wd, "aq/t1")
+        return git
+
     async def test_routing_rule_needs_both_flag_and_harness(self, real_orch, config):
         profile = AgentProfile(id="x", name="x", harness="claude")
         assert real_orch._is_session_routed(profile) is True
@@ -2164,6 +2494,7 @@ class TestEndToEndOnFakeProvider:
         #    ``platform = None``, workspace prep, then return immediately
         #    with no stream to block on.
         wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
 
         # A session-routed task must never construct a runtime adapter --
         # that is what ``platform = None`` is for, and an adapter registered
@@ -2298,8 +2629,9 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_agent("a1")).state is AgentState.IDLE
         assert (await db.get_workspace("ws1")).locked_by_task_id is None
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_fixable_verification_refuses_the_close_and_keeps_the_session(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """The close/verification loop must not kill the worker it needs.
 
@@ -2311,10 +2643,75 @@ class TestEndToEndOnFakeProvider:
         claim, the agent gets the issue list back, and a second close after
         fixing them succeeds.
         """
-        import asyncio
+        await self._assert_fixable_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            cancel_caller=cancel_caller,
+        )
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+    @pytest.mark.perf
+    async def test_fixable_verification_refusal_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Retain the two-second budget for both closes on an opted-in quiet box."""
+        await self._assert_fixable_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_fixable_verification_refusal(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
+        from src.api.auth import SessionTokenStore
+
+        real_orch.token_store = SessionTokenStore(db)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        git = await self._setup_task_publication(db, real_orch, tmp_path, wd, publish=False)
+        before_task = await db.get_task("t1")
+        before_workspace = await db.get_workspace_for_task("t1")
+        token = provider.starts[0].env["AQ_API_TOKEN"]
+
+        async def close_at_checkpoint(pipeline, *, cancel=False):
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            attempts = []
+            if not synchronize:
+                release.set()
+
+            async def held_pipeline(ctx):
+                attempts.append(asyncio.current_task())
+                entered.set()
+                await release.wait()
+                return await pipeline(ctx)
+
+            monkeypatch.setattr(real_orch, "_run_completion_pipeline", held_pipeline)
+            caller = asyncio.create_task(real_handler.execute("task_close", args))
+            try:
+                if synchronize:
+                    # Observe the real close after its admission/database work.
+                    # Functional correctness must not depend on cold dispatch
+                    # and PostgreSQL fitting a two-second wall-clock budget.
+                    await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                    assert not caller.done()
+                    assert await db.get_task_meta("t1", "pending_completion") is not None
+                    assert await db.get_task_meta("t1", "accepted_close") is None
+                    if cancel:
+                        caller.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await caller
+                        assert not attempts[0].done(), "the shielded close must survive"
+                    release.set()
+                return await asyncio.wait_for(
+                    asyncio.shield(attempts[0] if cancel else caller), timeout=close_timeout
+                )
+            finally:
+                # Even a deadline before pipeline entry must drain the caller
+                # and its shielded close before the database fixture is torn down.
+                release.set()
+                await asyncio.wait_for(
+                    asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+                )
 
         async def _stop_with_feedback(ctx):
             assert ctx.close_session_live is True, "the live session must be visible here"
@@ -2323,7 +2720,6 @@ class TestEndToEndOnFakeProvider:
             ctx.verification_feedback = "push and open a PR, then close again"
             return None, False
 
-        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _stop_with_feedback)
         args = {
             "task_id": "t1",
             "session_id": session.id,
@@ -2331,7 +2727,7 @@ class TestEndToEndOnFakeProvider:
             "work_outcome": "shipped",
             "summary": "Work done.",
         }
-        close = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
+        close = await close_at_checkpoint(_stop_with_feedback, cancel=cancel_caller)
 
         assert close["success"] is False
         assert close["result"] == "verification_failed"
@@ -2342,25 +2738,41 @@ class TestEndToEndOnFakeProvider:
         task = await db.get_task("t1")
         assert task.status is TaskStatus.IN_PROGRESS
         assert task.assigned_agent_id == "a1"
+        assert (task.claim_epoch, task.retry_count) == (
+            before_task.claim_epoch, before_task.retry_count,
+        )
         assert (await db.get_agent("a1")).state is AgentState.BUSY
         ws = await db.get_workspace("ws1")
         assert ws.locked_by_task_id == "t1" and ws.locked_by_agent_id == "a1"
+        assert await db.get_workspace_for_task("t1") == before_workspace
+        assert await real_orch.token_store.validate(token) is not None
+        assert await db.get_task_completion("t1") is None
+        assert await db.get_task_meta("t1", "pending_completion") is None
+        assert await db.get_task_meta("t1", "accepted_close") is None
 
         # The orphan sweep drained the worker in the original bug.  With the
         # task still IN_PROGRESS it leaves the session alone.
         await real_orch.session_reconciler.tick(now=time.time())
-        assert (await db.get_session(session.id)).state == "running"
+        after_session = await db.get_session(session.id)
+        assert (after_session.state, after_session.instance_token) == (
+            "running", session.instance_token,
+        )
 
-        # Second close, after the agent fixed the git state, completes.
+        # Second close, after the agent published the exact branch, completes.
+        await git.apush_branch(wd, "aq/t1")
+
         async def _ok(ctx):
             return "https://github.com/org/repo/pull/7", True
 
-        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _ok)
-        again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
-        assert again["success"] is True and again["status"] == "COMPLETED"
+        again = await close_at_checkpoint(_ok)
+        assert again["success"] is True and again["status"] == "COMPLETED", again
+        assert await db.get_task_completion("t1") is not None
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_escalated_verification_refusal_does_not_blame_the_workspace(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """A precondition the workspace cannot satisfy reads as an escalation.
 
@@ -2368,12 +2780,44 @@ class TestEndToEndOnFakeProvider:
         thing is daemon-side delivery state sends it into a retry loop or
         into closing ``--outcome fail`` over passing work (task fleet-willow).
         """
-        import asyncio
+        await self._assert_escalated_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            cancel_caller=cancel_caller,
+        )
 
+    @pytest.mark.perf
+    async def test_escalated_verification_refusal_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Keep the two-second cold-close budget on an opted-in quiet box."""
+        await self._assert_escalated_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_escalated_verification_refusal(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
+        from src.api.auth import SessionTokenStore
+
+        real_orch.token_store = SessionTokenStore(db)
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        before_task = await db.get_task("t1")
+        before_workspace = await db.get_workspace_for_task("t1")
+        token = provider.starts[0].env["AQ_API_TOKEN"]
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        attempts = []
+        if not synchronize:
+            release.set()
 
         async def _stop_escalated(ctx):
+            attempts.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
+            assert ctx.close_session_live is True
             ctx.verification_retry_in_session = True
             ctx.verification_escalated = True
             ctx.verification_issues = ["dirty: task t1 holds no integration workspace"]
@@ -2381,7 +2825,7 @@ class TestEndToEndOnFakeProvider:
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", _stop_escalated)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2391,38 +2835,108 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work done.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            if synchronize:
+                # Hold the real close at a known checkpoint, rather than racing
+                # cold command-catalogue construction and PostgreSQL against a
+                # two-second CI deadline. These are deadlock backstops; only the
+                # perf_strict arm above asserts a wall-clock latency budget.
+                await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                assert not caller.done()
+                assert await db.get_task_meta("t1", "pending_completion") is not None
+                assert await db.get_task_meta("t1", "accepted_close") is None
+                if cancel_caller:
+                    caller.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await caller
+                    assert not attempts[0].done(), "the shielded close must survive"
+                release.set()
+            close = await asyncio.wait_for(
+                attempts[0] if cancel_caller else caller, timeout=close_timeout
+            )
+        finally:
+            # A failed assertion must not leave a shielded close using the
+            # database after its fixture has been torn down.
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+            )
 
         assert close["success"] is False and close["escalated"] is True
+        assert close["result"] == "verification_failed"
+        assert close["issues"] == ["dirty: task t1 holds no integration workspace"]
         assert "you can still fix from this workspace" not in close["error"]
         assert "daemon state this workspace cannot change" in close["error"]
         assert "user:dashboard" in close["error"]
-        # Still a refusal, not a close: the task keeps its claim.
-        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        # Still a refusal: neither caller cancellation nor slow verification
+        # may turn daemon-side delivery state into a failed/quarantined worker.
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert (task.assigned_agent_id, task.claim_epoch, task.retry_count) == (
+            before_task.assigned_agent_id, before_task.claim_epoch, before_task.retry_count,
+        )
+        assert await db.get_workspace_for_task("t1") == before_workspace
+        assert (await db.get_agent("a1")).state is AgentState.BUSY
+        assert await real_orch.token_store.validate(token) is not None
+        assert await db.get_task_completion("t1") is None
+        assert await db.get_task_meta("t1", "pending_completion") is None
+        assert await db.get_task_meta("t1", "accepted_close") is None
+        await real_orch.session_reconciler.tick(now=time.time())
+        after_session = await db.get_session(session.id)
+        assert (after_session.state, after_session.instance_token) == (
+            "running", session.instance_token,
+        )
+        assert await db.get_workspace_for_task("t1") == before_workspace
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_verification_reopen_returns_ready_and_releases_resources(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """A verification retry must return READY and release its old worker."""
-        import asyncio
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch, cancel_caller=cancel_caller
+        )
 
+    @pytest.mark.perf
+    async def test_verification_reopen_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Keep the two-second close budget on an opted-in quiet box."""
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_verification_reopen(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        attempts = []
+        if not synchronize:
+            release.set()
 
         async def reopen(ctx):
+            attempts.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
             await db.transition_task(
                 ctx.task.id,
                 TaskStatus.READY,
                 context="verification_reopen",
                 assigned_agent_id=None,
+                accepted_close=ctx.accepted_close,
             )
             ctx.verification_reopened = True
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", reopen)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2432,9 +2946,36 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work completed; git verification requested a retry.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            if synchronize:
+                # Observe the close before verification reopens the task. The
+                # default arm checks state and cancellation, while the perf arm
+                # retains the cold-close latency budget on a quiet box.
+                await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                assert not caller.done()
+                assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+                assert (await db.get_agent("a1")).state is AgentState.BUSY
+                assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+                assert await db.get_task_meta("t1", "pending_completion") is not None
+                assert await db.get_task_meta("t1", "accepted_close") is None
+                if cancel_caller:
+                    caller.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await caller
+                    assert not attempts[0].done(), "the shielded close must survive"
+                release.set()
+            close = await asyncio.wait_for(
+                asyncio.shield(attempts[0] if cancel_caller else caller), timeout=close_timeout
+            )
+        finally:
+            # Drain the shielded close even if a checkpoint assertion fails,
+            # before the database fixture is torn down.
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+            )
 
         assert close["success"] is True and close["status"] == "READY"
         task = await db.get_task("t1")
@@ -2456,7 +2997,8 @@ class TestEndToEndOnFakeProvider:
         increments ``retry_count`` and re-queues.  Sending it straight to
         FAILED made a session-run flake terminal where a legacy one retries.
         """
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
 
         close = await real_handler.execute(
@@ -2483,7 +3025,8 @@ class TestEndToEndOnFakeProvider:
     async def test_hard_failure_blocks_and_does_not_retry(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         close = await real_handler.execute(
             "task_close",
@@ -2502,7 +3045,8 @@ class TestEndToEndOnFakeProvider:
     async def test_transient_failure_blocks_once_retries_are_spent(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         task = await db.get_task("t1")
         await db.update_task(task.id, retry_count=task.max_retries - 1)
@@ -2542,7 +3086,8 @@ class TestEndToEndOnFakeProvider:
         class _Restart(BaseException):
             pass
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         real_orch.pipeline_result = (None, pipeline_ok)
         seen: list = []
@@ -2663,7 +3208,8 @@ class TestEndToEndOnFakeProvider:
     async def test_retry_can_reassign_only_after_old_session_is_stopped(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         old = await db.get_session_for_task("t1")
         await real_handler.execute("task_close", {
             "task_id": "t1", "session_id": old.id, "outcome": "fail",
@@ -3115,6 +3661,103 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_task("t1")).pr_url == pr_url
         real_orch._phase_integrate.assert_not_awaited()
 
+    async def test_train_leaf_root_close_does_not_wait_on_a_slow_pull_request(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Regression for amber-flare-10: the root PR open gated the whole close.
+
+        It reads the project-wide delivery observation, which a busy project
+        held for minutes; the record and claim release waited behind it while
+        the caller timed out.  Past the bound the close finishes and the open
+        lands detached, once.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import update
+
+        from src.database.tables import repos
+        from src.git.manager import RemoteRefState
+        from src.orchestrator import execution
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode="train")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(repos).where(repos.c.id == "repo").values(
+                    url="https://github.com/o/r.git", default_branch="main"
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        monkeypatch.setattr(execution, "CLOSE_PUBLICATION_TIMEOUT_SECONDS", 0.05)
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
+
+        async def git_run(args, *, cwd):
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        pr_url = "https://github.com/o/r/pull/9"
+        github = asyncio.Event()
+
+        async def slow_create_pr(*args, **kwargs):
+            await github.wait()
+            return pr_url
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            bind_github_repository=AsyncMock(return_value="binding"),
+            acommits_ahead_of_base=AsyncMock(return_value=1),
+            acreate_pr=AsyncMock(side_effect=slow_create_pr),
+            _arun=git_run,
+        )
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "shipped",
+                    "summary": "leaf root complete",
+                },
+            ),
+            10,
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert len(await db.get_task_completions("t1")) == 1
+        (detached,) = execution._DETACHED_CLOSE_PUBLICATIONS
+        assert (await db.get_task("t1")).pr_url is None
+
+        github.set()
+        assert (await asyncio.wait_for(detached, 10))["pr_url"] == pr_url
+        real_orch.git.acreate_pr.assert_awaited_once()
+        assert (await db.get_task("t1")).pr_url == pr_url
+        assert len(await db.get_task_completions("t1")) == 1
+
     async def test_train_leaf_root_close_survives_a_pull_request_failure(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
@@ -3187,7 +3830,7 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
         assert (await db.get_task("t1")).pr_url is None
 
-    async def test_managed_parent_close_suspends_owned_branch_without_legacy_integrate(
+    async def test_managed_parent_close_refuses_unresolved_children_without_legacy_integrate(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
         from unittest.mock import AsyncMock
@@ -3254,17 +3897,17 @@ class TestEndToEndOnFakeProvider:
 
         checkpoint = await db.get_integration_checkpoint("t1")
         operation = await db.get_active_parent_integration_operation("t1")
-        assert close["success"] is True
-        assert close["status"] == "PAUSED"
-        assert checkpoint["checkpoint_sha"] == head
-        # The suspension transition recorded this close's identity (smart-cascade).
-        assert await db.get_task_meta("t1", "accepted_close") == {
-            "completion_id": (await db.get_task_completion("t1")).id,
-            "session_id": session.id,
-            "claim_epoch": (await db.get_task("t1")).claim_epoch,
-        }
-        assert checkpoint["episode_id"] == operation["episode_id"]
-        assert operation["state"] == "active"
+        assert close["success"] is False
+        assert "container has unresolved children: t1.1" in close["error"]
+        # The active train admits only a completed container whose children are
+        # settled. Refusal preserves the producer's held branch and checkpoint.
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_session_for_task("t1")).id == session.id
+        assert checkpoint["checkpoint_sha"] == "a" * 40
+        assert await db.get_task_meta("t1", "accepted_close") is None
+        assert await db.get_task_completion("t1") is None
+        assert operation is None
+        assert checkpoint["episode_id"] is None
         assert (await db.get_task_branch_origin_for_promotion("t1", "repo"))["base_sha"] == (
             "a" * 40
         )
@@ -3439,11 +4082,11 @@ class TestEndToEndOnFakeProvider:
             pass
 
         verifier_id, session, head = await self._aggregate_failure_session(db, provider, tmp_path)
+        # Failure-close needs actual preservation proof before testing its
+        # transition/crash behavior. Keep the later ref lookup misleading.
+        await self._setup_task_publication(db, real_orch, tmp_path, str(tmp_path / "wd"))
         # A later local ref lookup cannot replace the original verification subject.
-        real_orch.git = SimpleNamespace(
-            arev_parse=AsyncMock(return_value="b" * 40),
-            avalidate_checkout=AsyncMock(return_value=False),
-        )
+        monkeypatch.setattr(real_orch.git, "arev_parse", AsyncMock(return_value="b" * 40))
         save = db.save_task_completion
 
         async def die(*_args, **_kwargs):
@@ -4125,9 +4768,26 @@ class TestEndToEndOnFakeProvider:
         close surface ever stops threading it through, a read-only reviewer
         is back to being refused for a PR it was never going to open.
         """
-        import asyncio
+        await self._assert_no_op_close(db, real_orch, real_handler, tmp_path, monkeypatch)
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+    @pytest.mark.perf
+    async def test_no_op_close_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Measure the two-second close budget only on an opted-in quiet box."""
+        await self._assert_no_op_close(
+            db, real_orch, real_handler, tmp_path, monkeypatch, close_timeout=2
+        )
+
+    async def _assert_no_op_close(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *, close_timeout=120
+    ):
+        # The default test always checks the real command and durable outcome.
+        # The 120-second backstop catches hangs; PostgreSQL latency belongs to the
+        # separate perf_strict budget test, not the default CI shard.
+
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         seen: dict = {}
 
@@ -4147,7 +4807,7 @@ class TestEndToEndOnFakeProvider:
                     "summary": "Reviewed; nothing to ship.",
                 },
             ),
-            timeout=2,
+            timeout=close_timeout,
         )
         assert close["success"] is True and close["status"] == "COMPLETED"
         assert seen == {"work_outcome": "no-op"}

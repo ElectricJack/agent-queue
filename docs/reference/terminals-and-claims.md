@@ -48,7 +48,7 @@ nobody is watching.
 | `sessions.pane_stream_lines` | `60` | lines captured per frame |
 
 Each frame is a *whole screen*, not a delta, so the client replaces rather than
-appends ([`usePaneStream.ts`](../../dashboard/src/ws/usePaneStream.ts)):
+appends:
 
 ```text
 {source:"pane", type:"screen",  screen, seq, ts}
@@ -56,10 +56,9 @@ appends ([`usePaneStream.ts`](../../dashboard/src/ws/usePaneStream.ts)):
 {source:"pane", type:"error",   message, seq, ts}
 ```
 
-Colour comes from tmux's own `capture-pane -e` (SGR sequences only) and is
-rendered directly — tmux has already done the terminal emulation, so
-[`LivePaneConsole`](../../dashboard/src/components/LivePaneConsole.tsx) needs no
-emulator and keeps no scrollback.
+Colour comes from tmux's own `capture-pane -e` (SGR sequences only). This
+endpoint remains for external clients and older dashboard builds. Current
+dashboard terminal panes all use the interactive terminal below.
 
 ### The interactive terminal
 
@@ -112,14 +111,19 @@ See the [reconnection contract](../specs/terminal-reconnection.md).
 
 ### From a phone
 
-A phone opens the same attach socket as a desktop, from the same xterm.js
-terminal and theme
-([`PhoneTerminal.tsx`](../../dashboard/src/components/PhoneTerminal.tsx)).
-Below 768 px, and on every focus route, the dashboard uses this phone terminal.
-It fits columns and rows to the phone, never fewer than 40 columns while the
-font can still shrink (to 10 px). It refits on rotation and when the on-screen
-keyboard opens or closes (`visualViewport`), and each refit is a `resize`
-control. Its handshake adds two options a desktop never sends:
+There is one terminal component in the dashboard:
+[`InteractiveTerminal.tsx`](../../dashboard/src/components/InteractiveTerminal.tsx).
+The host shell, agent and pool windows, task terminal links, session detail,
+focus session and session-peek pane all render it at every viewport. It owns
+xterm, the host shell's options and palette (`terminalSetup.ts`), fit, socket,
+input handling and touch scrolling. There is no phone-specific renderer or
+chrome. Type focuses xterm's textarea; Enter and Ctrl+C are in its details.
+
+Columns and rows fit the terminal area using the host shell's FitAddon and
+fixed 12 px font. Rotation and visualViewport keyboard changes refit it and
+send resize frames to the session's PTY. The keyboard's bottom boundary is
+measured from the terminal area's top, including page and pane headers.
+Below 768 px, an attach adds two options that wide attaches omit:
 
 * `restore_size=1`. Agent windows run with `window-size latest`, so an attach
   sizes the agent's real window, and tmux keeps the last size once every client
@@ -139,18 +143,15 @@ control. Its handshake adds two options a desktop never sends:
   scrolls with line feeds and each scrolled line reaches the viewer's
   scrollback. `CSI n S`, which tmux would otherwise send, discards those lines.
 
-Any other value for either option is refused with `4400`. The phone keeps tmux
-out of the alternate screen (which has no scrollback). A touch drag scrolls the
-terminal's buffer with momentum, and a tap focuses the input bar. The input bar
-and key strip (Esc, Tab, Ctrl-C, ↑, ↓, Enter, 1–3) write raw bytes to the
-attach socket: a line, then Enter about 150 ms later, because a TUI reads a
-burst that ends in CR as a paste. A multi-line entry goes as one bracketed paste
-with CR line endings.
-
-A session that has ended is watch only. A viewer whose attach is refused
-(`4401`/`4403`, from the handshake or the access probe) watches the live pane,
-drawn in the same terminal. Design:
-[mobile terminal](../superpowers/specs/2026-10-08-mobile-terminal-design.md).
+Any other value for either option is refused with `4400`. The compact viewer
+keeps tmux out of the alternate screen (which has no scrollback). A touch drag
+scrolls the terminal's buffer with momentum, and a tap focuses xterm's own
+textarea. Input and paste follow the host shell's attach path. Refused viewers
+see the connection error with input disabled. Ended sessions link to their
+transcripts. There is no watch/type mode or separate pane-stream fallback.
+Design: [shared terminal](../superpowers/specs/2026-10-08-mobile-terminal-design.md).
+The [evidence bundle](../reports/mobile-terminal-host-shell-parity-2026-10-09/README.md)
+includes Playwright comparisons and phone screenshots.
 
 `/ws/terminal/{id}/input` is still served, for dashboard builds from before
 phones attached. It is the same handler with `input_only`, behind every gate in
@@ -347,7 +348,21 @@ the next reader can act on it:
 | `needs_attention: integration_prepare_failed` | the branch fence, not the filesystem, blocked preparation | same |
 | `needs_attention: branch_fenced` | the task's branch is fenced by a writer the owner-recovery sweep releases | same |
 | `branch_fenced` | same — carries reason, branch, repository, workspace, session and timestamp | same |
-| `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds |
+| `prepare_failure` | any permanent preparation failure, released, blocked or retained — carries reason, error type, stage, cause chain, session, instance token, claim epoch, workspace, disposition, attempt and timestamp | same |
+| `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds, or a foreign checkpoint is discarded with a `manual_pause_checkpoint_discarded` audit record (`aq task discard-pause-checkpoint`) |
+
+Every surface reports one description of a failure, built by
+[`describe_preparation_failure`](../../src/preparation_failure.py): the claim
+response's `reason`, the session's `claim_failure_reason`, the `reason`,
+`error_type` and `stage` of the `pool.prepare_failed` event, the metadata above
+and the daemon log line. It reads `<stage>: <Type>: <message>`, followed by up
+to three `caused by`/`during` links. A link with no text, such as
+`asyncio.timeout`'s `TimeoutError`, reads `<Type> (no message) at <file:line
+function>` and names only the frame it was raised at, never a guessed cause.
+Messages are secret-scrubbed and bounded, and the text is deterministic, so
+identical refusals still count as identical. A fenced branch section that
+outlives its 30 s bound raises `BranchLockTimeout`, which names the bound and
+the ref.
 
 All of them are cleared together by one delete
 ([`clear_claim_preparation_metadata`](../../src/database/queries/claim_queries.py)),
