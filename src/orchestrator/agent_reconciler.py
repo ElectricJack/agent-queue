@@ -129,6 +129,9 @@ class AgentReconciler:
         live_counts = project_live_session_counts(live)
         live_agents = {row.agent_id for row in live if row.agent_id}
         live_agents.update(launching_agent_ids or ())
+        from src.waits.occupancy import continuation_agent_ids
+
+        live_agents.update(await continuation_agent_ids(self._db))
         # Legacy task sessions may not have been linked before adoption.
         live_tasks = {row.task_id for row in live if row.task_id}
         by_task = {task.id: task for task in tasks}
@@ -140,15 +143,6 @@ class AgentReconciler:
             task = by_task.get(agent.current_task_id)
             if task is not None and task.status in (
                 TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
-            ):
-                continue
-            # A continuation's reserved agent has no session until its fresh
-            # workspace is ready, which can outlast the heartbeat grace; the
-            # resume binds that exact agent, so it must stay pinned.
-            if (
-                task is not None
-                and task.status is TaskStatus.RESUME_PENDING
-                and task.assigned_agent_id == agent.id
             ):
                 continue
             # Pool launch reservations have no task yet; do not steal an
