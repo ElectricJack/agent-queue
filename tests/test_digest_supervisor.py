@@ -318,7 +318,7 @@ def test_the_authored_body_is_cut_to_the_digest_budget_and_carries_one_link():
     text = render_authored_digest(body, base_url=BASE_URL)
     assert len(text) <= 600
     assert text.count("https://") == 1
-    assert text.endswith(f"<{BASE_URL}/focus/inbox>")
+    assert text.endswith(f"<{BASE_URL}/inbox>")
     # §3.1's glyph is added, and a mention an author typed cannot ping a role:
     # the bare ``@`` survives with a zero-width space, so no token Discord would
     # resolve as a role or user ping ever reaches the channel.
@@ -408,7 +408,7 @@ def test_the_quiet_line_is_the_specs_one_line_with_the_session_count():
     line = quiet_line(4, base_url=BASE_URL)
     assert QUIET_LINE.format(sessions=4) in line
     assert line.startswith("⏳ ")
-    assert line.endswith(f"<{BASE_URL}/focus/inbox>")
+    assert line.endswith(f"<{BASE_URL}/inbox>")
     assert len(line) <= 600
 
 
@@ -839,11 +839,11 @@ def test_authored_and_fallback_digest_keep_daily_human_reminder_within_budget():
                                       base_url=BASE_URL, facts=brief)
     assert "Waiting on you (12)" in authored
     assert authored.index("Needs you") < authored.index("Waiting on you")
-    assert len(authored) <= 600 and authored.endswith(f"<{BASE_URL}/focus/inbox>")
-    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n<{BASE_URL}/focus/inbox>"
+    assert len(authored) <= 600 and authored.endswith(f"<{BASE_URL}/inbox>")
+    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n<{BASE_URL}/inbox>"
     fallback = fallback_text(deterministic, brief)
     assert "Waiting on you (12)" in fallback
-    assert fallback.endswith(f"<{BASE_URL}/focus/inbox>") and len(fallback) <= 600
+    assert fallback.endswith(f"<{BASE_URL}/inbox>") and len(fallback) <= 600
     assert "Waiting on you (12)" in fallback_text("", brief)
 
 

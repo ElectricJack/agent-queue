@@ -254,6 +254,13 @@ schema validity into a failed result: inspect `warnings`, `protection` and
 `workflow_triggers`. Hidden bypass actors or unreadable workflows are
 unverifiable, not evidence of correct protection.
 
+Live project and global supervisors can capture `aq integration cutover-plan`
+previews within their project scope. When the App hides bypass actors, the daemon
+uses its existing administrator `gh` login for bounded ruleset-detail reads and
+checks that both readers observed the same policy. The login must already have
+access to those actors; unavailable access or inconsistent policy still refuses
+the preview. Supervisors gain no cutover-apply or GitHub-write authority.
+
 required test workflows cover `pull_request` to
 the default and every chain target, including `ready_for_review`, and pushes to
 `aq/promote/**` as well as the train's candidate refs. Branch-attestation

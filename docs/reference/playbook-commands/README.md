@@ -108,6 +108,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_promotion_policy_input`](integration_promotion_policy_input.md) | Integration Promotion Policy Input | Read pinned source and outstanding promotion facts for reviewed policy. |
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
+| [`integration_rebind_batch_authority`](integration_rebind_batch_authority.md) | Integration Rebind Batch Authority | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
 | [`integration_reconcile_git_truth`](integration_reconcile_git_truth.md) | Integration Reconcile Git Truth | Daemon-only repair of Git-derived integration projections. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
@@ -361,7 +362,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status, owner identity and bounded diagnostics. |
 | [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
 | [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
-| [`message_inbox`](message_inbox.md) | Message Inbox | List a recipient's pending messages, optionally marking them delivered. |
+| [`message_inbox`](message_inbox.md) | Message Inbox | List unread, unarchived mail; inject claims only undelivered messages. |
 | [`message_list`](message_list.md) | Message List | List messages with project/thread/recipient filters. |
 | [`message_reply`](message_reply.md) | Message Reply | Reply to a message: marks it read and writes the linked reply row. |
 | [`message_status`](message_status.md) | Message Status | Return the durable delivery state of one message. |
@@ -624,6 +625,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`wait_resume_dispatch`](wait_resume_dispatch.md) | Wait Resume Dispatch | Wait resume dispatch through verified wait state. |
 | [`wait_sleep_decide`](wait_sleep_decide.md) | Wait Sleep Decide | Wait sleep decide through verified wait state. |
 | [`wait_source_commit`](wait_source_commit.md) | Wait Source Commit | Wait source commit through verified wait state. |
+| [`wait_source_redispatch`](wait_source_redispatch.md) | Wait Source Redispatch | Wait source redispatch through verified wait state. |
 | [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
 | [`workspace_clear_sentinel`](workspace_clear_sentinel.md) | Workspace Clear Sentinel | Clear a slot sentinel that still names a terminal task. |
 | [`workspace_cutover`](workspace_cutover.md) | Workspace Cutover | Execute the workspace_cutover command. |

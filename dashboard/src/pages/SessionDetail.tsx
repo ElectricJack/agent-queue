@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   PlayIcon,
   StopIcon,
@@ -18,6 +18,7 @@ import type { SessionSummary } from "../api/client";
 import { AttemptTime } from "../components/TaskSessions";
 import { useTranscriptStream } from "../ws/useTranscriptStream";
 import InteractiveTerminal from "../components/InteractiveTerminal";
+import { useAgentFlock } from "../api/agents";
 import { workspaceHref } from "../shell/projectNavigation";
 
 export default function SessionDetail() {
@@ -25,16 +26,55 @@ export default function SessionDetail() {
   const location = useLocation();
   const query = new URLSearchParams(location.search);
   const attemptId = query.get("attempt");
+  const started = Number(query.get("started") || NaN);
+  const pinned = Number.isFinite(started) ? started : null;
   return attemptId !== null ? (
     <AttemptSessionDetail key={`${sessionId}:${attemptId}:${query.get("taskId")}`} sessionId={sessionId} attemptId={attemptId} taskId={query.get("taskId") ?? ""} />
-  ) : <CurrentSessionDetail key={sessionId} sessionId={sessionId} />;
+  ) : <CurrentSessionDetail key={`${sessionId}:${pinned}`} sessionId={sessionId} pinned={pinned} />;
 }
 
-function CurrentSessionDetail({ sessionId }: { sessionId: string }) {
-  const { data: session, isLoading } = useSession(sessionId);
-  if (isLoading) return <div className="p-6 text-gray-400">Loading…</div>;
+function CurrentSessionDetail({ sessionId, pinned }: { sessionId: string; pinned: number | null }) {
+  const query = useSession(sessionId);
+  const session = query.data;
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [watched, setWatched] = useState(pinned);
+  useEffect(() => {
+    if (watched === null && session?.started_at != null) setWatched(session.started_at);
+  }, [watched, session?.started_at]);
+  if (query.isLoading) return <div className="p-6 text-gray-400">Loading…</div>;
+  if (query.isError) return <div role="alert" className="p-4">
+    <p>Could not load session. {query.error?.message}</p>
+    <button onClick={() => void query.refetch()}>Retry session</button>
+  </div>;
   if (!session) return <div className="p-6 text-gray-400">Session not found</div>;
-  return <SessionDetailContent session={session} interactive={session.state === "running" || session.state === "draining"} />;
+  if (watched !== null && session.started_at != null && session.started_at !== watched) {
+    return <section className="dashboard-page space-y-3 p-4">
+      <p role="status">This session restarted at {new Date(session.started_at * 1000).toLocaleString()}.
+        You were watching the process started at {new Date(watched * 1000).toLocaleString()}.</p>
+      <button type="button" data-primary-control className="rounded border border-gray-700 px-3 py-2" onClick={() => {
+        const params = new URLSearchParams(location.search);
+        params.set("started", String(session.started_at));
+        navigate({ pathname: location.pathname, search: `?${params}`, hash: location.hash }, { replace: true, state: location.state });
+      }}>Watch the new process</button>
+    </section>;
+  }
+  return <SessionDetailContent session={session} interactive={!query.isError && (session.state === "running" || session.state === "draining")} />;
+}
+
+/** Only an inactive session needs the roster to offer an explicit current-session link. */
+function InactiveSession({ session }: { session: SessionSummary }) {
+  const { data: flock = [] } = useAgentFlock();
+  const current = flock.find((agent) => agent.id === session.agent_id && agent.session_id
+    && agent.session_id !== session.id && ["running", "draining"].includes(agent.session_state ?? ""));
+  return <section className="space-y-2 text-sm text-gray-400">
+    <p>{session.state === "starting" ? "This session is starting; its terminal appears once it runs."
+      : session.state === "sleeping" ? `Session asleep${session.sleep_reason ? ` (${session.sleep_reason})` : ""}.`
+        : `Session ended (${session.state ?? "unknown state"})${session.ended_at ? ` at ${new Date(session.ended_at * 1000).toLocaleString()}` : ""}.`}</p>
+    {session.end_reason && <p className="whitespace-pre-wrap">{session.end_reason}</p>}
+    {current && <Link data-primary-control className="inline-flex items-center rounded border border-gray-700 px-3 py-2 text-indigo-300"
+      to={`/sessions/${encodeURIComponent(current.session_id!)}`}>Watch {current.name}'s current session</Link>}
+  </section>;
 }
 
 function AttemptSessionDetail({ sessionId, attemptId, taskId }: { sessionId: string; attemptId: string; taskId: string }) {
@@ -95,7 +135,7 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
 
   const from = (location.state as { from?: string } | null)?.from ?? (attempt ? `/tasks/${encodeURIComponent(attempt.task_id)}` : workspaceHref(session.project_id, "sessions"));
   return (
-    <div className="h-full overflow-y-auto p-6 space-y-4">
+    <div className="dashboard-page h-full overflow-y-auto p-3 sm:p-6 space-y-4">
       <SessionBackLink from={from} toTask={!!attempt} />
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Session</p>
@@ -133,67 +173,12 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         )}
       </header>
 
-      {interactive && <section className="grid gap-4 md:grid-cols-2">
-        <div className="rounded border border-gray-800 bg-gray-950 p-3">
-          <h2 className="mb-2 text-sm font-semibold text-gray-300">Attach</h2>
-          {attach.data ? (
-            <div className="flex items-center gap-2">
-              <code className="flex-1 overflow-x-auto rounded bg-black/40 px-2 py-1 font-mono text-xs">
-                {attach.data.attach_command}
-              </code>
-              <button
-                className="rounded p-1 text-gray-400 hover:text-gray-200"
-                aria-label="Copy attach command"
-                onClick={() =>
-                  navigator.clipboard.writeText(attach.data!.attach_command)
-                }
-              >
-                <ClipboardIcon className="h-4 w-4" />
-              </button>
-            </div>
-          ) : (
-            <p className="text-xs text-gray-500">No attach command available.</p>
-          )}
-        </div>
-        <div className="rounded border border-gray-800 bg-gray-950 p-3">
-          <h2 className="mb-2 text-sm font-semibold text-gray-300">Nudge</h2>
-          <form
-            className="flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!text.trim()) return;
-              nudge.mutate(
-                { session_id: sessionId, text },
-                { onSuccess: () => setText("") },
-              );
-            }}
-          >
-            <input
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Message the agent…"
-              className="flex-1 rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
-            />
-            <button
-              type="submit"
-              disabled={nudge.isPending || !text.trim()}
-              className="inline-flex items-center gap-1 rounded bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-            >
-              <PaperAirplaneIcon className="h-4 w-4" />
-              Send
-            </button>
-          </form>
-          {nudge.error && (
-            <p className="mt-2 text-xs text-red-400">
-              {(nudge.error as Error).message}
-            </p>
-          )}
-        </div>
-      </section>}
+      {!attempt && !running && <InactiveSession session={session} />}
+
 
       <section className="overflow-hidden rounded-lg border border-gray-800 bg-gray-950">
-        <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-sm font-semibold text-gray-300">
               {showingPane ? "Pane view" : "Transcript stream"}
               {!showingPane && <span className="ml-2 text-xs text-gray-500">({status})</span>}
@@ -225,7 +210,7 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             {!showingPane && (
               <>
                 <button
@@ -275,6 +260,64 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
           </div>
         )}
       </section>
+      {interactive && <section className="grid gap-4 md:grid-cols-2">
+        <div className="rounded border border-gray-800 bg-gray-950 p-3">
+          <h2 className="mb-2 text-sm font-semibold text-gray-300">Attach</h2>
+          {attach.data ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <code data-allow-overflow-x className="min-w-0 flex-1 overflow-x-auto rounded bg-black/40 px-2 py-1 font-mono text-xs">
+                {attach.data.attach_command}
+              </code>
+              <button
+                className="rounded p-1 text-gray-400 hover:text-gray-200"
+                aria-label="Copy attach command"
+                onClick={() =>
+                  navigator.clipboard.writeText(attach.data!.attach_command)
+                }
+              >
+                <ClipboardIcon className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">No attach command available.</p>
+          )}
+        </div>
+        <div className="rounded border border-gray-800 bg-gray-950 p-3">
+          <h2 className="mb-2 text-sm font-semibold text-gray-300">Nudge</h2>
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!text.trim()) return;
+              nudge.mutate(
+                { session_id: sessionId, text },
+                { onSuccess: () => setText("") },
+              );
+            }}
+          >
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Message the agent…"
+              className="min-w-0 flex-1 rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
+            />
+            <button
+              type="submit"
+              disabled={nudge.isPending || !text.trim()}
+              className="inline-flex items-center gap-1 rounded bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            >
+              <PaperAirplaneIcon className="h-4 w-4" />
+              Send
+            </button>
+          </form>
+          {nudge.error && (
+            <p className="mt-2 text-xs text-red-400">
+              {(nudge.error as Error).message}
+            </p>
+          )}
+        </div>
+      </section>}
+
     </div>
   );
 }

@@ -146,6 +146,8 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
             assert (await continuous.runs.load_run(run_id)).lifecycle is RunLifecycle.COMPLETED
         return True
 
+    now = [1_800_000_000.0]
+
     def make_train():
         lanes = DaemonLanes(orchestrator, batches=batches)
 
@@ -155,13 +157,16 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
 
         train = IntegrationTrain(targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
             batches=batches, lane_for=lane_for,
-            repair=SimpleNamespace(settle_green=AsyncMock()))
+            repair=SimpleNamespace(settle_green=AsyncMock()), clock=lambda: now[0])
         e.handler.orchestrator.integration_train = train
-        return train, IntegrationService(e.db, IntegrationOutbox(e.db, accept), train=train)
+        return train, IntegrationService(e.db, IntegrationOutbox(e.db, accept), train=train,
+                                         clock=lambda: now[0])
 
     train, service = make_train()
 
     async def tick():
+        # No readiness event: the next observation becomes due on the lane timer.
+        now[0] += 30
         await service.tick(service._clock())
         await train._lanes[target.key].task
         assert train.status()[0]["errors"] == 0, train.status()
