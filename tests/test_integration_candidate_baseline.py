@@ -117,7 +117,7 @@ def batch(batch_id="batch-1", attempts=0):
 
 
 def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None,
-          sync_default_branch=None, baseline_fix_checks=None):
+          sync_default_branch=None, baseline_fix_checks=None, target=ROOT):
     """One target, one open batch, the given checks cache and baseline service."""
     from src.integration.train import BatchSelection
 
@@ -138,12 +138,12 @@ def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None
         async def settle(self, batch_, observation):
             return None
 
-    async def lane_for(target):
-        assert target == ROOT
+    async def lane_for(requested):
+        assert requested == target
         return lane
 
     async def targets(_now):
-        return [ROOT]
+        return [target]
 
     return IntegrationTrain(
         targets=SimpleNamespace(targets=targets),
@@ -820,3 +820,160 @@ async def test_only_proven_preexisting_failures_consider_pending_baseline_fixes(
         assert visit.detail["reassembly"]["replacement_batch_id"] == "with-fix"
         assert visit.repair is None and provider.rerequests == []
         assert reassemble.call_args.kwargs["names"] == ("unit",)
+
+
+async def sealed_epic(database, *, attempts=0):
+    from src.integration.batches import BatchStore
+    from src.models import Task, TaskStatus
+
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    await database.create_task(Task(
+        id="epic", project_id="p", repo_id="r", title="Epic", description="",
+        branch_name="aq/epic", status=TaskStatus.COMPLETED,
+    ))
+    await database.create_task(Task(
+        id="t-1", project_id="p", repo_id="r", title="Child", description="",
+        parent_task_id="epic", status=TaskStatus.COMPLETED,
+    ))
+    store = BatchStore(database)
+    await store.freeze(Batch("sealed-epic", "p", "r", target.target_ref,
+                             repair_attempt_count=attempts), MEMBERS, trees={"t-1": "d" * 40})
+    return target, await store.get("sealed-epic")
+
+
+@pytest.mark.parametrize("sync", [None, "spent"])
+async def test_sealed_epic_inherited_failure_files_one_bounded_candidate_repair(db, sync):
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskStatus
+
+    target, batch_ = await sealed_epic(db)
+    provider = Provider({CANDIDATE: {"unit": "failure", "lint": "success"},
+                         TARGET: {"unit": "failure", "lint": "success"}})
+    checks = ExactChecks(db, provider, clock=Clock())
+    repair = OrdinaryRepairService(db)
+    # A spent sync falls through to ordinary target repair; it does not reset
+    # the existing allocator budget or create another sync task.
+    if sync:
+        allocate = repair.allocate
+
+        async def sync_spent(*args, **kwargs):
+            if kwargs.get("sync_default_branch"):
+                return {"outcome": "sync_exhausted"}
+            return await allocate(*args, **kwargs)
+
+        repair.allocate = sync_spent
+    t = train(checks, baseline=CandidateBaselineService(db), frozen_batch=batch_,
+              target=target, repair=repair, sync_default_branch=(
+                  AsyncMock(return_value={"ref": "refs/heads/main", "sha": OTHER,
+                                          "checks": ["unit"]}) if sync else None))
+    first = await t.visit(target)
+    again = await t.visit(target)
+    assert (first.state, again.state) == ("repair", "repair")
+    assert (first.repair["outcome"], again.repair["outcome"]) == ("filed", "exists")
+    assert first.repair["task_id"] == again.repair["task_id"]
+    task = await db.get_task(first.repair["task_id"])
+    assert task.parent_task_id is None
+    assert task.branch_name == candidate_ref(batch_.id).removeprefix("refs/heads/")
+    assert "Repair these proven pre-existing target failures" in task.description
+    assert "  - unit" in task.description
+    assert (await repair.input(task.id))["starting_sha"] == CANDIDATE
+    assert (await db.get_task("epic")).status == TaskStatus.COMPLETED
+    assert (await db.get_task("t-1")).parent_task_id == "epic"
+    assert provider.rerequests == []
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.repair_attempt_count).where(
+            integration_batches.c.id == batch_.id)) == 1
+
+
+@pytest.mark.parametrize("reason", ["unknown", "unrelated", "paused", "promoted", "default"])
+async def test_sealed_target_exception_needs_own_open_batch_and_proven_failure(db, reason):
+
+    target, batch_ = await sealed_epic(db)
+    if reason == "unrelated":
+        await db.update_task("t-1", parent_task_id=None)
+    elif reason == "default":
+        from src.database.tables import repos
+
+        async with db._engine.begin() as conn:
+            await conn.execute(update(repos).where(repos.c.id == "r").values(default_branch="aq/epic"))
+    elif reason in {"paused", "promoted"}:
+        async with db._engine.begin() as conn:
+            values = {"intent": "paused"} if reason == "paused" else {"lifecycle": "promoted"}
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch_.id).values(**values))
+    provider = Provider({CANDIDATE: {"unit": "failure", "lint": "success"},
+                         TARGET: {"unit": "pending" if reason == "unknown" else "failure",
+                                  "lint": "success"}})
+    repair = Repair()
+    t = train(ExactChecks(db, provider, clock=Clock()), baseline=CandidateBaselineService(db),
+              frozen_batch=batch_, target=target, repair=repair)
+    visit = await t.visit(target)
+    assert visit.state == "preexisting" and repair.calls == []
+
+
+async def test_sealed_epic_mixed_failures_owns_proven_target_failures_too(db):
+    target, batch_ = await sealed_epic(db)
+    provider = Provider({CANDIDATE: {"unit": "failure", "lint": "failure"},
+                         TARGET: {"unit": "failure", "lint": "success"}})
+    repair = Repair()
+    t = train(ExactChecks(db, provider, clock=Clock()), baseline=CandidateBaselineService(db),
+              frozen_batch=batch_, target=target, repair=repair)
+    visit = await t.visit(target)
+    assert visit.state == "repair"
+    brief = repair.calls[0][1]["brief"]
+    assert "Repair these proven pre-existing target failures" in brief
+    assert "  - lint" in brief and "  - unit" in brief
+
+
+@pytest.mark.parametrize("changed", ["candidate", "target", "green", "unknown", "paused",
+                                     "exhausted", "unconfirmed"])
+async def test_target_repair_control_refuses_changed_or_unsafe_evidence(db, changed):
+    from dataclasses import replace
+
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+    from src.integration.train_controls import TrainControls
+
+    target, batch_ = await sealed_epic(db, attempts=6 if changed == "exhausted" else 0)
+    provider = Provider({CANDIDATE: {"unit": "failure", "lint": "success"},
+                         TARGET: {"unit": "failure", "lint": "success"}})
+    checks = ExactChecks(db, provider, clock=Clock())
+    service = Service()
+    service.gitops = SimpleNamespace(repository=AsyncMock(return_value=object()),
+                                    remote=AsyncMock(return_value=TARGET))
+    service.repair_authorized = AsyncMock(return_value=changed != "unconfirmed")
+    repairs = OrdinaryRepairService(db)
+    t = train(checks, baseline=CandidateBaselineService(db), service=service,
+              frozen_batch=batch_, target=target, repair=repairs)
+    lane = await t.lane_for(target)
+    observed = SimpleNamespace(
+        error=None, target_oid=TARGET,
+        observation=SimpleNamespace(source_heads={
+            "refs/remotes/origin/" + candidate_ref(batch_.id).removeprefix("refs/heads/"): CANDIDATE,
+        }),
+    )
+    lane = replace(lane, snapshot=AsyncMock(return_value=observed),
+                   repair_policy=RepairPolicy(debug_intelligence_class="deep-high"))
+    t.lane_for = AsyncMock(return_value=lane)
+    # train() returns the same lane; preview evidence comes from real cache rows.
+    await checks.refresh(HeadIdentity(repository_id="r", ref=candidate_ref(batch_.id),
+                                      sha=CANDIDATE, generation=0))
+    await checks.refresh(target_head(batch_, TARGET))
+    controls = TrainControls(db, train=t)
+    args = dict(dry_run=False, expected_candidate_sha=CANDIDATE,
+                expected_target_sha=TARGET, reason="Repair sealed target", operator_id="supervisor")
+    if changed in {"candidate", "target"}:
+        args[f"expected_{changed}_sha"] = OTHER
+    elif changed == "green":
+        provider.verdicts[CANDIDATE]["unit"] = "success"
+    elif changed == "unknown":
+        provider.verdicts[TARGET]["unit"] = "pending"
+    elif changed == "paused":
+        async with db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch_.id).values(intent="paused"))
+    with pytest.raises(ValueError):
+        await controls.repair_target(batch_.id, **args)
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.repair_attempt_count).where(
+            integration_batches.c.id == batch_.id)) == (6 if changed == "exhausted" else 0)

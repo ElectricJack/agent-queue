@@ -380,6 +380,15 @@ class PerfSamplerCost(BaseModel):
     perf_ms: float | None = None
 
 
+class OperationPerf(BaseModel):
+    """Bounded operation timing; coarser tiers average concurrency gauges."""
+
+    latency: Histogram | None = None
+    outcomes: dict[str, Any] = {}
+    in_flight: float = 0
+    peak_in_flight: float = 0
+
+
 class PerfMetrics(BaseModel):
     """MetricsSampler's daemon and dashboard-server performance blocks."""
 
@@ -387,6 +396,7 @@ class PerfMetrics(BaseModel):
     loop: LoopPerf = LoopPerf()
     api: ApiPerf = ApiPerf()
     db: DbPerf = DbPerf()
+    operations: dict[str, OperationPerf] = {}
     host: HostPerf = HostPerf()
     relay: RelayPerf = RelayPerf()
     sampler: PerfSamplerCost = PerfSamplerCost()
