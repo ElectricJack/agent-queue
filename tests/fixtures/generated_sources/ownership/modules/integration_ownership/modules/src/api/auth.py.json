@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/api/auth.py::LOCAL_SCOPE": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/auth.py::RequestScope": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/auth.py::SessionTokenStore": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/auth.py::operator_viewer_allowed": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+from src.models import TaskStatus
+
+from src.observations.models import SnapshotValue
 
 from . import TaskRef
+
+
+# Preserve loose response projections and their empty legacy default while
+# exposing the lifecycle vocabulary from the enum to generated clients.
+TaskStatusValue = Annotated[str, Field(json_schema_extra={
+    "enum": ["", *(status.value for status in TaskStatus)],
+})]
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +215,7 @@ class TaskDetail(TaskDisplayFields):
     project_id: str
     title: str
     description: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
     priority: int = 0
     assigned_agent: str | None = None
     retry_count: int = 0
@@ -270,7 +280,7 @@ class TaskDict(BaseModel):
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +288,7 @@ class TaskDict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ListTasksResponse(BaseModel):
+class ListTasksResponse(SnapshotValue):
     display_mode: str = "flat"
     tasks: list[TaskDetail] = []
     total: int = 0
@@ -353,6 +363,9 @@ class TaskShowResponse(TaskDetail):
     labels: list[str] = []
     provenance: list[dict[str, Any]] = []
     claimed_by: ClaimedBy | None = None
+    # Present only on the assigned fidelity reviewer's bounded member read.
+    batch_member: dict[str, Any] | None = None
+    fidelity: dict[str, Any] | None = None
 
 
 class TaskSetResponse(TaskShowResponse):
@@ -623,6 +636,14 @@ class TaskControlResponse(BaseModel):
     status: str
 
 
+class DiscardPauseCheckpointResponse(BaseModel):
+    task_id: str
+    discarded: bool
+    branch: str | None = None
+    ref: str | None = None
+    commit: str | None = None
+
+
 class StopTaskResponse(BaseModel):
     stopped: str
 
@@ -780,6 +801,18 @@ class TaskProgressResponse(TaskDisplayFields):
     waves: list[list[str]]
     max_parallelism: int
     depth: int
+
+
+class TaskSplitResponse(BaseModel):
+    success: bool
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
+    code: str | None = None
+    error: str | None = None
+    owner: dict[str, Any] | None = None
+    safe_continuation: str | None = None
 
 
 class ReparentTaskResponse(BaseModel):
@@ -1034,6 +1067,8 @@ class ApprovedSpecPacketResponse(BaseModel):
     body: str
     packet: dict[str, Any]
     feedback: list[dict[str, Any]]
+    # The batch's frozen approved design lineage, never a caller-selected document.
+    design: dict[str, Any] | None = None
 
 
 class SpecIngestReconcileResponse(BaseModel):
@@ -1103,6 +1138,12 @@ class TaskBatchValidateResponse(BaseModel):
     hard: list[dict[str, Any]] = Field(default_factory=list)
     advisory: list[dict[str, Any]] = Field(default_factory=list)
     gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
+    """Adoption replays a held batch receipt or retains the proposal's human gate."""
+
+    left_gated: bool = False
 
 
 class ClaimSessionSummary(BaseModel):
@@ -1207,6 +1248,7 @@ class PoolProjectStatus(BaseModel):
     ready: int = 0
     running_idle: int = 0
     running_busy: int = 0
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int = 0
     draining: int = 0
     #: The project's own ``max_concurrent_agents`` ceiling, which bounds how
@@ -1262,6 +1304,7 @@ class PoolStatusRow(BaseModel):
     desired: int
     running_idle: int
     running_busy: int
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int
     draining: int
     ready: int
@@ -1394,6 +1437,17 @@ class PoolRenameResponse(BaseModel):
     error: str | None = None
 
 
+class PoolDeleteResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    deleted: str | None = None
+    retired: bool = False
+    depth: str | None = None
+    sessions: list[str] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1407,6 +1461,7 @@ class TaskRecoveryResponse(BaseModel):
     incident_id: str
     decision: str
     status: str
+    decided_at: float | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -1432,6 +1487,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
+    "discard_pause_checkpoint": DiscardPauseCheckpointResponse,
     "restart_task": RestartTaskResponse,
     "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,
@@ -1452,6 +1508,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_children": TaskChildrenResponse,
     "task_progress": TaskProgressResponse,
     "reparent_task": ReparentTaskResponse,
+    "task_split": TaskSplitResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "task_recent_activity": TaskRecentActivityResponse,
@@ -1464,6 +1521,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
+    "spec_ingest_legacy_adopt": SpecIngestLegacyAdoptResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,
@@ -1476,6 +1534,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_rename": PoolRenameResponse,
+    "pool_delete": PoolDeleteResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,

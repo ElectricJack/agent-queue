@@ -536,6 +536,8 @@ async def test_completed_undelivered_names_only_work_nothing_will_deliver(world,
         "queued": "awaiting_delivery", "doomed": "retiring", "kid": "integrated"}
     assert "aq task archive stray --disposition deliver|obsolete|retire" in result.detail
     assert "--relanded stray=<landing-sha>" in result.detail
+    assert {e["task_id"] for e in result.data["undelivered_roots"]} == {
+        "stray", "queued", "doomed"}
 
     # A root's pull request is a queue for a day, then a stranded root.
     later = await completed_undelivered(ctx, now=time.time() + 2 * ROOT_DELIVERY_WAIT_SECONDS)
@@ -554,8 +556,26 @@ async def test_completed_undelivered_names_only_work_nothing_will_deliver(world,
     origin.land("stray")
     db._delivery_observer.READ_MAX_AGE = 0.0
     settled = await _BY_ID["integration.completed_undelivered"].run(ctx)
-    assert settled.severity == Severity.OK, settled.detail
-    assert "3 not yet on the default branch are accounted for" in settled.detail
+    assert settled.severity == Severity.WARN, settled.detail
+    assert not settled.data["stranded"]
+    assert {e["task_id"] for e in settled.data["undelivered_roots"]} == {"queued", "doomed"}
+    assert "2 COMPLETED root branch(es) are not contained" in settled.detail
+
+
+async def test_accounted_completed_root_is_reported_until_default_branch_contains_it(world, tmp_path):
+    await completed(world, "queued")
+    ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=world.db)
+    result = await _BY_ID["integration.completed_undelivered"].run(ctx)
+    assert result.severity == Severity.WARN
+    assert not result.data["stranded"]
+    [root] = result.data["undelivered_roots"]
+    assert root["task_id"] == "queued" and root["rule"] == "awaiting_delivery"
+    assert "aq integration redrive-root queued" in result.detail
+    world.origin.land("queued")
+    world.db._delivery_observer.READ_MAX_AGE = 0.0
+    landed = await _BY_ID["integration.completed_undelivered"].run(ctx)
+    assert landed.severity == Severity.OK
+    assert not landed.data["undelivered_roots"]
 
 
 async def test_an_archived_branch_waits_for_the_backstop_then_is_a_finding(world, tmp_path):
