@@ -1,42 +1,48 @@
 ---
 spec_kind: implementation
-status: draft
+status: partially implemented
 ---
 
 # Approved document ingestion
 
-Successful approval of kind `spec` or `plan` dispatches `spec.approved` with
-an immutable `decision_id` and `packet_sha256`. The absolute vault path is a
-mirror link, not approval authority. Other documents and rejected or stale
-decisions do not ingest. The default pipeline calls `ensure_spec_ingest`,
-deduplicates on `spec-ingest:decision:<id>`, and runs the role at deep-high.
-Replayed approvals return the original transactional task receipt after the
-task completes, is closed as obsolete, or is archived. Settling a task does
-not authorize replacement ingestion. The graph's batch receipt likewise
-prevents replay from recreating existing or archived work. A new approved
-decision is distinct; a path or textual graph reference alone cannot establish
-its ingestion authority. See [work-graph §15](../design/work-graph.md#15-immutable-approval-ingestion-2026-10-11).
-
-The role launches on the enabled global `spec-ingest` agent definition, retaining
-its saved name, id and execution overrides. Generic pool definitions cannot take
-this assignment, the ingestion agent cannot take ordinary implementation tasks,
-and busy or disabled role definitions do not create duplicates.
-The shipped profile grants `knowledge_show` and `record_search` for prime's
-project knowledge context and scoped discovery, plus `record_capabilities` for
-inspecting available record operations. Existing installs receive these grants through the
-operator's `aq agent profile-reseed --profile-id spec-ingest --grants-only`;
-the shipped file remains write-if-absent.
-
-Submitted `spec_kind: design | implementation` belongs to each immutable
-review revision and survives vault regeneration. Missing values remain unset
-for legacy documents; the ingest agent reads the content before classifying.
-Routing consumes type/class hints, never profiles.
-
-The design behind this contract is the approved vault spec
+This page describes approved-document ingestion, held implementation batches,
+fidelity review and atomic release. The design is the approved vault spec
 `2026-10-13-spec-ingestion-with-task-structure-review-before-release.md`
 (`rev-bright-meadow` revision 2); its implementation spec is
 `2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md`
 (`rev-agile-beacon` revision 1). Section numbers below cite the design.
+
+## Approval authority
+
+Approval of review kind `spec` or `plan` freezes a decision packet with an
+immutable `decision_id` and `packet_sha256`. The asks operation dispatches
+`spec.approved`; the default pipeline calls `ensure_spec_ingest`, deduplicated
+on `spec-ingest:decision:<id>`. Other document kinds and stale or rejected
+decisions do not ingest. Standalone `spec-approve` snapshots use the same
+immutable-packet ingestion path. A vault path is a mirror link, not authority.
+
+Replaying an approval returns the original task receipt, including after task
+completion, obsolete closure or archive. The graph receipt similarly prevents
+recreation of existing or archived work. A new approved decision is distinct.
+See [work-graph §15](../design/work-graph.md#15-immutable-approval-ingestion-2026-10-11).
+
+The ingest role must be a live `spec-ingest` assignment holding the task stamped
+with that decision. Its proposal source must be `spec:decision:<id>` for the
+same project and approved packet. Caller-chosen source text cannot confer this
+authority. Generic pool workers cannot use the role's proposal path.
+The role launches on its enabled global agent definition, preserving its saved
+name, id and execution overrides. Busy or disabled definitions do not create
+replacement agents, and the ingestion agent cannot take ordinary tasks.
+Its shipped grants include `knowledge_show`, `record_search` and
+`record_capabilities` for scoped discovery; core knowledge activation is still
+independent. Existing installs receive missing grants through the operator's
+`aq agent profile-reseed --profile-id spec-ingest --grants-only`, preserving
+local Role/Rules and harness choices.
+
+`spec_kind: design | implementation` belongs to each immutable review revision
+and survives vault regeneration. The approved-packet reader defaults an omitted
+classification to `design`; the agent does not choose the fallback. Routing
+consumes type/class hints, never profiles.
 
 ## What ingestion creates (design §3)
 
@@ -213,6 +219,22 @@ new held batch with its own review.
 Ordinary proposals keep the staged flow: `task_batch_propose` persists a
 `ready` proposal, `proposal.ready` requests approval, and the human gate's
 resolution is what `task_batch_commit` accepts as authority.
+
+## Source and verification
+
+- [Approved packets](../../../src/asks/ingestion.py) and
+  [ingest task creation](../../../src/commands/spec_ingest_commands.py).
+- [Atomic proposals](../../../src/commands/proposal_commands.py),
+  [fidelity review](../../../src/commands/fidelity_review_commands.py),
+  [hold predicate](../../../src/database/queries/ingest_hold.py) and
+  [batch persistence](../../../src/database/queries/ingest_batch_queries.py).
+- [Reviewed default pipeline](../../../src/prompts/reviewed_playbooks/default-pipeline/source.md)
+  and [shipped ingest profile](../../../src/profiles/defaults/spec-ingest/profile.md).
+
+The operator owns schema upgrades and reconciliation of installed profiles and
+reviewed policy. Shipped profiles are write-if-absent; grants-only reseeding does
+not refresh their Role or Rules. Workers ship source changes and preserve the
+installed harness. This page records no rollout or production release evidence.
 
 ## Acceptance
 
