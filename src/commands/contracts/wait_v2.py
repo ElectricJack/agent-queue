@@ -125,8 +125,8 @@ class WaitAckArgs(WaitV2ScopeArgs):
 
 class WaitDecideArgs(CommandArgs):
     project_id: str | None = None
-    wait_id: str = Field(min_length=1)
-    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue"]
+    wait_id: str | None = Field(default=None, min_length=1)
+    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue", "retire"]
     note: str = Field(min_length=1, max_length=4000)
     extend_seconds: float | None = Field(default=None, ge=60, le=86400, allow_inf_nan=False)
     to: str | None = Field(default=None, min_length=1)
@@ -141,11 +141,13 @@ class WaitDecideArgs(CommandArgs):
             raise ValueError("extend_seconds is only valid for extend")
         if (self.decision == "reroute") != (self.to is not None):
             raise ValueError("to is required only for reroute")
-        if self.decision == "requeue":
+        if self.decision != "retire" and self.wait_id is None:
+            raise ValueError("wait_id is required for this decision")
+        if self.decision in {"requeue", "retire"}:
             if not self.continuation_id or self.expected_generation is None:
-                raise ValueError("requeue requires continuation_id and expected_generation")
+                raise ValueError(f"{self.decision} requires continuation_id and expected_generation")
         elif self.continuation_id is not None:
-            raise ValueError("continuation_id is only valid for requeue")
+            raise ValueError("continuation_id is only valid for requeue or retire")
         return self
 
 
@@ -164,13 +166,15 @@ class WaitLiftArgs(CommandArgs):
 
 class WaitSourceRedispatchArgs(CommandArgs):
     project_id: str = Field(min_length=1)
-    source_seq: int = Field(ge=1, strict=True)
-    note: str = Field(min_length=1, max_length=4000)
+    action: Literal["redispatch", "blockers", "retire"] = "redispatch"
+    source_seq: int | None = Field(default=None, ge=1, strict=True)
+    note: str | None = Field(default=None, min_length=1, max_length=4000)
+    limit: int = Field(default=100, ge=1, le=200, strict=True)
 
     @model_validator(mode="after")
     def note_nonblank(self):
-        if not self.note.strip():
-            raise ValueError("note must not be blank")
+        if self.action != "blockers" and (self.source_seq is None or not (self.note or "").strip()):
+            raise ValueError("source_seq and a nonblank note are required")
         return self
 
 

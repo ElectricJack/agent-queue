@@ -375,6 +375,7 @@ exports_files([
         "src/pages/knowledge/useKnowledge.ts",
         "src/pages/metrics/DeliveryLatency.tsx",
         "src/pages/metrics/Metrics.tsx",
+        "src/pages/metrics/MetricsSection.tsx",
         "src/pages/metrics/ProviderAvailabilityHeader.tsx",
         "src/pages/metrics/ProviderUsage.tsx",
         "src/pages/metrics/StatTiles.tsx",

@@ -57,6 +57,18 @@ def test_every_categorized_command_has_response_model(cmd_name: str) -> None:
 
 
 @pytest.mark.parametrize("payload", [
+    {"success": True, "outcome": "cleanup_pending", "task_id": "t1",
+     "session_id": "s1", "claim_epoch": 2},
+    {"success": True, "outcome": "settled", "task_id": "t1", "session_id": "s1",
+     "claim_epoch": 2, "claim_phase": None, "result": "prepare_failed"},
+    {"success": False, "error": "Claim preparation identity changed"},
+])
+def test_claim_abort_response_preserves_cleanup_and_refusal_evidence(payload):
+    model = get_all_response_models()["task_claim_abort"]
+    assert model.model_validate(payload).model_dump(exclude_unset=True) == payload
+
+
+@pytest.mark.parametrize("payload", [
     {"success": True, "proposal_id": "legacy-1", "left_gated": True},
     {
         "success": True, "proposal_id": "legacy-1", "batch_id": "legacy-1",

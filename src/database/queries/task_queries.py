@@ -900,15 +900,20 @@ class TaskQueryMixin:
                 )
             return attachments
 
-    async def pause_task(self, task_id: str) -> dict:
+    async def pause_task(self, task_id: str, *, require_workspace_release=False) -> dict:
         """Persist an operator hold and fence the previous claim in one transaction."""
         async with self.immediate() as conn:
-            snapshot, result = await self._pause_task_on(task_id, conn=conn)
+            snapshot, result = await self._pause_task_on(
+                task_id, conn=conn, require_workspace_release=require_workspace_release,
+            )
         if result:
             await self.log_blocked_flips(result.flipped)
         return snapshot
 
-    async def _pause_task_on(self, task_id: str, *, conn, for_removal=False, defer_projection=False):
+    async def _pause_task_on(
+        self, task_id: str, *, conn, for_removal=False, defer_projection=False,
+        require_workspace_release=False,
+    ):
         row = (await conn.execute(
             select(tasks).where(tasks.c.id == task_id).with_for_update()
         )).mappings().fetchone()
@@ -934,6 +939,8 @@ class TaskQueryMixin:
             sessions.c.task_id == task_id
         ).order_by(sessions.c.id))).mappings().all()
         owners = await self._pause_owners(conn, task_id, owned_workspaces)
+        if require_workspace_release:
+            self._require_pause_owner_handoff(task_id, owners)
         snapshot = {
             "sessions": [dict(session) for session in owned_sessions],
             "workspaces": [dict(workspace) for workspace in owned_workspaces],
@@ -973,6 +980,18 @@ class TaskQueryMixin:
             integration_branch_owners.c.owner_id == task_id,
             integration_branch_owners.c.workspace_id.in_([ws["id"] for ws in workspace_rows]),
         )).order_by(integration_branch_owners.c.id).with_for_update())).mappings().all()]
+
+    @staticmethod
+    def _require_pause_owner_handoff(task_id, owners):
+        if any(owner["fence"] is None and owner["workspace_id"] is not None
+               and owner["handoff_state"] in {"attached", "handoff_pending"}
+               for owner in owners):
+            raise PauseFenceError(
+                "Attached integration ownership requires its guarded handoff before workspace "
+                f"release. Inspect `aq integration release-owner --task-id {task_id}`; "
+                "after proving the writer stopped and reviewing the checkout, use --apply "
+                "and retry the task command."
+            )
 
     async def validate_task_pause(
         self, task_id: str, snapshot: dict, *, conn=None, stopped=False
@@ -1147,7 +1166,9 @@ class TaskQueryMixin:
             owners = await self._pause_owners(conn, task_id, current_workspaces)
             if any(owner["handoff_state"] != "released" for owner in owners):
                 raise PauseFenceError(
-                    "Integration ownership must complete its guarded handoff first"
+                    "Integration ownership must complete its guarded handoff first. "
+                    f"Inspect `aq integration release-owner --task-id {task_id}`; "
+                    "apply only after proving the writer stopped and reviewing the checkout."
                 )
             if current_workspaces:
                 if any(
@@ -1337,13 +1358,7 @@ class TaskQueryMixin:
                 if (checkpoint.get("pause_claim_epoch") != snapshot["claim_epoch"]
                         or checkpoint.get("pause_workspace_id") != snapshot["workspaces"][0]["id"]):
                     raise PauseFenceError("Full managed-slot checkpoint is unproved; retain the source")
-            if any(owner["fence"] is None and owner["workspace_id"] is not None
-                   and owner["handoff_state"] in {"attached", "handoff_pending"}
-                   for owner in snapshot.get("owners", [])):
-                raise PauseFenceError(
-                    "Task remains paused; attached integration ownership "
-                    "requires its guarded handoff before workspace release"
-                )
+            self._require_pause_owner_handoff(task_id, snapshot.get("owners", []))
             agent_id = snapshot.get("agent_id")
             if before_release is not None:
                 before_release()
