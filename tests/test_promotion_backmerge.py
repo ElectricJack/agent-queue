@@ -19,6 +19,7 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 from src.integration.train import TrainTarget
 from src.integration.train_sources import BackmergeAdmission
 from src.models import TaskType
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import hosted_train, world as world
 from tests.test_promote_commands import IntentGitHub, promote_env as promote_env, request
@@ -268,8 +269,9 @@ async def test_recorded_ledger_survives_archive_and_can_enable_authorship(world)
                                        e.source, e.github)
     assert authored["task_id"] == record["task_id"] and authored["pr_url"]
     assert authored["kind"] == "source" and len(e.github.pulls) == 1
-    # Force administrative archival to exercise preserved completion history.
-    await world.db.archive_task(record["task_id"], hold_undelivered=False)
+    # Retire undelivered work explicitly to exercise preserved completion history.
+    await world.db.archive_task(record["task_id"], abandon_undelivered=True,
+                               abandon_reason="test retained ledger", disposition="retire")
     async with world.db._engine.connect() as conn:
         [debt] = await backmerge_ledger(conn, "r")
     assert debt["source_sha"] == e.source
