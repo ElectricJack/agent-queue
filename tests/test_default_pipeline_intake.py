@@ -19,7 +19,7 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal
 from src.database.queries.proposal_queries import get_proposal
-from src.models import AgentProfile
+from src.models import AgentProfile, TaskStatus
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
@@ -224,7 +224,10 @@ async def test_a_refused_ensure_spec_ingest_ends_the_spec_ingest_run_failed(hand
 
 
 @pytest.mark.parametrize("kind", ["spec", "plan"])
-async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind):
+@pytest.mark.parametrize("lifecycle", [
+    "active", "completed", "failed", "obsolete", "archived-completed", "archived-obsolete",
+])
+async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind, lifecycle):
     from src.vault import ensure_default_intelligence_classes
 
     ensure_default_intelligence_classes(handler.config.data_dir)
@@ -264,11 +267,10 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
     path = Path(payload["spec_path"])
     assert path.is_absolute()
     assert "status: approved" in path.read_text()
-    for event_id in ("review-approval-1", "review-approval-replay"):
-        result = await engine.dispatch_event(
-            {"event_type": "spec.approved", "event_id": event_id, **payload}, principal,
-        )
-        assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
+    result = await engine.dispatch_event(
+        {"event_type": "spec.approved", "event_id": "review-approval-1", **payload}, principal,
+    )
+    assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
     [task] = await handler.db.list_tasks(project_id=PROJECT)
     assert task.profile_id == "spec-ingest"
     assert task.intelligence_class == "deep-high"
@@ -281,6 +283,41 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
     assert "every predecessor goal as kept, changed or dropped" in task.description
     assert "Jack's explicit sign-off for the goal and replacement revision" in task.description
     assert "do not commit affected work" in task.description
+
+    # A supervisor settling an unnecessary ingest must not commission another
+    # task when approval is delivered again under a fresh event identity.
+    if "obsolete" in lifecycle:
+        closed = await handler.execute("task_close", {
+            "task_id": task.id, "obsolete": True, "reason": "Spec already ingested manually",
+        })
+        assert closed["success"], closed
+        assert (await handler.db.get_task(task.id)).status == TaskStatus.COMPLETED
+    elif lifecycle != "active":
+        status = TaskStatus.FAILED if lifecycle == "failed" else TaskStatus.COMPLETED
+        await handler.db.update_task(task.id, status=status)
+    archived = lifecycle.startswith("archived-")
+    if archived:
+        assert await handler.db.archive_task(task.id)
+    replay = await engine.dispatch_event(
+        {"event_type": "spec.approved", "event_id": "review-approval-replay", **payload},
+        principal,
+    )
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert {t.id for t in await handler.db.list_tasks(project_id=PROJECT)} == (
+        set() if archived else {task.id}
+    )
+    ingest_args = {
+        key: payload[key] for key in ("project_id", "decision_id", "packet_sha256")
+    }
+    # Receipt reuse still requires the exact approved identity, including
+    # after the task row has left the active table.
+    for override in ({"packet_sha256": "0" * 64}, {"decision_id": "other"},
+                     {"project_id": "other"}):
+        refused = await handler.execute("ensure_spec_ingest", {**ingest_args, **override})
+        assert not refused["success"], refused
+        assert refused["code"] == "ask.not_found", refused
+    reused = await handler.execute("ensure_spec_ingest", ingest_args)
+    assert reused == {"success": True, "task_id": task.id, "created": False}
 
 
 async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipeline):
