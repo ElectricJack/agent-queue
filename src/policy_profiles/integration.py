@@ -23,8 +23,9 @@ def settings(project, flow, engine: str) -> IntegrationSettings | None:
         policy = HierarchicalIntegrationPolicy.model_validate(policy).model_dump(mode="json")
         for boundary in (policy["parent"], policy["root"]):
             # Activation snapshots and task grants belong to the target. The
-            # train's code engine needs no fabricated playbook artifacts.
-            boundary.pop("route")
+            # train's code engine needs no fabricated playbook artifacts, and a
+            # git-first policy has no legacy route at all (omitted when absent).
+            boundary.pop("route", None)
             boundary["authorized_task_ids"] = []
             boundary.pop("primary_profile_id", None)
             boundary.pop("verifier_profile_id", None)
@@ -96,13 +97,11 @@ def updates(payload: IntegrationSettings, project, engine: str) -> dict:
             boundary = policy.get(name)
             if not isinstance(boundary, dict) or "route" in boundary:
                 raise ValueError("portable integration boundaries must omit activation routes")
+            # The git-first train never reads the legacy route: keep a
+            # target-local one if present, never fabricate one.
             route = existing.get(name, {}).get("route")
-            if route is None:
-                raise ValueError(
-                    f"Configure a reviewed target-local {name} integration route first; "
-                    "policy import cannot fabricate an artifact."
-                )
-            boundary["route"] = copy.deepcopy(route)
+            if route is not None:
+                boundary["route"] = copy.deepcopy(route)
             # Explicit task admissions are local, never copied from another project.
             if boundary.get("authorized_task_ids"):
                 raise ValueError("portable integration settings cannot grant task admissions")

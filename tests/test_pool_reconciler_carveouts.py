@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
 import logging
 import time
@@ -10,9 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 
 from src.claim_file import write_claim_file
+from src.claim_preparation import CompletedClaimPreparation
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
@@ -37,9 +40,10 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
-from src.sessions.context import completed_turn_at
+from src.sessions.context import completed_turn_at, store_lower_bound
 from src.sessions.exit_classifier import ExitVerdict, Verdict
 from src.sessions.fake import FakeProvider
+from src.sessions.proctable import MarkedProc
 from src.sessions.provider import SessionHandle, SessionSpec
 from src.sessions.reconciler import (
     DRAIN_ACK_KEY,
@@ -355,14 +359,20 @@ class TestExits:
         task = await db.get_task("t1")
         claim_epoch = None if epoch_delta is None else task.claim_epoch + epoch_delta
         await db.update_session(sid, last_claim_epoch=claim_epoch)
+        before = await db.get_session(sid)
+        workspace = await db.get_workspace_for_agent("agent-1")
         provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
         live, now = await observe(reconciler)
 
         await reconciler._step_exits(live, now)
 
-        task = await db.get_task("t1")
-        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
-        assert (await db.get_session(sid)).state == "running"
+        assert await db.get_task("t1") == task
+        assert await db.get_workspace_for_agent("agent-1") == workspace
+        row = await db.get_session(sid)
+        assert (row.state, row.desired_state, row.ended_at) == ("stopped", "stopped", now)
+        assert (row.task_id, row.agent_id, row.claim_phase, row.last_claim_epoch) == (
+            before.task_id, before.agent_id, before.claim_phase, before.last_claim_epoch,
+        )
         assert await db.get_task_meta("t1", "worker_failure_streak") is None
         assert orch._pool_quarantine == {}
 
@@ -378,6 +388,45 @@ class TestExits:
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
         assert await db.get_workspace_for_agent("agent-1") is None
         assert (await db.get_session(sid)).state == "stopped"
+
+    @pytest.mark.parametrize("handed_back", [True, False])
+    async def test_dead_pool_session_holding_a_requeued_task_is_ended(
+        self, db, reconciler, provider, orch, monkeypatch, handed_back,
+    ):
+        # A close whose writer handoff failed requeued the task at this
+        # session's epoch but left the dead session holding it.
+        sid = await held_pool_session(db)
+        await db.update_task("t1", status=TaskStatus.READY, assigned_agent_id=None)
+        await _attached_owner(db, sid)
+
+        async def release(task, *, reason, pool):
+            if handed_back:
+                async with db.immediate() as conn:
+                    await conn.execute(update(integration_branch_owners).values(
+                        handoff_state="released", session_id=None, workspace_id=None,
+                    ))
+            return handed_back
+
+        release = AsyncMock(side_effect=release)
+        monkeypatch.setattr(orch, "arelease_integration_writer_for_retry", release, raising=False)
+        provider.peek = AsyncMock(return_value="")
+        live, now = await observe(reconciler)
+
+        await reconciler._step_exits(live, now)
+
+        release.assert_awaited_once()
+        assert release.await_args.kwargs["pool"] is True
+        assert (await db.get_session(sid)).state == "stopped"
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        # A refused hand-back leaves the owner, and the writer's binding, to
+        # owner recovery: the session is now provably stopped for it.
+        agent = await db.get_agent("agent-1")
+        if handed_back:
+            assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+        else:
+            assert agent.current_task_id == "t1"
 
     async def test_rapid_crash_quarantines_pool_key(self, db, reconciler, provider, orch):
         sid = await held_pool_session(db)
@@ -497,6 +546,26 @@ class TestExits:
         )
 
 
+def _running_command(monkeypatch, now, grace=None, command=True, reconciler=None):
+    """A turn that completed 30 minutes ago and, optionally, the shell it left running."""
+    procs = [MarkedProc(21, 1, "claude", "t")]
+    if command:
+        procs += [MarkedProc(22, 21, "bash", "t"), MarkedProc(23, 22, "python3", "t")]
+    monkeypatch.setattr("src.sessions.reconciler.marked_inventory", AsyncMock(return_value=procs))
+    monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                        AsyncMock(return_value=now - 1800))
+    if grace is not None:
+        reconciler.sessions_config.stall_command_grace_seconds = grace
+
+
+_COMMAND_CASES = [
+    pytest.param(None, True, False, id="running-command"),
+    pytest.param(None, False, True, id="no-command"),
+    pytest.param(600, True, True, id="beyond-grace"),
+    pytest.param(0, True, True, id="grace-disabled"),
+]
+
+
 class TestBackstop:
     async def test_idle_pool_session_is_not_stale_for_backstop(self, db, reconciler):
         sid = await held_pool_session(db)
@@ -554,8 +623,36 @@ class TestStallLadder:
         await reconciler._step_stall_ladder(await db.list_sessions(live_only=True), now)
         assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
 
+    @pytest.mark.parametrize("grace,command,stalls", _COMMAND_CASES)
+    async def test_running_command_after_a_completed_turn_spends_no_rung(
+        self, db, reconciler, monkeypatch, grace, command, stalls
+    ):
+        """A 30-minute foreground ``aq test`` is the work, not a stall (fair-ember-83)."""
+        sid = await held_pool_session(db)
+        now = time.time()
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1800)
+        _running_command(monkeypatch, now, grace, command, reconciler)
+        await reconciler._step_stall_ladder(await db.list_sessions(live_only=True), now)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == ("1" if stalls else None)
+        assert (await db.get_session(sid)).state == "running"
+
 
 class TestCompletedTurnBackstop:
+    @pytest.mark.parametrize("grace,command,stalls", _COMMAND_CASES)
+    async def test_running_command_holds_the_claim(
+        self, db, reconciler, monkeypatch, grace, command, stalls
+    ):
+        sid = await held_pool_session(db)
+        now = time.time()
+        reconciler.config.agents_config.stuck_timeout_seconds = 0
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1800)
+        _running_command(monkeypatch, now, grace, command, reconciler)
+        await reconciler._step_backstop(await db.list_sessions(live_only=True), now)
+        assert (await db.get_session(sid)).state == ("stopped" if stalls else "running")
+        assert (await db.get_task("t1")).assigned_agent_id == (None if stalls else "agent-1")
+
     @pytest.mark.parametrize("exemption", [None, "question", "wait", "heartbeat", "disabled"])
     async def test_repainting_idle_holder_released_unless_exempt(
         self, db, reconciler, monkeypatch, exemption
@@ -1328,3 +1425,168 @@ class TestSettledClaimDrain:
         emitted = [c.args[0] for c in orch.bus.emit.await_args_list]
         assert "session.retired_delegate_stopped" in emitted
         assert "session.settled_claim_stopped" not in emitted
+
+
+class TestSettledClaimWake:
+    """A worker that ended its turn on ``claim_in_progress`` (nimble-journey-85).
+
+    The preparation settles off-turn and its result waits in
+    ``claim_preparation_results`` for a claim that never comes, while the
+    repainting pane keeps ``last_activity`` fresh.
+    """
+
+    @pytest.fixture
+    def turn_ended(self, monkeypatch):
+        """The transcript's last turn ended at *at*, scoped like the real store read."""
+        ended = {"at": None}
+
+        async def read(session, *, base_dir=None):
+            at = ended["at"]
+            return at if at is not None and at >= store_lower_bound(session) else None
+
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at", read)
+        return ended
+
+    async def _settled(self, db, orch, provider, *, result, phase, now):
+        sid = await held_pool_session(db, phase=phase, phase_at=now - 50)
+        await provider.start(SessionSpec(
+            session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+        ))
+        if result == "prepare_failed":
+            await db.release_claim(sid, task_status=TaskStatus.READY, context="x", now=now - 50)
+        row = await db.get_session(sid)
+        orch.claim_preparation_results[sid] = CompletedClaimPreparation(
+            session=row, task_id="t1", claim_epoch=row.last_claim_epoch,
+            task_created_at=now - 1000, preparation_started_at=now - 200,
+            outcome={"result": result},
+        )
+        return sid
+
+    async def _tick(self, db, reconciler, now):
+        # The pane repaints: activity is always fresh.
+        await db.update_session("s1", last_activity=now)
+        live = await db.list_sessions(live_only=True)
+        await reconciler._step_settled_claim_wake(live, now)
+        await reconciler._step_abandoned_pool_claim_loop(
+            await db.list_sessions(live_only=True), now
+        )
+
+    async def test_prepare_failed_wakes_the_ended_turn_then_recycles_it(
+        self, db, reconciler, provider, orch, turn_ended
+    ):
+        now = time.time()
+        sid = await self._settled(db, orch, provider, result="prepare_failed", phase="preparing",
+                                  now=now)
+        turn_ended["at"] = now - 190  # on ``claim_in_progress``, during preparation
+        stall = reconciler._pool_claim_loop_stall_seconds()
+
+        await self._tick(db, reconciler, now)
+        await self._tick(db, reconciler, now + stall / 2)
+
+        # Woken once with the result; not recycled inside the wake's window.
+        nudges = [text for name, text in provider.sent_nudges if name == sid]
+        assert len(nudges) == 1
+        assert "prepare_failed" in nudges[0] and "aq task claim --next" in nudges[0]
+        assert (await db.get_session(sid)).desired_state == "running"
+
+        # Still ended a stall window later: idle, not supply -- recycled.
+        await self._tick(db, reconciler, now + stall + 1)
+        session = await db.get_session(sid)
+        assert (session.state, session.desired_state, session.end_reason) == (
+            "stopped", "stopped", "claim_loop_stalled"
+        )
+        assert sid not in provider.sessions
+        assert len([n for n, _ in provider.sent_nudges if n == sid]) == 1
+
+    async def test_activated_claim_wakes_then_returns_the_undelivered_task(
+        self, db, reconciler, provider, orch, turn_ended
+    ):
+        now = time.time()
+        sid = await self._settled(db, orch, provider, result="claimed", phase="active", now=now)
+        turn_ended["at"] = now - 190  # before the activation at now - 50
+        row = await db.get_session(sid)
+        # The completed-turn backstop's own read never counts this turn.
+        assert await reconciler._pool_completed_turn(row) is None
+        stall = reconciler._pool_claim_loop_stall_seconds()
+
+        await self._tick(db, reconciler, now)
+        nudges = [text for name, text in provider.sent_nudges if name == sid]
+        assert len(nudges) == 1 and "t1 settled (claimed)" in nudges[0]
+        await self._tick(db, reconciler, now + stall - 1)
+        assert (await db.get_session(sid)).state == "running"
+
+        await self._tick(db, reconciler, now + stall + 1)
+        session = await db.get_session(sid)
+        assert (session.state, session.end_reason) == ("stopped", "claim_result_undelivered")
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert sid not in orch.claim_preparation_results
+
+    @pytest.mark.parametrize("shape", ["working", "consumed", "relaunched"])
+    async def test_no_wake_without_an_ended_turn_and_a_pending_result(
+        self, db, reconciler, provider, orch, turn_ended, shape
+    ):
+        now = time.time()
+        sid = await self._settled(db, orch, provider, result="prepare_failed", phase="preparing",
+                                  now=now)
+        turn_ended["at"] = now - 190
+        if shape == "working":
+            turn_ended["at"] = None
+        elif shape == "consumed":
+            orch.claim_preparation_results.pop(sid)
+        else:
+            cached = orch.claim_preparation_results[sid]
+            orch.claim_preparation_results[sid] = dataclasses.replace(
+                cached, session=dataclasses.replace(cached.session, instance_token="old"),
+            )
+
+        await self._tick(db, reconciler, now)
+
+        assert [n for n, _ in provider.sent_nudges if n == sid] == []
+
+
+class TestDrainedPreparationStop:
+    """A drain-acked worker bound to an unactivated preparation reaches stopped."""
+
+    @pytest.fixture
+    async def acked(self, db, provider):
+        sid = await held_pool_session(db, phase="preparing", phase_at=time.time())
+        await _attached_owner(db, sid)
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "owner-1"
+            ).values(handoff_state="handoff_pending"))
+        await provider.start(SessionSpec(
+            session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+        ))
+        await db.update_session(sid, state="draining", desired_state="stopped")
+        await provider.set_meta(SessionHandle(sid, "fake", "t"), DRAIN_ACK_KEY, "1")
+        return sid
+
+    async def test_acked_preparation_holder_is_stopped(self, db, reconciler, provider, acked):
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        assert acked not in provider.sessions
+        session = await db.get_session(acked)
+        assert (session.state, session.end_reason) == ("stopped", "drained_preparation")
+        # The pending owner keeps its binding: owner recovery now has its stop proof.
+        assert (session.task_id, session.claim_phase) == ("t1", "preparing")
+
+    @pytest.mark.parametrize("shape", ["live_preparation", "not_acked", "control_held"])
+    async def test_a_running_preparation_or_unacked_worker_keeps_waiting(
+        self, db, reconciler, provider, orch, acked, shape, monkeypatch
+    ):
+        if shape == "live_preparation":
+            future = asyncio.get_running_loop().create_future()
+            orch.claim_preparations[(acked, "t1", 1)] = future
+        elif shape == "not_acked":
+            await provider.set_meta(SessionHandle(acked, "fake", "t"), DRAIN_ACK_KEY, "0")
+        else:
+            monkeypatch.setattr(orch, "_task_control_held", lambda task_id: True)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        assert acked in provider.sessions
+        assert (await db.get_session(acked)).state == "draining"

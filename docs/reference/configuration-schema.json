@@ -3167,6 +3167,7 @@
         "restart_backoff_seconds": 30,
         "restart_window_seconds": 600,
         "stall_backoff_seconds": 300,
+        "stall_command_grace_seconds": 7200,
         "stall_max_nudges": 3,
         "state_cache_ttl_seconds": 2,
         "stop_intent_report_seconds": 600,
@@ -3245,6 +3246,10 @@
         },
         "stall_backoff_seconds": {
           "default": 300,
+          "type": "integer"
+        },
+        "stall_command_grace_seconds": {
+          "default": 7200,
           "type": "integer"
         },
         "stall_max_nudges": {
