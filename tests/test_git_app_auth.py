@@ -2189,7 +2189,7 @@ async def test_isolated_app_delete_refuses_moved_remote(tmp_path):
 async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
     tmp_path, monkeypatch
 ):
-    """noble-horizon: provenance batches share one import and one transfer."""
+    """noble-horizon: provenance batches share one transfer and borrow, never import."""
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     _git(["push", str(target), f"{base}:refs/heads/taken"], checkout)
     manager = GitManager()
@@ -2211,7 +2211,7 @@ async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
             token="installation-token-sentinel",
             updates=((tip, "new/one", absent), (base, "new/two", absent), (tip, "taken", absent)),
         )
-    assert len(fetches) == 1
+    assert fetches == []
     assert _git(["rev-parse", "refs/heads/new/one"], target) == tip
     assert _git(["rev-parse", "refs/heads/new/two"], target) == base
     assert _git(["rev-parse", "refs/heads/taken"], target) == base
@@ -2245,6 +2245,8 @@ async def test_isolated_app_push_import_never_starts_detached_maintenance(
         return await real_import(args, **kwargs)
 
     monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    # A store that cannot be borrowed (shallow or partial) is imported instead.
+    monkeypatch.setattr(manager, "_apush_borrowable_objects", AsyncMock(return_value=None))
 
     await manager._apush_oid_with_app_auth_to_url(
         str(checkout),
@@ -2259,6 +2261,63 @@ async def test_isolated_app_push_import_never_starts_detached_maintenance(
     assert "maintenance.auto=false" in fetch
     assert fetch.index("maintenance.auto=false") < fetch.index("fetch")
     assert _git(["rev-parse", "refs/heads/main"], target) == tip
+
+
+@pytest.mark.asyncio
+async def test_isolated_app_push_borrows_the_checkout_and_sends_only_new_objects(
+    tmp_path, monkeypatch
+):
+    """bold-lantern-71: once the remote moved, an import re-sent the whole history.
+
+    send-pack leaves out only advertised remote tips it holds; a temporary
+    repository holding just the pushed tips' history lacks a remote tip off
+    that history, so the push packed everything. Borrowing the checkout's
+    store keeps the shared history known and the checkout unchanged.
+    """
+    checkout, target, _, _, _ = _git_push_case(tmp_path)
+    for index in range(20):
+        (checkout / "file.txt").write_text(f"history {index}")
+        _git(["commit", "-qam", f"history {index}"], checkout)
+    history = _git(["rev-parse", "HEAD"], checkout)
+    _git(["push", str(target), f"{history}:refs/heads/main"], checkout)
+    # The remote moves to a commit the checkout holds but the pushed tip does
+    # not descend from: an import of that tip alone knows no advertised tip.
+    _git(["commit", "-q", "--allow-empty", "-m", "elsewhere"], checkout)
+    _git(["push", "-q", str(target), "HEAD:refs/heads/main"], checkout)
+    _git(["reset", "-q", "--hard", history], checkout)
+    (checkout / "file.txt").write_text("new")
+    _git(["commit", "-qam", "new"], checkout)
+    new = _git(["rev-parse", "HEAD"], checkout)
+    before = _git(["count-objects", "-v"], checkout)
+    # Keep every received pack as sent, so its index counts what was transferred.
+    _git(["config", "receive.unpackLimit", "1"], target)
+    packs = set((target / "objects" / "pack").glob("*.idx"))
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    absent = "0" * 40
+    await manager._apush_refs_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        updates=((new, "feature", absent),),
+    )
+    assert _git(["rev-parse", "refs/heads/feature"], target) == new
+    assert _git(["count-objects", "-v"], checkout) == before
+    _git(["fsck", "--connectivity-only", "--no-dangling"], target)
+    # One commit, one tree, one blob: the history the remote holds stays home.
+    [received] = set((target / "objects" / "pack").glob("*.idx")) - packs
+    # A version 2 index ends its fan-out table with the pack's object count.
+    sent = int.from_bytes(received.read_bytes()[8 + 255 * 4:8 + 256 * 4], "big")
+    assert sent == 3
+    assert fetches == []
 
 
 @pytest.mark.asyncio
@@ -3190,6 +3249,33 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     assert runs.await_count == 4
 
 
+async def test_concurrent_integrity_checks_of_one_store_run_one_fsck(tmp_path, monkeypatch):
+    """bold-lantern-71: a burst of pushes verifies the shared store once."""
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    manager = GitManager()
+    running = 0
+    overlap = []
+
+    async def fsck(*args, **kwargs):
+        nonlocal running
+        running += 1
+        overlap.append(running)
+        await asyncio.sleep(0.05)
+        running -= 1
+        return b""
+
+    runs = AsyncMock(side_effect=fsck)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+    deadline = asyncio.get_running_loop().time() + 30
+    await asyncio.gather(*(
+        manager._averify_retained_objects(str(store), home=tmp_path, deadline=deadline)
+        for _ in range(5)
+    ))
+    assert runs.await_count == 1
+    assert overlap == [1]
+
+
 async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
     store = tmp_path / "store.git"
     subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
@@ -3202,3 +3288,114 @@ async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
                 str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
             )
     assert runs.await_count == 2
+
+
+async def test_integrity_transient_failure_rechecks_full_store_with_same_deadline(
+    tmp_path, monkeypatch,
+):
+    manager = GitManager()
+    runs = AsyncMock(side_effect=[GitError('retained Git object integrity is unavailable'), b''])
+    monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+    deadline = asyncio.get_running_loop().time() + 30
+    await manager._averify_retained_objects(str(tmp_path), home=tmp_path, deadline=deadline)
+    assert runs.await_count == 2
+    assert runs.await_args_list[0] == runs.await_args_list[1]
+    assert runs.await_args.kwargs['deadline'] == deadline
+    assert runs.await_args.kwargs['verify_integrity'] is True
+
+
+async def test_integrity_persistent_failure_keeps_safe_object_evidence(tmp_path, monkeypatch):
+    oid = b'c' * 40
+    process = SimpleNamespace(returncode=2, communicate=AsyncMock(return_value=(
+        b'missing blob ' + oid + b'\n', b'error: private-path-token-sentinel\n',
+    )))
+    manager = GitManager()
+    spawn = AsyncMock(return_value=process)
+    monkeypatch.setattr(manager, '_spawn_isolated_git', spawn)
+    with pytest.raises(GitError, match='missing ' + oid.decode()) as caught:
+        await manager._averify_retained_objects(
+            str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+    assert spawn.await_count == 2
+    assert 'private-path' not in str(caught.value)
+
+
+async def test_linked_gitdir_integrity_cache_observes_shared_object_changes(tmp_path, monkeypatch):
+    work, _source, _store = _exact_fetch_case(tmp_path)
+    linked = tmp_path / 'linked'
+    _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
+    gitdir = _git(['rev-parse', '--absolute-git-dir'], linked)
+    manager = GitManager()
+    runs = AsyncMock(return_value=b'')
+    monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+
+    async def verify():
+        await manager._averify_retained_objects(
+            gitdir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+    await verify()
+    await verify()
+    assert runs.await_count == 1
+    content = tmp_path / 'new-object'
+    content.write_text('new linked worktree object\n')
+    _git(['hash-object', '-w', str(content)], work)
+    await verify()
+    assert runs.await_count == 2
+
+
+_STALE_GC_LOG = (
+    "fatal: Unable to read current working directory: No such file or directory\n"
+    "fatal: failed to run repack\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_survives_stale_gc_log_and_never_runs_auto_gc(tmp_path):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    manager = GitManager()
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+    # Every import crosses the auto-gc threshold, and a gc would run in the
+    # foreground, so one spawned by the import would consolidate the packs.
+    _git(["config", "gc.auto", "1"], destination)
+    _git(["config", "gc.autoPackLimit", "1"], destination)
+    _git(["config", "gc.autoDetach", "false"], destination)
+    _git(["config", "fetch.unpackLimit", "1"], destination)
+    packs = destination / ".git" / "objects" / "pack"
+
+    async def import_one(number):
+        tip = _commit_and_publish(work, source, f"after gc.log {number}\n")
+        before = sorted(packs.glob("*.pack"))
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token="local-test-token"
+        )
+        assert _git(["rev-parse", "refs/remotes/origin/main"], destination) == tip
+        # No gc consolidated the packs: the import only ever adds one.
+        assert set(before) < set(packs.glob("*.pack"))
+
+    for number in range(2):
+        await import_one(number)
+    # A detached gc that died in a deleted temporary HOME left its gc.log
+    # behind (git 2.43); every later `gc --auto` reports its fatal lines.
+    report = destination / ".git" / "gc.log"
+    report.write_text(_STALE_GC_LOG)
+    for number in range(2, 4):
+        await import_one(number)
+    assert report.read_text() == _STALE_GC_LOG
+
+
+def test_stale_gc_report_is_the_only_zero_exit_stderr_forgiven():
+    from src.git.manager import _without_stale_gc_report
+
+    report = (
+        b"warning: The last gc run reported the following. Please correct the root cause\n"
+        b"and remove .git/gc.log\n"
+        b"Automatic cleanup will not be performed until the file is removed.\n\n"
+        + _STALE_GC_LOG.encode()
+    )
+    assert _without_stale_gc_report(b"From source\n" + report) == b"From source\n"
+    genuine = b"fatal: bad object deadbeef\n"
+    assert _without_stale_gc_report(genuine + report) == genuine
+    assert _without_stale_gc_report(genuine) == genuine

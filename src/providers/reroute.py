@@ -138,6 +138,7 @@ class Candidate:
     #: routing §6.8).  Empty for a route the router did not write (legacy,
     #: in flight), which keeps the class-equivalent rung search.
     route_candidates: tuple[tuple[str, str], ...] = ()
+    workspace_kind: str = "project-repo"
 
 
 @dataclass
@@ -168,9 +169,13 @@ class Decision:
     #: move: ``provider_unavailable`` (failover), ``operator_forced`` or
     #: ``capacity_spill`` (D24).  Set by the sweep, not the planners.
     reason_code: str | None = None
+    #: Internal capacity accounting between the failover and spill passes.
+    workspace_kind: str = "project-repo"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value.pop("workspace_kind")
+        return value
 
 
 @dataclass
@@ -380,6 +385,7 @@ def plan_sweep(
             title=cand.title,
             status=cand.status,
             provider_generation=ctx.generations.get(provider),
+            workspace_kind=cand.workspace_kind,
         )
         decisions.append(decision)
         down = state in UNAVAILABLE
@@ -817,6 +823,7 @@ class ProviderRerouteService:
                     provider_pause=pause if paused else None,
                     legacy_pause=paused and pause is None,
                     route_candidates=route_candidates_of(row.get("route")),
+                    workspace_kind=row.get("workspace_kind") or "project-repo",
                 )
             )
         return out
@@ -1046,6 +1053,7 @@ class ProviderRerouteService:
                     ),
                     updated_at=float(row.get("updated_at") or 0.0),
                     route_candidates=route_candidates_of(row.get("route")),
+                    workspace_kind=row.get("workspace_kind") or "project-repo",
                 )
                 for row in rows
                 if row["project_id"] in projects
