@@ -14,7 +14,7 @@ tags: [implementation, messaging, discord, dashboard, api, overhaul]
 
 **Status:** Superseded for Discord by [../messaging/discord](../messaging/discord.md) and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained implementation history below must not be used to restore task threads, streaming, chat, buttons, or mirrored commands.
 **Design:** [../design/messaging-rework](../design/messaging-rework.md)
-**Related:** [../design/session-runtime](../design/session-runtime.md) (event producers, transcripts), [../design/supervisor-agent](../design/supervisor-agent.md) (messages, chat relay), [../design/work-graph](../design/work-graph.md) (gates, event log, `after_seq`), [../design/aq-surface](../design/aq-surface.md) (command surface), [../messaging/base](../messaging/base.md), `dashboard/CLAUDE.md`
+**Related:** [../design/session-runtime](../design/session-runtime.md) (event producers, transcripts), [../design/supervisor-agent](../design/supervisor-agent.md) (messages, chat relay), [../design/work-graph](../design/work-graph.md) (gates, event log, `after_seq`), [../design/aq-surface](../design/aq-surface.md) (command surface), [../messaging/base](../messaging/base.md), `dashboard/AGENTS.md`
 
 ---
 
@@ -288,6 +288,12 @@ channel set**, never the same channels, to avoid duplicate posting.
 > replaced each control is the
 > [replacement capability checklist](../../guides/discord-replacement-checklist.md), and
 > the operator procedure is the [migration runbook](../../guides/discord-migration.md).
+>
+> No `aq-discord` package was ever created, so the rows above that route a module
+> "→ `aq_discord/…`" have no destination left. `src/discord/views.py`,
+> `src/discord/embeds.py` and `src/discord/notifications.py` were deleted outright;
+> the formatters with live callers now live in `src/notifications/render.py` and
+> `src/commands/helpers.py`.
 
 **M0 — Strip (with overhaul Phase 0)**
 - [ ] Delete `src/telegram/`, `[telegram]` extra, `TelegramConfig`, telegram factory branch, telegram spec; migration note for `messaging_platform: telegram` users (hard error with pointer).

@@ -99,7 +99,7 @@
       "default": {
         "graceful_shutdown_timeout_seconds": 30,
         "heartbeat_interval_seconds": 30,
-        "stuck_timeout_seconds": 1800
+        "stuck_timeout_seconds": 0
       },
       "properties": {
         "graceful_shutdown_timeout_seconds": {
@@ -111,7 +111,7 @@
           "type": "integer"
         },
         "stuck_timeout_seconds": {
-          "default": 1800,
+          "default": 0,
           "type": "integer"
         }
       },
@@ -215,8 +215,41 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "dashboard_server": {
+      "additionalProperties": false,
+      "default": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8082,
+        "public_url": "",
+        "tailscale_path": ""
+      },
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "host": {
+          "default": "127.0.0.1",
+          "type": "string"
+        },
+        "port": {
+          "default": 8082,
+          "type": "integer"
+        },
+        "public_url": {
+          "default": "",
+          "type": "string"
+        },
+        "tailscale_path": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "data_dir": {
-      "default": "/home/jkern/.agent-queue",
       "type": "string",
       "x-reload": "restart"
     },
@@ -227,6 +260,8 @@
         "pool_min_size": 2,
         "pool_recycle_seconds": 1800,
         "pre_ping": "local",
+        "schema_ahead_max_revisions": null,
+        "schema_ahead_migrations": "",
         "url": ""
       },
       "properties": {
@@ -246,6 +281,17 @@
           "default": "local",
           "type": "string"
         },
+        "schema_ahead_max_revisions": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schema_ahead_migrations": {
+          "default": "",
+          "type": "string"
+        },
         "url": {
           "default": "",
           "type": "string"
@@ -259,13 +305,55 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "deploy": {
+      "additionalProperties": false,
+      "default": {
+        "poll_interval_seconds": 300.0,
+        "tag_glob": null,
+        "target": "main",
+        "track_branch": null
+      },
+      "properties": {
+        "poll_interval_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "tag_glob": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "default": "main",
+          "type": "string"
+        },
+        "track_branch": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "discord": {
       "additionalProperties": false,
       "default": {
         "authorized_users": [],
         "bot_token": "",
         "channel_id": "",
+        "conversation": {
+          "allow_dm": false,
+          "enabled": false,
+          "require_mention": true
+        },
         "digest": {
+          "author_fallback_minutes": 10,
+          "cadence_minutes": 120,
           "catchup_hours": 24,
           "categories": [
             "work",
@@ -275,7 +363,13 @@
           ],
           "enabled": true,
           "interval_minutes": 60,
-          "project_ids": []
+          "project_ids": [],
+          "quiet_hours": {
+            "end": "07:00",
+            "start": "22:00"
+          },
+          "quiet_line_after_skips": 3,
+          "supervisor_authored": false
         },
         "escalation": {
           "enabled": true,
@@ -284,7 +378,11 @@
           "reminder_minutes": 0,
           "supervisor_delivery_timeout_minutes": 15
         },
+        "escalations": {
+          "stateful": false
+        },
         "guild_id": "",
+        "project_id": "",
         "rate_guard_critical": 5000,
         "rate_guard_halt": 8000,
         "rate_guard_warn": 1000
@@ -305,9 +403,34 @@
           "default": "",
           "type": "string"
         },
+        "conversation": {
+          "additionalProperties": false,
+          "default": {
+            "allow_dm": false,
+            "enabled": false,
+            "require_mention": true
+          },
+          "properties": {
+            "allow_dm": {
+              "default": false,
+              "type": "boolean"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "require_mention": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "digest": {
           "additionalProperties": false,
           "default": {
+            "author_fallback_minutes": 10,
+            "cadence_minutes": 120,
             "catchup_hours": 24,
             "categories": [
               "work",
@@ -317,9 +440,27 @@
             ],
             "enabled": true,
             "interval_minutes": 60,
-            "project_ids": []
+            "project_ids": [],
+            "quiet_hours": {
+              "end": "07:00",
+              "start": "22:00"
+            },
+            "quiet_line_after_skips": 3,
+            "supervisor_authored": false
           },
           "properties": {
+            "author_fallback_minutes": {
+              "default": 10,
+              "maximum": 60,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "cadence_minutes": {
+              "default": 120,
+              "maximum": 1440,
+              "minimum": 15,
+              "type": "integer"
+            },
             "catchup_hours": {
               "default": 24,
               "maximum": 168,
@@ -359,6 +500,37 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": {
+                "end": "07:00",
+                "start": "22:00"
+              },
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "quiet_line_after_skips": {
+              "default": 3,
+              "maximum": 24,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "supervisor_authored": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -406,7 +578,24 @@
           },
           "type": "object"
         },
+        "escalations": {
+          "additionalProperties": false,
+          "default": {
+            "stateful": false
+          },
+          "properties": {
+            "stateful": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "guild_id": {
+          "default": "",
+          "type": "string"
+        },
+        "project_id": {
           "default": "",
           "type": "string"
         },
@@ -425,6 +614,20 @@
       },
       "type": "object",
       "x-reload": "restart"
+    },
+    "docs": {
+      "additionalProperties": false,
+      "default": {
+        "base_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/"
+      },
+      "properties": {
+        "base_url": {
+          "default": "https://github.com/ElectricJack/agent-queue/blob/main/docs/",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "env": {
       "default": "production",
@@ -450,6 +653,30 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "git_identity": {
+      "additionalProperties": false,
+      "default": {
+        "email": "",
+        "name": "",
+        "source": ""
+      },
+      "properties": {
+        "email": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "global_token_budget_daily": {
       "default": null,
       "type": [
@@ -464,6 +691,7 @@
         "enabled": true,
         "incremental_debounce_ms": 500,
         "reconcile_interval_seconds": 900,
+        "row_aspect": 1.3,
         "tidy_job_budget_seconds": 60
       },
       "properties": {
@@ -478,6 +706,10 @@
         "reconcile_interval_seconds": {
           "default": 900,
           "type": "integer"
+        },
+        "row_aspect": {
+          "default": 1.3,
+          "type": "number"
         },
         "tidy_job_budget_seconds": {
           "default": 60,
@@ -511,6 +743,30 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "host_shell": {
+      "additionalProperties": false,
+      "default": {
+        "allow_remote": false,
+        "enabled": false,
+        "max_shells": 4
+      },
+      "properties": {
+        "allow_remote": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_shells": {
+          "default": 4,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "inbox": {
       "default": {
         "client_secret": "$GOOGLE_CLIENT_SECRET",
@@ -525,21 +781,41 @@
       "additionalProperties": false,
       "default": {
         "default_mode": "pull_request",
+        "git_first": "active",
         "github_app": null,
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
-        "scratch_probe": null
+        "owner_recovery_sweep": true,
+        "publisher_stall_after": 5,
+        "reconciler_active": true,
+        "reconciler_shadow": false,
+        "scratch_probe": null,
+        "service_item_timeout_seconds": 60.0,
+        "service_source_timeout_seconds": 300.0,
+        "service_source_timeouts": {}
       },
       "properties": {
         "default_mode": {
           "default": "pull_request",
           "type": "string"
         },
+        "git_first": {
+          "default": "active",
+          "type": "string"
+        },
         "github_app": {
           "additionalProperties": false,
           "default": null,
           "properties": {
+            "actions_permission": {
+              "default": "read",
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
             "app_id": {
               "minimum": 1,
               "type": "integer"
@@ -594,6 +870,22 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "owner_recovery_sweep": {
+          "default": true,
+          "type": "boolean"
+        },
+        "publisher_stall_after": {
+          "default": 5,
+          "type": "integer"
+        },
+        "reconciler_active": {
+          "default": true,
+          "type": "boolean"
+        },
+        "reconciler_shadow": {
+          "default": false,
+          "type": "boolean"
         },
         "scratch_probe": {
           "additionalProperties": false,
@@ -655,10 +947,322 @@
             "object",
             "null"
           ]
+        },
+        "service_item_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        },
+        "service_source_timeout_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "service_source_timeouts": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "type": "object"
         }
       },
       "type": "object",
       "x-reload": "restart"
+    },
+    "knowledge": {
+      "additionalProperties": false,
+      "default": {
+        "authority_review_required": true,
+        "consolidation": {
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
+        },
+        "context": {
+          "bundle_ttl_seconds": 300,
+          "discovery_max_items": 8,
+          "discovery_max_tokens": 1000,
+          "enabled": false,
+          "input_max_tokens": null,
+          "max_bytes": 16384,
+          "max_tokens": 4096,
+          "output_reserve_tokens": 4096,
+          "supervisor_global_scope": false,
+          "supervisor_project_ids": [],
+          "supervisor_query": "",
+          "wrapper_reserve_tokens": 256
+        },
+        "enabled": false,
+        "enabled_projects": [],
+        "export": {
+          "enabled": false
+        },
+        "extraction": {
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
+        },
+        "global_enabled": false,
+        "import_apply": {
+          "enabled": false
+        },
+        "import_inventory": {
+          "enabled": false
+        },
+        "legacy_memory_mode": "disabled",
+        "semantic": {
+          "enabled": false
+        },
+        "ui_enabled": false,
+        "writes_enabled": false
+      },
+      "properties": {
+        "authority_review_required": {
+          "default": true,
+          "type": "boolean"
+        },
+        "consolidation": {
+          "additionalProperties": false,
+          "default": {
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
+          },
+          "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "context": {
+          "additionalProperties": false,
+          "default": {
+            "bundle_ttl_seconds": 300,
+            "discovery_max_items": 8,
+            "discovery_max_tokens": 1000,
+            "enabled": false,
+            "input_max_tokens": null,
+            "max_bytes": 16384,
+            "max_tokens": 4096,
+            "output_reserve_tokens": 4096,
+            "supervisor_global_scope": false,
+            "supervisor_project_ids": [],
+            "supervisor_query": "",
+            "wrapper_reserve_tokens": 256
+          },
+          "properties": {
+            "bundle_ttl_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "discovery_max_items": {
+              "default": 8,
+              "type": "integer"
+            },
+            "discovery_max_tokens": {
+              "default": 1000,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "input_max_tokens": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_bytes": {
+              "default": 16384,
+              "type": "integer"
+            },
+            "max_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "output_reserve_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "supervisor_global_scope": {
+              "default": false,
+              "type": "boolean"
+            },
+            "supervisor_project_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "supervisor_query": {
+              "default": "",
+              "type": "string"
+            },
+            "wrapper_reserve_tokens": {
+              "default": 256,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled_projects": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "export": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "extraction": {
+          "additionalProperties": false,
+          "default": {
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
+          },
+          "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "global_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "import_apply": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "import_inventory": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "legacy_memory_mode": {
+          "default": "disabled",
+          "type": "string"
+        },
+        "semantic": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "ui_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "writes_enabled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "llm": {
       "additionalProperties": false,
@@ -666,6 +1270,7 @@
         "api_key": "",
         "base_url": "",
         "default_class": "",
+        "fallback": null,
         "max_tokens": 4096,
         "model": "",
         "provider": "anthropic"
@@ -682,6 +1287,36 @@
         "default_class": {
           "default": "",
           "type": "string"
+        },
+        "fallback": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "api_key": {
+              "default": "",
+              "type": "string"
+            },
+            "base_url": {
+              "default": "",
+              "type": "string"
+            },
+            "default_class": {
+              "default": "",
+              "type": "string"
+            },
+            "model": {
+              "default": "",
+              "type": "string"
+            },
+            "provider": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "max_tokens": {
           "default": 4096,
@@ -892,6 +1527,7 @@
         "profile_enabled": true,
         "profile_max_size": 5000,
         "project_docs_files": [
+          "AGENTS.md",
           "CLAUDE.md",
           "README.md"
         ],
@@ -1101,6 +1737,7 @@
         },
         "project_docs_files": {
           "default": [
+            "AGENTS.md",
             "CLAUDE.md",
             "README.md"
           ]
@@ -1198,6 +1835,7 @@
         "enabled": true,
         "max_inject_per_prompt": 10,
         "reply_timeout": 120.0,
+        "reply_window_multiplier": 3.0,
         "transcript_tail_fallback": true
       },
       "properties": {
@@ -1215,6 +1853,10 @@
         },
         "reply_timeout": {
           "default": 120.0,
+          "type": "number"
+        },
+        "reply_window_multiplier": {
+          "default": 3.0,
           "type": "number"
         },
         "transcript_tail_fallback": {
@@ -1237,6 +1879,11 @@
         "enabled": true,
         "flush_interval_seconds": 5.0,
         "interval_seconds": 1.0,
+        "perf_enabled": true,
+        "perf_host_budget_ms": 20.0,
+        "perf_loop_probe_ms": 100,
+        "perf_relay_poll_seconds": 5.0,
+        "perf_slow_query_ms": 100.0,
         "retain_seconds_1h": 31536000,
         "retain_seconds_1m": 2592000,
         "retain_seconds_1s": 3600,
@@ -1256,6 +1903,26 @@
         },
         "interval_seconds": {
           "default": 1.0,
+          "type": "number"
+        },
+        "perf_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "perf_host_budget_ms": {
+          "default": 20.0,
+          "type": "number"
+        },
+        "perf_loop_probe_ms": {
+          "default": 100,
+          "type": "integer"
+        },
+        "perf_relay_poll_seconds": {
+          "default": 5.0,
+          "type": "number"
+        },
+        "perf_slow_query_ms": {
+          "default": 100.0,
           "type": "number"
         },
         "retain_seconds_1h": {
@@ -1309,40 +1976,13 @@
       "type": "object",
       "x-reload": "hot"
     },
-    "pause_retry": {
-      "additionalProperties": false,
-      "default": {
-        "rate_limit_backoff_seconds": 60,
-        "rate_limit_max_backoff_seconds": 300,
-        "rate_limit_max_retries": 3,
-        "token_exhaustion_retry_seconds": 300
-      },
-      "properties": {
-        "rate_limit_backoff_seconds": {
-          "default": 60,
-          "type": "integer"
-        },
-        "rate_limit_max_backoff_seconds": {
-          "default": 300,
-          "type": "integer"
-        },
-        "rate_limit_max_retries": {
-          "default": 3,
-          "type": "integer"
-        },
-        "token_exhaustion_retry_seconds": {
-          "default": 300,
-          "type": "integer"
-        }
-      },
-      "type": "object",
-      "x-reload": "hot"
-    },
     "playbooks": {
       "additionalProperties": false,
       "default": {
         "cancellation_grace_seconds": 30,
         "enabled": false,
+        "private_value_active_key_id": "",
+        "private_value_key_env": {},
         "v2_artifact_min_versions": 10,
         "v2_artifact_retention_days": 90,
         "v2_dry_run_max_paths": 32,
@@ -1367,6 +2007,17 @@
           "description": "When false the V2 playbook runtime, TimerService, resume handlers, and workflow recovery are not started. V2 artifacts and run data are preserved. See docs/specs/design/feature-pauses.md.",
           "restart_required": true,
           "type": "boolean"
+        },
+        "private_value_active_key_id": {
+          "default": "",
+          "type": "string"
+        },
+        "private_value_key_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "v2_artifact_min_versions": {
           "default": 10,
@@ -1436,6 +2087,20 @@
           "items": {
             "additionalProperties": false,
             "properties": {
+              "cache_read_per_mtok": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cache_write_per_mtok": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
               "input_per_mtok": {
                 "default": 0.0,
                 "type": "number"
@@ -1481,6 +2146,370 @@
         "type": "object"
       },
       "type": "array",
+      "x-reload": "hot"
+    },
+    "provider_failover": {
+      "additionalProperties": false,
+      "default": {
+        "auth_probe": {
+          "interval_seconds": 600,
+          "timeout_seconds": 10
+        },
+        "classes": {},
+        "default_policy": "same_class",
+        "doctor": {
+          "held_warn_seconds": 14400
+        },
+        "evidence": {
+          "keep": 20
+        },
+        "launch": {
+          "generic_failures_to_trip": 5,
+          "strong_failures_to_trip": 2,
+          "suspect_backoff_seconds": 30,
+          "window_seconds": 600
+        },
+        "mode": "enforce",
+        "notify": {
+          "digest": true,
+          "escalate_all_down_after_seconds": 1800,
+          "escalate_failing_after_seconds": 1800,
+          "escalate_unauthenticated": true,
+          "flap_threshold": 3,
+          "supervisor": true
+        },
+        "order": [],
+        "override": {
+          "default_ttl_seconds": 14400,
+          "max_ttl_seconds": 604800
+        },
+        "rate_limit": {
+          "cooldown_seconds": 900,
+          "exits_to_trip": 2
+        },
+        "recovery": {
+          "auth_probe_interval_seconds": 120,
+          "backoff_max_seconds": 3600,
+          "failing_backoff_seconds": 300,
+          "flap_window_seconds": 3600,
+          "reset_grace_seconds": 60
+        },
+        "reroute": {
+          "allow_degraded_target": false,
+          "enabled": true,
+          "max_auto_per_task": 2,
+          "max_per_sweep": 10,
+          "max_priority_value": null,
+          "target_backlog_factor": 1.0,
+          "task_cooldown_seconds": 1800
+        },
+        "spill": {
+          "after_seconds": 300,
+          "enabled": true,
+          "max_per_sweep": 5
+        },
+        "usage": {
+          "degraded_percent": 85.0,
+          "exhausted_percent": 99.0,
+          "hysteresis_percent": 2.0
+        }
+      },
+      "properties": {
+        "auth_probe": {
+          "additionalProperties": false,
+          "default": {
+            "interval_seconds": 600,
+            "timeout_seconds": 10
+          },
+          "properties": {
+            "interval_seconds": {
+              "default": 600,
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 10,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "classes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "default_policy": {
+          "default": "same_class",
+          "type": "string"
+        },
+        "doctor": {
+          "additionalProperties": false,
+          "default": {
+            "held_warn_seconds": 14400
+          },
+          "properties": {
+            "held_warn_seconds": {
+              "default": 14400,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "evidence": {
+          "additionalProperties": false,
+          "default": {
+            "keep": 20
+          },
+          "properties": {
+            "keep": {
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "launch": {
+          "additionalProperties": false,
+          "default": {
+            "generic_failures_to_trip": 5,
+            "strong_failures_to_trip": 2,
+            "suspect_backoff_seconds": 30,
+            "window_seconds": 600
+          },
+          "properties": {
+            "generic_failures_to_trip": {
+              "default": 5,
+              "type": "integer"
+            },
+            "strong_failures_to_trip": {
+              "default": 2,
+              "type": "integer"
+            },
+            "suspect_backoff_seconds": {
+              "default": 30,
+              "type": "integer"
+            },
+            "window_seconds": {
+              "default": 600,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "mode": {
+          "default": "enforce",
+          "type": "string"
+        },
+        "notify": {
+          "additionalProperties": false,
+          "default": {
+            "digest": true,
+            "escalate_all_down_after_seconds": 1800,
+            "escalate_failing_after_seconds": 1800,
+            "escalate_unauthenticated": true,
+            "flap_threshold": 3,
+            "supervisor": true
+          },
+          "properties": {
+            "digest": {
+              "default": true,
+              "type": "boolean"
+            },
+            "escalate_all_down_after_seconds": {
+              "default": 1800,
+              "type": "integer"
+            },
+            "escalate_failing_after_seconds": {
+              "default": 1800,
+              "type": "integer"
+            },
+            "escalate_unauthenticated": {
+              "default": true,
+              "type": "boolean"
+            },
+            "flap_threshold": {
+              "default": 3,
+              "type": "integer"
+            },
+            "supervisor": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "order": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "override": {
+          "additionalProperties": false,
+          "default": {
+            "default_ttl_seconds": 14400,
+            "max_ttl_seconds": 604800
+          },
+          "properties": {
+            "default_ttl_seconds": {
+              "default": 14400,
+              "type": "integer"
+            },
+            "max_ttl_seconds": {
+              "default": 604800,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "rate_limit": {
+          "additionalProperties": false,
+          "default": {
+            "cooldown_seconds": 900,
+            "exits_to_trip": 2
+          },
+          "properties": {
+            "cooldown_seconds": {
+              "default": 900,
+              "type": "integer"
+            },
+            "exits_to_trip": {
+              "default": 2,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "recovery": {
+          "additionalProperties": false,
+          "default": {
+            "auth_probe_interval_seconds": 120,
+            "backoff_max_seconds": 3600,
+            "failing_backoff_seconds": 300,
+            "flap_window_seconds": 3600,
+            "reset_grace_seconds": 60
+          },
+          "properties": {
+            "auth_probe_interval_seconds": {
+              "default": 120,
+              "type": "integer"
+            },
+            "backoff_max_seconds": {
+              "default": 3600,
+              "type": "integer"
+            },
+            "failing_backoff_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "flap_window_seconds": {
+              "default": 3600,
+              "type": "integer"
+            },
+            "reset_grace_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "reroute": {
+          "additionalProperties": false,
+          "default": {
+            "allow_degraded_target": false,
+            "enabled": true,
+            "max_auto_per_task": 2,
+            "max_per_sweep": 10,
+            "max_priority_value": null,
+            "target_backlog_factor": 1.0,
+            "task_cooldown_seconds": 1800
+          },
+          "properties": {
+            "allow_degraded_target": {
+              "default": false,
+              "type": "boolean"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "max_auto_per_task": {
+              "default": 2,
+              "type": "integer"
+            },
+            "max_per_sweep": {
+              "default": 10,
+              "type": "integer"
+            },
+            "max_priority_value": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target_backlog_factor": {
+              "default": 1.0,
+              "type": "number"
+            },
+            "task_cooldown_seconds": {
+              "default": 1800,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "spill": {
+          "additionalProperties": false,
+          "default": {
+            "after_seconds": 300,
+            "enabled": true,
+            "max_per_sweep": 5
+          },
+          "properties": {
+            "after_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "max_per_sweep": {
+              "default": 5,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "usage": {
+          "additionalProperties": false,
+          "default": {
+            "degraded_percent": 85.0,
+            "exhausted_percent": 99.0,
+            "hysteresis_percent": 2.0
+          },
+          "properties": {
+            "degraded_percent": {
+              "default": 85.0,
+              "type": "number"
+            },
+            "exhausted_percent": {
+              "default": 99.0,
+              "type": "number"
+            },
+            "hysteresis_percent": {
+              "default": 2.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object",
       "x-reload": "hot"
     },
     "providers": {
@@ -1536,6 +2565,135 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "reports": {
+      "additionalProperties": false,
+      "default": {
+        "hourly": {
+          "enabled": false,
+          "full_fleet_visibility": false,
+          "grace_minutes": 5,
+          "max_requests_per_day": 12,
+          "quiet_hours": null
+        },
+        "morning": {
+          "author_deadline_minutes": 15,
+          "destination": "",
+          "enabled": false,
+          "full_fleet_visibility": false,
+          "late_cutoff_minutes": 120,
+          "max_lookback_hours": 72,
+          "project_ids": [],
+          "time": "07:00"
+        },
+        "timezone": "UTC"
+      },
+      "properties": {
+        "hourly": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "full_fleet_visibility": false,
+            "grace_minutes": 5,
+            "max_requests_per_day": 12,
+            "quiet_hours": null
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "full_fleet_visibility": {
+              "default": false,
+              "type": "boolean"
+            },
+            "grace_minutes": {
+              "default": 5,
+              "type": "integer"
+            },
+            "max_requests_per_day": {
+              "default": 12,
+              "type": "integer"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": null,
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "morning": {
+          "additionalProperties": false,
+          "default": {
+            "author_deadline_minutes": 15,
+            "destination": "",
+            "enabled": false,
+            "full_fleet_visibility": false,
+            "late_cutoff_minutes": 120,
+            "max_lookback_hours": 72,
+            "project_ids": [],
+            "time": "07:00"
+          },
+          "properties": {
+            "author_deadline_minutes": {
+              "default": 15,
+              "type": "integer"
+            },
+            "destination": {
+              "default": "",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "full_fleet_visibility": {
+              "default": false,
+              "type": "boolean"
+            },
+            "late_cutoff_minutes": {
+              "default": 120,
+              "type": "integer"
+            },
+            "max_lookback_hours": {
+              "default": 72,
+              "type": "integer"
+            },
+            "project_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "time": {
+              "default": "07:00",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "timezone": {
+          "default": "UTC",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "restart"
+    },
     "resources": {
       "additionalProperties": false,
       "default": {
@@ -1546,12 +2704,56 @@
         },
         "cores": null,
         "enabled": true,
+        "jobs": {
+          "enabled": false,
+          "exclusive_queue_seconds": 5400,
+          "full_suite_reserved_slots": 2,
+          "head_bytes": 1048576,
+          "log_budget_bytes": 2147483648,
+          "log_days": 14,
+          "matter_artifact_bytes": 268435456,
+          "matter_capture_script": "",
+          "matter_editor": "",
+          "matter_gpu_id": "default",
+          "matter_python": "",
+          "max_queued": 100,
+          "per_task_active": 2,
+          "per_task_queued": 10,
+          "result_days": 90,
+          "run_seconds": 7200,
+          "shared_queue_seconds": 1800,
+          "tail_bytes": 66060288,
+          "test_database_url": ""
+        },
         "load_warn_ratio": 1.0,
         "max_concurrent_agents": 8,
         "max_pytest_processes": 24,
         "per_session_cpu_share": null,
+        "scripts": {
+          "enabled": true,
+          "env_allowlist": [],
+          "input_bytes": 67108864,
+          "input_root": "",
+          "input_storage_bytes": 2147483648,
+          "output_storage_bytes": 2147483648,
+          "per_run_storage_bytes": 67108864,
+          "queue_seconds": 300,
+          "runtime_bytes": 1073741824,
+          "runtime_manifest": "",
+          "runtime_root": "",
+          "search_path": [
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+          ],
+          "state_root": "",
+          "stderr_bytes": 1048576,
+          "stdout_bytes": 1048576,
+          "wall_seconds": 60
+        },
         "session_nice": 10,
         "test_deselect_markers": "not perf and not migration and not slow and not tmux and not integration",
+        "test_interpreters": {},
         "test_poll_interval": 2.0,
         "test_slots": 2,
         "test_wait_timeout": 1800,
@@ -1592,6 +2794,109 @@
           "default": true,
           "type": "boolean"
         },
+        "jobs": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "exclusive_queue_seconds": 5400,
+            "full_suite_reserved_slots": 2,
+            "head_bytes": 1048576,
+            "log_budget_bytes": 2147483648,
+            "log_days": 14,
+            "matter_artifact_bytes": 268435456,
+            "matter_capture_script": "",
+            "matter_editor": "",
+            "matter_gpu_id": "default",
+            "matter_python": "",
+            "max_queued": 100,
+            "per_task_active": 2,
+            "per_task_queued": 10,
+            "result_days": 90,
+            "run_seconds": 7200,
+            "shared_queue_seconds": 1800,
+            "tail_bytes": 66060288,
+            "test_database_url": ""
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "exclusive_queue_seconds": {
+              "default": 5400,
+              "type": "integer"
+            },
+            "full_suite_reserved_slots": {
+              "default": 2,
+              "type": "integer"
+            },
+            "head_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "log_budget_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "log_days": {
+              "default": 14,
+              "type": "integer"
+            },
+            "matter_artifact_bytes": {
+              "default": 268435456,
+              "type": "integer"
+            },
+            "matter_capture_script": {
+              "default": "",
+              "type": "string"
+            },
+            "matter_editor": {
+              "default": "",
+              "type": "string"
+            },
+            "matter_gpu_id": {
+              "default": "default",
+              "type": "string"
+            },
+            "matter_python": {
+              "default": "",
+              "type": "string"
+            },
+            "max_queued": {
+              "default": 100,
+              "type": "integer"
+            },
+            "per_task_active": {
+              "default": 2,
+              "type": "integer"
+            },
+            "per_task_queued": {
+              "default": 10,
+              "type": "integer"
+            },
+            "result_days": {
+              "default": 90,
+              "type": "integer"
+            },
+            "run_seconds": {
+              "default": 7200,
+              "type": "integer"
+            },
+            "shared_queue_seconds": {
+              "default": 1800,
+              "type": "integer"
+            },
+            "tail_bytes": {
+              "default": 66060288,
+              "type": "integer"
+            },
+            "test_database_url": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "load_warn_ratio": {
           "default": 1.0,
           "type": "number"
@@ -1611,6 +2916,108 @@
             "null"
           ]
         },
+        "scripts": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": true,
+            "env_allowlist": [],
+            "input_bytes": 67108864,
+            "input_root": "",
+            "input_storage_bytes": 2147483648,
+            "output_storage_bytes": 2147483648,
+            "per_run_storage_bytes": 67108864,
+            "queue_seconds": 300,
+            "runtime_bytes": 1073741824,
+            "runtime_manifest": "",
+            "runtime_root": "",
+            "search_path": [
+              "/usr/local/bin",
+              "/usr/bin",
+              "/bin"
+            ],
+            "state_root": "",
+            "stderr_bytes": 1048576,
+            "stdout_bytes": 1048576,
+            "wall_seconds": 60
+          },
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "env_allowlist": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "input_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "input_root": {
+              "default": "",
+              "type": "string"
+            },
+            "input_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "output_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "per_run_storage_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "queue_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "runtime_bytes": {
+              "default": 1073741824,
+              "type": "integer"
+            },
+            "runtime_manifest": {
+              "default": "",
+              "type": "string"
+            },
+            "runtime_root": {
+              "default": "",
+              "type": "string"
+            },
+            "search_path": {
+              "default": [
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "state_root": {
+              "default": "",
+              "type": "string"
+            },
+            "stderr_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "stdout_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "wall_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "session_nice": {
           "default": 10,
           "type": "integer"
@@ -1618,6 +3025,13 @@
         "test_deselect_markers": {
           "default": "not perf and not migration and not slow and not tmux and not integration",
           "type": "string"
+        },
+        "test_interpreters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "test_poll_interval": {
           "default": 2.0,
@@ -1642,10 +3056,27 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "routing": {
+      "additionalProperties": false,
+      "default": {
+        "default_router": "default-assignment-routing"
+      },
+      "properties": {
+        "default_router": {
+          "default": "default-assignment-routing",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "scheduling": {
       "additionalProperties": false,
       "default": {
         "affinity_wait_seconds": 120,
+        "config_poll_interval_seconds": 30.0,
+        "cycle_interval_seconds": 5.0,
+        "min_cycle_interval_seconds": 1.0,
         "min_task_guarantee": true,
         "rolling_window_hours": 24
       },
@@ -1653,6 +3084,18 @@
         "affinity_wait_seconds": {
           "default": 120,
           "type": "integer"
+        },
+        "config_poll_interval_seconds": {
+          "default": 30.0,
+          "type": "number"
+        },
+        "cycle_interval_seconds": {
+          "default": 5.0,
+          "type": "number"
+        },
+        "min_cycle_interval_seconds": {
+          "default": 1.0,
+          "type": "number"
         },
         "min_task_guarantee": {
           "default": true,
@@ -1711,6 +3154,9 @@
         "dialog_budget_seconds": 8,
         "dialog_settle_seconds": 1.5,
         "enabled": true,
+        "fake_script_file": "",
+        "idle_claim_timeout_seconds": 900,
+        "idle_stop_grace_seconds": 60,
         "lease_ttl_seconds": 480,
         "max_restarts": 3,
         "nudge_debounce_ms": 500,
@@ -1723,9 +3169,14 @@
         "stall_backoff_seconds": 300,
         "stall_max_nudges": 3,
         "state_cache_ttl_seconds": 2,
+        "stop_intent_report_seconds": 600,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
-        "transcript_startup_replay_limit": 100
+        "transcript_startup_replay_limit": 100,
+        "worker_claude_plugin_overrides": {},
+        "worker_context_checkpoint_tokens": 120000,
+        "worker_context_compact_tokens": 160000,
+        "worker_context_unknown_checkpoint_turns": 40
       },
       "properties": {
         "adopt_on_start": {
@@ -1743,6 +3194,18 @@
         "enabled": {
           "default": true,
           "type": "boolean"
+        },
+        "fake_script_file": {
+          "default": "",
+          "type": "string"
+        },
+        "idle_claim_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "idle_stop_grace_seconds": {
+          "default": 60,
+          "type": "integer"
         },
         "lease_ttl_seconds": {
           "default": 480,
@@ -1792,6 +3255,10 @@
           "default": 2,
           "type": "integer"
         },
+        "stop_intent_report_seconds": {
+          "default": 600,
+          "type": "integer"
+        },
         "tmux_socket": {
           "default": "aq",
           "type": "string"
@@ -1802,6 +3269,25 @@
         },
         "transcript_startup_replay_limit": {
           "default": 100,
+          "type": "integer"
+        },
+        "worker_claude_plugin_overrides": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "worker_context_checkpoint_tokens": {
+          "default": 120000,
+          "type": "integer"
+        },
+        "worker_context_compact_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
+        "worker_context_unknown_checkpoint_turns": {
+          "default": 40,
           "type": "integer"
         }
       },
@@ -1866,11 +3352,21 @@
     "supervisor": {
       "additionalProperties": false,
       "default": {
+        "context_ceiling_tokens": 160000,
         "global_": {
           "idle_timeout_seconds": 2700
-        }
+        },
+        "max_session_age_seconds": 86400,
+        "max_turn_retries": 2,
+        "question_timeout_seconds": 900,
+        "retry_backoff_seconds": 60,
+        "turn_timeout_seconds": 900
       },
       "properties": {
+        "context_ceiling_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
         "global_": {
           "additionalProperties": false,
           "default": {
@@ -1883,6 +3379,26 @@
             }
           },
           "type": "object"
+        },
+        "max_session_age_seconds": {
+          "default": 86400,
+          "type": "integer"
+        },
+        "max_turn_retries": {
+          "default": 2,
+          "type": "integer"
+        },
+        "question_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 60,
+          "type": "integer"
+        },
+        "turn_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
         }
       },
       "type": "object",
@@ -1981,24 +3497,449 @@
       "x-note": "Framework overhaul: pull-based worker pools (claims, pool reconciliation).",
       "x-reload": "hot"
     },
+    "test_selection": {
+      "additionalProperties": false,
+      "default": {
+        "api_key_env": "TYPESAFE_API_KEY",
+        "base_url": null,
+        "cache_entries": 256,
+        "default_base_ref": null,
+        "enabled": false,
+        "enforce_enabled": false,
+        "excerpt_lines": 40,
+        "jev_enabled": false,
+        "max_requests": 4,
+        "max_state_plus_question_tokens": 32000,
+        "max_total_tokens": 64000,
+        "model": "jev-1.13.0",
+        "request_concurrency": 2,
+        "retention_days": 90,
+        "rpc_deadline_seconds": 2.0,
+        "static_timeout_seconds": 60.0
+      },
+      "properties": {
+        "api_key_env": {
+          "default": "TYPESAFE_API_KEY",
+          "type": "string"
+        },
+        "base_url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_entries": {
+          "default": 256,
+          "type": "integer"
+        },
+        "default_base_ref": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enforce_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "excerpt_lines": {
+          "default": 40,
+          "type": "integer"
+        },
+        "jev_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_requests": {
+          "default": 4,
+          "type": "integer"
+        },
+        "max_state_plus_question_tokens": {
+          "default": 32000,
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "default": 64000,
+          "type": "integer"
+        },
+        "model": {
+          "default": "jev-1.13.0",
+          "type": "string"
+        },
+        "request_concurrency": {
+          "default": 2,
+          "type": "integer"
+        },
+        "retention_days": {
+          "default": 90,
+          "type": "integer"
+        },
+        "rpc_deadline_seconds": {
+          "default": 2.0,
+          "type": "number"
+        },
+        "static_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "validate_events": {
       "default": true,
       "type": "boolean",
       "x-reload": "restart"
     },
+    "wait_policy": {
+      "additionalProperties": false,
+      "default": {
+        "branch_admission_deadline_seconds": 1800,
+        "hibernate_margin": 2.0,
+        "hibernation_enabled": true,
+        "in_place_ceiling_seconds": 1800,
+        "kinds": {
+          "batch": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 2700
+          },
+          "ci_check": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1200
+          },
+          "ci_run": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1500
+          },
+          "dependency": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "human": {
+            "escalate_after_seconds": null,
+            "expected_duration_seconds": null
+          },
+          "job": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 900
+          },
+          "message": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "playbook_condition": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "pull_request": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "resource": {
+            "escalate_after_seconds": 1800,
+            "expected_duration_seconds": null
+          },
+          "task": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "timer": {
+            "escalate_after_seconds": 300,
+            "expected_duration_seconds": null
+          }
+        },
+        "loop_window_registrations": 3,
+        "loop_window_seconds": 3600,
+        "metrics": {
+          "cohort": null,
+          "pre_rollout_tokens_per_turn": null,
+          "pre_rollout_turn_rate": null,
+          "window": null
+        },
+        "min_samples": 5,
+        "projects": {},
+        "resume_cost_minutes": 10.0,
+        "resume_launch_attempts": 2,
+        "resume_stall_seconds": 300,
+        "scheduler_waits_enabled": true,
+        "transition_budget_seconds": 120,
+        "v1_bodies": "refuse",
+        "v2_enabled": true
+      },
+      "properties": {
+        "branch_admission_deadline_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "hibernate_margin": {
+          "default": 2.0,
+          "type": "number"
+        },
+        "hibernation_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "in_place_ceiling_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "kinds": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "escalate_after_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expected_duration_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {
+            "batch": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 2700
+            },
+            "ci_check": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1200
+            },
+            "ci_run": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1500
+            },
+            "dependency": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "human": {
+              "escalate_after_seconds": null,
+              "expected_duration_seconds": null
+            },
+            "job": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 900
+            },
+            "message": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "playbook_condition": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "pull_request": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "resource": {
+              "escalate_after_seconds": 1800,
+              "expected_duration_seconds": null
+            },
+            "task": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "timer": {
+              "escalate_after_seconds": 300,
+              "expected_duration_seconds": null
+            }
+          },
+          "type": "object"
+        },
+        "loop_window_registrations": {
+          "default": 3,
+          "type": "integer"
+        },
+        "loop_window_seconds": {
+          "default": 3600,
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "default": {
+            "cohort": null,
+            "pre_rollout_tokens_per_turn": null,
+            "pre_rollout_turn_rate": null,
+            "window": null
+          },
+          "properties": {
+            "cohort": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_rollout_tokens_per_turn": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "pre_rollout_turn_rate": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "window": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "min_samples": {
+          "default": 5,
+          "type": "integer"
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "hibernate_margin": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "hibernation_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "in_place_ceiling_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kinds": {
+                "additionalProperties": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "escalate_after_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "expected_duration_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "resume_cost_minutes": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "resume_stall_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "scheduler_waits_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "v2_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "resume_cost_minutes": {
+          "default": 10.0,
+          "type": "number"
+        },
+        "resume_launch_attempts": {
+          "default": 2,
+          "type": "integer"
+        },
+        "resume_stall_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "scheduler_waits_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "transition_budget_seconds": {
+          "default": 120,
+          "type": "integer"
+        },
+        "v1_bodies": {
+          "default": "refuse",
+          "type": "string"
+        },
+        "v2_enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "work_graph": {
       "additionalProperties": false,
       "default": {
-        "blocked_state_authoritative": false,
         "conditional_autoclose": true,
         "container_sweep_interval_seconds": 60,
-        "gate_sweep_interval_seconds": 30
+        "frontier_rejected_after_seconds": 600,
+        "gate_sweep_interval_seconds": 30,
+        "lifecycle_sweep_interval_seconds": 300,
+        "stale_open_after_seconds": 21600
       },
       "properties": {
-        "blocked_state_authoritative": {
-          "default": false,
-          "type": "boolean"
-        },
         "conditional_autoclose": {
           "default": true,
           "type": "boolean"
@@ -2007,8 +3948,20 @@
           "default": 60,
           "type": "integer"
         },
+        "frontier_rejected_after_seconds": {
+          "default": 600,
+          "type": "integer"
+        },
         "gate_sweep_interval_seconds": {
           "default": 30,
+          "type": "integer"
+        },
+        "lifecycle_sweep_interval_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "stale_open_after_seconds": {
+          "default": 21600,
           "type": "integer"
         }
       },
@@ -2017,9 +3970,58 @@
       "x-reload": "hot"
     },
     "workspace_dir": {
-      "default": "/home/jkern/agent-queue-workspaces",
       "type": "string",
       "x-reload": "restart"
+    },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "worktrees": {
       "additionalProperties": false,
@@ -2031,6 +4033,8 @@
         "salvage_dirty": true,
         "salvage_max_bytes": 5242880,
         "setup_timeout_seconds": 900,
+        "slot_reset_git_timeout_seconds": 600,
+        "slot_reset_git_timeouts": {},
         "spawn_conflict_continuation": false
       },
       "properties": {
@@ -2062,6 +4066,17 @@
           "default": 900,
           "type": "integer"
         },
+        "slot_reset_git_timeout_seconds": {
+          "default": 600,
+          "type": "integer"
+        },
+        "slot_reset_git_timeouts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "type": "object"
+        },
         "spawn_conflict_continuation": {
           "default": false,
           "type": "boolean"
@@ -2079,25 +4094,35 @@
       "agents_config",
       "archive",
       "auto_task",
+      "dashboard_server",
+      "deploy",
+      "docs",
+      "git_identity",
       "global_token_budget_daily",
       "graph_layout",
+      "host_shell",
+      "knowledge",
       "llm_logging",
       "logging",
       "max_concurrent_playbook_runs",
       "max_daily_playbook_tokens",
       "metrics",
       "monitoring",
-      "pause_retry",
       "pricing",
       "project_roots",
+      "provider_failover",
       "providers",
       "rate_limits",
       "resources",
+      "routing",
       "scheduling",
       "state_machine",
       "surface",
       "swarm",
-      "work_graph"
+      "test_selection",
+      "wait_policy",
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [
@@ -2119,6 +4144,7 @@
       "messaging_platform",
       "playbooks",
       "profile",
+      "reports",
       "security",
       "sessions",
       "streams",

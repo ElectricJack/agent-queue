@@ -2,8 +2,11 @@
 
 Everything Discord-specific about §7 lives here: how a channel is resolved by
 ID, how a thread is created from the root message, how a deleted post is told
-apart from a rate limit, and how the marker search reads back recent history
-after an ambiguous send.
+apart from a rate limit or a refused request, how every send is fitted under
+the 2000-character message ceiling, and how the marker search reads back
+recent history after an ambiguous send.  §5.3's buttons come along for the
+ride -- a post carries the component set it is given, and an edit replaces
+it, which is how a closed incident stops offering a choice.
 
 The rest of the feature never imports ``discord``.  That is deliberate: the
 planner, renderer and dispatcher are exercised against
@@ -14,16 +17,21 @@ touches a real gateway.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
+from src.escalations.interactions import ButtonSpec
 from src.escalations.transport import (
     SendOutcome,
     ThreadHandle,
     TransportAmbiguous,
     TransportMissing,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
+    bound_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,8 +119,10 @@ class DiscordEscalationTransport:
             return TransportUnavailable(f"missing permission ({exc})")
         if status == 404:
             return TransportMissing(str(exc))
-        if status == 429 or status >= 500:
-            return TransportRetryable(f"discord {status}: {exc}")
+        if 400 <= status < 500 and status not in (401, 408, 429):
+            # Discord refused the request itself -- a 400 "Invalid Form Body"
+            # (error code 50035) answers the same way to every resend.
+            return TransportRejected(f"discord {status}: {exc}")
         return TransportRetryable(f"discord {status}: {exc}")
 
     def _guard(self) -> None:
@@ -120,13 +130,122 @@ class DiscordEscalationTransport:
         if tracker is not None and not tracker.should_allow(critical=True):
             raise TransportRetryable("held by the Discord invalid-request rate guard")
 
+    def _outbound_guard(self) -> None:
+        self._guard()
+        from src.discord.rate_guard import OutboundTokenBucket
+
+        bucket = getattr(self._bot, "_outbound_bucket", None)
+        if bucket is None:
+            bucket = self._bot._outbound_bucket = OutboundTokenBucket()
+        if not bucket.take():
+            raise TransportRetryable("held by the shared Discord outbound budget")
+
+    @staticmethod
+    def _view(buttons: Sequence[ButtonSpec]) -> Any:
+        """The §5.3 components for a post, or ``None`` to carry none."""
+        from src.discord.escalation_buttons import build_view
+
+        return build_view(buttons)
+
+    @classmethod
+    def _edit_view(cls, buttons: Sequence[ButtonSpec]) -> Any:
+        """The components an edit carries.  An empty set is how buttons go.
+
+        Discord reads an edit's components as the message's *whole* component
+        list, so removing them needs an empty view rather than the absence of
+        one -- and it must still be persistent, which is why it is built here
+        instead of passed as ``None``.
+        """
+        return cls._view(buttons) or discord.ui.View(timeout=None)
+
+    @staticmethod
+    def _reference(channel_id: str, message_id: str | None) -> Any:
+        """The reply reference a channel post carries, or ``None`` for none.
+
+        Discord answers a reference to a message that no longer exists by
+        posting without it, so a deleted root degrades to an ordinary post
+        instead of refusing the answer.
+        """
+        if not message_id or not message_id.isdigit():
+            return None
+        return discord.MessageReference(
+            message_id=int(message_id),
+            channel_id=int(channel_id) if str(channel_id).isdigit() else 0,
+            fail_if_not_exists=False,
+        )
+
+    @staticmethod
+    def _release(view: Any) -> None:
+        """Drop the in-memory dispatch entry for a view we have already sent.
+
+        The components stay on the message; what stops is the store's mapping
+        from this message to them.  Presses are handled by
+        :meth:`~src.discord.bot.AgentQueueBot.on_interaction` instead, so a
+        button on a post that outlived the daemon that sent it still works.
+        """
+        if view is None:
+            return
+        try:
+            view.stop()
+        except Exception:  # pragma: no cover - the components are already sent
+            logger.debug("could not release an escalation view", exc_info=True)
+
     # -- port ------------------------------------------------------------
-    async def post_root(self, *, channel_id: str, content: str) -> SendOutcome:
+    async def read_history(
+        self,
+        *,
+        channel_id: str,
+        after_message_id: str | None,
+        after_ts: float,
+        before_ts: float,
+        limit: int,
+    ) -> list[Any]:
+        """Read one oldest-first recovery page, bounded by both cursor and time.
+
+        Lives here until the conversation delivery adapter owns its transport.
+        The snowflake bound keeps even a recent cursor inside the 24-hour window.
+        """
         self._guard()
         channel = await self._channel(channel_id)
+        after = max(
+            int(after_message_id or 0),
+            discord.utils.time_snowflake(datetime.fromtimestamp(after_ts, UTC), high=True),
+        )
+        try:
+            return [
+                message
+                async for message in channel.history(
+                    limit=limit,
+                    oldest_first=True,
+                    after=discord.Object(id=after),
+                    before=datetime.fromtimestamp(before_ts, UTC),
+                )
+            ]
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(f"cannot read history in channel {channel_id}") from exc
+        except discord.NotFound as exc:
+            raise TransportUnavailable(f"history channel {channel_id} no longer exists") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
+    async def post_root(
+        self,
+        *,
+        channel_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
+    ) -> SendOutcome:
+        self._outbound_guard()
+        channel = await self._channel(channel_id)
+        view = self._view(buttons)
         try:
             message = await channel.send(
-                content, allowed_mentions=_allowed_mentions(self._settings)
+                bound_content(content),
+                allowed_mentions=_allowed_mentions(self._settings),
+                view=view,
+                reference=self._reference(channel_id, reference_message_id),
             )
         except discord.Forbidden as exc:
             self._record(403)
@@ -136,6 +255,8 @@ class DiscordEscalationTransport:
             raise TransportAmbiguous(f"root post outcome unknown: {exc}") from exc
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
+        finally:
+            self._release(view)
         return SendOutcome(
             receipt_id=str(message.id), channel_id=channel_id, root_message_id=str(message.id)
         )
@@ -166,6 +287,7 @@ class DiscordEscalationTransport:
         if existing is not None:
             return ThreadHandle(thread_id=str(existing.id), created=False)
         try:
+            self._outbound_guard()
             thread = await message.create_thread(name=name)
         except discord.Forbidden as exc:
             self._record(403)
@@ -181,8 +303,10 @@ class DiscordEscalationTransport:
         thread = await self._thread(thread_id)
         try:
             if getattr(thread, "archived", False):
+                self._outbound_guard()
                 await thread.edit(archived=False)
-            message = await thread.send(content, allowed_mentions=discord.AllowedMentions.none())
+            self._outbound_guard()
+            message = await thread.send(bound_content(content), allowed_mentions=discord.AllowedMentions.none())
         except discord.Forbidden as exc:
             self._record(403)
             raise TransportUnavailable(f"cannot post in thread {thread_id}: {exc}") from exc
@@ -194,12 +318,28 @@ class DiscordEscalationTransport:
             raise self._http_error(exc) from exc
         return SendOutcome(receipt_id=str(message.id), thread_id=thread_id)
 
-    async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None:
+    async def edit_root(
+        self,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> None:
         self._guard()
         channel = await self._channel(channel_id)
+        # An edit carries exactly the buttons it names: an empty set removes
+        # them, which is how an answered or collapsed post stops offering a
+        # choice (§5.2's one-post rule).
+        view = self._edit_view(buttons)
         try:
             message = await channel.fetch_message(int(root_message_id))
-            await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+            self._outbound_guard()
+            await message.edit(
+                content=bound_content(content),
+                allowed_mentions=discord.AllowedMentions.none(),
+                view=view,
+            )
         except discord.NotFound as exc:
             raise TransportMissing(f"root message {root_message_id} was deleted") from exc
         except discord.Forbidden as exc:
@@ -209,14 +349,71 @@ class DiscordEscalationTransport:
             raise TransportAmbiguous(f"root edit outcome unknown: {exc}") from exc
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
+        finally:
+            self._release(view)
+
+    async def edit_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
+    ) -> None:
+        """Replace one message in place: the status-line edit of spec §2.4."""
+        where = await (self._thread(thread_id) if thread_id else self._channel(channel_id))
+        try:
+            message = await where.fetch_message(int(message_id))
+            self._outbound_guard()
+            await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+        except discord.NotFound as exc:
+            raise TransportMissing(f"message {message_id} was deleted") from exc
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(str(exc)) from exc
+        except (TimeoutError, discord.DiscordServerError) as exc:
+            raise TransportAmbiguous(f"message edit outcome unknown: {exc}") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
+    async def delete_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str
+    ) -> None:
+        """Remove one message: the retirement of a resolved status line (§2.4)."""
+        where = await (self._thread(thread_id) if thread_id else self._channel(channel_id))
+        try:
+            message = await where.fetch_message(int(message_id))
+            self._outbound_guard()
+            await message.delete()
+        except discord.NotFound:
+            # Already gone is the state the caller asked for.
+            return
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(str(exc)) from exc
+        except (TimeoutError, discord.DiscordServerError) as exc:
+            raise TransportAmbiguous(f"message delete outcome unknown: {exc}") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
 
     async def archive_thread(self, *, thread_id: str) -> None:
         self._guard()
         thread = await self._thread(thread_id)
         try:
+            self._outbound_guard()
             await thread.edit(archived=True)
         except discord.NotFound as exc:
             raise TransportMissing(f"thread {thread_id} no longer exists") from exc
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(str(exc)) from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
+    async def read_root(self, *, channel_id: str, root_message_id: str) -> str:
+        channel = await self._channel(channel_id)
+        try:
+            message = await channel.fetch_message(int(root_message_id))
+            if message.author.id != getattr(self._bot.user, "id", None):
+                raise TransportUnavailable("root is not owned by this bot")
+            return message.content
+        except discord.NotFound as exc:
+            raise TransportMissing("root message was deleted") from exc
         except discord.Forbidden as exc:
             self._record(403)
             raise TransportUnavailable(str(exc)) from exc

@@ -1,0 +1,12 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/routing-building-blocks/shipped/artifact.json",
+      "previous_sha256": "4ec68bae1d26ff1535ae4249fa8ae35989834dc0d7535a637cae05cc503ebae4",
+      "sha256": "130f7a50b40a548cf0d51a5fa54e5b43fd208c6d5b9efafc58d81f4e1dd2651f"
+    }
+  },
+  "reason": "grand-quest-20 declares the router's existing capabilities explicitly and records source evidence for its existing guards and bindings. Only trusted execution metadata and source provenance change; the executable graph, policy, prompts and command fingerprints remain unchanged. The original shipped artifact is preserved byte-for-byte and tests/test_assignment_routing_building_blocks.py verifies graph and scenario equivalence for both shipped and installed policy variants.",
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473",
+  "source_commit": "7221b1a593d18d23fce8d48d1c33dde065d45bf1"
+}

@@ -597,7 +597,28 @@ class PlaybookEngine:
 
 `DispatchResult` carries `dispatch_id`, `rules_selected: tuple[str, ...]`, `run_ids: tuple[str, ...]`, and `pending: tuple[PendingEventRef, ...]`. Package 6's shadow-parity harness reads `rules_selected` and the recorded `commands`; Package 5's pending-event `dispatch` action calls `dispatch_event`. Both are named in their plans, so the field names are locked here.
 
-`ResumeCause` is a closed union: `EventArrived(event_id, payload)`, `TimerFired(wait_id)`, `ChildTaskCompleted(task_id, status)`, `HumanDecision(decision, payload)`, `OperatorResolution(kind, payload)`.
+`ResumeCause` is a closed union: `EventArrived(event_id, payload)`, `TimerFired(wait_id)`, `ChildTaskCompleted(task_id, status)`, `HumanDecision(decision, payload)`, `OperatorResolution(kind, payload)`, `InterruptedByRestart(process_started_at)`.
+
+**Restart recovery (2026-10-04).** At the end of daemon initialization and on each
+playbook cycle pass, a bounded keyset scan finds live-mode `running` and
+`cancelling` runs whose `updated_at` precedes this process's start. It schedules
+at most ten background resumes; slow executors never hold startup or the cycle.
+The cursor advances past failures so an unreadable artifact cannot starve later
+runs. Runs already driven by this process are excluded, and the shared engine
+guards re-entry before loading state. A resume rechecks the lifecycle and process
+boundary. An ordinary resume that claims a newly paused wait before its driver
+finishes waits for that driver to exit, preserving the cause without overlapping
+execution. Recovery persists the restart cause in snapshot context with its next
+receipt, including an interruption receipt that pauses for operator resolution.
+Safe commands reuse their attempt key; unsafe commands, LLM calls and ambiguous
+child creation retain §4.8's operator stop. Wait and loop boundaries use their
+existing durable identities and frames. Cancellation settles without executing
+the interrupted step. Paused waits and operator decisions stay with their
+existing producers; terminal runs are never retried. The read-only doctor check
+`playbooks.orphaned_runs` names candidates with no current driver, using the
+daemon's process boundary and engine registry rather than inferring ownership
+from elapsed time. Shutdown cancels and joins recovery tasks, leaving their
+durable boundaries for the next process.
 
 `cancel_children=None` means "use each `AgentTaskStep.cancel_child`", which defaults to `False`. An explicit `True` still cannot cancel a child the run does not own (§7.4).
 
@@ -724,6 +745,7 @@ Distinct from `LlmStep` because it schedules, persists, waits, costs and cancels
 3. **Persist before suspending.** `ExecutorResult(control=SUSPEND, child_task_id=..., wait=WaitSpec(kind="task", correlation_key=task_id, deadline_at=now+step.timeout_seconds))`. The engine commits the boundary — snapshot, receipt and wait registration in one transaction — *before* the run is considered paused. A crash between task creation and the commit leaves an orphan child task and a run still at the step; §4.8's ambiguity rule applies, and the operator sees the orphan because the `create_task` receipt is already durable from the boundary that authorized it.
 4. `wait_for_completion=False` returns `control=ADVANCE, outcome="dispatched"` instead, with no wait.
 5. **Reconcile idempotently.** `resume(run_id, ChildTaskCompleted(task_id, status), ...)` maps the child's terminal status onto `completed` / `failed` / `timed_out` / `cancelled`. **The registered wait is the idempotency token**: the first delivery clears it in the same boundary that takes the edge, so a second delivery finds no wait to reconcile and returns `duplicate_child_completion` with no receipt and no transition. Reconciliation deliberately does *not* re-enter the executor — re-running an `AgentTaskStep` would create a second child task. A status outside the mapped set is `runtime_error`, never a guessed `failed`. A second delivery of the same `(run_id, step_id, attempt, task_id)` is a no-op that writes no receipt — T-8's `test_duplicate_child_completion_is_a_noop`.
+   **The producer** (added 2026-09-20 — T-8 shipped the branch above with nothing to call it, so a child wait ended only at its deadline): `ChildTaskReconciler` in `engine.py`, ticked from `Orchestrator.run_one_cycle` *before* the wait-expiry sweep so a child that settled in the same tick as its deadline is a completion. It is a scan over durable state, not a bus subscriber: `settled_child_waits` joins the active `agent_task` waits of paused runs to `tasks` / `archived_tasks` on `match.task_id` and returns the ones whose task is `COMPLETED` / `FAILED` / `BLOCKED` (delivered as `completed` / `failed` / `blocked`) or gone (`cancelled`). A task reaches a terminal status from some thirty call sites, several of which emit nothing, and a bus delivery swallowed by a restart is never re-sent; the two rows survive all of it. Nothing is claimed — the wait cleared in the resume boundary is what takes the run out of the next scan. Two engine rules ride with it: an open child wait resumed by anything *but* its child (a `TimerFired`, an unrelated event) takes `timed_out` on expiry and otherwise stays paused, never re-entering the executor; and a `WaitStep(wait_kind="task")`, which stores the same `agent_task` wait, records its `awaited` task ref as `match.task_id` and resumes on `ChildTaskCompleted` through the ordinary claim path. The child wait's `deadline_at` is the earlier of the step's `timeout_seconds` and the run deadline, as a `WaitStep`'s is — `WaitScheduler` expires only a wait that has one. Tests: `tests/test_child_task_reconciler.py` (real `tasks` rows, real `transition_task`, the cause is never constructed).
 6. **Cancellation.** §4.9: `cancel_child` defaults to `False`, so cancelling a parent leaves the child running by default. The child is never granted authority by cancellation.
 
 ### 4.6 `WaitExecutor` and the wait scheduler — `src/playbooks/executors/wait.py`

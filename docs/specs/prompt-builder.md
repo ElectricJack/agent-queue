@@ -12,6 +12,12 @@ tags: [spec, prompts, context]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+> **Obsolete runtime entry point.** `PromptBuilder` remains for compatibility and
+> isolated tests; its layered build path is not used to prompt worker sessions.
+> Workers obtain their live context through `aq prime`. See
+> [current prompt context](../concepts/configuration-and-vault.md#prompt-output)
+> and the [system specification](systems/configuration-and-vault.md#prompts-and-templates).
+
 ## Purpose
 
 Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [specs/platforms/claude_sdk](runtimes/claude_sdk.md), chat agent, and agent_prompting.
@@ -29,7 +35,7 @@ Every prompt is assembled from up to 5 ordered layers:
 
 2. **Project Context** — What project is this for? Pulled from the memory system:
    - Project profile (from `profile.md`)
-   - Project documentation (CLAUDE.md, README.md)
+   - Project documentation (AGENTS.md, CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
 3. **Relevant Rules** — Removed. Rules were replaced by [playbooks](design/playbooks.md) and vault memory; nothing is loaded at this step.

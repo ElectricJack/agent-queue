@@ -152,8 +152,8 @@ Extras group features that aren't needed for the minimal install:
 | `sqlite-import` | `aiosqlite` for the one-way `aq db import-sqlite` path                  |
 | `mcp`           | MCP server dependencies (`mcp>=1.28.1,<2`)                              |
 | `cli`           | `aq` CLI (`click`, `prompt-toolkit`, `agent-queue-api-client`)          |
-| `docs`          | `mkdocs` + `mkdocs-material` + `mkdocstrings[python]`                   |
 | `dev`           | Test + lint tools — see §3.4                                            |
+| `test-selection-dynamic` | `pytest-testmon==2.2.0` for the evidence-only testmon experiment (`tests/test_selection_testmon_experiment.py`); deliberately not in `dev` |
 
 There is no `gemini` extra (the Google one is `google`) and no `memory` extra —
 semantic memory ships as the external `aq-memory` plugin, installed with
@@ -189,7 +189,7 @@ dev = [
 - **`pytest>=9.0.3`** — pinned for CVE-2025-71176. This was the subject of the
   `grand-ridge` update task; future bumps should retain the minimum.
 - **`pytest-xdist`** — enables `pytest -n auto` for ~5× faster test runs
-  (see root `CLAUDE.md`).
+  (see root `AGENTS.md`).
 - **`wheel>=0.38.1`** — duplicated from the build-system requires so that the
   patched wheel is present at runtime (some plugins, e.g. `aq-vibecop`, invoke
   the wheel CLI).

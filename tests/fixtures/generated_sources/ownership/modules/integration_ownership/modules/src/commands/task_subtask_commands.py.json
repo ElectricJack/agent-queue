@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/task_subtask_commands.py::TaskSubtaskCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
