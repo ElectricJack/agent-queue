@@ -12,6 +12,11 @@ tags: [design, supervisor, sessions, messages, planning, multi-project]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Current implementation:** [Supervisors and policy](../systems/supervisors-and-policy.md)
+> and [Supervisor turn health](../supervisor-turn-health.md). The August design
+> below predates opt-in project supervisors, global-only report authorship,
+> turn-health recovery and instance-fenced restart. It is not an operating guide.
+
 **Status:** Approved direction (2026-08-19), amended by [../messaging/discord](../messaging/discord.md):
 Discord now reaches the supervisor only through durable escalation threads;
 the project-channel chat and task-thread routes described below are retired.
@@ -264,15 +269,32 @@ delivery consumer. A direct cycle caller without the service retains the deliver
 Concurrent engine passes are skipped while one is in flight.
 
 1. **Target session idle** → provider `nudge` for the first pending message only, as a
-   single line pointing at its durable body (``Handle `aq message status <id> --json`.``);
+   single line pointing at its durable body (``Handle `aq message status <id> --json`
+   (running it marks the message read).``), the same text on every attempt. Saying that
+   the command is the acknowledgment matters: a supervisor that had peeked at the bodies
+   with `aq message inbox` answered each retry from memory and never acknowledged
+   (2026-10-20);
    the rest stay pending for later passes. The nudge carries no body and no reply
    instruction — the supervisor profile teaches `aq reply <msg-id>` for user messages,
    and internal notices (`task_recovery`, `agent_question`) take no reply. The nudge
-   marks the row delivered, so `message_inbox` no longer lists it and `message_status`
-   is the recipient's only way to reach the body. It is therefore on the agent
+   records a notification attempt, leaving the row pending until the recipient
+   reads its body with `message_status`, replies, or receives inbox/prime injection.
+   An operator or another supervisor inspecting status does not consume the
+   recipient's message. Notification attempts and their timestamps survive daemon
+   restarts. Retry after 60 seconds, doubling up to five minutes. A read message is
+   never nudged again: the pending query, the notification claim and the cold-start
+   recheck all exclude rows with `read_at` set. After three
+   unanswered attempts queue one durable alert, including the original body, to
+   the global supervisor. For mail addressed to the global supervisor, send that
+   alert to `user:dashboard` instead: an unauthenticated supervisor cannot alert
+   itself. The alert does not recursively escalate. The original
+   message stays pending and retryable. `message_status` is therefore on the agent
    surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
    own mailbox, and a non-elevated session may read only messages addressed to its
-   own mailboxes (the `message_inbox` mailbox fence). A task comment has no
+   own mailboxes (the `message_inbox` mailbox fence). A named session owns both
+   its UUID and its persisted session name, including task-free batch fixers;
+   reading either address acknowledges the message and ends notification retries.
+   Another session's name grants no mailbox access. A task comment has no
    exception: its notification is the same one-line pointer. Its rendered body (a
    six-line header plus up to 8 KB) used to be typed in directly, and Claude Code
    never shows that verbatim: over 800 characters it collapses to
@@ -283,6 +305,26 @@ Concurrent engine passes are skipped while one is in flight.
    verbatim"). A nudge to a
    sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
+   Wake selection preserves priority (lower first), then selects the newest
+   eligible message, with creation sequence breaking timestamp ties. Inbox/prime
+   body injection retains chronological ordering. Before delivery and supervisor
+   inbox reads, archive unread system `task_recovery` and `stale_open` notices
+   whose subject identifies a completed or missing task in the notice's project.
+   Preserve user mail and notices for failed or otherwise unfinished tasks;
+   expiry is archival, never a recipient acknowledgment.
+   Apply the same archival policy to supervisor escalation notices, replies and
+   owner reminders whose durable thread identifies a terminal escalation or a
+   completed source task. Worker question notices identified by `msg-<question-id>`
+   expire when the question leaves supervisor handling or its source task completes.
+   Preserve unrelated user conversations and failed-task recovery. Pending selection
+   excludes acknowledged and obsolete notices; notification reservation rechecks
+   these conditions before starting or nudging a recipient, so a source settled
+   after selection cannot trigger another wake. Archival preserves the original body
+   and existing delivery receipts without inventing a read acknowledgment.
+   More than 50 unread, unarchived messages across the global supervisor's logical
+   addresses also queues a durable alert to `user:dashboard`, even if the session
+   is busy or absent. Anchor its identity to the oldest unread message so delivery
+   passes and daemon restarts cannot repeat an alert for the same backlog episode.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
    nudged on the first delivery pass that observes the session idle. This *was* a
    `UserPromptSubmit` hook running `aq inbox --inject`; it was removed 2026-08-27 because
@@ -299,6 +341,9 @@ spec's activity signal (transcript in-turn state, A.6) through a narrow interfac
 that lands, the engine can only queue and prime-inject — an acceptable degraded mode.
 
 Session recipients may be immutable UUIDs or historical named supervisor addresses.
+System notifications for a batch fixer use its registered AQ session UUID, including
+new CI evidence, rebind requests and green results. Its tmux session name identifies
+the process, rather than the mailbox authorized by its session token.
 A retired UUID is never redirected to a successor with the same name. The global
 supervisor has no project and can receive project-scoped messages without acquiring that
 project as its session scope. Profile recipients remain inbox/prime broadcasts; they do
@@ -309,10 +354,11 @@ Wake logs identify the message and recipient, and distinguish refused from submi
 Terminal guard refusals name the observed condition (attached client, copy mode, unknown
 prompt prefix, or cursor outside the pane), retaining the existing guard behavior. All
 provider failures, including unsupported nudges, are available in session diagnostics;
-logs retain evidence across daemon restarts. A confirmed nudge stamps `delivered_at`,
-never `read_at`. Inbox injection exposes the body, explicit acknowledgement/reply stamps
-`read_at`, and neither stamp alone proves the requested work was performed. A process
-crash after submit but before the delivery CAS can repeat a pointer on restart: this is
+logs retain evidence across daemon restarts. A confirmed nudge does not stamp
+`delivered_at` or `read_at`. Reading the body as its recipient or replying stamps both;
+inbox/prime injection stamps delivery. No stamp proves the requested work was performed.
+A process crash after notification reservation but before submit delays its retry by
+the bounded backoff; a crash after submit can repeat a pointer on restart: this is
 at-least-once transport, not an exactly-once handling guarantee.
 
 ### 6.2 Reply protocol
@@ -325,17 +371,46 @@ shows a completed assistant turn since delivery, the relay tails that turn and p
 the reply, marked `via=transcript_tail`. The fallback keeps chat usable with harnesses or
 prompts that forget the protocol; the profile Rules make the CLI path the norm.
 
-The tail is only a recovery, never an invention, so the turn it posts must pass three
+The tail is only a recovery, never an invention, so the turn it posts must pass four
 tests: it carries assistant *prose* (a `[tool_use: …]` transcript placeholder is a tool
 call, not an answer), it is the first such turn after delivery and inside
-`delivered_at + reply_window_multiplier × reply_timeout`, and the request came from someone
-awaiting an answer (`system:*` senders are excluded). The window is what stops a resumed
+`delivered_at + reply_window_multiplier × reply_timeout`, the request came from a human
+(`from_kind=user`), and the attribution is unambiguous. The window is what stops a resumed
 session from replying to its whole backlog at once; without it, every
 delivered-but-unreplied row ever written would qualify forever.
 
+A transcript turn names no message it answers, so the relay never guesses which request a
+turn was about. It fails closed instead:
+
+- **Agent senders are never swept.** A reply addressed to a session or task lands in a
+  mailbox that satisfies that agent's durable message waits and reads as the recipient's
+  answer. On 2026-10-12 a supervisor's general progress about another task was posted as
+  the reply to two workers' requests and cleared one worker's wait. Agents receive only
+  explicit replies (`aq message reply`, `aq agent message --reply-to`).
+  `aq agent message` from a current named launch of the target's own project
+  supervisor is signed `session:supervisor-<project>`, so the worker's
+  `aq message reply` returns to that mailbox on the same thread. Any other
+  caller (the operator CLI, automation, the global supervisor, a stale launch)
+  signs `system:supervisor`, which stays unanswerable. A worker replies only
+  to its own mailboxes' messages, as that mailbox.
+- **One turn binds to at most one conversation.** If any row from another conversation
+  (a different project, thread or sender, of any kind and including archived rows) was
+  delivered to the same recipient within one window length either side of the request's
+  `delivered_at`, the turn may be about that one, and the request gets no tail reply.
+- **The insert re-checks under the request's row lock.** The reply row is written already
+  delivered, in one transaction that locks the request, confirms it is unarchived with the
+  same `delivered_at`, and repeats the explicit-reply and competing-delivery checks. A
+  native reply also locks its parent while inserting, so a reply that wins the race leaves
+  no tail row behind, and concurrent sweeps create one reply at most.
+
+There is no correlated-prose path. Harness transcripts carry no message id, so prose that
+does answer a worker counts only if the recipient sends it with an explicit reply. A quiet
+human chat still receives the recipient's next prose turn. That is the intended fallback;
+it is human-facing, marked `via=transcript_tail`, and cannot satisfy an agent wait.
+
 ### 6.3 Events
 
-`message.sent` (row created), `message.delivered` (nudge confirmed submitted, or injected),
+`message.sent` (row created), `message.delivered` (body read by recipient, or injected),
 `message.replied` (reply row linked). All registered in the event payload registry.
 Subsystems integrate only through these events — the Discord adapter, dashboard WS stream,
 and delivery engine never call each other (principle #7).

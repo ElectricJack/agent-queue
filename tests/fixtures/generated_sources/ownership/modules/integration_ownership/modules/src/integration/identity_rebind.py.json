@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/identity_rebind.py::ReusedIdentityRebind._apply::4a1d195bf956bc45337e19249ca73496384e6f1fd9eba59d6f86cfee29084ee7": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 338,
+      "owner": "ReusedIdentityRebind._apply",
+      "owner_fingerprint": "b700803de0fa50973a6b0c560ea3f6c2b493ef49f299f5036f70c55886c4b8f5",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
