@@ -19,6 +19,7 @@ from src.commands.principal import TRUSTED_LOCAL
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.receipts import REDACTED_KEY, SENSITIVE_PREFIX
+from tests._private_values_helper import ReadyPrivateValues
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     GATE_CREATE,
@@ -114,6 +115,7 @@ def build(command: str, contract: Any, *, save_as: str = "bound"):
             clock=lambda: 1_000.0,
             artifact_store=store,
             bus=RecordingBus(),
+            private_values=ReadyPrivateValues(),
         ),
         runs=runs,
         waits=None,
@@ -314,3 +316,16 @@ class TestPrincipalProjection:
         principal = step_receipt(runs).principal
         assert principal["capability_fingerprint"] == TRUSTED_LOCAL.policy.fingerprint()
         assert "ensure_task" not in str(principal)
+
+
+async def test_rejected_summary_does_not_bypass_receipt_projection():
+    engine, adapter, runs, ref = build("ensure_task", ENSURE_TASK)
+    adapter.queue.append(CommandResult(
+        outcome="rejected", value=EnsureTaskResult(task_id="", created=False),
+        summary="unclassified secret from a command adapter",
+    ))
+    outcome = await run_one(engine, ref)
+    assert step_receipt(runs).error is None
+    # This fixture handles the refusal by completing successfully.
+    assert outcome.snapshot.error is None
+    assert "unclassified secret" not in str(runs.receipts)

@@ -20,12 +20,16 @@ Like ``tests/test_v1_removal.py``, this module holds the line the spec draws:
 4. **No stale readers** (Task 8): no module under ``src/`` reads
    ``default_profile_id``, ``task_route_options`` no longer exists, and a
    project takes no default profile on any surface (spec §8, §9.3).
+5. **Shipped prose files with hints** (Task 9): no skill, shipped profile,
+   prompt or current document tells a caller to file or route a task with a
+   profile, a pin or a responder profile (spec §12).
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import re
 import textwrap
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -294,6 +298,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_router_route"): (
         "task_route_apply: the bound router's single route write (spec §6.6)"
     ),
+    ("src/database/queries/routing_queries.py", "RoutingQueryMixin.record_routing_retry_on"): (
+        "guarded retry/reopen clears router/legacy results for a fresh router plan; "
+        "journals substantive failures atomically, never selects a worker or changes an override"
+    ),
     # -- the audited emergency override (spec §7, D2) -------------------------
     ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_override_route"): (
         "task_route_override: the local operator's or supervisor's pinned override"
@@ -306,6 +314,15 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "reroute undo (spec §6.8, Task 6)"
     ),
     # -- role creators (spec §4, D3) -----------------------------------------
+    ("src/commands/spec_ingest_commands.py", "SpecIngestCommandsMixin._cmd_ensure_spec_ingest"): (
+        "creates the server-owned spec-ingest role after validating the immutable "
+        "approval application receipt; callers cannot choose a profile"
+    ),
+    ("src/commands/fidelity_review_commands.py",
+     "FidelityReviewCommandsMixin._cmd_ensure_fidelity_review"): (
+        "creates the server-owned fidelity-reviewer role for a held batch after "
+        "checking the batch and its dispatch receipt; callers cannot choose a profile"
+    ),
     ("src/commands/task_commands.py", "TaskCommandsMixin._create_task"): (
         "writes route_source/route for every task; a profile only for a role creator's "
         "role profile (_filing_refusal refuses every other)"
@@ -323,6 +340,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ("src/database/queries/task_queries.py", "TaskQueryMixin.reset_task_route"): (
         "sends a queued task back to its router: clears the route (aq task route, "
         "edit_task hint edits)"
+    ),
+    ("src/commands/promote_commands.py", "PromoteCommandsMixin._cmd_promote_repair"): (
+        "operator/supervisor repair clears an erroneous worker route from a "
+        "daemon-owned promotion intent; never selects a worker profile"
     ),
     # -- the persistence layer -------------------------------------------------
     ("src/database/queries/task_queries.py", "TaskQueryMixin._insert_task_row"): (
@@ -975,11 +996,23 @@ def test_the_llm_tool_loop_refuses_ahead_of_the_args_model() -> None:
 #: Recorded before the refusal landed (solid-dune-67.5).  The argument models
 #: keep their legacy routing fields, refused at runtime, so these do not move
 #: and no reviewed bundle that calls them goes stale (spec §5.1).
+#:
+#: ``create_task`` moved once, for an unrelated reason: the per-task routing
+#: preference (``--prefer``/``--prefer-mode``, spec §4) is a declared argument
+#: now, which changes its args schema.  What the pin protects is that nothing
+#: reviewed compiles against the command whose digest moved, which
+#: :func:`test_no_reviewed_bundle_compiles_against_create_task` now asserts
+#: structurally rather than leaving it to the recorded digest.
 FINGERPRINTS = {
-    "create_task": "sha256:6b42134bd02d6111e6dde186aa5ffebfb2aae8ba6842a9c4024a465086359ca2",
-    "ensure_task": "sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4",
+    "create_task": "sha256:6545a178b72152e39968fa3e86e0dde22235b981c6a33f7bcde2424d9ac491d6",
+    "ensure_task": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5",
     "edit_task": "sha256:a5c02bc88c11931d870330d03db0b1a7237e539a51a7d65a18149b3dc63b9fb6",
 }
+
+#: The one filing command whose recorded fingerprint may move, and only while
+#: no reviewed bundle calls it.  ``ensure_task`` and ``edit_task`` are called
+#: by shipped bundles, so their digests are frozen for good.
+MOVABLE_FINGERPRINTS = frozenset({"create_task"})
 
 
 @pytest.mark.parametrize("command", sorted(FINGERPRINTS))
@@ -990,6 +1023,31 @@ def test_filing_contract_fingerprints_are_unchanged(command: str) -> None:
     contract = CONTRACTS.require(command).contract
     assert execution_fingerprint(contract.execution) == FINGERPRINTS[command]
     assert "rejected" in {spec.name for spec in contract.execution.outcomes}
+
+
+def test_no_reviewed_bundle_compiles_against_create_task() -> None:
+    """Why ``create_task``'s digest may move: nothing reviewed calls it.
+
+    A fingerprint is recorded so that changing a filing contract cannot
+    silently stale a reviewed bundle.  That only holds while the shipped
+    bundles reference none of the movable commands, so this pins the premise
+    instead of trusting the recorded digest to keep it.
+    """
+    import json
+    from pathlib import Path
+
+    shipped = Path(__file__).resolve().parent.parent / "src" / "prompts" / "reviewed_playbooks"
+    referencing: dict[str, list[str]] = {}
+    for artifact in sorted(shipped.glob("*/artifact.json")):
+        compiled = json.loads(artifact.read_text(encoding="utf-8")).get("compiled_against", {})
+        for command in set(compiled.get("commands", {})) & MOVABLE_FINGERPRINTS:
+            referencing.setdefault(command, []).append(artifact.parent.name)
+    assert not referencing, (
+        "a reviewed bundle now compiles against a filing command whose "
+        f"fingerprint may move: {referencing}. Its recorded fingerprint is stale "
+        "-- rebuild the bundle (scripts/rebuild-reviewed-playbook-artifacts.py), "
+        "re-review it, and freeze its digest above."
+    )
 
 
 @pytest.mark.parametrize("command", ["create_task", "ensure_task", "edit_task", "task_route"])
@@ -1166,6 +1224,126 @@ async def test_the_typed_api_route_refuses_a_project_default(env, monkeypatch) -
             assert response.status_code == 422, (path, response.text)
             assert response.json()["code"] == ROUTING_CHOICE_FORBIDDEN, response.text
     assert await db.list_projects() == before
+
+
+# ---------------------------------------------------------------------------
+# 5. Shipped prose files with hints (spec §12)
+# ---------------------------------------------------------------------------
+
+#: Prose AQ ships, or presents as current documentation.  Design specs,
+#: plans, reports and reviewed bundles are history and keep what they record.
+PROSE_GLOBS: tuple[str, ...] = (
+    "AGENTS.md",
+    "README.md",
+    "profile.md",
+    "src/skills/**/*.md",
+    "src/profiles/defaults/**/*.md",
+    "src/prompts/*.md",
+    "src/prompts/default_playbooks/*.md",
+    "src/prompts/integration_playbooks/*.md",
+    "src/prompts/project_playbooks/**/*.md",
+    "src/prime/templates/*.md",
+    "docs/concepts/**/*.md",
+    "docs/config/**/*.md",
+    "docs/contributing/**/*.md",
+    "docs/guides/**/*.md",
+    "docs/reference/**/*.md",
+    "docs/tutorials/**/*.md",
+)
+
+#: A command that files or routes a task, and the flags that would choose its
+#: route.  ``aq task route-override`` is the audited exception (spec §7).
+ROUTE_CHOOSING_FLAGS: dict[str, tuple[str, ...]] = {
+    "aq task create": ("--profile", "-P", "--pin", "--provider-intent", "--agent-type"),
+    "aq task route": ("--profile-id", "--pin", "--provider-intent"),
+    "aq task edit": ("--profile-id", "--pin", "--provider-intent"),
+    "aq review dispatch": ("--to",),
+    "aq review decide": ("--responder-profile",),
+}
+
+#: Where a command's arguments end once the prose is flattened: a closing
+#: backtick, a table cell, a shell comment, or the next ``aq`` command.
+_COMMAND_END = re.compile(r"`|\||\s#\s|\baq\s")
+
+
+def route_choosing_commands(text: str) -> list[str]:
+    """Every command in *text* that files or routes a task with a route.
+
+    Line continuations and wrapping are flattened first, so a command split
+    across lines of a code block or a paragraph is read whole.
+    """
+    flat = re.sub(r"\s+", " ", text.replace("\\\n", " "))
+    found: list[str] = []
+    for command, flags in ROUTE_CHOOSING_FLAGS.items():
+        for match in re.finditer(rf"\b{re.escape(command)}(?![\w-])", flat):
+            rest = flat[match.end():]
+            end = _COMMAND_END.search(rest)
+            arguments = rest[: end.start()] if end else rest
+            found.extend(
+                f"{command} {flag}"
+                for flag in flags
+                if re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", arguments)
+            )
+    found.extend(
+        match.group(0) for match in re.finditer(r"\baq project set \S+ default-profile\b", flat)
+    )
+    return found
+
+
+def _prose_files() -> list[Path]:
+    files: set[Path] = set()
+    for pattern in PROSE_GLOBS:
+        files.update(REPO.glob(pattern))
+    return sorted(path for path in files if path.is_file())
+
+
+SEEDED_ROUTE_CHOICES = {
+    "create --profile": "aq task create --project p --title t --profile standard-high-claude",
+    "create -P across lines": 'aq task create -p e2e -t "x" \\\n  -P worker',
+    "create --pin in prose": "file it with `aq task create --title t\n  --pin`",
+    "route --profile-id": "aq task route --task-id t --profile-id standard-high-codex",
+    "edit --pin": "aq task edit --task-id t --pin",
+    "dispatch --to": "aq review dispatch --review-id r --to deep-high-codex",
+    "decide --responder-profile": (
+        "aq review decide --review-id r --revision 1 --decision reject --responder-profile p"
+    ),
+    "project default": "aq project set demo default-profile standard-high-claude",
+}
+
+NOT_ROUTE_CHOICES = {
+    "override": 'aq task route-override --task-id t --profile-id p --reason "outage"',
+    "hints": "aq task create --project p --title t --type bugfix --intelligence-class deep-high",
+    "route hints": "aq task route --task-id t --intelligence-class deep-high --task-type design",
+    "pool scale": "aq pool scale --profile-id standard-high-claude --max 3",
+    "reseed": "aq agent profile-reseed --profile-id worker-claude --grants-only",
+    "refusal prose": "`aq task create` refuses `--profile` and `--pin`",
+    "shell comment": "aq task create --title t  # a --profile is refused",
+    "table cell": "| `aq task create` | --profile is refused |",
+}
+
+
+@pytest.mark.parametrize("label", sorted(SEEDED_ROUTE_CHOICES))
+def test_the_prose_scan_finds_a_seeded_route_choice(label: str) -> None:
+    assert route_choosing_commands(SEEDED_ROUTE_CHOICES[label]), label
+
+
+@pytest.mark.parametrize("label", sorted(NOT_ROUTE_CHOICES))
+def test_the_prose_scan_ignores_what_chooses_no_route(label: str) -> None:
+    assert route_choosing_commands(NOT_ROUTE_CHOICES[label]) == [], label
+
+
+def test_shipped_prose_files_with_hints_never_a_route() -> None:
+    """Spec §12, Task 9 acceptance: no shipped doc, skill or profile tells a
+    caller to pass ``--profile``, ``--pin`` or ``--profile-id`` to file or
+    route a task."""
+    files = _prose_files()
+    assert any(path.match("src/skills/*/SKILL.md") for path in files)
+    offenders = {
+        str(path.relative_to(REPO)): hits
+        for path in files
+        if (hits := route_choosing_commands(path.read_text(encoding="utf-8")))
+    }
+    assert offenders == {}, offenders
 
 
 if __name__ == "__main__":  # pragma: no cover - a developer's listing aid
