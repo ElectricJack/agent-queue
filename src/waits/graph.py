@@ -7,40 +7,108 @@ Resource cycles terminate; priorities are derived from bases, never stale caches
 
 import asyncio
 import heapq
+import inspect
+import logging
 import time
 import uuid
 from collections import defaultdict
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import task_dependencies, tasks, wait_edges, wait_priority_projection
 from src.models import BLOCKING_DEP_TYPES
+from src.metrics.perf import timed_operation
 from src.waits.conditions import WaitError
 
 GRAPH_LOCK = 0x41515747524150
 MAX_COMPONENT_NODES = 10_000
-# Every waiter pins a pooled connection. An unbounded wait let one slow holder
-# queue the whole pool behind it (2026-10-22 wedges), so waiting is refused.
+# Foreground writes retain their existing budget. Background reconcilers retry
+# next tick, so they must not pin the pool while a holder needs another connection.
 GRAPH_LOCK_TIMEOUT = 20.0
+GRAPH_LOCK_WARN_SECONDS = 5.0
+logger = logging.getLogger(__name__)
 
 
+def graph_locked(conn):
+    transaction = conn.info.get("wait_graph_transaction")
+    return transaction is not None and transaction is conn.sync_connection.get_transaction()
+
+
+def _release_graph_lock(sync_conn):
+    timer = sync_conn.info.pop("wait_graph_timer", None)
+    if timer:
+        timer.cancel()
+    state = sync_conn.info.pop("wait_graph_holder", None)
+    if state and not state["warned"] and time.monotonic() - state["started"] >= GRAPH_LOCK_WARN_SECONDS:
+        _warn_graph_holder(state)
+    sync_conn.info.pop("wait_graph_transaction", None)
+
+
+def _warn_graph_holder(state):
+    state["warned"] = True
+    logger.warning("wait.graph_lock_slow: caller=%s held_seconds=%.3f", state["caller"],
+                   time.monotonic() - state["started"])
+
+
+def track_graph_lock(conn):
+    """Warn while a holder is stuck, including idle Python awaits, once per transaction."""
+    if graph_locked(conn):
+        return
+    frame = inspect.currentframe().f_back
+    if frame.f_code.co_name == "lock_graph":
+        frame = frame.f_back
+    # The metrics decorator must not hide the transaction holder in diagnostics.
+    if frame.f_code is lock_graph.__code__:
+        frame = frame.f_back
+    caller = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
+    del frame
+    conn.info["wait_graph_transaction"] = conn.sync_connection.get_transaction()
+    state = {"started": time.monotonic(), "caller": caller, "warned": False}
+    conn.info["wait_graph_holder"] = state
+    timer = asyncio.get_running_loop().call_later(GRAPH_LOCK_WARN_SECONDS, _warn_graph_holder, state)
+    conn.info["wait_graph_timer"] = timer
+    for name in ("commit", "rollback"):
+        if not event.contains(conn.sync_connection, name, _release_graph_lock):
+            event.listen(conn.sync_connection, name, _release_graph_lock)
+
+BACKGROUND_GRAPH_LOCK_TIMEOUT = 0.25
+_background_graph_work = ContextVar("background_graph_work", default=False)
+
+
+@asynccontextmanager
+async def background_graph_work():
+    """Give replayable reconciliation a short fence wait, scoped to this task."""
+    token = _background_graph_work.set(True)
+    try:
+        yield
+    finally:
+        _background_graph_work.reset(token)
+
+
+@timed_operation("db.wait_graph_lock")
 async def lock_graph(conn, *, timeout=None):
     """Take the transaction-scoped graph fence, or refuse with ``wait.graph_busy``.
 
     Polls the non-blocking form so a refused waiter leaves its transaction
     usable and hands its connection back promptly instead of convoying.
     """
-    timeout = GRAPH_LOCK_TIMEOUT if timeout is None else timeout
+    if timeout is None:
+        timeout = (BACKGROUND_GRAPH_LOCK_TIMEOUT if _background_graph_work.get()
+                   else GRAPH_LOCK_TIMEOUT)
     deadline = time.monotonic() + timeout
     delay = 0.005
     while not await conn.scalar(select(func.pg_try_advisory_xact_lock(GRAPH_LOCK))):
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise WaitError(
-                "wait.graph_busy", f"wait graph lock not acquired within {timeout:.0f}s; retry"
+                "wait.graph_busy", f"wait graph lock not acquired within {timeout:g}s; retry"
             )
-        await asyncio.sleep(delay)
+        await asyncio.sleep(min(delay, remaining))
         delay = min(delay * 2, 0.25)
+    track_graph_lock(conn)
 
 
 async def _walk(conn, roots, *, reverse=False):
@@ -235,33 +303,35 @@ async def would_create_cycle(conn, proposed, *, excluding_wait_id=None) -> bool:
     participate. Check only cycles introduced by proposed edges so unrelated
     historical corruption does not reject every registration in the fleet.
     """
-    adjacency = defaultdict(set)
-    for waiter, blocker in await conn.execute(
-        select(
-            task_dependencies.c.task_id,
-            task_dependencies.c.depends_on_task_id,
-        ).where(task_dependencies.c.dep_type.in_(sorted(BLOCKING_DEP_TYPES)))
-    ):
-        adjacency[f"task:{waiter}"].add(f"task:{blocker}")
-    edge_query = select(
-        wait_edges.c.waiter_key,
-        wait_edges.c.blocker_key,
-    ).where(wait_edges.c.active.is_(True), wait_edges.c.relation == "semantic")
-    if excluding_wait_id is not None:
-        edge_query = edge_query.where(wait_edges.c.wait_id != excluding_wait_id)
-    for waiter, blocker in await conn.execute(edge_query):
-        adjacency[waiter].add(blocker)
-    semantic = [e for e in proposed if e.relation == "semantic"]
+    semantic = [edge for edge in proposed if edge.relation == "semantic"]
+    proposed_next = defaultdict(set)
     for edge in semantic:
-        adjacency[edge.waiter.key].add(edge.blocker.key)
+        proposed_next[edge.waiter.key].add(edge.blocker.key)
+    # Read only the reachable component, not every dependency/wait in the fleet.
     for edge in semantic:
-        visited = set()
-        frontier = [edge.blocker.key]
+        seen, frontier = set(), {edge.blocker.key}
         while frontier:
-            node = frontier.pop()
-            if node == edge.waiter.key:
+            if edge.waiter.key in frontier:
                 return True
-            if node not in visited:
-                visited.add(node)
-                frontier.extend(adjacency[node] - visited)
+            seen.update(frontier)
+            if len(seen) > MAX_COMPONENT_NODES:
+                raise WaitError("wait.graph_limit", "wait component exceeds the traversal budget")
+            following = {node for key in frontier for node in proposed_next[key]}
+            task_ids = [key.removeprefix("task:") for key in frontier if key.startswith("task:")]
+            if task_ids:
+                dependencies = await conn.execute(select(task_dependencies.c.depends_on_task_id).distinct().where(
+                    task_dependencies.c.task_id.in_(task_ids),
+                    task_dependencies.c.dep_type.in_(sorted(BLOCKING_DEP_TYPES)),
+                ).limit(MAX_COMPONENT_NODES + 1))
+                following.update(f"task:{task_id}" for task_id in dependencies.scalars())
+            query = select(wait_edges.c.blocker_key).distinct().where(
+                wait_edges.c.active.is_(True), wait_edges.c.relation == "semantic",
+                wait_edges.c.waiter_key.in_(sorted(frontier)),
+            )
+            if excluding_wait_id is not None:
+                query = query.where(wait_edges.c.wait_id != excluding_wait_id)
+            following.update((await conn.execute(query.limit(MAX_COMPONENT_NODES + 1))).scalars())
+            if len(seen | following) > MAX_COMPONENT_NODES:
+                raise WaitError("wait.graph_limit", "wait component exceeds the traversal budget")
+            frontier = following - seen
     return False
