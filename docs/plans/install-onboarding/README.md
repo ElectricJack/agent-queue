@@ -4,6 +4,10 @@ AQ epic: **noble-apex** (19 children, `noble-apex.1` through `noble-apex.19`). P
 
 Deliver one straightforward installation path on Windows through WSL2 and on macOS, from a fresh machine to a working first task. This plan specifies implementation work; it does not claim these capabilities already ship.
 
+The foundation's explicit platform, protocol, readiness, ownership, and
+compatibility decisions are in the [installation and onboarding contract](contract.md).
+That document is a planning handoff, not current-user installation guidance.
+
 The installer offers PostgreSQL setup and selected agent CLIs (Claude Code, Codex, Gemini CLI), including supported interactive login. Curated exportable configuration and profiles exclude project memory, credentials and machine-specific data. Enable only usable profiles for the installed platform and providers.
 
 All child tasks use standard-high with no pinned profile. The foundation waits for solid-grove and every other child depends transitively on it. Native platform acceptance is required; local mocks alone are insufficient. No additional review-ticket workflow is introduced.
@@ -169,5 +173,13 @@ Assemble shipped installers, portable defaults, profiles and GitHub documentatio
 
 - All required platform journeys have evidence, and published commands resolve to the intended artifacts.
 - Release includes discoverable upgrade/repair instructions and explicit supported-platform limitations.
+
+## Acceptance evidence
+
+Native platform evidence is recorded per platform, not asserted:
+
+* macOS — [acceptance/macos.md](acceptance/macos.md), produced by
+  `scripts/acceptance/macos_acceptance.py` and
+  `.github/workflows/macos-acceptance.yml`.
 
 The authoritative creation graph is [tasks.graph.json](tasks.graph.json). Third-party installation and login methods must be verified against current official documentation during implementation.

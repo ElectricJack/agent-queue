@@ -4,6 +4,14 @@ tags: [spec, config]
 
 # Config Module Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 The config module is responsible for loading, parsing, and structuring the application's runtime configuration. It reads a single YAML file from a caller-supplied path, loads an optional `.env` file from the same directory, performs environment variable substitution on all string values, and returns a fully populated `AppConfig` dataclass instance.
@@ -12,7 +20,7 @@ The module never writes configuration, never searches for the config file itself
 
 ## Source Files
 - `src/config.py` — read path: `load_config(path)` returns an `AppConfig`
-- `src/config_editor.py` — runtime write path (see [Runtime Editing](#runtime-editing))
+- `src/config_editor.py` — runtime write path (see [Runtime Editing](#7-runtime-editing))
 
 ---
 
@@ -163,15 +171,86 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 | `bot_token` | `str` | `""` | Discord bot token. |
 | `guild_id` | `str` | `""` | Discord server ID. |
 | `channel_id` | `str` | `""` | Numeric shared channel ID for digests and escalation roots. |
-| `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads. |
+| `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
+| `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
+
+#### 4.2.1 Supervisor-authored digest (phase P3, gated)
+
+`discord.digest.supervisor_authored` defaults to **false**, which is the whole
+deterministic digest described above. Turning it on replaces the deterministic
+window with one the supervisor writes; rollback is the flag and nothing else.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `supervisor_authored` | `bool` | `false` | Hold each window for the supervisor instead of posting it directly. |
+| `cadence_minutes` | `int` | `120` | Window length while supervisor-authored; 15–1440, replaces `interval_minutes`. |
+| `quiet_hours.start` / `.end` | `str` | `"22:00"` / `"07:00"` | Local `HH:MM` interval, may cross midnight, in `reports.timezone`. Suppresses the post, never the fact collection. |
+| `author_fallback_minutes` | `int` | `10` | Grace before the deterministic digest posts for an unanswered window; 1–60. |
+| `quiet_line_after_skips` | `int` | `3` | Consecutive unchanged windows before one "nothing needs you" line a day; 1–24. |
+
+With the flag on, each window is reserved on the cadence grid and held until
+`window_end + author_fallback_minutes`. The supervisor reads the frozen facts
+with `aq digest facts --since <window start>` and posts with
+`aq digest post --window <window start> --body "..."`, which the daemon renders
+inside the 600-character digest budget and appends the needs-you link to. A
+window with no new facts and nothing waiting on Jack is skipped; after
+`quiet_line_after_skips` such windows one line is posted per local day, so
+silence stays distinguishable from a dead bot. Authoring also requires the
+`supervisor-digest` playbook, whose historical reviewed bundle remains available
+for explicit operator import and activation; without it every window falls back.
+Its retired source is no longer seeded into `system/playbooks`, nor are
+`supervisor-hourly-report` and `blocked-task-escalation`. Startup preserves existing
+operator copies and does not recreate deleted sources.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
+
+`discord.escalations` is the P1 phase of the Discord design spec (§5.2, §5.5,
+§7.1) and is the only rollback flag for it:
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `stateful` | `bool` | `false` | One channel post per incident, edited in place as it moves and collapsed to one line when it closes; incidents whose source went away close themselves. |
+
+There is no retention timer. Spec §5.2 sketched an opt-in
+`delete_collapsed_after_hours`, and the §8 Q3 decision (2026-10-03) was
+"keep as one-line posts forever": a closed incident's collapsed post stays in the
+channel permanently and nothing deletes it. `escalations.collapsed_at` records
+*when* a post collapsed — the audit trail and the idempotency check for a
+replayed edit, not a countdown.
+
+`discord.escalations.stateful: false` is not a degraded mode — it is exactly the
+behaviour that shipped before the phase: one root post per incident, edited only
+when it closes, no auto-resolution and no collapse bookkeeping. Turning it off
+also fences any state edit a daemon had already queued, so rollback never leaves
+half a phase running. The two keys are additive columns
+(`escalations.outcome`, `escalations.collapsed_at`), so an incident raised
+before the phase reads as unbacked and keeps the create-only post.
+`discord.escalation.reminder_minutes` remains the stale timer that decides when
+an open incident's post says it has been sitting unanswered; 0 disables it.
+
+`discord.conversation.require_mention` is the routing flag: true (the default)
+admits a top-level message only when the gateway saw a bot-user mention, while
+false makes the channel's one conversation answer any message from the
+allow-list. `allow_dm` admits a direct message from an allow-listed user as its
+own channel conversation and requires `enabled`; it is off by default. Both
+default to the mention-routing behaviour, so either is a rollback switch.
+
+`discord.conversation.enabled` is a boolean, false by default. Enabling it
+requires a non-empty `authorized_users` allowlist and configured `guild_id` and
+`channel_id`; validation rejects missing values. Runtime intake also requires
+`messages.enabled`, `sessions.enabled`, completed Discord cutover and a bound
+conversation outbox. Both gateway and command re-check all eight prerequisites.
+Settings warn that allowlisted identities reach the elevated global supervisor;
+this is not a sandboxed chatbot. Deployments requiring enforced read-only chat
+keep it off. Numeric conversation limits are fixed, not YAML settings; see
+[Discord supervisor conversations](../guides/discord-conversations.md).
 
 Old `channels.control`, `channels.notifications` and
 `channels.agent_questions` names are retained only as one-way migration
@@ -183,6 +262,113 @@ creation.
 Disabling external escalation or digest delivery never disables the core
 escalation inbox, supervisor routing, scheduler, or dashboard.
 
+### 4.2.1 `reports` Section
+
+`reports.timezone` is the one installation-wide IANA time zone used for report
+daily limits, quiet hours and morning report boundaries. It defaults to
+`UTC`. An invalid zone fails configuration loading. The section requires a
+daemon restart when edited.
+
+```yaml
+reports:
+  timezone: America/Los_Angeles
+  hourly:
+    enabled: false
+    full_fleet_visibility: false
+    grace_minutes: 5
+    max_requests_per_day: 12
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
+  morning:
+    enabled: false
+    full_fleet_visibility: false
+    time: "07:00"
+    late_cutoff_minutes: 120
+    max_lookback_hours: 72
+    author_deadline_minutes: 15
+    project_ids: []
+    destination: "" # empty inherits the shared destination in the delivery layer
+```
+
+Hourly supervisor authoring is opt-in and defaults off. `full_fleet_visibility`
+must be explicitly true, and `discord.digest.project_ids` must be empty, before
+the global supervisor can author text for the shared destination. Quiet hours
+use local `HH:MM` times, may cross midnight, and suppress author wakes while
+the deterministic digest remains eligible to send. Omitting `quiet_hours`
+disables that suppression. `grace_minutes` is 1–60; `max_requests_per_day` is
+1–24, with reservations counted even when a report falls back. An inactive
+authoring playbook keeps delivery deterministic. The request/CAS slice does
+not activate an authoring playbook by itself.
+
+Morning scheduling is opt-in. `time` must be a zero-padded local `HH:MM`;
+`late_cutoff_minutes` is 1–1440, `max_lookback_hours` is 1–72 and
+`author_deadline_minutes` is 1–60. `project_ids` selects up to 100 projects
+(empty means the fleet). A nonempty destination is `discord:<channel id>`.
+The report tick runs only from a daemon service or system playbook, uses the
+report zone instead of host-local cron, moves a nonexistent DST time to the
+first valid minute, and chooses the first occurrence of a repeated time.
+
+The durable `morning-daily` schedule reserves one row per local date even if
+the time is edited. A zone edit cannot reserve a report whose planned instant
+is within 20 hours of the last daily reservation. A restart after the late
+cutoff records `skipped:late_start` without advancing coverage. Within cutoff,
+the window still ends at the planned instant, while the full author deadline
+starts at reservation. Interrupted builds recover their stored window and
+source context; ready briefs and their hashes are never rebuilt.
+
+Git evidence reads the configured repository's checkout, else a `project-repo` base
+workspace. When several bases exist, each origin must match the configured repository;
+the `<project>-primary` workspace wins, followed by a stable path order. Reads never fetch:
+a remote-tracking head whose `FETCH_HEAD` is over an hour old is a
+`stale_remote_tracking_head` gap, a missing
+checkout is `checkout_unavailable`, and a project with no usable checkout or
+different/unreadable origins is `configured_repository_unavailable`.
+Per-source coverage and default-branch heads advance on finalization, separately
+from transport receipts. Failed sources retain their cursor for recovery;
+lookback caps disclose the omitted interval. Morning fact membership deduplicates
+the 72-hour replay independently of hourly digests. Changed project selections
+have separate source cursors so they do not consume unseen project evidence.
+Healthy quiet days finalize as suppressed immediately, without an author turn.
+Expired ready reports finalize their deterministic fallback; disabling the
+schedule cancels pending rows and leaves stored reports readable. Report rows
+and their fact membership are retained for 90 days; coverage anchors survive.
+
+`aq report morning --dry-run` reads the latest configured boundary without writes.
+`aq report show ID` and `aq report list` read stored reports, also available at
+`/reports/:id` in the dashboard. Reads enforce the caller's project visibility;
+the page separates landed changes, pending/unknown shipment, failures and source
+gaps, and labels prior verification as agent-reported. Project-scoped readers
+receive scoped deterministic evidence rather than global supervisor prose.
+
+The optional reviewed system playbook `morning-report` triggers on
+`report.morning_due`, which the daemon emits once per local day after the zoned
+morning time. The event id names the schedule and local date, so a restart or a
+repeated emission deduplicates to the day's one run; that run calls
+`morning_report_tick` a minute apart on a durable timer until the day's report
+settles. Activating it after the day's morning time starts with the next day.
+It is neither required for readiness nor activated by default; the operator imports and activates the reviewed bundle
+separately. Morning authoring requires `full_fleet_visibility: true`, an empty
+project selection and a configured Discord destination. Restricted destinations
+use the deterministic report without waking the global supervisor. The author
+reads `aq report brief ID` and submits version 1 JSON with
+`aq report submit ID --file FILE --brief-hash HASH --expected-version VERSION`.
+The server validates project/evidence references, caps manual checks at ten
+grounded landed changes with known surfaces, and owns coverage and links. Only
+the live global supervisor launch may read or submit the brief
+([supervisor hourly reports](../guides/supervisor-hourly-reports.md)).
+
+Final reports reserve one immutable summary in `outbound_deliveries`; the shared
+dispatcher sends at most 1,500 characters including a stable marker and a link
+to `/reports/:id` when an external dashboard origin is configured. Escalations
+and the rate guard retain priority. Delivery failure never rebuilds evidence or
+creates another author request. Ambiguous sends reconcile their marker or remain
+unknown without blind reposting. Disable, destination edits and visibility edits
+cancel queued author messages and unsent summaries; cancellation survives
+re-enabling the schedule. Final content remains readable. An operator applies
+the outbound cancellation migration during deployment; workers do not migrate
+the operator database or activate the playbook.
+
 ### 4.3 `agents` Section
 
 Maps to `AgentsDefaultConfig`. The YAML key is `agents`.
@@ -190,7 +376,7 @@ Maps to `AgentsDefaultConfig`. The YAML key is `agents`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `heartbeat_interval_seconds` | `int` | `30` | How often (in seconds) a running agent must emit a heartbeat to be considered alive. |
-| `stuck_timeout_seconds` | `int` | `0` | Seconds without a heartbeat before an agent is declared stuck. `0` disables the timeout entirely (no stuck detection). |
+| `stuck_timeout_seconds` | `int` | `0` | Session backstop: task sessions use age since launch or question/wait resumption; pool sessions use inactivity. Active current-claim waits are exempt and their results grant a fresh lease interval. `0` disables this backstop; the inactivity ladder remains enabled. |
 | `graceful_shutdown_timeout_seconds` | `int` | `30` | Maximum seconds to wait for an agent to finish cleanly during shutdown before forcibly terminating it. |
 
 ### 4.4 `scheduling` Section
@@ -201,6 +387,16 @@ Maps to `SchedulingConfig`. The YAML key is `scheduling`.
 |---|---|---|---|
 | `rolling_window_hours` | `int` | `24` | Length of the rolling window (in hours) used for credit-weight scheduling calculations. |
 | `min_task_guarantee` | `bool` | `True` | When `True`, the scheduler guarantees every project receives at least one task slot even if its credit weight is proportionally very small. |
+| `cycle_interval_seconds` | `float` | `5.0` | Periodic reconciliation backstop when no relevant event arrives. |
+| `min_cycle_interval_seconds` | `float` | `1.0` | Minimum start-to-start interval for event-triggered cycles; coalesces bursts without changing capacity or provider backoff. Must not exceed the periodic interval. |
+| `config_poll_interval_seconds` | `float` | `30.0` | Config watcher polling cadence; updated on hot reload. |
+
+The three cadence values must be finite and positive. Task/routing/gate/provider/
+session changes wake the normal deterministic scheduler before its next periodic
+poll. Events request reconciliation; durable readiness and identity fences remain
+authoritative. Failed cycles retain the periodic retry delay even during an event
+burst. Idle installations keep the existing periodic and config polling cadence.
+
 
 ### 4.5 `pause_retry` Section
 
@@ -293,7 +489,7 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `index_specs` | `bool` | `True` | When `true`, the workspace `specs/` directory is included in the memory index. |
 | `index_docs` | `bool` | `True` | When `true`, the workspace `docs/` directory (published documentation) is included in the memory index. |
 | `index_project_docs` | `bool` | `True` | When `true`, individual project doc files are indexed separately for targeted retrieval. |
-| `project_docs_files` | `tuple[str, ...]` | `("CLAUDE.md", "README.md")` | Files to index individually when `index_project_docs` is enabled. |
+| `project_docs_files` | `tuple[str, ...]` | `("AGENTS.md", "CLAUDE.md", "README.md")` | Files to index individually when `index_project_docs` is enabled. |
 | `index_sessions` | `bool` | `False` | When `true`, session transcripts are included in the memory index. |
 | `profile_enabled` | `bool` | `True` | Toggle project profiles — auto-generated summaries of each project. |
 | `profile_max_size` | `int` | `5000` | Maximum characters for project profile content. |
@@ -372,11 +568,47 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
+| `private_value_active_key_id` | `str` | `""` | Active encryption key identifier. Missing key material refuses protected bindings before invocation. |
+| `private_value_key_env` | `dict[str, str]` | `{}` | Key identifier → daemon environment variable name containing a base64-encoded 32-byte key. Retain old keys for existing runs. The installer bootstraps unconfigured storage; the runtime never generates keys. Key bytes remain outside the database, vault and script mounts. |
 | `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
 | `v2_compiler_enabled` | `bool` | `False` | Review-only Package 2 compiler commands. Compilation, validation and shadow reports never persist or activate an artifact. |
 | `contract_intent` | `bool` | `True` | Add contract-derived intent to V1 graph-view nodes. Removed in Package 5. |
 | `cancellation_grace_seconds` | `int` | `30` | How long `PlaybookEngine.cancel` waits for an in-flight executor to acknowledge before ending the run itself. `0` means "do not wait": the run reaches `cancelled` immediately and the receipt records `grace_expired`. |
+
+Protected playbook data uses authenticated encryption with run/namespace and
+scope ownership bound to every value. Provision a random 32-byte key in the
+daemon's environment, then map its variable name (never its value) through
+`private_value_key_env` and select its identifier with
+`private_value_active_key_id`. Rotation selects a new active identifier and
+retains the previous variable mappings until their encrypted data expires or is
+retired. Missing read keys leave suspended runs intact and return
+`private_storage_key_unavailable`; restoring the key permits authorized resume.
+Do not pass these environment variables to agents or scripts.
+
+When playbooks are enabled with neither an active key identifier nor a key
+mapping, `aq install` provisions a random 32-byte key in the protected `.env`
+file (mode 0600), with a fresh identifier and variable name recorded in config.
+It preserves other environment entries and playbook settings. Reruns retain
+configured identifiers, mappings and key material; dry runs generate nothing.
+The runtime and doctor never generate keys. If a configured key is lost,
+restore its original material rather than replacing it under the same identifier.
+
+`aq install` fails its `config.check` step if a configured
+active key is absent, malformed base64, or decodes to anything other than 32
+bytes. `aq doctor --check playbooks.private_value_key` reports the same problem
+as an error, with provisioning instructions.
+The daemon's `playbook_private_value_key` health check inspects the key loaded
+by the live private-value service, so `/health` and `/ready` return 503 while
+protected routing cannot run. Restart after provisioning or restoring key
+material; changing the environment alone does not replace the live key ring.
+
+The run snapshot stores opaque references for unprojected or sensitive command
+results, derived loop/wait state and LLM transcripts. Audited public result
+fields remain JSON. Receipt, event, error, API and graph projections never resolve
+those references. Generated commands require a live engine context and ready
+private storage; dry-run and shadow do not invoke their live handlers. Removing
+the feature's configuration does not delete encrypted evidence.
 
 > **Temporary — framework overhaul pause.** While `playbooks.enabled` is
 > `false` the `PlaybookManager`, `TimerService`, the playbook and
@@ -422,6 +654,8 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `provider` | `str` | `"subprocess"` | `tmux` \| `subprocess` \| `fake`. Validated against that set, **and** — when `enabled` — against what `default_session_registry()` can actually build on this host, so a name the registry lacks is a config error at load rather than a failed launch per task. `tmux` is registered only on hosts where its module imports; `subprocess` is the portable default. |
 | `tmux_socket` | `str` | `"aq"` | `tmux -L` socket name — one server per daemon, so two daemons on one host cannot see each other's sessions. |
 | `lease_ttl_seconds` | `int` | `480` | No transcript activity and no `aq task heartbeat` for this long marks a task **stalled** (not dead) and starts the ladder. `0` disables the ladder. |
+| `idle_stop_grace_seconds` | `int` | `60` | Grace before the reconciler stops a session that has nothing left to do — its task closed, or its claim budget is spent — even though the harness never exited. Measured from the first tick the finished shape was *observed*, not from `last_activity`: tmux's `window_activity` advances on any output, so an always-painting TUI never looks idle. A pool worker goes through `_terminate_pool_session`, so the slot, claim and worktree are released as an operator's `aq session kill` releases them. `0` disables the stop and leaves the diagnosis to `sessions.stop_intent_pending`. |
+| `stop_intent_report_seconds` | `int` | `600` | How long a recorded stop intent may stand before `aq doctor --check sessions.stop_intent_pending` reports the session. A report threshold, not an action: the reconciler owns the stop, and this only says the graceful path is not converging. `0` disables the report. |
 | `stall_max_nudges` | `int` | `3` | Nudges before the ladder escalates to interrupt + restart-with-resume. |
 | `stall_backoff_seconds` | `int` | `300` | Minimum gap between ladder rungs. |
 | `max_restarts` | `int` | `3` | Restarts within `restart_window_seconds` before a session is quarantined. Counters persist on the `sessions` row, so the ladder survives a daemon restart. |
@@ -433,9 +667,12 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `state_cache_ttl_seconds` | `int` | `2` | TTL of the provider state cache — the tmux provider does at most one `list-panes` and one `ps` per reconciler tick. |
 | `transcript_poll_seconds` | `int` | `2` | Transcript reader poll interval (Phase S3). |
 | `adopt_on_start` | `bool` | `True` | Run the boot-time adoption pass. With it off, surviving sessions are not re-bound and `_recover_stale_state` resets their tasks. |
+| `worker_claude_plugin_overrides` | `map<str, bool>` | `{}` | Per-worker Claude plugin switch. A `plugin_id → bool` map merged as `enabledPlugins` into the `.aq/hooks/claude.json` rendered for **worker-lifecycle (`task`/`pool`) Claude sessions only**; supervisors and named sessions are untouched, and the live user-scope `~/.claude/settings.json` is never read or written. The empty default leaves the hook file byte-identical to the shipped template. Keys are validated `name@marketplace`, values must be `bool`. |
 
 Validation (`SessionsConfig.validate`): `provider` must be one of the three
-names; every integer key must be `>= 0`.
+names; every integer key must be `>= 0`; `worker_claude_plugin_overrides` must
+be a mapping whose keys look like `name@marketplace`
+(e.g. `fast-jev-compaction@fast-jev-compaction`) and whose values are `bool`.
 
 **Rollout and rollback.** A task takes the session path only when
 `sessions.enabled` is true **and** its resolved profile sets `harness:`
@@ -443,6 +680,17 @@ names; every integer key must be `>= 0`.
 gives per-profile and per-project opt-in with no extra config. Rollback is
 flipping `enabled` back to `false` or removing `harness:` from one profile —
 live sessions then drain naturally, and `aq session kill` cleans stragglers.
+
+**Rollout and rollback — fast-jev compaction hold-out.** Stage
+`worker_claude_plugin_overrides: {"fast-jev-compaction@fast-jev-compaction":
+false}` in the same config change that turns on `92.3`'s 160k compaction
+(`CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000`), so worker sessions neither inherit
+the user-scope plugin nor hand post-compaction tool results to its judge.
+Rollback is deleting that one key — sessions revert to the inherited set on
+their next launch. Re-admit the plugin only after the review's `E1` retention
+probe shows parity with the built-in summary. The override is per-launch only:
+an existing live session keeps whatever it was handed at start, and nothing is
+ever written to `~/.claude/settings.json`.
 
 Per-profile session knobs (`harness`, `lifecycle`, `mode`, `wake_mode`,
 `idle_timeout`, `max_session_age`) live in profile markdown, not here: they
@@ -506,6 +754,32 @@ See `docs/guides/worker-pools.md` for the operational guide — turning a
 profile into a pool, setting bounds, reading quarantine, the `pools.*` doctor
 checks, and rolling back to `lifecycle: task`.
 
+### `worktrees` — slot reset Git budgets and lock recovery
+
+Local Git commands during `reset_slot_for_task`, including checkpoint restoration,
+abort, reset, clean, switch and child-branch merge, use
+`worktrees.slot_reset_git_timeout_seconds` (positive integer, default `600`).
+`worktrees.slot_reset_git_timeouts` is a mapping of project IDs to positive integer
+overrides; for example `{matter-engine-cpp: 1800}` gives that project's repository
+30 minutes per local command. An explicit command timeout still wins. The budget
+is scoped to the reset coroutine and restored on success, failure or cancellation;
+concurrent resets and other Git operations keep their own budgets. Authenticated
+network operations retain their transport deadlines. The reconciler's
+`swarm.prepare_timeout` applies to abandoned preparations, and does not release
+an exact preparation still running in the daemon.
+
+Git timeout errors report the command and elapsed budget, without attributing
+the timeout to a credential prompt without evidence.
+
+Before aborting interrupted Git operations, recovery resolves both the worktree
+Git directory and its common directory. It considers worktree `index.lock` and
+common `index.lock`, `shallow.lock`, `refs/heads.lock` and `objects/maintenance.lock`.
+It removes a lock only after checking local process ownership, and only if the
+file still matches the inspected inode and timestamps. Inspectable open lock files
+and live Git processes that could own repository locks prevent removal; unknown
+Git-process liveness or unavailable Git-process inspection also preserves the locks. Inspection
+runs off the event loop. A lock's age alone is never proof that its owner died.
+
 ### 4.11a `resources` Section
 
 Maps to `ResourcesConfig` / `ResourceCgroupConfig` (`src/config.py`). The YAML
@@ -528,10 +802,12 @@ reads it per launch and `aq test` reads it per run.
 | `per_session_cpu_share` | `int \| None` | `None` | Explicit share override. `None` derives `cores // max_concurrent_agents`, floored at 1. |
 | `session_nice` | `int` | `10` | `nice` increment on the harness process, so the daemon, API, dashboard and tmux stay schedulable under agent load. `0` disables. |
 | `test_slots` | `int` | `2` | Concurrent `aq test` runs allowed box-wide. |
+| `jobs.full_suite_reserved_slots` | `int` | `2` | Slots left for focused work beside a managed full suite. Positive integer; full-suite weight is `max(1, test_slots - reserve)`. Accepted contracts remain immutable. |
 | `test_workers` | `int \| None` | `None` | `-n` cap `aq test` enforces. `None` uses the per-session share. |
 | `test_wait_timeout` | `int` | `1800` | Seconds `aq test` waits for a slot before exiting `75` (`EX_TEMPFAIL`). |
 | `test_poll_interval` | `float` | `2.0` | Slot poll interval while waiting; also the cadence of the "waiting" line. |
 | `test_deselect_markers` | `str` | `"not perf and not migration and not slow and not tmux and not integration"` | `-m` expression `aq test` applies when the caller passed none. |
+| `test_interpreters` | `dict[str, str]` | `{}` | Interpreter `aq test` runs pytest with, per project id (`--aq-project`, else the session's `AQ_PROJECT_ID`), e.g. `{quilt-trader: ~/dev/quilt-trader/.venv/bin/python}`. `~` is expanded; a relative path is tried against the project root, the repository root and a linked worktree's main checkout. A pinned path that does not exist refuses the run (exit 4). An unlisted project is detected: agent-queue itself uses `aq`'s interpreter, any other project the `.venv/bin/python` of its project root, repository root or main checkout, else `aq`'s interpreter with a warning (`src/resources/project_tests.py`). |
 | `load_warn_ratio` | `float` | `1.0` | `resources.load` warns when the 5-minute load average exceeds `cores × this`. |
 | `max_pytest_processes` | `int` | `24` | `resources.test_pressure` warns above this many pytest processes box-wide (xdist workers included). `0` disables the check. |
 | `cgroups.enabled` | `bool` | `False` | Launch each session inside a `systemd-run --user --scope`. Requires a one-time root step (`scripts/setup-cgroup-delegation.sh`); degrades to the other layers with a startup log line and a doctor warning when delegation is absent. |
@@ -542,7 +818,8 @@ Validation (`ResourcesConfig.validate`): `cores`, `per_session_cpu_share` and
 `test_workers` must be positive or null; `max_concurrent_agents` and
 `test_slots` must be positive; `test_wait_timeout`, `test_poll_interval` and
 `max_pytest_processes` must be `>= 0`; `session_nice` must be within
-`-20..19`; `load_warn_ratio` must be positive; `cgroups.cpu_quota_percent`
+`-20..19`; `load_warn_ratio` must be positive; `test_interpreters` must be a
+mapping whose values are non-empty paths; `cgroups.cpu_quota_percent`
 must be positive and `cgroups.memory_max` non-empty.
 
 **Harness `env` blocks win.** `session_env_caps()` skips any key already
@@ -560,16 +837,45 @@ override → project policy `projects.integration_mode` → this).
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `default_mode` | `str` | `"pull_request"` | Effective integration mode for tasks that inherit all the way down the chain. `"pull_request"`: the worker pushes its branch and opens a PR; the task completes unmerged and the default-pipeline playbook's review policy owns the merge. `"direct"`: the completion pipeline merges the task branch into the default branch on completion — set this only for deployments that explicitly run without a review policy. |
+| `default_mode` | `str` | `"pull_request"` | Effective integration mode for tasks that inherit all the way down the chain. `"pull_request"`: the worker pushes its branch and opens a PR; the task completes unmerged and the default-pipeline playbook's review policy owns the merge. `"direct"`: the completion pipeline merges the task branch into the default branch on completion — set this only for deployments that explicitly run without a review policy. A `"pull_request"` default never reaches a repository on disk (a bare repository such as `~/.agent-queue/local-remotes/<name>.git`), where no pull request can exist: tasks there inherit `direct`, reported with source `repository`. A hosted remote other than github.com keeps the default so its work never lands unreviewed; that, and an explicit `pull_request` on a repository on disk, is flagged by `aq doctor --check integration.delivery_path`. |
 | `merge_ci_policy` | `str` | `"warn"` | What `pr_merge` does when the PR's status-check rollup is not green. `"off"`: never asks (pre-2026-09-03 behaviour). `"warn"`: asks, merges regardless, and returns the verdict in the result's `ci` block and the daemon log. `"required"`: refuses to merge anything that is not green, including a rollup that cannot be read (fail closed). |
 | `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
 | `merge_require_up_to_date` | `bool` | `true` | Whether a PR head that is *behind* its base counts as not green — GitHub's "Require branches to be up to date before merging", applied on the fleet's own merge path. A green rollup only proves the head passed against the base as it was when the run started; PRs #390 and #391 were each green on their own base and their back-to-back merge put a `main` together that no run had tested. Under `warn` this only adds a `base` block (`ref`, `behind_by`, `state`: `current` / `stale` / `unknown`) to the result; under `required` a stale or unreadable base refuses the merge until the branch is updated and its checks re-run. The trade-off is more CI re-runs on a busy queue. |
+| `owner_recovery_sweep` | `bool` | `true` | Whether the daemon periodically (every 300 s) releases branch owners whose writers are proven gone, through the same guarded recovery as `aq integration release-owner`: a live writer, a live checkout or an unreachable origin is refused, never released. Ships on because stranded-owner recovery is routine; an explicit `false` (including the string `"false"` from a `${VAR}` substitution) keeps it off. |
+| `reconciler_shadow` | `bool` | `false` | Retained configuration compatibility flag. The legacy subject publisher/shadow runtime has been removed; this flag installs no subject loop. Historical evidence remains available to ownership and cleanup checks. |
+| `reconciler_active` | `bool` | `false` | Retained historical ownership-transfer guard. It installs no subject publisher. Generic root `engine-transfer` retains exact-version/reason/evidence fences; Development transfer was removed with its dormant runtime. Current delivery runs through `git_first: active`. |
+| `git_first` | `str` | `"shadow"` | Read when startup constructs integration services. `"active"` constructs the Git-first train and runs it through `integration_train_tick`, with exact-candidate checks, review/publication gates and bounded repair policy. `"shadow"` leaves the train off; the removed legacy subject runtimes are not restored. Cleanup, outbox and ownership maintenance retain their safety contracts. A selector change requires an operator restart; see [the current runbook](../guides/git-first-train-runbook.md). |
+| `publisher_stall_after` | `int` | `5` | Retained compatibility setting for the retired development publisher. It does not install a publisher or alter the active train repair budget. |
+| `service_source_timeout_seconds` | `float` | `300` | Wall-clock budget for one source callback of the integration reconciliation service (one bounded page of one source: GitHub PR reviews, candidate CI, the outbox, …). A source past its budget is cancelled and the pass continues with the other sources; its durable rows stay retryable. A callback that refuses cancellation is left to unwind and its source is skipped, never run twice at once, until it has. The slowest sources observed on a busy install take about two minutes. |
+| `service_item_timeout_seconds` | `float` | `60` | Budget for one item of a page the service iterates itself (a due schedule, a repair deadline, a repair dispatch, a candidate CI row, a promotion intent, a cleanup item). A hung item is cancelled and the later items of the page still run. |
+| `service_source_timeouts` | `dict[str, float]` | `{}` | Per-source overrides of `service_source_timeout_seconds`, keyed by the source name the daemon logs (`integration slow source=<name>`), e.g. `{"GitHub PR reviews": 600}`. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
 `INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
 one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
 `src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
-strings; `merge_require_up_to_date` is coerced to a boolean.
+strings; `merge_require_up_to_date` is coerced to a boolean;
+`publisher_stall_after` must be a positive integer;
+`service_source_timeout_seconds` and `service_item_timeout_seconds` must be
+positive numbers and `service_source_timeouts` a mapping of non-empty source
+names to positive numbers.
+`reconciler_shadow` and
+`reconciler_active` must be booleans. Neither flag is hot-reloadable: a config
+value alone installs no loop into a running service, so both need `aq restart
+--no-dashboard`.
+
+The active train's shared contracts and ownership guards live in retained
+`runtime_contracts.py`, `promotion_contracts.py` and `owner_guards.py`. Shared
+parent checkpoint seeding belongs to `parent_subjects.py`, and is invoked only
+when a subject policy loader is explicitly installed. Loading gates and the active train use retained contracts without importing
+retired schedulers or reconciler publishers. The Development adapter/runtime and
+its transfer command are absent; the train imports policy pins and repository
+construction from `development_policy.py` and `repository_git.py`.
+
+`git_first` accepts only `shadow` or `active` and is read when the integration service
+is constructed. Current startup constructs no subject publisher in either mode.
+The [consumer retirement audit](../reports/2026-10-12-legacy-consumer-retirement.md)
+records the remaining historical safety and active repair consumers.
 
 `merge_ci_policy` exists because GitHub was never asked the question: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30
@@ -623,8 +929,121 @@ Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
 | `retain_seconds_1s` | `int` | `3600` | Retention horizon for per-second samples. Must be `>= 0`. |
 | `retain_seconds_1m` | `int` | `2592000` | Retention horizon for per-minute roll-ups (30 days). Must be `>= 0`. |
 | `retain_seconds_1h` | `int` | `31536000` | Retention horizon for per-hour roll-ups (365 days). Must be `>= 0`. |
+| `perf_enabled` | `bool` | `True` | Whether the performance probes record: the event-loop drift probe, route latency by route template, connection-pool wait and query duration. `false` is the rollback switch — the probes stop recording and each sample's `perf` block drops to `{"enabled": false}`; routing, the dashboard server and stored samples are untouched. Hot-reloadable. Spec: `2026-09-24-dashboard-performance-under-load-and-separation` §4.1. |
+| `perf_loop_probe_ms` | `int` | `100` | Period of the event-loop drift probe: it sleeps this long and records how late each wake-up was. Must be between `10` and `1000`. |
+| `perf_slow_query_ms` | `float` | `100.0` | A query that takes longer than this counts toward `perf.db.counters.slow_queries`. The statement text is never recorded. Must be `> 0`. |
+| `perf_host_budget_ms` | `float` | `20.0` | Wall-clock budget for one host read (pressure-stall information, test-slot occupancy, ungated load). An overrun backs the reader off and marks the host block `stale` with reason `over_budget`. Must be `> 0`. |
+| `perf_relay_poll_seconds` | `float` | `5.0` | How often the sampler polls the dashboard server's relay counters (`GET /__aq/metrics`) and records their deltas. The poll runs on the sampler tick. Must be `>= interval_seconds`. |
+
+### 4.15 `git_identity` Section
+
+Maps to `GitIdentityConfig`. The installation's default Git commit identity:
+every project commits as it unless its Project Settings override it. Full
+semantics in [git identity](git-identity.md). Hot-reloadable; not portable.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | `""` | Author and committer name. Set together with `email`, or leave both empty. |
+| `email` | `str` | `""` | Author and committer email, one `name@domain` address. Both empty means the install is unset and AQ commits as the fallback `Agent Queue <agent-queue@localhost>`. |
+| `source` | `str` | `""` | Where the confirmed value came from (`gh:<login>`, `git-config`, `manual`). Informational only. |
+
+Set by `aq install` (wizard, `--git-name/--git-email`, or
+`settings.git_identity` in `--config`) and by `aq system config git-identity`.
 
 ---
+
+### deploy — installation deployment
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `tag_glob` | `str \| null` | `null` | Annotated release tag family for operator updates. |
+| `target` | `str` | `"main"` | Promotion branch containing selected release tags. |
+| `track_branch` | `str \| null` | `null` | Automatically deploy new commits from the installation's matching branch/upstream. Conflicts with tag selection. |
+| `poll_interval_seconds` | `float` | `300.0` | Background branch-check cadence; finite, at least 60 seconds. |
+
+This section is hot reloadable. Branch tracking requires a clean operator
+checkout on the configured branch with a matching upstream. It never switches
+branches, discards local commits, or runs from worker slots. Updates check the
+pinned target's single-head migration graph, keep running agent sessions, rebuild
+changed dashboard inputs, and verify daemon health/readiness and the installed
+dashboard. Failed starts restore the previous deployment unless schema migrations
+may have run; then newer code is retained and the pre-update backup is named.
+Failed automatic targets remain held until a new commit or manual operator retry.
+After migrations may have run, a persistent recovery hold blocks all targets
+until an operator restores health/readiness and the dashboard, then verifies with
+`aq update --yes --resume-after-recovery`. Automatic updates require backup.
+System Config shows the private, bounded `deploy-history.json` log.
+See [branch tracking](design/branch-tracking-deployment.md).
+
+### 4.16 `wait_policy` Section
+
+Maps to `WaitPolicyConfig`. This section is hot reloadable. Values are read
+at each wait decision; registry consumers snapshot the three rollout flags
+once per cycle. All flags (`v2_enabled`, `hibernation_enabled`,
+`scheduler_waits_enabled`) default to `true`. `v1_bodies` defaults to `refuse` and
+also accepts `translate` for rollout/rollback compatibility. Explicit false
+configuration continues to gate new admission; persisted waits and continuations
+keep draining. See [the cutover runbook](../guides/hibernation-cutover-runbook.md)
+for existing installations and rollback ordering.
+
+Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
+`resume_cost_minutes: 10`, `min_samples: 5`, `loop_window_registrations: 3`,
+`loop_window_seconds: 3600`, `branch_admission_deadline_seconds: 1800`,
+`transition_budget_seconds: 120`, and `resume_launch_attempts: 2`.
+
+`kinds` maps each wait kind to `WaitKindPolicy`, with
+`escalate_after_seconds` and `expected_duration_seconds`. Partial global
+kind entries preserve the omitted defaults. Escalation defaults are 14400
+for `task`, `dependency`, `pull_request`, and `batch`; 7200 for `job`,
+`message`, and `playbook_condition`; 5400 for `ci_check` and `ci_run`; 1800
+for `resource`; and 300 for `timer` after its due time. Expected durations
+are respectively 3600, 3600, 3600, 2700, 900, 1800, 1800, 1200, and 1500
+seconds for the first nine kinds. Timer duration comes from its due time;
+`human` and `resource` have no configured duration estimate. Human waits
+have no escalation policy and cannot be overridden.
+
+`projects.<project-id>` maps to `WaitProjectOverrides`. It accepts the three
+rollout flags, `in_place_ceiling_seconds`, `resume_cost_minutes`,
+`hibernate_margin`, and partial `kinds` entries. Absent or null override
+fields inherit the global value. `WaitPolicyConfig.resolve_project(id)`
+returns an independent effective policy in project → global → default order.
+This supports one project's v2 canary while global rollout flags stay off;
+`src.waits.decision.project_policy` resolves through it, so per-project
+registration, hibernation and scheduler admission gates all honour the effective
+project policy. A global listener also starts for any enabled project canary.
+
+`metrics` maps to `WaitMetricsConfig`: an operator-supplied pre-rollout
+cohort (`pre_rollout_turn_rate` in turns per minute,
+`pre_rollout_tokens_per_turn`, `cohort`, `window`) for the counterfactual
+tokens-saved metric. Rates must be finite and nonnegative; labels must be
+non-empty strings. All default to null.
+
+The single implementation lives in `src/config_wait_policy.py`
+(`parse_wait_policy`, `WaitPolicyConfig.validate`).
+
+Unknown keys at any depth and unknown kind names are errors. Ceilings and
+deadlines must be integers between 60 and 86400 seconds; the transition
+budget must be between 1 and 86400 seconds. Counts must be positive
+integers, resume cost must be finite and positive, and the margin must be
+finite and at least 1.0. Expected durations must be nonnegative integers.
+
+`metrics` retains the optional historical cohort used for wait cost reporting:
+`pre_rollout_turn_rate` and `pre_rollout_tokens_per_turn` are finite nonnegative
+numbers, while `cohort` and `window` are non-empty strings when supplied.
+Project resolution preserves this global metrics configuration.
+
+```yaml
+wait_policy:
+  kinds:
+    task:
+      escalate_after_seconds: 18000
+  projects:
+    expensive-resume:
+      resume_cost_minutes: 40
+      in_place_ceiling_seconds: 7200
+    canary:
+      v2_enabled: true
+```
 
 ## 5. Loading Behavior
 
@@ -697,6 +1116,12 @@ Environment variables set in the process environment before `load_config` is cal
 | `AGENT_QUEUE_LOG_FORMAT` | Override `logging.format` (`dev`, `json`, `plain`) |
 
 ### Output Modes
+
+Daemon exception rendering never captures or prints frame locals. Rich console
+tracebacks use at most 20 frames, a width of 100 characters and one context line
+around source locations. JSON tracebacks retain at most 20 innermost frames per
+exception. Expected, handled GitHub access and Git errors in the
+review poller produce a one-line warning with the repository and error message.
 
 **dev** (default) — Rich-colored console output with aligned columns. Best for local terminal use. Timestamps are shortened to `HH:MM:SS`, logger names strip the `src.` prefix.
 

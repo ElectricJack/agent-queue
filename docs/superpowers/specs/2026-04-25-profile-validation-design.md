@@ -7,6 +7,12 @@ tags: [spec, platforms, profiles, validation, discord]
 
 # Profile Validation + Platform-Driven Dispatch (Phase 2)
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## Scope
 
 This spec depends on phase 1 ([`2026-04-25-platforms-implementation-design.md`](./2026-04-25-platforms-implementation-design.md)) being merged. Phase 1 establishes the `Platform` ABC, `Capability` enum, three platform implementations (`ClaudeSDKPlatform`, `ClaudeCLIPlatform`, `CodexCLIPlatform`), the `PlatformRegistry`, and a temporary `config.default_platform` field used at orchestrator call sites.

@@ -24,6 +24,7 @@ class PrMergeResponse:
         pr_url (str | Unset):  Default: ''.
         sha (None | str | Unset):
         error (None | str | Unset):
+        outcome (None | str | Unset):
         ci (None | PrMergeCiVerdict | Unset):
     """
 
@@ -31,6 +32,7 @@ class PrMergeResponse:
     pr_url: str | Unset = ""
     sha: None | str | Unset = UNSET
     error: None | str | Unset = UNSET
+    outcome: None | str | Unset = UNSET
     ci: None | PrMergeCiVerdict | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -53,6 +55,12 @@ class PrMergeResponse:
         else:
             error = self.error
 
+        outcome: None | str | Unset
+        if isinstance(self.outcome, Unset):
+            outcome = UNSET
+        else:
+            outcome = self.outcome
+
         ci: dict[str, Any] | None | Unset
         if isinstance(self.ci, Unset):
             ci = UNSET
@@ -72,6 +80,8 @@ class PrMergeResponse:
             field_dict["sha"] = sha
         if error is not UNSET:
             field_dict["error"] = error
+        if outcome is not UNSET:
+            field_dict["outcome"] = outcome
         if ci is not UNSET:
             field_dict["ci"] = ci
 
@@ -104,6 +114,15 @@ class PrMergeResponse:
 
         error = _parse_error(d.pop("error", UNSET))
 
+        def _parse_outcome(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        outcome = _parse_outcome(d.pop("outcome", UNSET))
+
         def _parse_ci(data: object) -> None | PrMergeCiVerdict | Unset:
             if data is None:
                 return data
@@ -126,6 +145,7 @@ class PrMergeResponse:
             pr_url=pr_url,
             sha=sha,
             error=error,
+            outcome=outcome,
             ci=ci,
         )
 
