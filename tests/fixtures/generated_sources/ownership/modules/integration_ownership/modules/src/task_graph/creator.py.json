@@ -1,0 +1,53 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/creator.py::GraphFilingError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/creator.py::assign_child_ids": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/creator.py::build_report": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/task_graph/creator.py::_graph_route": {
+      "baseline_span": [
+        644,
+        660
+      ],
+      "landing_span": [
+        644,
+        660
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/task_graph/creator.py::build_plan": {
+      "baseline_span": [
+        306,
+        538
+      ],
+      "landing_span": [
+        306,
+        538
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/task_graph/creator.py::create_graph": {
+      "baseline_span": [
+        1138,
+        1243
+      ],
+      "landing_span": [
+        1138,
+        1243
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/task_graph/creator.py::import from src.database.queries.task_queries import task_repository_id": {
+      "baseline_span": [
+        36,
+        36
+      ],
+      "landing_span": [
+        36,
+        36
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
