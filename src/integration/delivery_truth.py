@@ -22,15 +22,26 @@ target, or a retained historical operator settlement). Git is asked first:
 a settlement only turns *pending* into *settled*, never contained or unknown
 work. It is fenced to the repository, the target and, for ordinary work, the
 exact completion generation it settled, so a reopened task owes its new work.
+
+A source-CI repair delegate asks a different question of the same evidence:
+not *has this work been delivered* but *does my bound source generation still
+have the head it was filed against*. :func:`superseded_source_repairs_on`
+answers that for the whole lineage, including repairs of repairs, and lives here
+rather than in :mod:`src.integration.source_delivery` so the reduced train can
+ask it without importing a module it outlives. :func:`undeliverable_repairs_on`
+is the admission answer that adds a repair's own terminal failure to it, so a
+repair whose purpose is gone cannot be admitted into, or keep, a batch.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
+from uuid import uuid4
 
 from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -47,13 +58,69 @@ PARENT_ADOPTION_EVENT = "integration.parent_adopted"
 #: when it is filed, is settled that way.
 SETTLEMENT_KEY = "development_delivery_settlement"
 
+# Separate from legacy equivalence proofs and settlements throughout shadow rollout.
+CONTAINMENT_CONTRACT_VERSION = "strict-ancestry-v1"
+DELIVERY_DISPOSITION_KEY = "integration_delivery_disposition"
+DELIVERED_BY_OTHER_MEANS = "delivered_by_other_means"
+
+
+def completion_after_rework(completed_at: float, rework_value: str | None) -> bool:
+    """A historical close cannot answer a generation reopened after it.
+
+    Container settlement changes work status without writing a fresh close.
+    Keep that history, but never select it as current delivery evidence.
+    """
+    if rework_value is None:
+        return True
+    try:
+        rework_at = json.loads(rework_value)
+    except (TypeError, ValueError):
+        return False
+    return type(rework_at) in (int, float) and completed_at >= rework_at
+
 
 class DeliveryState(StrEnum):
     CONTAINED = "contained"
+    NOT_APPLICABLE = "not_applicable"
+    NO_CHANGE = "no_change"
     NO_ARTIFACT = "no_artifact"
     PENDING = "pending"
     SETTLED = "settled"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class DeliveryDisposition:
+    """Operator cutover retirement; never a Git containment proof.
+
+    The cutover command owns authorization and persistence. This value merely
+    retains its exact generation/target fence for lifecycle consumers.
+    """
+
+    project_id: str
+    repository_id: str
+    task_id: str
+    completion_id: str
+    target_ref: str
+    source_oid: str
+    carrying_oid: str
+    equivalence_proof: str
+    plan_digest: str
+    kind: str = DELIVERED_BY_OTHER_MEANS
+
+    def matches(self, request: DeliveryRequest) -> bool:
+        return (
+            self.kind == DELIVERED_BY_OTHER_MEANS
+            and (self.project_id, self.repository_id, self.task_id,
+                 self.completion_id, self.target_ref) == (
+                     request.project_id, request.repository_id, request.task_id,
+                     request.completion_id, request.target_ref,
+                 )
+            and is_valid_git_oid(self.source_oid) and is_valid_git_oid(self.carrying_oid)
+            and bool(self.equivalence_proof.strip())
+            and len(self.plan_digest) == 64
+            and all(c in "0123456789abcdef" for c in self.plan_digest)
+        )
 
 
 @dataclass(frozen=True)
@@ -119,12 +186,33 @@ class DeliveryRequest:
     requires_parent_completion: bool = False
     parent_completion: VerifiedParentCompletion | None = None
     parent_adoption: AdoptedParentCompletion | None = None
+    #: The current immutable close's account; None is missing, () is explicitly empty.
+    completion_outcome: str | None = None
+    completion_commits: tuple[str, ...] | None = None
     #: The recorded settlement (:data:`SETTLEMENT_KEY`), whatever it fences;
     #: :meth:`settles` decides whether it answers this request.
     settled_repository_id: str | None = None
     settled_target_ref: str | None = None
     settled_completion_id: str | None = None
     settled_reason: str | None = None
+    #: Explicit organizational/non-Git proof supplied by the completion owner.
+    code_free_proven: bool = False
+    #: Optional source fence; never substitutes for retained completion provenance.
+    retained_source_oid: str | None = None
+    disposition: DeliveryDisposition | None = None
+
+    #: A completed container that recorded no source of its own: each child's
+    #: current request and recorded origin base, so Git can prove it from its
+    #: children. Loaded only on request (``containers=True``); () otherwise.
+    container_children: tuple[tuple[DeliveryRequest, str | None], ...] = ()
+
+    @property
+    def lifecycle_disposition(self) -> DeliveryDisposition | None:
+        """Current audit-bound obligation retirement, never a source/ancestry proof."""
+        value = self.disposition
+        return value if value is not None and self.task_status == "COMPLETED" and (
+            value.matches(self) and self.reported_source in {None, value.source_oid}
+        ) else None
 
     @property
     def settles(self):
@@ -147,6 +235,8 @@ class DeliveryRequest:
             reported_source=completion.commits[-1] if completion and completion.commits else None,
             has_recorded_source=bool(completion and completion.commits),
             task_status=task["status"], claim_epoch=task.get("claim_epoch", 0),
+            completion_outcome=completion.outcome if completion else None,
+            completion_commits=tuple(completion.commits) if completion else None,
         )
 
 
@@ -159,10 +249,70 @@ class DeliveryEvidence:
     reason: str
 
     @property
+    def lifecycle_exclusion(self) -> str | None:
+        value = self.request.lifecycle_disposition
+        return value.kind if value is not None and self.source_oid == value.source_oid else None
+
+    @property
     def satisfied(self):
         return self.state in {
-            DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE,
+            DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
+            DeliveryState.NOT_APPLICABLE,
         }
+
+
+@dataclass(frozen=True)
+class DeliveryAnswer:
+    """Strict observation result, independent of authorization/lifecycle policy."""
+
+    request: DeliveryRequest
+    state: DeliveryState
+    source_oid: str | None
+    target_ref: str
+    target_oid: str | None
+    observed_at: float | None
+    observation_token: str | None
+    reason: str
+    diagnostic: str | None = None
+    contract_version: str = CONTAINMENT_CONTRACT_VERSION
+
+    @property
+    def generation(self) -> CompletionIdentity | None:
+        if not self.request.completion_id:
+            return None
+        return CompletionIdentity(self.request.project_id, self.request.repository_id,
+                                  self.request.task_id, self.request.completion_id)
+
+    @property
+    def disposition(self) -> DeliveryDisposition | None:
+        value = self.request.lifecycle_disposition
+        return value if value is not None and (
+            self.source_oid == value.source_oid
+        ) else None
+
+    @property
+    def lifecycle_exclusion(self) -> str | None:
+        """Shared watchdog/admission/metrics exclusion; never a delivery state."""
+        return DELIVERED_BY_OTHER_MEANS if self.disposition is not None else None
+
+
+async def delivered(task: DeliveryRequest, target_ref: str, *, observation=None) -> DeliveryAnswer:
+    """Answer exact containment for one accepted immutable completion generation.
+
+    Supply a batched DeliverySnapshot or GitTruthSnapshot gathered outside SQL
+    locks. Absence is explicitly unknown: this reader never guesses transport
+    or repository authority from a task ID. Mutations must reload the request
+    and recheck observation freshness before acting on this pinned answer.
+    """
+    from src.integration.git_truth import GitTruth, GitTruthSnapshot, strict_delivery
+
+    if observation is None:
+        return DeliveryAnswer(task, DeliveryState.UNKNOWN, None, target_ref, None,
+                              None, None, "observation_unavailable")
+    if isinstance(observation, DeliverySnapshot):
+        observation = GitTruthSnapshot(GitTruth(observation.git), observation)
+    return await strict_delivery(observation, task, target_ref)
 
 
 @dataclass(frozen=True)
@@ -186,6 +336,20 @@ class DeliverySnapshot:
     error: str | None = None
     _cache: dict[DeliveryRequest, DeliveryEvidence] = field(default_factory=dict, repr=False)
     _identities: dict[str, DeliveryRequest] = field(default_factory=dict, repr=False)
+    # Shared only by copies of the same fetched observation. Diagnostics must
+    # respect a freshness failure already seen by a background consumer.
+    _freshness: dict[str, bool] = field(default_factory=dict, repr=False, compare=False)
+    # A remote absence can be known even when acquisition failed. It is not a
+    # fetched inventory and must never answer another target's observation.
+    acquisition_error: str | None = None
+    absent_target_refs: frozenset[str] = frozenset()
+    observed_at: float = field(default_factory=time.time)
+    observation_token: str = field(default_factory=lambda: uuid4().hex)
+    contract_version: str = "legacy-equivalence-v1"
+
+    async def delivered(self, request, target_ref=None):
+        """Additive strict delegate; legacy evaluate remains rollout authority."""
+        return await delivered(request, target_ref or self.target_ref, observation=self)
 
     def for_request(self):
         """The same fetched observation without another request's cached answers."""
@@ -196,6 +360,11 @@ class DeliverySnapshot:
         return set(requests) == set(self._cache) and graph_inputs == current_graph_inputs
 
     async def is_fresh(self, *, repository_url=None, target_ref=None):
+        fresh = await self._remote_is_fresh(repository_url=repository_url, target_ref=target_ref)
+        self._freshness[self.target_ref] = fresh
+        return fresh
+
+    async def _remote_is_fresh(self, *, repository_url=None, target_ref=None):
         if self.error or not self.target_oid:
             return False
         if repository_url is not None and repository_url != self.repository_url:
@@ -222,6 +391,13 @@ class DeliverySnapshot:
         return {request.task_id: await self.evaluate(request) for request in requests}
 
     async def evaluate(self, request):
+        if self.contract_version == CONTAINMENT_CONTRACT_VERSION:
+            answer = await self.delivered(request)
+            evidence = DeliveryEvidence(request, answer.state, answer.target_oid,
+                                        answer.source_oid, answer.reason)
+            self._identities[request.task_id] = request
+            self._cache[request] = evidence
+            return evidence
         if self._identities.get(request.task_id, request) != request:
             self._cache.clear()
         self._identities[request.task_id] = request
@@ -238,7 +414,7 @@ class DeliverySnapshot:
         ):
             return result(DeliveryState.UNKNOWN, "scope_mismatch")
         if self.error or not self.target_oid:
-            return result(DeliveryState.UNKNOWN, self.error or "missing_target")
+            return result(DeliveryState.UNKNOWN, self.error or "target_ref_missing")
         if (request.requires_parent_completion and request.parent_completion is None
             and request.parent_adoption is None):
             return result(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
@@ -314,22 +490,32 @@ async def _run(git, store, *args):
 
 
 async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, conn=None,
-                                 reduced=False):
+                                 reduced=False, containers=False, _ancestors=frozenset()):
     """Batch read current completions and live/archive identities without locks.
 
     Absent tasks are omitted so consumers explicitly withhold them. PostgreSQL
     DISTINCT ON gives a deterministic latest generation even at equal times.
     A guarded consumer passes its own *conn* to recheck, under its locks, that
     the identities it evaluated before the transaction are still current.
+    A reduced read with *containers* also attaches the children of completed
+    containers without a recorded source (:attr:`DeliveryRequest.container_children`).
     """
     from contextlib import nullcontext
+
+    if containers and conn is None:
+        async with db._engine.connect() as reader:
+            return await load_delivery_requests(
+                db, task_ids, repository_id=repository_id, target_ref=target_ref,
+                conn=reader, reduced=reduced, containers=True,
+            )
 
     from sqlalchemy import and_, select
 
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
-    from src.database.tables import archived_tasks, task_completion_records, task_metadata, tasks
+    from src.database.tables import archived_tasks, repos, task_completion_records, task_metadata, tasks
+    from src.integration.containment_audit import load_audits
     from src.integration.publishable_artifact import legacy_artifact
 
     task_ids = set(task_ids)
@@ -368,8 +554,30 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         recorded_ids |= set((await reader.execute(
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
+        # Writable task metadata is not operator authorization. Only the guarded
+        # repository cutover audit may supply persisted lifecycle exclusions.
+        dispositions = {}
+        # Canonical cutover audit survives archive's removal of task metadata.
+        # Its exact project/repository/generation/target/source fences are checked
+        # by DeliveryAnswer.disposition; stale entries cannot retire a reclose.
+        cutovers = await load_audits(reader, {
+            (row["project_id"], repository_id) for row in [*live, *archived]
+            if row["repo_id"] in {None, repository_id}
+        })
+        repository = (await reader.execute(select(repos).where(
+            repos.c.id == repository_id,
+        ))).mappings().one_or_none() if cutovers else None
+        for audit in cutovers:
+            bound = audit["manifest"]["facts"]["repository"]
+            if repository is None or any(repository[field] != bound[field]
+                                         for field in ("project_id", "url", "default_branch")):
+                continue
+            for record in audit["dispositions"]:
+                if isinstance(record, dict) and record.get("task_id") in task_ids:
+                    dispositions[record["task_id"]] = record
         settlements, parent_ids, abandoned = {}, set(), set()
-        parent_completions, adopted_parents, parent_adoptions, rework = {}, {}, {}, {}
+        parent_completions, adopted_parents, parent_adoptions = {}, {}, {}
+        parent_history = set()
         if not reduced:
             settlements = {
                 task_id: settlement_fields(value)
@@ -388,20 +596,26 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
             parent_history = parent_ids | abandoned
             adopted_parents = await _adopted_parents_on(reader, parent_history, repository_id)
             parent_adoptions = await _parent_adoptions_on(reader, parent_history, repository_id)
-            rework = dict((await reader.execute(select(
-                task_metadata.c.task_id, task_metadata.c.value,
-            ).where(task_metadata.c.task_id.in_(parent_history),
-                    task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
+        rework = dict((await reader.execute(select(
+            task_metadata.c.task_id, task_metadata.c.value,
+        ).where(task_metadata.c.task_id.in_(task_ids | parent_history),
+                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
     requests = {}
     for rows, is_archived in ((live, False), (archived, True)):
         for row in rows:
+            completion = completion_by_id.get(row["id"])
+            if completion and not completion_after_rework(
+                completion.completed_at, rework.get(row["id"]),
+            ):
+                completion = None
             request = DeliveryRequest.from_task(
-                {**row, "archived": is_archived}, completion_by_id.get(row["id"]),
+                {**row, "archived": is_archived}, completion,
                 repository_id=repository_id, target_ref=target_ref,
             )
+            request = replace(request, disposition=delivery_disposition(dispositions.get(row["id"])))
             current_id = json.loads(row["current_generation"]) if not is_archived and row[
                 "current_generation"
             ] is not None else None
@@ -411,7 +625,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 # generation for this newly completed incarnation.
                 request = replace(
                     request, completion_id=current_id, completed_at=None,
-                    reported_source=None,
+                    reported_source=None, completion_outcome=None, completion_commits=None,
                 )
             elif request.completion_id is None and request.task_status == "COMPLETED":
                 # Legacy closes sometimes have no descriptive completion row.
@@ -484,7 +698,55 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 has_recorded_source=(row["id"] in recorded_ids or bool(current_id)),
                 **settlements.get(row["id"], {}),
             )
+    if containers and reduced:
+        requests = await _with_container_children(
+            db, requests, conn, repository_id=repository_id, target_ref=target_ref,
+            ancestors=_ancestors,
+        )
     return requests
+
+
+async def _with_container_children(db, requests, conn, *, repository_id, target_ref, ancestors):
+    """Attach each sourceless completed container's children, recursively.
+
+    A container closes with no artifact of its own, so its children carry the
+    code. A container keeps no children unless every child loaded, so Git
+    truth withholds it rather than judging a partial family.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import archived_tasks, task_branch_origins, tasks
+
+    containers = {
+        task_id for task_id, request in requests.items()
+        if request.task_status == "COMPLETED" and not request.has_recorded_source
+    } - ancestors
+    if not containers:
+        return requests
+    children: dict[str, set[str]] = {}
+    for table in (tasks, archived_tasks):
+        for child_id, parent_id in (await conn.execute(select(
+            table.c.id, table.c.parent_task_id,
+        ).where(table.c.parent_task_id.in_(containers)))).all():
+            children.setdefault(parent_id, set()).add(child_id)
+    if not children:
+        return requests
+    child_ids = set().union(*children.values())
+    loaded = await load_delivery_requests(
+        db, child_ids, repository_id=repository_id, target_ref=target_ref, conn=conn,
+        reduced=True, containers=True, _ancestors=ancestors | containers,
+    )
+    bases = dict((await conn.execute(select(
+        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+    ).where(task_branch_origins.c.task_id.in_(child_ids),
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None)))).all())
+    return {
+        task_id: replace(request, container_children=tuple(
+            (loaded[child_id], bases.get(child_id)) for child_id in sorted(children[task_id])
+        )) if children.get(task_id, set()) and children[task_id] <= loaded.keys() else request
+        for task_id, request in requests.items()
+    }
 
 
 async def _parent_adoptions_on(conn, task_ids, repository_id):
@@ -693,6 +955,174 @@ def settlement_fields(value):
     }
 
 
+def delivery_disposition(value) -> DeliveryDisposition | None:
+    """Read an explicit cutover disposition without widening a damaged fence."""
+    try:
+        record = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(record, dict) or not all(isinstance(v, str) for v in record.values()):
+            return None
+        return DeliveryDisposition(**record)
+    except (ValueError, TypeError):
+        return None
+
+
+#: Task metadata recording that a source-CI delegate was revoked because its
+#: bound completion generation no longer has the recorded head. Audit plus the
+#: supersession fence; it is written once per delegate and read back here.
+RETIREMENT_KEY = "source_ci_retirement"
+#: The blocker code this fence reports to train admission and publication.
+SUPERSEDED = "source_ci_repair_superseded"
+#: The blocker code a terminal repair reports to the same two places.
+FAILED_REPAIR = "source_ci_repair_failed"
+#: The only retirement disposition that revokes a repair's purpose.
+REOPEN_DISPOSITION = "superseded_by_reopen"
+
+
+def repair_ids(record) -> set[str]:
+    """Current and historical delegates retain the same exact source binding."""
+    return {task_id for task_id in (
+        record["repair_task_id"],
+        *(attempt["task_id"] for attempt in record["repair_history"] or []),
+    ) if task_id}
+
+
+async def repair_bindings_on(conn, ids, *, repository_id):
+    from sqlalchemy import or_, select
+
+    from src.database.tables import integration_source_ci
+
+    if not ids:
+        return []
+    return (await conn.execute(select(integration_source_ci).where(
+        integration_source_ci.c.repository_id == repository_id,
+        or_(integration_source_ci.c.repair_task_id.in_(ids), *(
+            integration_source_ci.c.repair_history.contains([{"task_id": task_id}])
+            for task_id in sorted(ids)
+        )),
+    ))).mappings().all()
+
+
+async def superseded_source_repairs_on(db, conn, ids, *, repository_id) -> dict[str, dict]:
+    """Fresh completion-head and retirement checks for the entire repair chain.
+
+    Unlike delivery, supersession revokes a repair's purpose. Already delivered
+    source work cannot authorize a delegate after that source was reopened.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import task_integration_checkpoints, task_metadata
+
+    candidates = set(ids)
+    ancestors, records, seen = set(ids), [], set()
+    while ancestors - seen:
+        frontier = ancestors - seen
+        seen |= frontier
+        found = await repair_bindings_on(conn, frontier, repository_id=repository_id)
+        records.extend(found)
+        ancestors.update(row["task_id"] for row in found)
+    if not records:
+        return {}
+    sources = {row["task_id"] for row in records}
+    requests = await load_delivery_requests(
+        db, sources, repository_id=repository_id, target_ref="", conn=conn,
+    )
+    checkpoints = dict((await conn.execute(select(
+        task_integration_checkpoints.c.task_id, task_integration_checkpoints.c.checkpoint_sha,
+    ).where(task_integration_checkpoints.c.task_id.in_(sources),
+            task_integration_checkpoints.c.repository_id == repository_id))).all())
+    retired = dict((await conn.execute(select(
+        task_metadata.c.task_id, task_metadata.c.value,
+    ).where(task_metadata.c.task_id.in_(ancestors),
+            task_metadata.c.key == RETIREMENT_KEY))).all())
+    blocked = {
+        task_id: {"code": SUPERSEDED, "ref": task_id, "task_id": task_id,
+                  "detail": json.loads(value)["reason"]}
+        for task_id, value in retired.items()
+        if json.loads(value).get("disposition") == REOPEN_DISPOSITION
+    }
+    while True:
+        before = set(blocked)
+        for row in records:
+            request = requests.get(row["task_id"])
+            head = request.reported_source if request else None
+            if (request is not None and not head and not request.requires_parent_completion
+                    and request.completion_id == request.legacy_generation):
+                # Legacy leaf observations bind the finished checkpoint. A
+                # missing or invalid verified parent must never borrow it.
+                head = checkpoints.get(row["task_id"])
+            if (request is not None and not request.requires_parent_completion
+                    and checkpoints.get(row["task_id"]) not in {None, head}):
+                head = None  # A moved checkpoint cannot borrow an older close row.
+            if (row["task_id"] not in blocked and request is not None
+                    and request.task_status == "COMPLETED"
+                    and request.repository_id == repository_id and head == row["source_head"]):
+                continue
+            for repair_id in repair_ids(row) & ancestors:
+                blocked.setdefault(repair_id, {
+                    "code": SUPERSEDED, "ref": repair_id, "task_id": repair_id,
+                    "source_task_id": row["task_id"], "source_head": row["source_head"],
+                    "detail": f"Source CI repair {repair_id} is superseded: "
+                              f"{row['task_id']} no longer has completion head {row['source_head']}",
+                })
+        if set(blocked) == before:
+            return {task_id: blocked[task_id] for task_id in sorted(candidates & blocked.keys())}
+
+
+async def failed_source_repairs_on(conn, ids, *, repository_id) -> dict[str, dict]:
+    """Repair tasks among *ids* whose own task is a terminal failure.
+
+    Every publication gate rechecks the exact ``COMPLETED`` identity, so a
+    FAILED delegate owes nothing to any target and can never be delivered: it
+    is not pending work in any sense. Only repairs are reported. An ordinary
+    failed task is not this predicate's business, and an id that is no repair
+    at all is simply absent, because a caller reads a named repair as a reason
+    to withhold exactly that repair.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import tasks
+
+    ids = set(ids)
+    if not ids:
+        return {}
+    records = await repair_bindings_on(conn, ids, repository_id=repository_id)
+    repairs = set()
+    for row in records:
+        repairs |= repair_ids(row) & ids
+    if not repairs:
+        return {}
+    failed = set((await conn.execute(
+        select(tasks.c.id).where(tasks.c.id.in_(sorted(repairs)), tasks.c.status == "FAILED")
+    )).scalars())
+    return {
+        repair_id: {
+            "code": FAILED_REPAIR, "ref": repair_id, "task_id": repair_id,
+            "detail": f"Source CI repair {repair_id} is FAILED; it owes this target no "
+                      f"delivery and cannot be admitted to a batch",
+        }
+        for repair_id in sorted(failed)
+    }
+
+
+async def undeliverable_repairs_on(db, conn, ids, *, repository_id) -> dict[str, dict]:
+    """Repairs among *ids* that no batch may admit and no lane may wait for.
+
+    Two independent answers, both observed fresh. Supersession
+    (:func:`superseded_source_repairs_on`) revokes a repair's purpose: the
+    bound source generation no longer has the head it was filed against. A
+    terminal delegate (:func:`failed_source_repairs_on`) owes nothing at all and
+    never will. Either one keeps a repair out of admission and out of a frozen
+    batch, so a superseded repair cannot hold a target open while the corrected
+    source it was filed against waits behind it.
+    """
+    ids = set(ids)
+    blocked = dict(await superseded_source_repairs_on(
+        db, conn, ids, repository_id=repository_id))
+    blocked.update(await failed_source_repairs_on(
+        conn, ids - set(blocked), repository_id=repository_id))
+    return blocked
+
+
 async def delivery_snapshot(git, store, *, project_id, repository_id, repository_url,
                             target_ref):
     """Fetch once and pin all batch observations to its exact target OID.
@@ -700,6 +1130,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
     Git failure yields an unknown snapshot even if stale tracking refs exist.
     It is never converted to an empty source or a successful delivery.
     """
+    from src.integration.repository_recovery import fetch_retained_origin
+
     target_oid, heads, error = None, {}, None
     try:
         if await _run(git, store, "remote", "get-url", "origin") != repository_url:
@@ -707,15 +1139,39 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         if not target_ref.startswith("refs/heads/"):
             raise GitError("invalid_target")
         await _run(git, store, "check-ref-format", target_ref)
-        await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True)
+        try:
+            await fetch_retained_origin(git, store, repository_url=repository_url,
+                                        project_id=project_id, repository_id=repository_id)
+        except GitError as exc:
+            # Ref retirement requires no readable objects. A clean, independent
+            # remote read can diagnose absence even when the retained cache
+            # cannot be acquired. Keep that failure for every other target.
+            if str(exc) != "retained Git object integrity is unavailable":
+                raise
+            try:
+                remote = await git.als_remote_ref(
+                    str(store), target_ref.removeprefix("refs/heads/"),
+                    repository_url=repository_url,
+                )
+            except (GitError, OSError):
+                raise exc
+            if remote.state is not RemoteRefState.ABSENT:
+                raise
+            acquisition_error = f"snapshot_git_error: {exc}"
+            absent_refs = frozenset((target_ref,))
+            return DeliverySnapshot(
+                git, str(store), project_id, repository_id, repository_url, target_ref,
+                None, MappingProxyType({}), "target_ref_missing",
+                acquisition_error=acquisition_error, absent_target_refs=absent_refs,
+            )
         refs = await _run(
             git, store, "for-each-ref", "--format=%(refname) %(objectname)",
-            "refs/remotes/origin/",
+            "refs/remotes/origin/", "refs/aq/provenance/",
         )
         heads = dict(line.split(" ", 1) for line in refs.splitlines())
         target_oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
         if not is_valid_git_oid(target_oid):
-            error = "missing_target"
+            error = "target_ref_missing"
     except (GitError, OSError) as exc:
         error = f"snapshot_git_error: {exc}"
     return DeliverySnapshot(
