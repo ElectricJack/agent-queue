@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,26 +8,34 @@ import { askPage } from "../../../testUtils/asks";
 const reviewsApi = vi.hoisted(() => ({
   reviews: [] as Array<Record<string, unknown>>,
   filters: [] as Array<Record<string, string | undefined>>,
-  pullRequests: [] as Array<Record<string, unknown>>,
-  canApprove: false,
+  projects: [] as Array<Record<string, unknown>>,
+  snapshotAt: 1 as number | null,
+  snapshotAge: 15 as number | null,
+  loading: false,
+  error: null as Error | null,
 }));
 
 const withdrawApi = vi.hoisted(() => ({ mutateAsync: vi.fn(), isPending: false }));
-const approveApi = vi.hoisted(() => ({ mutateAsync: vi.fn(), isPending: false, error: null }));
+
 
 vi.mock("../../../api/asks", () => ({ useAsks: (filters: Record<string, string | undefined>) => {
   reviewsApi.filters.push(filters);
   const data = askPage();
-  data.items = reviewsApi.reviews.map(row => ({ ...data.items[0]!, id: String(row.id), context: { title: String(row.title) }, held_while_paused: Boolean(row.held_while_paused) }));
+  data.items = reviewsApi.reviews.map(row => ({ ...data.items[0]!, id: String(row.id), context: { title: String(row.title) }, created_at: Number(row.created_at), updated_at: row.updated_at == null ? Number(row.created_at) : Number(row.updated_at), held_while_paused: Boolean(row.held_while_paused) }));
   return { data: { ...data, count: data.items.length } };
 } }));
 
 vi.mock("../../../api/pullRequests", () => ({
-  usePendingPullRequests: () => ({
-    data: { pull_requests: reviewsApi.pullRequests, can_approve: reviewsApi.canApprove },
-    isLoading: false, error: null,
+  usePullRequestProjectSummaries: () => ({
+    data: {
+      projects: reviewsApi.projects,
+      snapshot_at: reviewsApi.snapshotAt,
+      snapshot_age_seconds: reviewsApi.snapshotAge,
+    },
+    isLoading: reviewsApi.loading, error: reviewsApi.error,
   }),
-  useApprovePullRequest: () => approveApi,
+  usePendingPullRequests: () => { throw new Error("Reviews must not fetch PR details"); },
+  useApprovePullRequest: () => { throw new Error("Reviews must not mount PR approvals"); },
 }));
 
 function Location() {
@@ -58,10 +66,11 @@ beforeEach(() => {
   withdrawApi.mutateAsync.mockReset();
   withdrawApi.mutateAsync.mockResolvedValue({ success: true, flagged_task_ids: [] });
   reviewsApi.filters = [];
-  reviewsApi.pullRequests = [];
-  reviewsApi.canApprove = false;
-  approveApi.mutateAsync.mockReset();
-  approveApi.mutateAsync.mockResolvedValue({ success: true });
+  reviewsApi.projects = [];
+  reviewsApi.snapshotAt = 1;
+  reviewsApi.snapshotAge = 15;
+  reviewsApi.loading = false;
+  reviewsApi.error = null;
   reviewsApi.reviews = [
     {
       id: "review-waiting",
@@ -93,58 +102,79 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ReviewsInbox", () => {
-  it("shows pending PRs with GitHub links in a new tab beside document reviews", () => {
-    reviewsApi.pullRequests = [{
-      title: "Improve queue", url: "https://github.com/acme/repo/pull/12",
-      repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
-      task_id: "steady-lantern", state: "open", opened_at: Date.now() / 1000 - 7200,
-    }];
+  it("shows one project row with an open PR count and repo link above document reviews", () => {
+    reviewsApi.projects = [
+      {
+        project_id: "agent-queue", project_name: "Agent Queue", open_pr_count: 12,
+        repository: "acme/repo", pulls_url: "https://github.com/acme/repo/pulls",
+      },
+      {
+        project_id: "other", project_name: "Other project", open_pr_count: 0,
+        repository: "acme/other", pulls_url: "https://github.com/acme/other/pulls",
+      },
+    ];
     renderInbox();
 
-    expect(screen.getByRole("heading", { name: "Pull requests" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Document reviews" })).toBeInTheDocument();
-    expect(screen.getByText("Architecture proposal")).toBeInTheDocument();
-    expect(screen.getByText("acme/repo")).toBeInTheDocument();
-    expect(screen.getByText("steady-lantern")).toBeInTheDocument();
-    expect(screen.getByText("2h")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Improve queue" }))
-      .toHaveAttribute("href", "https://github.com/acme/repo/pull/12");
-    expect(screen.getByRole("link", { name: "Improve queue" }))
-      .toHaveAttribute("target", "_blank");
-    expect(screen.getByRole("link", { name: "Improve queue" }))
-      .toHaveAttribute("rel", "noopener noreferrer");
-  });
-
-  it("shows an empty state and a pending PR link", () => {
-    const { rerender } = renderInbox();
-    expect(screen.getByText("No pending pull requests.")).toBeInTheDocument();
-    reviewsApi.pullRequests = [{
-      title: "Fallback title", url: "https://github.com/acme/repo/pull/4",
-      repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
-      task_id: "failed-lookup", state: "open", opened_at: null,
-    }];
-    rerender(<MemoryRouter><ReviewsInbox /></MemoryRouter>);
-    expect(screen.getAllByText("pending").length).toBeGreaterThan(0);
-    expect(screen.getByRole("link", { name: "Fallback title" })).toHaveAttribute("target", "_blank");
-  });
-
-  it("shows Approve only to operator viewers and pins the displayed head", async () => {
-    reviewsApi.pullRequests = [{
-      title: "Improve queue", url: "https://github.com/acme/repo/pull/12",
-      repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
-      task_id: "steady-lantern", state: "open", opened_at: null,
-      head_sha: "a".repeat(40), review_decision: "pending", ci_status: "success",
-      train_state: "awaiting review",
-    }];
-    const { rerender } = renderInbox();
+    const table = screen.getByRole("table", { name: "Project pull requests" });
+    expect(within(table).getAllByRole("row")).toHaveLength(3);
+    expect(within(table).getByText("Agent Queue")).toBeInTheDocument();
+    expect(within(table).getByText("12")).toBeInTheDocument();
+    expect(within(table).getByText("0")).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "View pull requests for Agent Queue" });
+    expect(link).toHaveAttribute("href", "https://github.com/acme/repo/pulls");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByRole("link", { name: "View pull requests for Other project" }))
+      .toHaveAttribute("href", "https://github.com/acme/other/pulls");
+    expect(screen.getByText("GitHub snapshot 15s old")).toBeInTheDocument();
+    expect(screen.queryByText("PR title")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
-    reviewsApi.canApprove = true;
+    const heading = screen.getByRole("heading", { name: "Document reviews" });
+    expect(table.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("Architecture proposal")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when no projects have GitHub repositories", () => {
+    renderInbox();
+    expect(screen.getByText("No active projects with GitHub repositories.")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Project pull requests" })).not.toBeInTheDocument();
+  });
+
+  it("shows unknown counts until the first GitHub snapshot", () => {
+    reviewsApi.projects = [{
+      project_id: "agent-queue", project_name: "Agent Queue", open_pr_count: 0,
+      repository: "acme/repo", pulls_url: "https://github.com/acme/repo/pulls",
+    }];
+    reviewsApi.snapshotAt = null;
+    reviewsApi.snapshotAge = null;
+    renderInbox();
+    const table = screen.getByRole("table", { name: "Project pull requests" });
+    expect(within(table).getByText("—")).toBeInTheDocument();
+    expect(within(table).queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getByText("Waiting for GitHub snapshot…")).toBeInTheDocument();
+  });
+
+  it("keeps document reviews visible while project counts load or fail", () => {
+    reviewsApi.loading = true;
+    const { rerender } = renderInbox();
+    expect(screen.getByText("Loading pull requests…")).toBeInTheDocument();
+    expect(screen.queryByText("No active projects with GitHub repositories.")).not.toBeInTheDocument();
+    expect(screen.getByText("Architecture proposal")).toBeInTheDocument();
+    reviewsApi.loading = false;
+    reviewsApi.error = new Error("Unavailable");
     rerender(inbox());
-    expect(screen.getByText("awaiting review")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(approveApi.mutateAsync).toHaveBeenCalledWith({
-      taskId: "steady-lantern", headSha: "a".repeat(40),
-    }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load pull requests.");
+    expect(screen.queryByText("No active projects with GitHub repositories.")).not.toBeInTheDocument();
+    expect(screen.getByText("Architecture proposal")).toBeInTheDocument();
+  });
+
+  it("puts the most recently updated document reviews first in every view", () => {
+    renderInbox();
+    const newer = screen.getByRole("link", { name: "Delegated design" });
+    const older = screen.getByRole("link", { name: "Architecture proposal" });
+    expect(newer.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    expect(newer.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("uses the shared document filter and canonical links", () => {

@@ -75,6 +75,9 @@ def build_digest(
         open_escalations=inputs.open_escalations,
         max_chars=max_chars,
         max_highlights=max_highlights,
+        waiting_on_delivery=tuple(item for item in inputs.waiting_on_delivery
+                                  if (project_ids is None or item["project_id"] in project_ids)
+                                  and (categories is None or "work" in categories)),
     )
     highlights = frozenset(highlight_key(fact) for fact in eligibility.facts)
     return DigestResult(
