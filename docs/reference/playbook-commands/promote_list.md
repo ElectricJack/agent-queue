@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:60b050ff4497ffe37c827376d677b333c1732f64ce612c50bd35d1c3769d5bdf` |
+| Contract fingerprint | `sha256:452d446d7de6b5c09b6b5b66d1bd23b52d4b861d034707898f99e4c52704368a` |
 
 ## Parameters
 
@@ -47,9 +47,10 @@
 | `draft` | `string \| null` | — |
 | `notes` | `string \| null` | — |
 | `policy` | `object \| null` | — |
+| `migration_admission` | `object \| null` | — |
 | `backmerges` | `object[]` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`, `policy`, `backmerges`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`, `policy`, `migration_admission`, `backmerges`.
 
 ## Outcomes
 
@@ -58,8 +59,11 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `approval_not_required` | failure | — |
 | `backmerge_ledger_invalid` | failure | — |
 | `backmerge_pending` | failure | — |
+| `breaking_migration_override_forbidden` | failure | — |
 | `hotfix_patch_required` | failure | — |
 | `listed` | success | — |
+| `migration_range_invalid` | failure | — |
+| `migrations_not_additive` | failure | — |
 | `not_found` | failure | — |
 | `notes_not_reviewed` | failure | — |
 | `notes_range_invalid` | failure | — |
