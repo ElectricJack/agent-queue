@@ -1,0 +1,461 @@
+{
+  "provider_availability_notify": {
+    "argument_reads_diagnostic_only": [
+      "generation",
+      "provider"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_availability_notify",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider availability is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'generation must be an integer'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.notify_state_change(provider, generation)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:549fcd0f7f364f7957753a99f3e665412007691ee29c31e102cb7faf551f95a0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "provider_held_tasks": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_held_tasks",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider availability is not running'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'now': service.now(), 'tasks': tasks, 'total': len(tasks), 'by_kind': by_kind}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:46dbcaac352d2a1ad6bf9d588c3bfc9436d524b5dd7e483223a8b8269ee51578",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_reroute.py"
+    ]
+  },
+  "provider_history": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "provider"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_resolve_provider_arg": "sha256:4a8cd48c69d6e4bc754defe45b90d68a3cae71e8900e14402d05fd210171b630"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_history",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider availability is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'limit must be an integer'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'provider': provider, 'transitions': transitions}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:954413a7b0fb1207d859f3877ccea2ee632220bcab769c4c6c922c2125d3f78d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_commands.py"
+    ]
+  },
+  "provider_recheck": {
+    "argument_reads_diagnostic_only": [
+      "provider"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_provider_operator_refusal": "sha256:924c4aadb774f42b106a54c0381685020462c067c9998f298b97cdd507879ded",
+      "_resolve_provider_arg": "sha256:4a8cd48c69d6e4bc754defe45b90d68a3cae71e8900e14402d05fd210171b630"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_recheck",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider availability is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'provider': provider, 'probe': result.get('probe'), 'probe_detail': dict(result.get('probe_detail') or {}), 'state': service.effective_state(provider, now), 'transition': result.get('transition'), 'status': await self._provider_view(service, provider, verbose=False, now=now)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:3d4ea69b66a4bc749f3e1e348b777f4138b0d54f9d1eaf7140f611a28b32e747",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_commands.py"
+    ]
+  },
+  "provider_reroute": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_reroute",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider failover is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'force and to_profile move named tasks only; pass task_id'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'out of scope: a token scoped to project {project_id} re-routes named tasks only; pass task_id'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"profile '{to_profile}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'task(s) not found: {', '.join(missing)}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.sweep(provider=provider, task_ids=task_ids, to_profile=to_profile, include_paused=bool(request.include_paused), dry_run=dry_run, force=force, actor=self._provider_actor())"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:ee981c393eea97be9457fc62c24870dce41aefb22efda76d1d4a5259c2d8d8b4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "provider_reroute_undo": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_foreign_task_refusal": "sha256:97cb5d66e2ff2db261570ff9f4dea049d454994d0ca9e520d339ba74f2616b1b",
+      "_provider_operator_refusal": "sha256:924c4aadb774f42b106a54c0381685020462c067c9998f298b97cdd507879ded",
+      "_reroute_request": "sha256:58f05b088fa555e4158cab74db4585923fdb06aa4165ab1b52e82043aa528d0d"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_reroute_undo",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider failover is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'pass batch_id or task_id'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.undo(batch_id=batch_id, task_ids=task_ids, force=bool(request.force), actor=self._provider_actor(), project_id=project_id)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:52ef3af97f0d92f36d2110105d32ec4c6b65c436d7093e5894fdcde1abeb5d37",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_reroute.py"
+    ]
+  },
+  "provider_set_state": {
+    "argument_reads_diagnostic_only": [
+      "for",
+      "no_expiry",
+      "provider",
+      "reason",
+      "state",
+      "until"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_provider_operator_refusal": "sha256:924c4aadb774f42b106a54c0381685020462c067c9998f298b97cdd507879ded",
+      "_resolve_provider_arg": "sha256:4a8cd48c69d6e4bc754defe45b90d68a3cae71e8900e14402d05fd210171b630"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_set_state",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider availability is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'state must be one of {', '.join(SET_STATES)}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'reason is required for an override'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'give at most one of for, until and no_expiry'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"an 'available' override always expires; no_expiry is accepted for 'disabled' only\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'the override would already have expired'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'an override may last at most {float(override_cfg.max_ttl_seconds):g}s (provider_failover.override.max_ttl_seconds)'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'provider': provider, 'state': service.effective_state(provider, now), 'transition': result.transition.payload() if result.transition else None, 'status': await self._provider_view(service, provider, verbose=False, now=now)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:da9ed24eabfb15f35dc23f2e0de204d2b3619fc39de2034a6ad1d0675f3bcb4d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_commands.py"
+    ]
+  },
+  "provider_status": {
+    "argument_reads_diagnostic_only": [
+      "provider",
+      "verbose"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_resolve_provider_arg": "sha256:4a8cd48c69d6e4bc754defe45b90d68a3cae71e8900e14402d05fd210171b630"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_status",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'provider availability is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'mode': getattr(service.config, 'mode', 'enforce'), 'now': now, 'providers': rows}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c5dca090546dcb6130b4b3a8a2e99e9d7f85dbcd02fdc999aad5401f923caea0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_commands.py",
+      "tests/test_provider_reroute.py"
+    ]
+  },
+  "provider_usage_probe": {
+    "argument_reads_diagnostic_only": [
+      "provider"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_commands.py:ProviderCommandsMixin._cmd_provider_usage_probe",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'unknown provider {provider!r}; probeable: {', '.join(PROBEABLE)}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._finish_probe(provider, {'success': True, 'outcome': 'disabled', 'provider': provider, 'snapshots': [], 'recorded': 0, 'unparsed': False, 'detail': 'providers.claude.usage_probe_enabled is false'})"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._finish_probe(provider, {'success': False, 'error': result.error or result.outcome, 'reason': result.outcome, 'provider': provider, 'snapshots': [], 'recorded': 0, 'unparsed': False})"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._finish_probe(provider, payload)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:87c48af15ed81ee178dd99d944ed143c9fe0ff41a9fd6474a71b7e01fa90ce0b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

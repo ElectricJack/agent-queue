@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/root_materialization.py::RootMaterialization.run::34102a726514e7aeb823abf3b69f122588ad5c1ce232cb5015b1467656a6573c": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 177,
+      "owner": "RootMaterialization.run",
+      "owner_fingerprint": "1b5a0b1f370b30f25866800f66edfc5cd1159b878b8fe7589082dd6f0924381c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
