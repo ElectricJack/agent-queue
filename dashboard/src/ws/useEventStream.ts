@@ -351,10 +351,14 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   }
 
   if (type.startsWith("pool.")) {
-    if (type === "pool.renamed") {
+    if (type === "pool.renamed" || type === "pool.deleted") {
       queryClient.invalidateQueries({ queryKey: ["profiles"] });
       queryClient.invalidateQueries({ queryKey: ["profile"] });
       queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    }
+    if (type === "pool.deleted") {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
     }
     queryClient.invalidateQueries({ queryKey: ["pools"] });
     queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
