@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/escalations.py::EscalationAutoResolver": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/escalations.py::EscalationDeliveryService": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/escalations.py::SupervisorDeliveryWatchdog": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
