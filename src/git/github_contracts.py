@@ -89,10 +89,30 @@ class GitHubCredentialIdentity:
 class GitHubAccessError(RuntimeError):
     """Safe GitHub failure containing classification but no raw diagnostics."""
 
-    def __init__(self, category: str, message: str, *, retry_at: float | None = None):
+    def __init__(
+        self,
+        category: str,
+        message: str,
+        *,
+        retry_at: float | None = None,
+        http_status: int | None = None,
+    ):
         self.category = category
         self.retry_at = retry_at
+        self.http_status = http_status
         super().__init__(message)
+
+
+def rate_limit_cause(exc: BaseException) -> GitHubAccessError | None:
+    """The ``rate_limited`` GitHub failure anywhere in *exc*'s cause chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, GitHubAccessError) and current.category == "rate_limited":
+            return current
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def credential_identity_from_client(client: Any) -> GitHubCredentialIdentity:
