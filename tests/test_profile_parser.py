@@ -1500,7 +1500,8 @@ class TestValidateConfig:
         the named-session fields from
         docs/specs/implementation/supervisor-agent.md §7, and the
         pool-only sizing fields (``min_active``, ``max_active``,
-        ``max_claims_per_session``) from swarm-work-model §9.
+        ``max_claims_per_session``) from swarm-work-model §9 and
+        ``min_per_project`` from global-worker-pools §2.1.
 
         Note: none of ``model``, ``agent_name`` or ``runtime`` is a known
         key.  ``model`` was replaced by ``default_class`` (the class and the
@@ -1514,6 +1515,7 @@ class TestValidateConfig:
         assert CONFIG_KNOWN_KEYS == {
             "permission_mode",
             "codex_full_auto",
+            "codex_service_tier",
             "claude_dangerously_skip_permissions",
             "max_tokens_per_task",
             "harness",
@@ -1526,11 +1528,20 @@ class TestValidateConfig:
             "default_class",
             "needs_workspace",
             "read_only",
+            "enabled",
             "allow_base_checkout",
             "min_active",
             "max_active",
+            "min_per_project",
             "max_claims_per_session",
         }
+
+    def test_config_enabled_must_be_a_boolean(self):
+        """``enabled`` is the operator kill-switch written by pool_set_enabled."""
+        assert _validate_config({"enabled": False}) == []
+        assert _validate_config({"enabled": True}) == []
+        errors = _validate_config({"enabled": "false"})
+        assert errors and "'enabled' must be a boolean" in errors[0]
 
     def test_config_model_rejected(self):
         """``model`` is rejected: the class and harness resolve the model."""
@@ -1574,6 +1585,16 @@ class TestValidateConfig:
         config = {"default_class": "standard-medium"}
         errors = _validate_config(config)
         assert errors == []
+
+    def test_codex_service_tier_requires_codex_and_known_value(self):
+        assert _validate_config({"harness": "codex", "codex_service_tier": "fast"}) == []
+        assert _validate_config({"harness": "codex", "codex_service_tier": "default"}) == []
+        assert "requires harness" in _validate_config(
+            {"harness": "claude", "codex_service_tier": "fast"}
+        )[0]
+        assert "must be" in _validate_config(
+            {"harness": "codex", "codex_service_tier": "priority"}
+        )[0]
 
     def test_valid_permission_mode_only(self):
         """A config with only permission_mode passes."""

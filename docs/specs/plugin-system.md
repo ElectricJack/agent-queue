@@ -4,14 +4,22 @@ tags: [spec, plugins, extensibility]
 
 # Plugin System Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 **Source files:** `src/plugins/` , modifications to `src/command_handler.py`, `src/tool_registry.py`, `src/orchestrator.py`, `src/cli/app.py`, `src/discord/bot.py`
-**Related specs:** [[specs/command-handler]], [[specs/tiered-tools]], [[design/playbooks]]
+**Related specs:** [specs/command-handler](command-handler.md), [specs/tiered-tools](tiered-tools.md), [design/playbooks](design/playbooks.md)
 
 ---
 
 ## 1. Overview
 
-See [[design/memory-plugin]] for how the memory plugin v2 extends the plugin architecture.
+See [design/memory-plugin](design/memory-plugin.md) for how the memory plugin v2 extends the plugin architecture.
 
 The plugin system enables extending AgentQueue with installable, self-contained Python packages that can register commands, tools, cron-scheduled functions, CLI commands, and Discord slash commands. Plugins are installed from git repositories, managed via Discord slash commands and the `aq` CLI, and can be developed/updated by AgentQueue agents themselves.
 
@@ -460,12 +468,24 @@ aq plugin remove <name>                     # Uninstall plugin
 aq plugin enable <name>                     # Enable disabled plugin
 aq plugin disable <name>                    # Disable plugin (keep installed)
 aq plugin config <name> [key=value ...]     # View or set plugin config
-aq plugin logs <name> [--limit N]           # View plugin hook run history
+aq plugin logs <name>                       # Removed (exits 1) — hook history is gone
 aq plugin prompts <name>                    # List plugin prompts
 aq plugin edit-prompt <name> <prompt-name>  # Edit an instance prompt
 aq plugin diff-prompts <name>               # Diff instance vs source defaults
 aq plugin reset-prompts <name>              # Reset prompts to source defaults
 ```
+
+`aq plugin logs` is a deprecation stub, not a query. The hook engine whose
+execution history it read has been removed, so the command always fails
+(exit 1; one `command_error` envelope under `--json`) rather than returning
+an empty-but-successful history that would read as "this plugin never ran".
+Its `--limit` option is still accepted and ignored so a legacy invocation
+reaches the guidance instead of a Click usage error. Replacements:
+
+- Playbook automation history: `aq playbook list-runs`, then
+  `aq playbook inspect-run --run-id <run-id>`.
+- A plugin's own diagnostic output (daemon logging, *not* hook history):
+  `aq logs --grep <plugin-name>`.
 
 ### Discord Commands
 
@@ -641,6 +661,9 @@ Without a CLAUDE.md, the agent has to reverse-engineer all of this from code, wh
 - `@cron` decorator for scheduled plain async Python functions
 - `PluginContext.invoke_llm()` for LLM access from cron jobs and handlers
 - `Plugin.cli_group()` for extending the `aq` CLI with Click groups
+- Plugin CLI entry points are discoverable during offline help, while saved
+  configuration is merged lazily on command invocation through a bounded,
+  read-only query that never initializes or migrates the database
 - `Plugin.discord_commands()` for extending Discord with `app_commands.Group`
 - Reserved plugin name validation to prevent CLI/Discord collisions
 - Class attributes (`plugin_permissions`, `config_schema`, `default_config`) replace

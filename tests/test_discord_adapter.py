@@ -63,6 +63,7 @@ class TestDiscordAdapterDelegation:
             # Replace bot methods with AsyncMocks for coroutine testing
             adapter._bot.start = AsyncMock()
             adapter._bot.wait_until_ready = AsyncMock()
+            adapter._bot.wait_until_cutover_complete = AsyncMock()
             adapter._bot.close = AsyncMock()
             adapter._bot._send_message = AsyncMock(return_value=MagicMock())
             adapter._bot._create_task_thread = AsyncMock(return_value=("send_cb", "notify_cb"))
@@ -81,6 +82,7 @@ class TestDiscordAdapterDelegation:
     async def test_wait_until_ready_delegates(self, adapter):
         await adapter.wait_until_ready()
         adapter._bot.wait_until_ready.assert_awaited_once()
+        adapter._bot.wait_until_cutover_complete.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_close_delegates(self, adapter):
@@ -88,32 +90,25 @@ class TestDiscordAdapterDelegation:
         adapter._bot.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_send_message_delegates(self, adapter):
+    async def test_legacy_send_message_is_inert(self, adapter):
         embed = MagicMock()
         view = MagicMock()
         result = await adapter.send_message("hello", "proj1", embed=embed, view=view)
-        adapter._bot._send_message.assert_awaited_once_with(
-            "hello", "proj1", embed=embed, view=view
-        )
-        # send_message is fire-and-forget (returns None)
         assert result is None
+        adapter._bot._send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_send_message_minimal(self, adapter):
-        """send_message works with just text."""
+    async def test_legacy_send_message_minimal_is_inert(self, adapter):
         await adapter.send_message("hello")
-        adapter._bot._send_message.assert_awaited_once_with("hello", None, embed=None, view=None)
+        adapter._bot._send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_create_task_thread_delegates(self, adapter):
-        # create_task_thread accepts (thread_name, initial_message, project_id, task_id)
+    async def test_create_task_thread_is_retired(self, adapter):
         result = await adapter.create_task_thread(
             "thread-name", "Agent working on: thread-name", "proj1", "task1"
         )
-        adapter._bot._create_task_thread.assert_awaited_once_with(
-            "thread-name", "Agent working on: thread-name", "proj1", "task1"
-        )
-        assert result == ("send_cb", "notify_cb")
+        adapter._bot._create_task_thread.assert_not_awaited()
+        assert result is None
 
     def test_get_command_handler_delegates(self, adapter):
         result = adapter.get_command_handler()

@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.deployment_event import DeploymentEvent
     from ..models.env_var_reference import EnvVarReference
     from ..models.get_config_response_config import GetConfigResponseConfig
 
@@ -18,16 +19,25 @@ T = TypeVar("T", bound="GetConfigResponse")
 
 @_attrs_define
 class GetConfigResponse:
-    """
-    Attributes:
-        path (str | Unset):  Default: ''.
-        config (GetConfigResponseConfig | Unset):
-        section (None | str | Unset):
-        hot_reloadable (list[str] | Unset):
-        restart_required (list[str] | Unset):
-        unclassified (list[str] | Unset):
-        env_var_references (list[EnvVarReference] | Unset):
-        error (None | str | Unset):
+    """The config as written on disk, with literal credentials redacted.
+
+    ``redacted`` holds the dotted path of every value replaced (or, for a DSN,
+    partially replaced) with ``secret_placeholder``.  Saving a section with the
+    placeholder left in place keeps the stored credential — see
+    :mod:`src.config_secrets`.
+
+        Attributes:
+            path (str | Unset):  Default: ''.
+            config (GetConfigResponseConfig | Unset):
+            section (None | str | Unset):
+            hot_reloadable (list[str] | Unset):
+            restart_required (list[str] | Unset):
+            unclassified (list[str] | Unset):
+            env_var_references (list[EnvVarReference] | Unset):
+            redacted (list[str] | Unset):
+            secret_placeholder (str | Unset):  Default: ''.
+            deployment_history (list[DeploymentEvent] | Unset):
+            error (None | str | Unset):
     """
 
     path: str | Unset = ""
@@ -37,6 +47,9 @@ class GetConfigResponse:
     restart_required: list[str] | Unset = UNSET
     unclassified: list[str] | Unset = UNSET
     env_var_references: list[EnvVarReference] | Unset = UNSET
+    redacted: list[str] | Unset = UNSET
+    secret_placeholder: str | Unset = ""
+    deployment_history: list[DeploymentEvent] | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -72,6 +85,19 @@ class GetConfigResponse:
                 env_var_references_item = env_var_references_item_data.to_dict()
                 env_var_references.append(env_var_references_item)
 
+        redacted: list[str] | Unset = UNSET
+        if not isinstance(self.redacted, Unset):
+            redacted = self.redacted
+
+        secret_placeholder = self.secret_placeholder
+
+        deployment_history: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.deployment_history, Unset):
+            deployment_history = []
+            for deployment_history_item_data in self.deployment_history:
+                deployment_history_item = deployment_history_item_data.to_dict()
+                deployment_history.append(deployment_history_item)
+
         error: None | str | Unset
         if isinstance(self.error, Unset):
             error = UNSET
@@ -95,6 +121,12 @@ class GetConfigResponse:
             field_dict["unclassified"] = unclassified
         if env_var_references is not UNSET:
             field_dict["env_var_references"] = env_var_references
+        if redacted is not UNSET:
+            field_dict["redacted"] = redacted
+        if secret_placeholder is not UNSET:
+            field_dict["secret_placeholder"] = secret_placeholder
+        if deployment_history is not UNSET:
+            field_dict["deployment_history"] = deployment_history
         if error is not UNSET:
             field_dict["error"] = error
 
@@ -102,6 +134,7 @@ class GetConfigResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.deployment_event import DeploymentEvent
         from ..models.env_var_reference import EnvVarReference
         from ..models.get_config_response_config import GetConfigResponseConfig
 
@@ -139,6 +172,19 @@ class GetConfigResponse:
 
                 env_var_references.append(env_var_references_item)
 
+        redacted = cast(list[str], d.pop("redacted", UNSET))
+
+        secret_placeholder = d.pop("secret_placeholder", UNSET)
+
+        _deployment_history = d.pop("deployment_history", UNSET)
+        deployment_history: list[DeploymentEvent] | Unset = UNSET
+        if _deployment_history is not UNSET:
+            deployment_history = []
+            for deployment_history_item_data in _deployment_history:
+                deployment_history_item = DeploymentEvent.from_dict(deployment_history_item_data)
+
+                deployment_history.append(deployment_history_item)
+
         def _parse_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -156,6 +202,9 @@ class GetConfigResponse:
             restart_required=restart_required,
             unclassified=unclassified,
             env_var_references=env_var_references,
+            redacted=redacted,
+            secret_placeholder=secret_placeholder,
+            deployment_history=deployment_history,
             error=error,
         )
 

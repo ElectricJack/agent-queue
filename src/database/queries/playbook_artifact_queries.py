@@ -11,13 +11,14 @@ from uuid import uuid4
 
 from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
     integration_operation_artifact_pins,
     integration_outbox_artifact_pins,
+    integration_subject_journal,
+    integration_subjects,
     playbook_activations,
     playbook_artifacts,
     playbook_pending_events,
@@ -106,11 +107,8 @@ class PlaybookArtifactQueryMixin:
         candidate sets queue rather than deadlock, and released by the commit.
         """
         async with self.immediate() as conn:
-            if conn.dialect.name == "postgresql":
-                for key in sorted({_advisory_key(sha) for sha in artifact_shas if sha}):
-                    await conn.execute(
-                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": key}
-                    )
+            for key in sorted({_advisory_key(sha) for sha in artifact_shas if sha}):
+                await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
             yield conn
 
     async def upsert_playbook_artifact(
@@ -169,9 +167,7 @@ class PlaybookArtifactQueryMixin:
             await self._upsert_playbook_artifact(locked_conn, values, path=path)
 
     @staticmethod
-    async def _upsert_playbook_artifact(
-        conn: AsyncConnection, values: dict, *, path: str
-    ) -> None:
+    async def _upsert_playbook_artifact(conn: AsyncConnection, values: dict, *, path: str) -> None:
         """Write one artifact row on a caller-owned transaction.
 
         The public method normally owns the per-hash lock.  Reviewed-artifact
@@ -179,7 +175,7 @@ class PlaybookArtifactQueryMixin:
         statement so a failed row write can compensate the new file before a
         concurrent retention/import operation observes it.
         """
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = pg_insert
         statement = insert_fn(playbook_artifacts).values(**values)
         await conn.execute(
             statement.on_conflict_do_update(
@@ -201,12 +197,16 @@ class PlaybookArtifactQueryMixin:
     async def get_playbook_artifact(self, artifact_sha256: str) -> ArtifactRef | None:
         async with self._engine.begin() as conn:
             row = (
-                await conn.execute(
-                    select(playbook_artifacts).where(
-                        playbook_artifacts.c.artifact_sha256 == artifact_sha256
+                (
+                    await conn.execute(
+                        select(playbook_artifacts).where(
+                            playbook_artifacts.c.artifact_sha256 == artifact_sha256
+                        )
                     )
                 )
-            ).mappings().fetchone()
+                .mappings()
+                .fetchone()
+            )
         return ArtifactRef.from_row(row) if row else None
 
     async def get_playbook_artifact_row(
@@ -268,6 +268,22 @@ class PlaybookArtifactQueryMixin:
         reasons: str,
     ) -> None:
         async with self.immediate() as conn:
+            if scope == "project":
+                # A policy edit/disable cannot race the train's fenced push.
+                # Take the repository fence before changing the activation;
+                # worker source publication does not participate in this fence.
+                from src.database.tables import projects
+                from src.integration.engine import lock_key
+
+                repository_id = await conn.scalar(select(
+                    projects.c.integration_repository_id,
+                ).where(projects.c.id == scope_identifier))
+                if repository_id:
+                    await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                       {"key": lock_key(repository_id)})
+                # Worker reservations already hold hierarchy before touching
+                # owner rows. Match that guard after the publisher's repo fence.
+                await self.lock_hierarchy_project(conn, scope_identifier)
             if artifact_sha256 is not None:
                 found = await conn.execute(
                     select(playbook_artifacts.c.artifact_sha256).where(
@@ -296,7 +312,7 @@ class PlaybookArtifactQueryMixin:
             # with "current transaction is aborted" instead of updating.
             dialect = conn.dialect.name
             if dialect in ("postgresql", "sqlite"):
-                insert_fn = pg_insert if dialect == "postgresql" else sqlite_insert
+                insert_fn = pg_insert
                 statement = insert_fn(playbook_activations).values(**values)
                 await conn.execute(
                     statement.on_conflict_do_update(
@@ -307,6 +323,15 @@ class PlaybookArtifactQueryMixin:
                         },
                     )
                 )
+                if scope == "project" and not enabled:
+                    from src.integration.train_policy import (
+                        release_idle_reservations_on,
+                        train_policy_on,
+                    )
+
+                    if (await train_policy_on(conn, scope_identifier)).reason == (
+                            "train_playbook_disabled"):
+                        await release_idle_reservations_on(conn, scope_identifier, now)
                 return
             # Generic fallback for any other dialect: update first, insert
             # only when the row is genuinely absent.
@@ -324,9 +349,7 @@ class PlaybookArtifactQueryMixin:
 
     # -- retention and integrity (child plan §12.1, §12.2) -------------------
 
-    async def list_playbook_activations(
-        self, *, enabled_only: bool = False
-    ) -> list[dict]:
+    async def list_playbook_activations(self, *, enabled_only: bool = False) -> list[dict]:
         """Every activation row, newest first, as plain mappings.
 
         Read-only and unfiltered by scope on purpose: its two callers are the
@@ -363,9 +386,7 @@ class PlaybookArtifactQueryMixin:
         tables and are **not** taken from the artifact: the activation's values
         are the authority for where the playbook is installed.
         """
-        artifact_columns = [
-            playbook_artifacts.c[name] for name in _ACTIVATION_ARTIFACT_COLUMNS
-        ]
+        artifact_columns = [playbook_artifacts.c[name] for name in _ACTIVATION_ARTIFACT_COLUMNS]
         stmt = (
             select(playbook_activations, *artifact_columns)
             .select_from(
@@ -442,9 +463,7 @@ class PlaybookArtifactQueryMixin:
             return await self._referenced_artifact_shas(connection, wanted)
 
     @staticmethod
-    async def _referenced_artifact_shas(
-        conn: AsyncConnection, wanted: list[str]
-    ) -> set[str]:
+    async def _referenced_artifact_shas(conn: AsyncConnection, wanted: list[str]) -> set[str]:
         referenced: set[str] = set()
         for start in range(0, len(wanted), _SHA_BATCH):
             batch = wanted[start : start + _SHA_BATCH]
@@ -454,6 +473,8 @@ class PlaybookArtifactQueryMixin:
                 playbook_v2_runs.c.artifact_sha256,
                 integration_outbox_artifact_pins.c.artifact_sha256,
                 integration_operation_artifact_pins.c.artifact_sha256,
+                integration_subjects.c.policy_artifact_sha256,
+                integration_subject_journal.c.policy_artifact_sha256,
             ):
                 found = await conn.execute(select(column).where(column.in_(batch)))
                 referenced.update(sha for sha in found.scalars().all() if sha)
@@ -472,8 +493,9 @@ class PlaybookArtifactQueryMixin:
 
         1. referenced by an activation (``active_artifact_sha256``);
         2. referenced by any retained run (``playbook_v2_runs.artifact_sha256``);
-        3. pinned by a protected pending integration destination or an
-           undelivered outbox destination manifest;
+        3. pinned by a protected pending integration destination, an
+           undelivered outbox destination manifest, an integration subject's
+           policy or an entry of its journal;
         4. among the newest ``min_versions`` artifacts of its own playbook,
            ranked by ``version`` then ``created_at`` so a re-used version
            number cannot make the window ambiguous.
@@ -493,12 +515,10 @@ class PlaybookArtifactQueryMixin:
                 playbook_pending_events.c.resolved_at.is_(None),
                 playbook_pending_events.c.artifact_sha256.is_not(None),
             )
-            pinned_by_outbox = select(
-                integration_outbox_artifact_pins.c.artifact_sha256
-            )
-            pinned_by_operation = select(
-                integration_operation_artifact_pins.c.artifact_sha256
-            )
+            pinned_by_outbox = select(integration_outbox_artifact_pins.c.artifact_sha256)
+            pinned_by_operation = select(integration_operation_artifact_pins.c.artifact_sha256)
+            pinned_by_subject = select(integration_subjects.c.policy_artifact_sha256)
+            pinned_by_journal = select(integration_subject_journal.c.policy_artifact_sha256)
             candidate_query = (
                 select(
                     playbook_artifacts.c.artifact_sha256,
@@ -507,32 +527,27 @@ class PlaybookArtifactQueryMixin:
                 )
                 .where(
                     playbook_artifacts.c.created_at < before,
-                    playbook_artifacts.c.artifact_sha256.not_in(
-                        activated.scalar_subquery()
-                    ),
-                    playbook_artifacts.c.artifact_sha256.not_in(
-                        pinned_by_run.scalar_subquery()
-                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(activated.scalar_subquery()),
+                    playbook_artifacts.c.artifact_sha256.not_in(pinned_by_run.scalar_subquery()),
                     playbook_artifacts.c.artifact_sha256.not_in(
                         pinned_by_pending.scalar_subquery()
                     ),
-                    playbook_artifacts.c.artifact_sha256.not_in(
-                        pinned_by_outbox.scalar_subquery()
-                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(pinned_by_outbox.scalar_subquery()),
                     playbook_artifacts.c.artifact_sha256.not_in(
                         pinned_by_operation.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_subject.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_journal.scalar_subquery()
                     ),
                 )
                 .order_by(playbook_artifacts.c.created_at)
                 .limit(limit)
             )
-            if conn.dialect.name == "postgresql":
-                candidate_query = candidate_query.with_for_update()
-            candidates = (
-                (await conn.execute(candidate_query))
-                .mappings()
-                .fetchall()
-            )
+            candidate_query = candidate_query.with_for_update()
+            candidates = (await conn.execute(candidate_query)).mappings().fetchall()
             if not candidates:
                 return []
             protected: set[str] = set()
@@ -564,10 +579,7 @@ class PlaybookArtifactQueryMixin:
             for artifact_sha256, path in eligible:
                 still_unreferenced = (
                     ~select(1)
-                    .where(
-                        playbook_activations.c.active_artifact_sha256
-                        == artifact_sha256
-                    )
+                    .where(playbook_activations.c.active_artifact_sha256 == artifact_sha256)
                     .exists(),
                     ~select(1)
                     .where(playbook_v2_runs.c.artifact_sha256 == artifact_sha256)
@@ -579,24 +591,23 @@ class PlaybookArtifactQueryMixin:
                     )
                     .exists(),
                     ~select(1)
-                    .where(
-                        integration_outbox_artifact_pins.c.artifact_sha256
-                        == artifact_sha256
-                    )
+                    .where(integration_outbox_artifact_pins.c.artifact_sha256 == artifact_sha256)
                     .exists(),
                     ~select(1)
-                    .where(
-                        integration_operation_artifact_pins.c.artifact_sha256
-                        == artifact_sha256
-                    )
+                    .where(integration_operation_artifact_pins.c.artifact_sha256 == artifact_sha256)
+                    .exists(),
+                    ~select(1)
+                    .where(integration_subjects.c.policy_artifact_sha256 == artifact_sha256)
+                    .exists(),
+                    ~select(1)
+                    .where(integration_subject_journal.c.policy_artifact_sha256 == artifact_sha256)
                     .exists(),
                 )
                 try:
                     async with conn.begin_nested():
                         result = await conn.execute(
                             delete(playbook_artifacts).where(
-                                playbook_artifacts.c.artifact_sha256
-                                == artifact_sha256,
+                                playbook_artifacts.c.artifact_sha256 == artifact_sha256,
                                 *still_unreferenced,
                             )
                         )

@@ -20,6 +20,7 @@ Covers:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -32,6 +33,8 @@ from src.profiles.parser import (
     parse_profile,
     parsed_profile_to_agent_profile,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +389,7 @@ class TestCommandVaultWrite:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -498,6 +501,12 @@ class TestCommandVaultWrite:
                 None,
             ),
             (
+                {"harness": "codex", "codex_service_tier": "fast"},
+                {"harness": "codex", "codex_service_tier": "fast"},
+                None,
+                None,
+            ),
+            (
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 None,
@@ -505,10 +514,11 @@ class TestCommandVaultWrite:
             ),
             ({"description": "Updated modern description"}, {}, "Updated modern description", None),
             (
+                # Written back sorted, so an edit produces a stable vault diff.
                 {"harness": "codex", "allowed_tools": ["Read", "Bash"]},
                 {"harness": "codex"},
                 None,
-                ["Read", "Bash"],
+                ["Bash", "Read"],
             ),
         ],
     )
@@ -583,6 +593,104 @@ Keep this operator note exactly as authored.
         assert "## Local rationale\nKeep this operator note exactly as authored." in edited
         assert "This rationale must remain next to the operational settings." in edited
 
+    async def _write_modern_profile(self, handler, profile_id="namespaced"):
+        """A profile that authors ``## Capabilities`` — the current shape."""
+        vault_path = handler._vault_profile_path(profile_id)
+        os.makedirs(os.path.dirname(vault_path), exist_ok=True)
+        with open(vault_path, "w") as f:
+            f.write(
+                f"""---
+id: {profile_id}
+name: Namespaced Worker
+---
+
+# Namespaced Worker
+
+## Config
+```json
+{{
+  "harness": "claude"
+}}
+```
+
+## Capabilities
+```json
+{{
+  "harness_tools": ["Bash"],
+  "aq_commands": ["task_show"],
+  "plugin_tools": []
+}}
+```
+"""
+            )
+        return vault_path
+
+    async def test_edit_routes_each_tool_to_the_namespace_that_gates_it(self, handler):
+        """A picker sends one flat list; aq command names must not land in harness_tools.
+
+        Writing the whole selection into ``harness_tools`` put aq command names
+        in the namespace the launcher filters against ``HARNESS_TOOL_NAMES``,
+        where every one of them is dropped, while ``aq_commands`` — the
+        namespace the dispatch gate actually consults — kept its old value.
+        """
+        vault_path = await self._write_modern_profile(handler)
+
+        result = await handler.execute(
+            "edit_profile",
+            {
+                "profile_id": "namespaced",
+                "allowed_tools": ["Read", "Bash", "list_tasks", "task_show"],
+            },
+        )
+        assert result["updated"] == "namespaced"
+
+        with open(vault_path) as f:
+            parsed = parse_profile(f.read())
+        assert parsed.is_valid
+        assert parsed.capabilities["harness_tools"] == ["Bash", "Read"]
+        assert parsed.capabilities["aq_commands"] == ["list_tasks", "task_show"]
+
+        profile = await handler.db.get_profile("namespaced")
+        assert profile.harness_tools == ["Bash", "Read"]
+        assert profile.aq_commands == ["list_tasks", "task_show"]
+
+    async def test_get_profile_reports_the_authored_namespaces(self, handler):
+        """The editors read ``allowed_tools``; a modern profile never fills it.
+
+        Reporting the empty column showed an empty picker for every migrated
+        profile, so a save looked like it had been discarded.
+        """
+        await self._write_modern_profile(handler, "reported")
+        await handler.execute(
+            "edit_profile", {"profile_id": "reported", "allowed_tools": ["Bash", "task_show"]}
+        )
+
+        detail = await handler.execute("get_profile", {"profile_id": "reported"})
+        assert detail["allowed_tools"] == ["Bash", "task_show"]
+
+        listed = await handler.execute("list_profiles", {})
+        row = next(p for p in listed["profiles"] if p["id"] == "reported")
+        assert row["allowed_tools"] == ["Bash", "task_show"]
+
+    async def test_edit_refuses_a_selection_that_would_strand_the_aq_cli(self, handler):
+        """Harness tools empty alongside aq commands is a hard parse error.
+
+        Caught before the write it is a message in the editor; caught at sync
+        it is a vault file that no longer parses.
+        """
+        vault_path = await self._write_modern_profile(handler, "stranded")
+        with open(vault_path) as f:
+            before = f.read()
+
+        result = await handler.execute(
+            "edit_profile", {"profile_id": "stranded", "allowed_tools": ["task_show"]}
+        )
+
+        assert "error" in result
+        assert "Bash" in result["error"]
+        with open(vault_path) as f:
+            assert f.read() == before
+
     async def test_delete_removes_vault_file(self, handler):
         """delete_profile should remove the vault markdown file."""
         await handler.execute(
@@ -604,6 +712,49 @@ Keep this operator note exactly as authored.
         await handler.execute("delete_profile", {"profile_id": "test-reviewer"})
         profile = await handler.db.get_profile("test-reviewer")
         assert profile is None
+
+    async def test_delete_rung_of_an_operators_own_class_records_a_tombstone(self, handler):
+        """Derivation reads the vault's classes, so the tombstone check must too.
+
+        Checking the *shipped* class set left a rung built from an operator's
+        own class untombstoned, and the next daemon start derived it straight
+        back — which is exactly what happened to ``fast-off-claude`` on a real
+        box.
+        """
+        from src.profiles.retired_defaults import is_retired
+
+        classes = Path(handler.config.data_dir) / "vault" / "intelligence-classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "house-style.md").write_text(
+            "---\nid: house-style\nname: House Style\n---\n\n"
+            '```json\n{"anthropic": {"model": "claude-opus-5", "thinking": "high"}}\n```\n',
+            encoding="utf-8",
+        )
+        await handler.execute(
+            "create_profile", {"id": "house-style-claude", "name": "House Claude"},
+        )
+
+        result = await handler.execute(
+            "delete_profile", {"profile_id": "house-style-claude"},
+        )
+
+        assert result["retired"] is True
+        assert is_retired(handler.config.data_dir, "house-style-claude")
+
+    async def test_delete_derived_rung_records_a_tombstone(self, handler):
+        """A deleted rung must not be re-derived on the next start or install."""
+        from src.profiles.retired_defaults import is_retired
+
+        await handler.execute(
+            "create_profile", {"id": "astra-high-codex", "name": "Codex Astra High"},
+        )
+
+        result = await handler.execute(
+            "delete_profile", {"profile_id": "astra-high-codex"},
+        )
+
+        assert result["retired"] is True
+        assert is_retired(handler.config.data_dir, "astra-high-codex")
 
     async def test_duplicate_detection_via_vault(self, handler):
         """Creating a profile with an existing vault file should fail."""

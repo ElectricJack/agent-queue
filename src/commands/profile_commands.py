@@ -11,6 +11,9 @@ from typing import Any
 
 import yaml
 
+from src.git.github_contracts import GitHubAccessError
+from src.projects.github import scrub_secrets
+
 logger = logging.getLogger(__name__)
 
 _AUTONOMOUS_PERMISSION_HARNESSES = {
@@ -30,6 +33,17 @@ def _autonomous_permission_error(values: dict) -> str | None:
             return f"{key} must be a boolean, got {type(value).__name__}"
         if value and harness != required_harness:
             return f"{key}=true requires harness '{required_harness}'"
+    return None
+
+
+def _codex_service_tier_error(values: dict) -> str | None:
+    tier = values.get("codex_service_tier")
+    if tier in (None, ""):
+        return None
+    if not isinstance(tier, str) or tier not in {"default", "fast"}:
+        return "codex_service_tier must be 'default' or 'fast'"
+    if values.get("harness") != "codex":
+        return "codex_service_tier requires harness 'codex'"
     return None
 
 
@@ -72,6 +86,70 @@ def _mcp_server_names(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     return [str(name) for name in value]
+
+
+def _flat_tool_list(profile: Any) -> list[str]:
+    """The flat tool list the profile editors speak, whatever the profile shape.
+
+    A modern profile authors ``## Capabilities`` and leaves the legacy
+    ``allowed_tools`` column empty (``src/profiles/parser.py`` — a present
+    block wins outright).  Reporting that column alone showed the dashboard an
+    empty tool picker for every migrated profile, so a save looked like it had
+    been discarded.  Flatten the authored namespaces instead;
+    :func:`_split_capability_namespaces` puts an edited list back where it
+    belongs.
+    """
+    from src.profiles.capabilities import NAMESPACES
+
+    authored = [getattr(profile, ns, None) for ns in NAMESPACES]
+    if all(value is None for value in authored):
+        return list(getattr(profile, "allowed_tools", None) or [])
+    names = set(getattr(profile, "allowed_tools", None) or [])
+    for value in authored:
+        names.update(value or [])
+    return sorted(names)
+
+
+def _split_capability_namespaces(
+    names: Any, plugin_command_names: frozenset[str]
+) -> dict[str, list[str]]:
+    """Route a flat tool list back into the three capability namespaces.
+
+    Editors send one list because that is what a tool picker is.  Writing it
+    verbatim into ``harness_tools`` — as this module used to — put ``aq``
+    command names in the namespace the launcher checks against
+    ``HARNESS_TOOL_NAMES``, where they are all dropped, while leaving
+    ``aq_commands`` (the namespace that actually gates daemon access)
+    untouched.  Classification is by name and matches the dispatch gate in
+    ``src/commands/authorization.py``.
+    """
+    from src.profiles.capabilities import NAMESPACES, classify_capability
+
+    buckets: dict[str, list[str]] = {ns: [] for ns in NAMESPACES}
+    seen: set[str] = set()
+    for name in names or []:
+        if not isinstance(name, str) or not name.strip() or name in seen:
+            continue
+        seen.add(name)
+        namespace = classify_capability(name, plugin_command_names=plugin_command_names)
+        buckets[namespace].append(name)
+    return {ns: sorted(values) for ns, values in buckets.items()}
+
+
+def _unreachable_capabilities_error(split: dict[str, list[str]]) -> str | None:
+    """Reject a selection the parser would refuse *before* writing the vault.
+
+    ``aq`` commands reach a session through the ``aq`` CLI, i.e. through
+    ``Bash``: harness tools empty alongside non-empty ``aq_commands`` is a hard
+    parse error (``src/profiles/parser.py``).  Caught here it is a message in
+    the editor; caught at sync it is a vault file that no longer parses.
+    """
+    if split["aq_commands"] and not split["harness_tools"]:
+        return (
+            "No harness tools selected: the aq commands would be unreachable "
+            "because a session needs Bash to run the aq CLI. Select at least Bash."
+        )
+    return None
 
 
 def _replace_json_section(markdown: str, heading: str, data: dict | list) -> str:
@@ -146,7 +224,13 @@ def _replace_prompt_section(markdown: str, heading: str, content: str) -> str:
     return markdown.rstrip() + f"\n\n## {heading}\n" + body
 
 
-def _patch_modern_profile(markdown: str, parsed: Any, updates: dict, merged: dict) -> str:
+def _patch_modern_profile(
+    markdown: str,
+    parsed: Any,
+    updates: dict,
+    merged: dict,
+    capability_split: dict[str, list[str]] | None = None,
+) -> str:
     """Apply every supported edit to a modern profile without legacy rendering."""
     patched = _patch_frontmatter_fields(
         markdown, {key: merged[key] for key in ("name", "description") if key in updates}
@@ -158,6 +242,7 @@ def _patch_modern_profile(markdown: str, parsed: Any, updates: dict, merged: dic
             "harness",
             "permission_mode",
             "codex_full_auto",
+            "codex_service_tier",
             "claude_dangerously_skip_permissions",
             "default_class",
         )
@@ -175,7 +260,9 @@ def _patch_modern_profile(markdown: str, parsed: Any, updates: dict, merged: dic
 
     if "allowed_tools" in updates:
         capabilities = dict(parsed.capabilities or {})
-        capabilities["harness_tools"] = list(merged["allowed_tools"])
+        capabilities.update(capability_split or _split_capability_namespaces(
+            merged["allowed_tools"], frozenset()
+        ))
         patched = _replace_json_section(patched, "Capabilities", capabilities)
     if "mcp_servers" in updates:
         patched = _replace_json_section(patched, "MCP Servers", merged["mcp_servers"])
@@ -196,6 +283,7 @@ def _patch_profile_config(markdown: str, config: dict, updates: dict) -> str:
         "harness",
         "permission_mode",
         "codex_full_auto",
+        "codex_service_tier",
         "claude_dangerously_skip_permissions",
         "default_class",
     )
@@ -234,8 +322,9 @@ class ProfileCommandsMixin:
     async def _cmd_list_profiles(self, args: dict) -> dict:
         profiles = await self.db.list_profiles()
         if not profiles:
-            return {"profiles": [], "count": 0}
+            return {"success": True, "profiles": [], "count": 0}
         return {
+            "success": True,
             "profiles": [
                 {
                     "id": p.id,
@@ -243,11 +332,12 @@ class ProfileCommandsMixin:
                     "description": p.description,
                     "harness": p.harness,
                     "codex_full_auto": p.codex_full_auto,
+                    "codex_service_tier": p.codex_service_tier,
                     "claude_dangerously_skip_permissions": (
                         p.claude_dangerously_skip_permissions
                     ),
                     "default_class": p.default_class or "",
-                    "allowed_tools": p.allowed_tools,
+                    "allowed_tools": _flat_tool_list(p),
                     "mcp_servers": list(p.mcp_servers) if p.mcp_servers else [],
                     "has_system_prompt": bool(p.system_prompt_suffix),
                     # Lifecycle and its sizing bounds decide whether a profile
@@ -259,6 +349,7 @@ class ProfileCommandsMixin:
                     "lifecycle": getattr(p, "lifecycle", "task") or "task",
                     "min_active": getattr(p, "min_active", None),
                     "max_active": getattr(p, "max_active", None),
+                    "min_per_project": getattr(p, "min_per_project", None),
                 }
                 for p in profiles
             ],
@@ -275,21 +366,22 @@ class ProfileCommandsMixin:
         profile_id = args.get("id", "").strip()
         name = args.get("name", "").strip()
         if not profile_id:
-            return {"error": "Profile id is required"}
+            return {"success": False, "error": "Profile id is required"}
         if not name:
-            return {"error": "Profile name is required"}
+            return {"success": False, "error": "Profile name is required"}
 
         # Check for duplicates in both vault and DB.
         vault_path = self._vault_profile_path(profile_id)
         if os.path.isfile(vault_path):
-            return {"error": f"Profile '{profile_id}' already exists"}
+            return {"success": False, "error": f"Profile '{profile_id}' already exists"}
         existing = await self.db.get_profile(profile_id)
         if existing:
-            return {"error": f"Profile '{profile_id}' already exists"}
+            return {"success": False, "error": f"Profile '{profile_id}' already exists"}
 
         validation_error = _autonomous_permission_error(args)
+        validation_error = validation_error or _codex_service_tier_error(args)
         if validation_error:
-            return {"error": validation_error}
+            return {"success": False, "error": validation_error}
         profile_values = _canonical_permission_values(args, args)
 
         # Create vault subdirectories for the new profile (vault spec §2).
@@ -307,6 +399,7 @@ class ProfileCommandsMixin:
             permission_mode=profile_values.get("permission_mode", ""),
             harness=profile_values.get("harness"),
             codex_full_auto=profile_values.get("codex_full_auto", False),
+            codex_service_tier=profile_values.get("codex_service_tier") or None,
             claude_dangerously_skip_permissions=profile_values.get(
                 "claude_dangerously_skip_permissions", False
             ),
@@ -326,6 +419,7 @@ class ProfileCommandsMixin:
         )
         if not sync_result.success:
             return {
+                "success": False,
                 "error": (f"Profile file written to vault but DB sync failed: {sync_result.errors}")
             }
 
@@ -341,7 +435,7 @@ class ProfileCommandsMixin:
                     exc_info=True,
                 )
 
-        result: dict = {"created": profile_id, "name": name}
+        result: dict = {"success": True, "created": profile_id, "name": name}
         if starter_result["copied"]:
             result["starter_knowledge"] = starter_result["copied"]
         if sync_result.warnings:
@@ -351,21 +445,23 @@ class ProfileCommandsMixin:
     async def _cmd_get_profile(self, args: dict) -> dict:
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
         profile = await self.db.get_profile(profile_id)
         if not profile:
-            return {"error": f"Profile '{profile_id}' not found"}
+            return {"success": False, "error": f"Profile '{profile_id}' not found"}
         return {
+            "success": True,
             "id": profile.id,
             "name": profile.name,
             "description": profile.description,
             "harness": profile.harness,
             "permission_mode": profile.permission_mode or "(default)",
             "codex_full_auto": profile.codex_full_auto,
+            "codex_service_tier": profile.codex_service_tier,
             "claude_dangerously_skip_permissions": (
                 profile.claude_dangerously_skip_permissions
             ),
-            "allowed_tools": profile.allowed_tools,
+            "allowed_tools": _flat_tool_list(profile),
             "mcp_servers": profile.mcp_servers,
             "system_prompt_suffix": profile.system_prompt_suffix or "(none)",
             "install": profile.install,
@@ -385,7 +481,7 @@ class ProfileCommandsMixin:
 
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
 
         updates: dict = {}
         for fld in (
@@ -394,6 +490,7 @@ class ProfileCommandsMixin:
             "harness",
             "permission_mode",
             "codex_full_auto",
+            "codex_service_tier",
             "claude_dangerously_skip_permissions",
             "allowed_tools",
             "mcp_servers",
@@ -405,9 +502,10 @@ class ProfileCommandsMixin:
                 updates[fld] = _mcp_server_names(args[fld]) if fld == "mcp_servers" else args[fld]
         if not updates:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide name, description, "
-                    "harness, permission_mode, codex_full_auto, "
+                    "harness, permission_mode, codex_full_auto, codex_service_tier, "
                     "claude_dangerously_skip_permissions, allowed_tools, mcp_servers, "
                     "system_prompt_suffix, default_class, or install."
                 )
@@ -431,7 +529,7 @@ class ProfileCommandsMixin:
             # No vault file yet — reconstruct from DB.
             profile = await self.db.get_profile(profile_id)
             if not profile:
-                return {"error": f"Profile '{profile_id}' not found"}
+                return {"success": False, "error": f"Profile '{profile_id}' not found"}
             current = {
                 "id": profile.id,
                 "name": profile.name,
@@ -439,6 +537,7 @@ class ProfileCommandsMixin:
                 "permission_mode": profile.permission_mode,
                 "harness": profile.harness,
                 "codex_full_auto": profile.codex_full_auto,
+                "codex_service_tier": profile.codex_service_tier,
                 "claude_dangerously_skip_permissions": (
                     profile.claude_dangerously_skip_permissions
                 ),
@@ -453,9 +552,22 @@ class ProfileCommandsMixin:
         merged = {**current, **updates}
 
         validation_error = _autonomous_permission_error(merged)
+        validation_error = validation_error or _codex_service_tier_error(merged)
         if validation_error:
-            return {"error": validation_error}
+            return {"success": False, "error": validation_error}
         merged = _canonical_permission_values(merged, updates)
+
+        # An edited tool list is one flat picker selection; split it by name
+        # so each entry lands in the namespace that actually gates it, and
+        # refuse a selection the parser would reject before touching the vault.
+        capability_split: dict[str, list[str]] | None = None
+        if "allowed_tools" in updates:
+            capability_split = _split_capability_namespaces(
+                merged.get("allowed_tools") or [], self._plugin_command_names()
+            )
+            unreachable = _unreachable_capabilities_error(capability_split)
+            if unreachable:
+                return {"success": False, "error": unreachable}
 
         # Ensure vault dirs exist (handles DB-only → vault migration).
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
@@ -465,7 +577,9 @@ class ProfileCommandsMixin:
             # model: it cannot represent modern Config keys, Capabilities, or
             # arbitrary authored sections. Patch each requested field in its
             # native location instead.
-            markdown = _patch_modern_profile(text, parsed, updates, merged)
+            markdown = _patch_modern_profile(
+                text, parsed, updates, merged, capability_split
+            )
         else:
             # Legacy and DB-only profiles remain on the established renderer.
             markdown = agent_profile_to_markdown(
@@ -475,6 +589,7 @@ class ProfileCommandsMixin:
                 permission_mode=merged.get("permission_mode", ""),
                 harness=merged.get("harness"),
                 codex_full_auto=merged.get("codex_full_auto", False),
+                codex_service_tier=merged.get("codex_service_tier") or None,
                 claude_dangerously_skip_permissions=merged.get(
                     "claude_dangerously_skip_permissions", False
                 ),
@@ -494,7 +609,7 @@ class ProfileCommandsMixin:
             markdown, self.db, source_path=vault_path, fallback_id=profile_id
         )
 
-        result: dict = {"updated": profile_id, "fields": list(updates.keys())}
+        result: dict = {"success": True, "updated": profile_id, "fields": list(updates.keys())}
         if sync_result.warnings:
             result["warnings"] = sync_result.warnings
         if not sync_result.success:
@@ -504,13 +619,20 @@ class ProfileCommandsMixin:
     async def _cmd_delete_profile(self, args: dict) -> dict:
         """Delete a profile from the vault and the database.
 
-        Deleting a *shipped* default also leaves a tombstone in
-        ``vault/agent-types/.retired-defaults``.  Without it
-        ``vault.ensure_default_profiles()`` — which is write-if-absent and
-        runs every daemon start — reads the missing directory as a fresh
-        install and re-creates the profile, silently undoing the operator's
-        decision at the next restart.  ``aq agent profile-reseed <id>``
-        clears the tombstone and is the explicit way back.
+        Deleting a *shipped* default or a **derived worker rung** also leaves
+        a tombstone in ``vault/agent-types/.retired-defaults``.  Without it
+        ``vault.ensure_default_profiles()`` and
+        ``catalog.derive_rungs_from_vault()`` — both write-if-absent and both
+        run every daemon start — read the missing directory as something to
+        create, silently undoing the operator's decision at the next restart.
+        ``aq agent profile-reseed <id>`` clears the tombstone and is the
+        explicit way back.
+
+        The rung half reads the **vault's** intelligence classes, not the
+        shipped ones, because that is what derivation reads: a rung built from
+        an operator's own class (``spark-low-codex``) must be as deletable as
+        one built from a shipped class, and checking the shipped set left it
+        untombstoned and reappearing on the next start.
 
         Args:
             profile_id (str): Required — the profile to delete.
@@ -521,12 +643,14 @@ class ProfileCommandsMixin:
             ``{"deleted", "name"}``, plus ``"retired": True`` when a
             tombstone was written.
         """
+        from src.intelligence_classes import load_intelligence_classes
+        from src.profiles.catalog import shipped_profile_catalog
         from src.profiles.drift import system_profile_ids
         from src.profiles.retired_defaults import retire_default
 
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
 
         # Check both vault file and DB for the profile.
         vault_path = self._vault_profile_path(profile_id)
@@ -534,7 +658,7 @@ class ProfileCommandsMixin:
         profile = await self.db.get_profile(profile_id)
 
         if not profile and not vault_exists:
-            return {"error": f"Profile '{profile_id}' not found"}
+            return {"success": False, "error": f"Profile '{profile_id}' not found"}
 
         name = profile.name if profile else profile_id
 
@@ -547,8 +671,13 @@ class ProfileCommandsMixin:
         if profile:
             await self.db.delete_profile(profile_id)
 
-        result: dict = {"deleted": profile_id, "name": name}
-        if profile_id in system_profile_ids():
+        result: dict = {"success": True, "deleted": profile_id, "name": name}
+        classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
+        catalog_ids = {
+            catalog_profile.id
+            for catalog_profile in shipped_profile_catalog(classes=classes or None)
+        }
+        if profile_id in system_profile_ids() or profile_id in catalog_ids:
             await asyncio.to_thread(
                 retire_default,
                 self.config.data_dir,
@@ -557,8 +686,8 @@ class ProfileCommandsMixin:
             )
             result["retired"] = True
             result["note"] = (
-                f"'{profile_id}' is a shipped default; recorded as retired so "
-                f"startup does not re-seed it. Restore it with "
+                f"'{profile_id}' is seeded or derived at startup; recorded as "
+                f"retired so it is not re-created. Restore it with "
                 f"'aq agent profile-reseed {profile_id}'."
             )
         return result
@@ -577,7 +706,7 @@ class ProfileCommandsMixin:
         # for backward-compat with callers that haven't migrated yet).
         profile_id = (args.get("profile_id") or args.get("agent_type") or "").strip()
         if not project_id or not profile_id:
-            return {"error": "project_id and profile_id are required"}
+            return {"success": False, "error": "project_id and profile_id are required"}
 
         # Synthesize a task object that the resolver expects.  We don't
         # touch the DB or schedule anything.
@@ -591,6 +720,7 @@ class ProfileCommandsMixin:
         profile = await self.orchestrator._resolve_profile(task)
         if profile is None:
             return {
+                "success": True,
                 "project_id": project_id,
                 "profile_id": profile_id,
                 "profile": None,
@@ -601,6 +731,7 @@ class ProfileCommandsMixin:
         source = "global" if profile.id == profile_id else "fallback"
 
         return {
+            "success": True,
             "project_id": project_id,
             "profile_id": profile_id,
             "profile": profile_to_dict(profile),
@@ -623,7 +754,7 @@ class ProfileCommandsMixin:
             }
             for name, info in sorted(KNOWN_MCP_SERVERS.items())
         ]
-        return {"tools": tools, "mcp_servers": mcp_servers}
+        return {"success": True, "tools": tools, "mcp_servers": mcp_servers}
 
     # --- Install manifest commands -----------------------------------------
 
@@ -633,10 +764,10 @@ class ProfileCommandsMixin:
 
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
         profile = await self.db.get_profile(profile_id)
         if not profile:
-            return {"error": f"Profile '{profile_id}' not found"}
+            return {"success": False, "error": f"Profile '{profile_id}' not found"}
 
         manifest = InstallManifest.from_dict(profile.install)
         issues: list[str] = []
@@ -674,6 +805,7 @@ class ProfileCommandsMixin:
                 issues.append(f"pip package not installed: {pkg}")
 
         return {
+            "success": True,
             "profile_id": profile_id,
             "valid": len(issues) == 0,
             "issues": issues,
@@ -683,7 +815,7 @@ class ProfileCommandsMixin:
     async def _cmd_install_profile(self, args: dict) -> dict:
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
 
         # Run check first
         check = await self._cmd_check_profile({"profile_id": profile_id})
@@ -697,6 +829,7 @@ class ProfileCommandsMixin:
 
         if manifest.is_empty:
             return {
+                "success": True,
                 "profile_id": profile_id,
                 "installed": [],
                 "already_present": [],
@@ -793,6 +926,7 @@ class ProfileCommandsMixin:
 
         ready = len(manual) == 0
         return {
+            "success": ready,
             "profile_id": profile_id,
             "installed": installed,
             "already_present": already_present,
@@ -807,10 +941,10 @@ class ProfileCommandsMixin:
 
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
         profile = await self.db.get_profile(profile_id)
         if not profile:
-            return {"error": f"Profile '{profile_id}' not found"}
+            return {"success": False, "error": f"Profile '{profile_id}' not found"}
 
         data: dict = {
             "id": profile.id,
@@ -829,6 +963,8 @@ class ProfileCommandsMixin:
             data["permission_mode"] = profile.permission_mode
         if profile.codex_full_auto:
             data["codex_full_auto"] = True
+        if profile.codex_service_tier is not None:
+            data["codex_service_tier"] = profile.codex_service_tier
         if profile.claude_dangerously_skip_permissions or legacy_claude_skip:
             data["claude_dangerously_skip_permissions"] = True
         if profile.allowed_tools:
@@ -847,47 +983,17 @@ class ProfileCommandsMixin:
             sort_keys=False,
         )
 
-        result: dict = {"yaml": yaml_text}
+        result: dict = {"success": True, "yaml": yaml_text}
 
         # Optionally create a GitHub gist
         if args.get("create_gist"):
-            import tempfile
-
             try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    suffix=".yaml",
-                    delete=False,
-                    prefix=f"agent-profile-{profile_id}-",
-                ) as f:
-                    f.write(yaml_text)
-                    tmp_path = f.name
-
-                env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
-                proc = await asyncio.create_subprocess_exec(
-                    "gh",
-                    "gist",
-                    "create",
-                    "--public",
-                    "--desc",
-                    f"Agent Profile: {profile.name}",
-                    tmp_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
+                result["gist_url"] = await self.orchestrator.github_access.create_profile_gist(
+                    profile_id, profile.name, yaml_text
                 )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode == 0:
-                    result["gist_url"] = stdout.decode().strip()
-                else:
-                    result["gist_error"] = stderr.decode().strip()
-            except FileNotFoundError:
-                result["gist_error"] = "gh CLI not found — install GitHub CLI"
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+            except GitHubAccessError as exc:
+                result["gist_error"] = scrub_secrets(str(exc))
+                result["gist_error_code"] = exc.category
 
         return result
 
@@ -903,46 +1009,35 @@ class ProfileCommandsMixin:
 
         source = args.get("source", "").strip()
         if not source:
-            return {"error": "source is required (YAML text or gist URL)"}
+            return {"success": False, "error": "source is required (YAML text or gist URL)"}
 
-        # If source looks like a URL, fetch via gh gist
+        # If source looks like a URL, fetch through the shared account operation.
         yaml_text = source
         if source.startswith("http://") or source.startswith("https://"):
-            gist_id = source.rstrip("/").split("/")[-1]
             try:
-                env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
-                proc = await asyncio.create_subprocess_exec(
-                    "gh",
-                    "gist",
-                    "view",
-                    gist_id,
-                    "--raw",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    return {"error": f"Failed to fetch gist: {stderr.decode().strip()}"}
-                yaml_text = stdout.decode()
-            except FileNotFoundError:
-                return {"error": "gh CLI not found — install GitHub CLI to import from URLs"}
+                yaml_text = await self.orchestrator.github_access.read_profile_gist(source)
+            except GitHubAccessError as exc:
+                return {
+                    "success": False,
+                    "error": f"Failed to fetch gist: {scrub_secrets(str(exc))}",
+                    "error_code": exc.category,
+                }
 
         try:
             data = _yaml.safe_load(yaml_text)
         except Exception as e:
-            return {"error": f"Invalid YAML: {e}"}
+            return {"success": False, "error": f"Invalid YAML: {e}"}
 
         if not isinstance(data, dict) or "agent_profile" not in data:
-            return {"error": "YAML must contain an 'agent_profile' key"}
+            return {"success": False, "error": "YAML must contain an 'agent_profile' key"}
 
         pdata = data["agent_profile"]
         if not isinstance(pdata, dict):
-            return {"error": "agent_profile must be a mapping"}
+            return {"success": False, "error": "agent_profile must be a mapping"}
 
         profile_id = args.get("id") or pdata.get("id", "")
         if not profile_id:
-            return {"error": "Profile must have an 'id' field"}
+            return {"success": False, "error": "Profile must have an 'id' field"}
 
         overwrite = args.get("overwrite", False)
         vault_path = self._vault_profile_path(profile_id)
@@ -950,14 +1045,16 @@ class ProfileCommandsMixin:
         existing = await self.db.get_profile(profile_id)
         if (existing or vault_exists) and not overwrite:
             return {
+                "success": False,
                 "error": f"Profile '{profile_id}' already exists (use overwrite=true to replace)"
             }
 
         profile_name = args.get("name") or pdata.get("name", profile_id)
 
         validation_error = _autonomous_permission_error(pdata)
+        validation_error = validation_error or _codex_service_tier_error(pdata)
         if validation_error:
-            return {"error": validation_error}
+            return {"success": False, "error": validation_error}
         pdata = _canonical_permission_values(pdata, pdata)
 
         # Ensure vault directories.
@@ -971,6 +1068,7 @@ class ProfileCommandsMixin:
             permission_mode=pdata.get("permission_mode", ""),
             harness=pdata.get("harness"),
             codex_full_auto=pdata.get("codex_full_auto", False),
+            codex_service_tier=pdata.get("codex_service_tier") or None,
             claude_dangerously_skip_permissions=pdata.get(
                 "claude_dangerously_skip_permissions", False
             ),
@@ -987,7 +1085,7 @@ class ProfileCommandsMixin:
             markdown, self.db, source_path=vault_path, fallback_id=profile_id
         )
 
-        result: dict = {"imported": True, "name": profile_name, "id": profile_id}
+        result: dict = {"success": True, "imported": True, "name": profile_name, "id": profile_id}
         if sync_result.warnings:
             result["warnings"] = sync_result.warnings
 
@@ -1132,7 +1230,7 @@ class ProfileCommandsMixin:
         profile_id = (args.get("profile_id") or "").strip()
         if profile_id:
             if profile_id not in system_profile_ids():
-                return {"error": f"'{profile_id}' is not a shipped system profile"}
+                return {"success": False, "error": f"'{profile_id}' is not a shipped system profile"}
             drifts = [diff_profile(profile_id, data_dir)]
         else:
             drifts = scan_profile_drift(data_dir)
@@ -1147,38 +1245,83 @@ class ProfileCommandsMixin:
         }
 
     async def _cmd_profile_reseed(self, args: dict) -> dict:
-        """Restore one vault system profile from its shipped default.
+        """Restore or repair one vault system profile from its shipped default.
 
-        The explicit, opt-in counterpart to startup seeding, which never
-        overwrites.  The existing file is copied to ``profile.md.bak-<epoch>``
-        before being replaced unless ``backup=False``, and the new text is
-        synced straight to the DB so the change takes effect without waiting
-        for the vault watcher.
+        Two modes:
+
+        - Full reseed (default): restores the shipped vault file while
+          preserving its existing display name — the explicit, opt-in counterpart to startup
+          seeding, which never overwrites.  The existing file is copied to
+          ``profile.md.bak-<epoch>`` before being replaced unless
+          ``backup=False``.
+        - ``grants_only=True``: additive repair — appends only the
+          ``## Capabilities`` grant names the shipped default has that the
+          vault copy lacks (:func:`src.profiles.drift.merge_profile_grants`),
+          leaving everything else — including operator edits like
+          ``"harness": "codex"`` — untouched.  Refuses if the vault copy has
+          no ``## Capabilities`` section (that case needs a full reseed or a
+          hand edit).
+
+        Either way the new text is synced straight to the DB so the change
+        takes effect without waiting for the vault watcher.
 
         Args:
             profile_id (str): Required — the system profile to reseed.
-            backup (bool): Keep a ``.bak-<epoch>`` copy (default True).
+            backup (bool): Full reseed only — keep a ``.bak-<epoch>`` copy
+                (default True). ``grants_only`` always keeps a backup when it
+                changes anything.
+            grants_only (bool): Additive repair instead of a full overwrite
+                (default False).
 
         Returns:
-            ``{"success": True, "profile_id", "path", "backup_path",
-            "created"}``.
+            Full reseed: ``{"success": True, "profile_id", "path",
+            "backup_path", "created"}``.
+            ``grants_only``: ``{"success": True, "profile_id",
+            "mode": "grants_only", "added", "backup_path", "changed"}``.
         """
         from pathlib import Path
 
-        from src.profiles.drift import reseed_profile, system_profile_ids
+        from src.profiles.drift import (
+            merge_profile_grants,
+            reseed_profile,
+            system_profile_ids,
+            vault_profile_path,
+        )
         from src.profiles.retired_defaults import unretire_default
         from src.profiles.sync import sync_profile_text_to_db
 
         profile_id = (args.get("profile_id") or "").strip()
         if not profile_id:
-            return {"error": "profile_id is required"}
+            return {"success": False, "error": "profile_id is required"}
         if profile_id not in system_profile_ids():
             return {
+                "success": False,
                 "error": (
                     f"'{profile_id}' is not a shipped system profile "
                     f"(one of: {', '.join(system_profile_ids())})"
                 )
             }
+
+        if bool(args.get("grants_only")):
+            try:
+                result = await asyncio.to_thread(
+                    merge_profile_grants, self.config.data_dir, profile_id
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                return {"success": False, "error": str(exc)}
+            result["success"] = True
+            result["mode"] = "grants_only"
+            if result["changed"]:
+                path = vault_profile_path(self.config.data_dir, profile_id)
+                markdown = Path(path).read_text(encoding="utf-8")
+                sync_result = await sync_profile_text_to_db(
+                    markdown, self.db, source_path=path, fallback_id=profile_id
+                )
+                if sync_result.warnings:
+                    result["warnings"] = sync_result.warnings
+                if not sync_result.success:
+                    result["sync_errors"] = sync_result.errors
+            return result
 
         backup = args.get("backup")
         result = await asyncio.to_thread(

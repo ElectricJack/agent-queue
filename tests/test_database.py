@@ -1,5 +1,4 @@
 import pytest
-from src.database import Database
 from src.models import (
     Project,
     Task,
@@ -10,14 +9,13 @@ from src.models import (
     Workspace,
     WorkspaceMode,
 )
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 class TestProjectCRUD:
@@ -81,6 +79,67 @@ class TestTaskCRUD:
         tasks = await db.list_tasks(project_id="p-1", status=TaskStatus.READY)
         assert len(tasks) == 1
         assert tasks[0].id == "t-1"
+
+    async def test_list_tasks_by_status_set_and_ids(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        for task_id, status in (
+            ("t-1", TaskStatus.READY),
+            ("t-2", TaskStatus.IN_PROGRESS),
+            ("t-3", TaskStatus.ASSIGNED),
+            ("t-4", TaskStatus.COMPLETED),
+        ):
+            await db.create_task(
+                Task(id=task_id, project_id="p-1", title=task_id, description="D", status=status)
+            )
+        active = await db.list_tasks(statuses={TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED})
+        assert sorted(t.id for t in active) == ["t-2", "t-3"]
+        picked = await db.list_tasks(task_ids={"t-1", "t-4", "missing"})
+        assert sorted(t.id for t in picked) == ["t-1", "t-4"]
+        both = await db.list_tasks(statuses={TaskStatus.READY}, task_ids={"t-1", "t-2"})
+        assert [t.id for t in both] == ["t-1"]
+        # An empty filter matches nothing rather than everything.
+        assert await db.list_tasks(task_ids=set()) == []
+        assert await db.list_tasks(statuses=()) == []
+
+    async def test_whole_list_hydration_yields_between_slices(self, db, monkeypatch):
+        """A large list must not hold the event loop for the whole hydration."""
+        import asyncio
+
+        from src.database.queries import task_queries
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        for index in range(7):
+            await db.create_task(Task(
+                id=f"t-{index}", project_id="p-1", title=f"T{index}", description="D",
+                status=TaskStatus.READY, priority=index,
+            ))
+        monkeypatch.setattr(task_queries, "_HYDRATE_SLICE", 2)
+        hydrated: list[int] = []
+        original = type(db)._row_to_task
+
+        def counting(row):
+            hydrated.append(1)
+            return original(row)
+
+        monkeypatch.setattr(db, "_row_to_task", counting)
+        seen_mid_hydration: list[int] = []
+
+        async def observer():
+            while True:
+                seen_mid_hydration.append(len(hydrated))
+                await asyncio.sleep(0)
+
+        watcher = asyncio.create_task(observer())
+        try:
+            listed = await db.list_tasks(project_id="p-1")
+            active = await db.list_active_tasks(project_id="p-1")
+        finally:
+            watcher.cancel()
+        assert [t.id for t in listed] == [f"t-{index}" for index in range(7)]
+        assert [t.id for t in active] == [f"t-{index}" for index in range(7)]
+        # The observer ran while rows were still being converted.
+        assert any(0 < count < 7 for count in seen_mid_hydration)
+        assert any(7 < count < 14 for count in seen_mid_hydration)
 
     async def test_get_subtasks(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
@@ -321,6 +380,14 @@ class TestTaskMetadata:
         await db.set_task_meta("t-1", "config", {"retries": 3, "timeout": 60})
         result = await db.get_task_meta("t-1", "config")
         assert result == {"retries": 3, "timeout": 60}
+
+    async def test_concurrent_first_writers(self, db):
+        import asyncio
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await asyncio.gather(*(db.set_task_meta("t-1", "config", i) for i in range(10)))
+        assert await db.get_task_meta("t-1", "config") in range(10)
 
     async def test_get_all(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
@@ -1401,11 +1468,384 @@ class TestTokenLedgerPricingColumns:
         assert current in script.get_heads()
 
 
+class TestTaskCommentKind:
+    """``task_comments.kind`` — the durable meaningful-progress marker.
+
+    The hourly digest may only report explicitly recorded progress, so a
+    comment says what it *is* rather than leaving the digest to guess from
+    prose (discord-simplification §8).
+    """
+
+    def test_declared_in_metadata_with_a_named_check(self):
+        from src.database.tables import task_comments
+
+        cols = {c.name: c for c in task_comments.columns}
+        assert "kind" in cols
+        assert cols["kind"].nullable is False
+        checks = {c.name for c in task_comments.constraints if hasattr(c, "sqltext")}
+        assert "ck_task_comment_kind" in checks
+
+    async def test_present_in_a_migrated_database_and_defaults_to_note(self, db):
+        from sqlalchemy import inspect, text
+
+        def _cols(sync_conn):
+            return {c["name"]: c for c in inspect(sync_conn).get_columns("task_comments")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+            assert "kind" in cols
+            # A row written without the column still lands as ordinary
+            # history, which is what keeps legacy comments out of the digest.
+            await conn.execute(
+                text(
+                    "INSERT INTO task_comments "
+                    "(id, task_id, project_id, body, author_kind, author_id, created_at) "
+                    "VALUES ('c1','t','p','hi','user','local',1)"
+                )
+            )
+            kind = (
+                await conn.execute(text("SELECT kind FROM task_comments WHERE id='c1'"))
+            ).scalar()
+        assert kind == "note"
+
+    async def test_an_unknown_kind_is_refused_by_the_database(self, db):
+        from sqlalchemy import text
+        from sqlalchemy.exc import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            async with db._engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO task_comments "
+                        "(id, task_id, project_id, body, author_kind, author_id, kind, "
+                        "created_at) VALUES ('c2','t','p','hi','user','local','milestone',1)"
+                    )
+                )
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_adds_the_column_to_a_pre_column_database(self):
+        """The ALTER path: only a database built before the column needs it.
+
+        A fresh database gets the column from the squashed baseline's
+        ``metadata.create_all``, so this shape is the only one that exercises
+        ``a00000000006``'s conditional ``add_column`` at all.
+        """
+        from sqlalchemy import inspect, text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("task_comment_kind_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("ALTER TABLE task_comments DROP COLUMN kind"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a00000000003')"))
+
+            await run_schema_setup(engine)
+
+            def _cols(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_columns("task_comments")}
+
+            def _checks(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_check_constraints("task_comments")}
+
+            async with engine.begin() as conn:
+                assert "kind" in await conn.run_sync(_cols)
+                assert "ck_task_comment_kind" in await conn.run_sync(_checks)
+            # Idempotent: a second pass over an already-upgraded database is
+            # a no-op rather than a duplicate-column failure.
+            await run_schema_setup(engine)
+        finally:
+            await engine.dispose()
+
+
+class TestAgentProfilesMinPerProject:
+    """``agent_profiles.min_per_project`` (global-worker-pools §2.1).
+
+    The per-project warm floor is nullable with no backfill: NULL reads as 0,
+    so every pre-existing profile keeps today's sizing behaviour.
+    """
+
+    def test_declared_in_metadata(self):
+        from src.database.tables import agent_profiles
+
+        cols = {c.name: c for c in agent_profiles.columns}
+        assert "min_per_project" in cols
+        assert cols["min_per_project"].nullable is True
+
+    async def test_present_in_a_migrated_database(self, db):
+        from sqlalchemy import inspect
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("agent_profiles")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        assert "min_per_project" in cols
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_adds_the_column_to_a_pre_column_database(self):
+        """The ALTER path, on a database that predates the column.
+
+        Fresh databases get the column from the squashed baseline's
+        ``metadata.create_all``, so only this shape exercises ``a00000000003``'s
+        ``add_column`` at all.
+        """
+        from sqlalchemy import inspect, text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("min_per_project_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("ALTER TABLE agent_profiles DROP COLUMN min_per_project"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a00000000002')"))
+
+            await run_schema_setup(engine)
+
+            def _cols(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_columns("agent_profiles")}
+
+            async with engine.begin() as conn:
+                assert "min_per_project" in await conn.run_sync(_cols)
+                version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+            # Asserted against the checkout's head rather than a literal:
+            # ``run_schema_setup`` runs the whole remaining chain, so pinning
+            # ``a00000000003`` here made every later revision fail this test
+            # for a reason that has nothing to do with ``min_per_project``.
+            from src.database.schema_key import alembic_head_revisions
+
+            assert version in alembic_head_revisions()
+        finally:
+            await engine.dispose()
+
+    def test_migration_is_in_the_linear_history(self):
+        """One head, and a00000000003 chains onto the restored-guards revision.
+
+        The head is asserted as "exactly one", not by id: a branch point is the
+        actual hazard (it wedges the daemon at boot), while a later revision
+        moving the head forward is ordinary.
+        """
+        from pathlib import Path
+
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        root = Path(__file__).resolve().parent.parent
+        script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
+        rev = script.get_revision("a00000000003")
+        assert rev.down_revision == "a00000000002"
+        heads = list(script.get_heads())
+        assert len(heads) == 1, f"migration history has branched: {heads}"
+        ancestry = {r.revision for r in script.iterate_revisions(heads[0], "base")}
+        assert "a00000000003" in ancestry
+
+
+class TestTaskBranchOriginDiscard:
+    """``a00000000004`` — the columns and the narrowed immutability trigger.
+
+    The trigger half is the load-bearing part: before this revision it raised
+    on *any* UPDATE of a materialized origin, which is what made a task with a
+    branch permanently undeletable
+    (``2026-09-08-task-deletion-with-materialized-branches-design`` §3.2).
+    """
+
+    async def test_discard_columns_are_present_in_a_fresh_database(self):
+        from sqlalchemy import inspect
+
+        from src.database import Database
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("task_branch_origins")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        await db.close()
+        assert {
+            "branch_name",
+            "discard_state",
+            "discard_requested_at",
+            "discard_attempts",
+            "discard_next_attempt_at",
+            "discard_last_error",
+        } <= cols
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_backfills_origin_branch_without_guessing_deleted_epics(self):
+        from sqlalchemy import text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("origin_branch_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("""
+                    INSERT INTO projects (id, name, created_at) VALUES ('p', 'p', 1)
+                """))
+                await conn.execute(text("""
+                    INSERT INTO tasks
+                        (id, project_id, title, description, branch_name,
+                         created_at, updated_at)
+                    VALUES ('live', 'p', 'live', '', 'aq/epic/live', 1, 1)
+                """))
+                await conn.execute(text("""
+                    INSERT INTO archived_tasks
+                        (id, project_id, title, description, status,
+                         created_at, updated_at, archived_at, branch_name)
+                    VALUES ('archived', 'p', 'archived', '', 'COMPLETED',
+                            1, 1, 2, 'aq/epic/archived')
+                """))
+                for task_id in ("live", "archived", "deleted", "unknown"):
+                    await conn.execute(text("""
+                        INSERT INTO task_branch_origins
+                            (id, task_id, repository_id, base_sha,
+                             creation_generation, created_at)
+                        VALUES (:id, :id, 'repo', :base, 0, 1)
+                    """), {"id": task_id, "base": "a" * 40})
+                await conn.execute(text("""
+                    INSERT INTO integration_branch_owners
+                        (id, repository_id, ref, owner_id, owner_role, fence_token,
+                         handoff_state, created_at, updated_at)
+                    VALUES ('owner', 'repo', 'aq/epic/deleted', 'deleted', 'worker', 1,
+                            'released', 1, 2)
+                """))
+                await conn.execute(text("ALTER TABLE task_branch_origins DROP COLUMN branch_name"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a0000000001f')"))
+
+            await run_schema_setup(engine)
+
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text("""
+                    SELECT task_id, branch_name FROM task_branch_origins ORDER BY task_id
+                """))).all()
+            assert rows == [
+                ("archived", "aq/epic/archived"),
+                ("deleted", "aq/epic/deleted"),
+                ("live", "aq/epic/live"),
+                ("unknown", None),
+            ]
+        finally:
+            await engine.dispose()
+
+    async def test_retiring_a_materialized_origin_is_allowed(self):
+        """The whole point: the trigger no longer freezes the entire row."""
+        from sqlalchemy import insert, select, update
+
+        from src.database import Database
+        from src.database.tables import task_branch_origins
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="o1",
+                    task_id="t1",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                update(task_branch_origins)
+                .where(task_branch_origins.c.id == "o1")
+                .values(retired_at=2.0, discard_state="pending", discard_requested_at=2.0)
+            )
+        async with db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(task_branch_origins).where(task_branch_origins.c.id == "o1")
+                )
+            ).mappings().one()
+        await db.close()
+        assert row["retired_at"] == 2.0
+        assert row["discard_state"] == "pending"
+
+    async def test_identity_of_a_materialized_origin_is_still_frozen(self):
+        from sqlalchemy import delete, insert, update
+
+        from src.database import Database
+        from src.database.tables import task_branch_origins
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="o2",
+                    task_id="t2",
+                    repository_id="repo",
+                    branch_name="aq/epic/old",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+        for values in (
+            {"base_sha": "b" * 40},
+            {"branch_name": "aq/epic/new"},
+            {"materialized": False},
+            {"task_id": "somewhere-else"},
+        ):
+            with pytest.raises(Exception, match="materialized task branch origin is immutable"):
+                async with db.immediate() as conn:
+                    await conn.execute(
+                        update(task_branch_origins)
+                        .where(task_branch_origins.c.id == "o2")
+                        .values(**values)
+                    )
+        # And it still cannot be removed outright.
+        with pytest.raises(Exception, match="materialized task branch origin is immutable"):
+            async with db.immediate() as conn:
+                await conn.execute(
+                    delete(task_branch_origins).where(task_branch_origins.c.id == "o2")
+                )
+        await db.close()
+
+
 async def test_layout_tables_exist(tmp_path):
     from sqlalchemy import inspect
     from src.database import Database
 
-    db = Database(str(tmp_path / "layout.db"))
+    db = Database(lease_dsn("layout.db"))
     await db.initialize()
     async with db._engine.connect() as conn:
         names = await conn.run_sync(lambda c: inspect(c).get_table_names())
