@@ -4,6 +4,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# --- Prompting ---
+#
+# Every question here has a safe default, so a run with no terminal answers it
+# rather than dying.  `read` returns non-zero at end of input, and under
+# `set -e` that aborted the whole script with a bare exit 1 and no message:
+# `curl … | bash`, `nohup ./setup.sh &`, a non-tty ssh command and CI all hit
+# it, always at the first question and always after real work had been done.
+#
+#   ask "Add it to ~/.zshrc?" Y   -> the default when there is nobody to ask
+ask() {
+    local prompt="$1" default="${2:-Y}" answer=""
+    local suffix="[Y/n]"
+    [[ "$default" =~ ^[Yy]$ ]] || suffix="[y/N]"
+    if [[ -t 0 ]]; then
+        read -rp "$prompt $suffix " answer || answer=""
+    else
+        echo "$prompt $suffix $default (no terminal; using the default)"
+    fi
+    [[ "${answer:-$default}" =~ ^[Yy]$ ]]
+}
+
 # --- Detect Python 3.12+ ---
 PYTHON=""
 for candidate in python3.13 python3.12 python3 python; do
@@ -91,13 +112,11 @@ if ! command -v npm &>/dev/null; then
     echo "npm is not installed. The web dashboard needs Node.js."
     OS="$(uname -s)"
     if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
-        read -rp "Install Node.js via Homebrew? [Y/n] " ans
-        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Install Node.js via Homebrew?" Y; then
             brew install node
         fi
     elif [[ "$OS" == "Linux" ]] && command -v apt-get &>/dev/null; then
-        read -rp "Install Node.js via apt? [Y/n] " ans
-        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Install Node.js via apt?" Y; then
             sudo apt-get install -y nodejs npm
         fi
     fi
@@ -128,7 +147,7 @@ LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
 echo ""
 echo "Linking CLI binaries into $LOCAL_BIN ..."
-for binname in aq agent-queue agent-queue-mcp; do
+for binname in aq agent-queue; do
     src="$SCRIPT_DIR/.venv/bin/$binname"
     dst="$LOCAL_BIN/$binname"
     if [[ -x "$src" ]]; then
@@ -147,8 +166,7 @@ if ! echo ":$PATH:" | grep -q ":$LOCAL_BIN:"; then
     if [[ -n "$PATH_RC" ]] && ! grep -qF '# agent-queue setup.sh' "$PATH_RC" 2>/dev/null; then
         echo ""
         echo "$LOCAL_BIN is not on your PATH."
-        read -rp "Add it to $PATH_RC? [Y/n] " answer
-        if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Add it to $PATH_RC?" Y; then
             echo 'export PATH="$HOME/.local/bin:$PATH"  # agent-queue setup.sh' >> "$PATH_RC"
             echo "Added to $PATH_RC. Restart your shell or run: source $PATH_RC"
         else
@@ -192,8 +210,7 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
         if ! grep -qF "$SOURCE_LINE" "$RC_FILE" 2>/dev/null; then
             echo ""
             echo "Shell completion for 'aq' is available."
-            read -rp "Add tab-completion to $RC_FILE? [Y/n] " answer
-            if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+            if ask "Add tab-completion to $RC_FILE?" Y; then
                 echo "$SOURCE_LINE" >> "$RC_FILE"
                 echo "Added to $RC_FILE. Restart your shell or run: $SOURCE_LINE"
             else
@@ -206,7 +223,37 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
     fi
 fi
 
+# --- Machine setup: one entry point ---
+#
+# setup.sh is the *contributor* bootstrap: it prepares this checkout (venv,
+# dependencies, the `aq` command, shell completion).  Everything about the
+# machine itself -- prerequisites, PostgreSQL, agent CLIs and their logins,
+# configuration, the daemon and the dashboard -- belongs to `aq install`, which
+# is the one installer users are documented to run.  Do not add a second
+# installation flow here: docs/tutorials/install.md and
+# docs/reference/cli/install.md describe that one.
+#
+# `aq install` is resumable, so an interruption (or a login you finish in
+# another terminal) is recovered by running it again.
+echo ""
+echo "Setting up this machine (aq install)..."
+set +e
+.venv/bin/aq install
+status=$?
+set -e
+if [[ "$status" -ne 0 ]]; then
+    echo ""
+    echo "Setup stopped (exit $status). Nothing was lost: rerun './setup.sh' or"
+    echo "'aq install' and it continues from where it stopped."
+    echo "See docs/tutorials/install.md."
+    exit "$status"
+fi
+
 # --- Optional memory plugin ---
+#
+# aq-memory is an external plugin (Milvus-backed memory). It is not bundled and
+# has no default location: pass --with-memory with AQ_MEMORY_PATH pointing at a
+# checkout, or install it later with `aq plugin install <git-or-path>`.
 INSTALL_MEMORY=0
 NO_PROMPT=0
 for arg in "$@"; do
@@ -216,24 +263,18 @@ for arg in "$@"; do
     esac
 done
 
-if [[ "$NO_PROMPT" -eq 0 && -t 0 ]]; then
-    read -rp "Install aq-memory plugin (Milvus-backed memory)? (y/N) " yn
-    case "$yn" in
-        [Yy]*) INSTALL_MEMORY=1 ;;
-    esac
-fi
-
-if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
-    AQ_MEMORY_PATH="${AQ_MEMORY_PATH:-/mnt/d/Dev/aq/aq-memory}"
-    if [[ -d "$AQ_MEMORY_PATH" ]]; then
-        echo "Installing aq-memory from $AQ_MEMORY_PATH..."
-        aq plugin install "$AQ_MEMORY_PATH"
-    else
-        echo "aq-memory not found at $AQ_MEMORY_PATH — skipping."
-        echo "  Set AQ_MEMORY_PATH=<dir> or run: aq plugin install <git-or-path>"
+if [[ "$NO_PROMPT" -eq 0 && -t 0 && -n "${AQ_MEMORY_PATH:-}" ]]; then
+    if ask "Install aq-memory plugin from $AQ_MEMORY_PATH?" N; then
+        INSTALL_MEMORY=1
     fi
 fi
 
-# --- Run setup wizard ---
-echo ""
-.venv/bin/python src/setup_wizard.py
+if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
+    if [[ -n "${AQ_MEMORY_PATH:-}" && -d "$AQ_MEMORY_PATH" ]]; then
+        echo "Installing aq-memory from $AQ_MEMORY_PATH..."
+        aq plugin install "$AQ_MEMORY_PATH"
+    else
+        echo "aq-memory was requested but AQ_MEMORY_PATH names no directory -- skipping."
+        echo "  Set AQ_MEMORY_PATH=<dir> or run: aq plugin install <git-or-path>"
+    fi
+fi

@@ -1,0 +1,1317 @@
+"""``aq install`` — the onboarding steps that finish the newcomer's path.
+
+These are the steps between "this machine has the prerequisites" and "there is
+a daemon answering and a URL to open": the configuration, the optional Discord
+delivery, the daemon and the dashboard report.  They run through the real
+engine over a scripted host — no daemon, no database, no network — because the
+acceptance criteria are about the *run*, not about any one function:
+
+* *A newcomer follows one documented entry point from prerequisites through a
+  ready daemon/dashboard* — :func:`test_a_default_run_reaches_a_ready_daemon_and_a_dashboard_url`.
+* *Skipping optional providers or Discord does not fail setup* —
+  :func:`test_an_install_that_never_mentions_discord_is_ready`,
+  :func:`test_skipping_every_provider_still_reaches_ready`.
+* *Interruption can resume without starting over* —
+  :func:`test_a_run_stopped_at_a_login_resumes_into_the_daemon_step`,
+  :func:`test_a_rerun_revalidates_the_daemon_instead_of_restarting_it`.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from src.install import InstallEngine, InstallOptions, InstallOutcome
+from src.install.command import CommandOutput
+from src.install.onboarding import (
+    CAPABILITY_DAEMON,
+    CAPABILITY_DISCORD,
+    DASHBOARD_DISABLED,
+    DASHBOARD_MISCONFIGURED,
+    DASHBOARD_PORT_CONFLICT,
+    DASHBOARD_SERVER,
+    DASHBOARD_STOPPED,
+    DASHBOARD_UNBUILT,
+    STEP_CHECK,
+    STEP_CONFIG,
+    STEP_DAEMON,
+    STEP_DASHBOARD,
+    STEP_DISCORD,
+    STEP_GIT_IDENTITY,
+    api_base_url,
+    data_locations,
+    inspect_dashboard,
+    onboarding_steps,
+)
+from src.install.platform import PlatformFacts, SupportVerdict
+from src.install.prerequisites import STEP_DATA_DIR, data_directory_step, host_step
+from src.install.redaction import find_secrets
+from src.install.results import StepState
+from src.install.steps import StepRegistry
+
+TOKEN = "MTIzNDU2Nzg5.GaBcDe.a-real-looking-discord-bot-token-value"
+CHANNEL = "123456789012345678"
+GUILD = "876543210987654321"
+
+
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """The installer runs before a database exists; it allocates none of its own."""
+
+
+def _facts() -> PlatformFacts:
+    return PlatformFacts(
+        system="linux",
+        release="6.6.0-microsoft-standard-WSL2",
+        machine="x86_64",
+        arch="x86_64",
+        python_version="3.12.3",
+        distro_id="ubuntu",
+        distro_version="24.04",
+        distro_name="Ubuntu 24.04 LTS",
+        wsl=True,
+        wsl_version=2,
+    )
+
+
+WSL2 = SupportVerdict(host_path="windows-wsl2", tier="supported", facts=_facts())
+
+VALID_DSN = "postgresql+asyncpg://agent_queue:${AQ_DB_PASSWORD}@localhost:5432/agent_queue"
+
+
+#: Where the dashboard server answers under a default configuration.
+DASHBOARD_URL = "http://127.0.0.1:8082/"
+
+
+class FakeDaemon:
+    """A daemon that is down until ``aq start`` is run, then answers /health.
+
+    It also plays the dashboard server, which ``aq start`` brings up with the
+    daemon when a bundle is installed -- as the real one does.  ``dashboard``
+    is what the dashboard server answers for its page.  The daemon itself
+    serves no page, so a probe of its old ``/dashboard`` mount is an error.
+    """
+
+    def __init__(
+        self,
+        *,
+        up: bool = False,
+        starts: bool = True,
+        dashboard: int | None = 200,
+        server_up: bool | None = None,
+    ):
+        self.up = up
+        self.starts = starts
+        self.dashboard = dashboard
+        self.server_up = up if server_up is None else server_up
+        self.commands: list[tuple[str, ...]] = []
+
+    def run(self, argv, **kwargs) -> CommandOutput:
+        command = tuple(str(part) for part in argv)
+        self.commands.append(command)
+        if command[1] == "start":
+            if not self.starts:
+                return CommandOutput(argv=command, returncode=1, stderr="database is unreachable")
+            self.up = self.server_up = True
+            return CommandOutput(argv=command, returncode=0, stdout="Daemon started")
+        if command[1:] == ("--json", "dashboard", "start"):
+            self.server_up = True
+            return CommandOutput(argv=command, returncode=0, stdout="{}")
+        raise AssertionError(f"unexpected command: {command}")
+
+    def probe(self, url: str) -> int | None:
+        if url.endswith("/health"):
+            return 200 if self.up else None
+        if url == DASHBOARD_URL:
+            return self.dashboard if self.server_up else None
+        raise AssertionError(f"unexpected probe: {url}")
+
+    def identify(self, url: str):
+        if url == DASHBOARD_URL and self.server_up:
+            return "ours", {
+                "service": "aq-dashboard-server",
+                "bundle": {"version": "0.1.0", "verified": True},
+                "upstream_ok": self.up,
+            }
+        return "none", None
+
+
+def release_root(home: Path) -> Path:
+    """A release-shaped installation: nothing to build, a bundle to serve."""
+    root = home.parent / "site-packages"
+    dist = root / "src" / "dashboard_assets" / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "aq-dashboard-manifest.json").write_text("{}", encoding="utf-8")
+    return root
+
+
+def home_with_config(tmp_path: Path, *, body: str | None = None) -> Path:
+    home = tmp_path / "aq-home"
+    home.mkdir(parents=True, exist_ok=True)
+    if body is not None:
+        (home / "config.yaml").write_text(body, encoding="utf-8")
+    return home
+
+
+def registry_for(
+    home: Path,
+    daemon: FakeDaemon,
+    *,
+    which=lambda name: f"/usr/bin/{name}",
+    extra=(),
+) -> StepRegistry:
+    """The engine's admission plus the onboarding steps, and nothing else.
+
+    The prerequisite, PostgreSQL and provider adapters have their own suites;
+    composing them here would make every assertion about the daemon depend on
+    whether this box happens to run PostgreSQL.
+    """
+    registry = StepRegistry((host_step(), data_directory_step(path=home)))
+    registry.extend(extra)
+    registry.extend(
+        onboarding_steps(
+            environ={"HOME": str(home)},
+            home=home,
+            runner=daemon.run,
+            which=which,
+            probe=daemon.probe,
+            identify=daemon.identify,
+            # Release-shaped: nothing to build.  test_install_dashboard.py owns the build.
+            dashboard_root=release_root(home),
+        )
+    )
+    return registry
+
+
+def run(
+    registry: StepRegistry,
+    tmp_path: Path,
+    *,
+    capabilities: tuple[str, ...] = (),
+    settings: dict | None = None,
+    state: Path | None = None,
+    dry_run: bool = False,
+):
+    options = InstallOptions(
+        installer_version="1.2.3",
+        target_version="1.2.3",
+        interactive=False,
+        dry_run=dry_run,
+        capabilities=frozenset(capabilities),
+        approve=frozenset({"*"}),
+        settings=settings or {},
+        state_path=state or (tmp_path / "install-state.json"),
+    )
+    return InstallEngine(registry, options, support=WSL2).run()
+
+
+def step(result, step_id):
+    return next(row for row in result.steps if row.step_id == step_id)
+
+
+def load_yaml(path: Path) -> dict:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def env_with_password(home: Path) -> None:
+    (home / ".env").write_text("AQ_DB_PASSWORD=local-development\n", encoding="utf-8")
+
+
+def configured(tmp_path: Path) -> Path:
+    """A home whose configuration is what the PostgreSQL steps would have left."""
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n",
+    )
+    env_with_password(home)
+    return home
+
+
+# ---------------------------------------------------------------------------
+# The whole path
+# ---------------------------------------------------------------------------
+
+
+def test_a_default_run_reaches_a_ready_daemon_and_a_dashboard_url(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+    )
+
+    assert result.outcome is InstallOutcome.READY
+    assert step(result, STEP_CONFIG).state is StepState.SUCCEEDED
+    assert step(result, STEP_CHECK).state is StepState.SUCCEEDED
+    assert step(result, STEP_DAEMON).state is StepState.SUCCEEDED
+    # `--no-dashboard` is load-bearing, not cosmetic: plain `aq start` asks
+    # `click.confirm` whether to launch the Vite dev server from a source
+    # checkout, and a confirmation with no terminal raises click's Abort. An
+    # unattended install then reported "the daemon did not come up: Aborted!"
+    # after the daemon had actually started (native macOS 14/15, noble-apex.18).
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
+    # The dashboard is the dashboard server's, never the API-only daemon's.
+    board = step(result, STEP_DASHBOARD).detail["dashboard"]
+    assert board["reachable"] is True
+    assert board["url"] == DASHBOARD_URL
+    assert board["source"] == DASHBOARD_SERVER
+
+
+def test_the_configuration_step_tunes_for_this_machine_and_keeps_what_exists(tmp_path):
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    written = step(result, STEP_CONFIG).detail
+    assert written["tuned"] is True
+    assert written["written"], "the tuned sections should have been added"
+    body = config.read_text(encoding="utf-8")
+    # The database the PostgreSQL steps configured is not disturbed, and the
+    # Discord-free default survives.
+    assert VALID_DSN in body
+    assert "messaging_platform: none" in body
+
+
+def test_the_configuration_step_selects_the_tmux_session_provider(tmp_path):
+    """`aq install` requires tmux, so a stock install must not end on `subprocess`.
+
+    The code default is `subprocess` because that is the provider every host's
+    registry can build; on a host that just passed `prereq.tmux` it is the
+    wrong answer, because it silently costs attach, peek, nudge and
+    re-adoption after a daemon restart.
+    """
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    detail = step(result, STEP_CONFIG).detail
+    assert detail["session_provider"] == "tmux"
+    assert "sessions" in detail["written"]
+    assert load_yaml(config)["sessions"]["provider"] == "tmux"
+
+
+def test_a_host_without_tmux_is_left_on_the_portable_session_provider(tmp_path):
+    """Nothing is written when the provider would not be constructible."""
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    def without_tmux(name):
+        return None if name == "tmux" else f"/usr/bin/{name}"
+
+    result = run(registry_for(home, daemon, which=without_tmux), tmp_path)
+
+    detail = step(result, STEP_CONFIG).detail
+    assert detail["session_provider"] is None
+    assert "sessions" not in detail["written"]
+    assert "sessions" not in load_yaml(config)
+
+
+def test_a_session_provider_the_operator_chose_is_kept(tmp_path):
+    """The step fills gaps; it never overwrites an opinion already in the file."""
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "sessions:\n  provider: subprocess\n"
+        ),
+    )
+    env_with_password(home)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CONFIG).detail["session_provider"] is None
+    assert load_yaml(config)["sessions"]["provider"] == "subprocess"
+
+
+def test_selecting_the_provider_keeps_the_rest_of_an_existing_sessions_section(tmp_path):
+    """`write_section` replaces the whole section, so the other keys travel with it."""
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "sessions:\n  lease_ttl_seconds: 600\n"
+        ),
+    )
+    env_with_password(home)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CONFIG).detail["session_provider"] == "tmux"
+    sessions = load_yaml(config)["sessions"]
+    assert sessions == {"lease_ttl_seconds": 600, "provider": "tmux"}
+
+
+def test_a_config_that_does_not_load_names_the_step_and_the_fix(tmp_path):
+    home = home_with_config(tmp_path, body="database:\n  url: ''\n")
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert result.outcome is InstallOutcome.FAILED
+    check = step(result, STEP_CHECK)
+    assert check.state is StepState.FAILED
+    assert "aq system config edit" in (check.remediation or "")
+    assert result.blocking_step is not None
+    assert result.blocking_step.step_id == STEP_CHECK
+
+
+def test_the_check_step_reports_where_every_kind_of_data_lives(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    labels = {entry["label"] for entry in step(result, STEP_CHECK).detail["locations"]}
+    assert {"Configuration", "Secrets", "Vault", "Worktrees", "Daemon log", "Database"} <= labels
+
+
+@pytest.mark.parametrize("material", [None, "not-base64", "eA==", "valid"])
+def test_install_checks_protected_routing_key_before_starting(tmp_path, monkeypatch, material):
+    import base64
+
+    variable = "AQ_INSTALL_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "playbooks:\n  enabled: true\n  private_value_active_key_id: k1\n"
+            f"  private_value_key_env:\n    k1: {variable}\n"
+        ),
+    )
+    env_with_password(home)
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        # load_config reads this file exactly as daemon startup does.
+        monkeypatch.setenv(variable, encoded)
+        with (home / ".env").open("a") as stream:
+            stream.write(f"{variable}={encoded}\n")
+        monkeypatch.delenv(variable)
+    before = (home / ".env").read_bytes()
+    daemon = FakeDaemon()
+
+    result = run(registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,))
+
+    check = step(result, STEP_CHECK)
+    if material == "valid":
+        assert result.outcome is InstallOutcome.READY
+        assert check.detail["playbook_private_value_key"]["ok"] is True
+    else:
+        assert result.outcome is InstallOutcome.FAILED
+        assert check.state is StepState.FAILED
+        assert "private_storage_key_unavailable" in check.summary
+        assert "playbooks.private_value_key_env" in check.remediation
+        assert daemon.commands == []
+    assert (home / ".env").read_bytes() == before
+    assert find_secrets(result.to_dict()) == []
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+def test_install_provisions_unconfigured_storage_and_preserves_it_on_rerun(tmp_path):
+    import base64
+
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "playbooks:\n  enabled: true\n"
+            "  v2_max_result_bytes: 12345\n"
+        ),
+    )
+    env_with_password(home)
+    result = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert result.outcome is InstallOutcome.READY
+    assert step(result, STEP_CONFIG).detail["private_storage_provisioned"] is True
+    playbooks = load_yaml(home / "config.yaml")["playbooks"]
+    variable = playbooks["private_value_key_env"][playbooks["private_value_active_key_id"]]
+    env_body = (home / ".env").read_text()
+    encoded = next(
+        line.split("=", 1)[1]
+        for line in env_body.splitlines()
+        if line.startswith(variable + "=")
+    )
+    assert len(base64.b64decode(encoded, validate=True)) == 32
+    assert (home / ".env").stat().st_mode & 0o777 == 0o600
+    assert "AQ_DB_PASSWORD=local-development" in env_body
+    assert playbooks["v2_max_result_bytes"] == 12345
+    assert encoded not in (home / "config.yaml").read_text()
+    assert encoded not in json.dumps(result.to_dict())
+    assert encoded not in (tmp_path / "install-state.json").read_text()
+
+    rerun = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert rerun.outcome is InstallOutcome.READY
+    assert load_yaml(home / "config.yaml")["playbooks"] == playbooks
+    assert (home / ".env").read_text() == env_body
+
+
+def test_install_does_not_generate_keys_when_playbooks_disabled(tmp_path):
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+        "playbooks:\n  enabled: false\n",
+    )
+    env_with_password(home)
+    before = (home / ".env").read_bytes()
+    result = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert result.outcome is InstallOutcome.READY
+    assert (home / ".env").read_bytes() == before
+    assert load_yaml(home / "config.yaml")["playbooks"] == {"enabled": False}
+
+
+def test_dry_run_does_not_provision_unconfigured_private_storage(tmp_path):
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+        "playbooks:\n  enabled: true\n",
+    )
+    env_with_password(home)
+    before_config = (home / "config.yaml").read_bytes()
+    before_env = (home / ".env").read_bytes()
+
+    result = run(registry_for(home, FakeDaemon()), tmp_path, dry_run=True)
+
+    assert step(result, STEP_CONFIG).state is StepState.SKIPPED
+    assert (home / "config.yaml").read_bytes() == before_config
+    assert (home / ".env").read_bytes() == before_env
+
+
+@pytest.mark.parametrize(
+    "partial",
+    ["  private_value_active_key_id: lost\n", "  private_value_key_env:\n    old: LOST_VARIABLE\n"],
+)
+def test_install_flags_partial_key_configuration_without_generating(tmp_path, partial):
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+        f"playbooks:\n  enabled: true\n{partial}",
+    )
+    env_with_password(home)
+    before = (home / ".env").read_bytes()
+    result = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert step(result, STEP_CHECK).state is StepState.FAILED
+    assert "private_storage_key_unavailable" in step(result, STEP_CHECK).summary
+    assert (home / ".env").read_bytes() == before
+
+
+def test_a_fresh_install_records_that_no_project_root_is_configured(tmp_path):
+    """`project_roots` is a fact of the run, not an absent key.
+
+    Nothing in AQ's default tuning invents a filesystem location, so a clean
+    install has none.  The wizard turns this list into the first-task
+    readiness answer, and it can only do that if the step reports the empty
+    case as explicitly as the populated one.
+    """
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CHECK).detail["project_roots"] == []
+
+
+def test_a_configured_project_root_is_reported_with_its_live_capabilities(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            f"project_roots:\n  - id: home\n    label: Home projects\n"
+            f"    path: {projects}\n"
+        ),
+    )
+    env_with_password(home)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CHECK).detail["project_roots"] == [
+        {
+            "id": "home",
+            "label": "Home projects",
+            "path": str(projects),
+            "readable": True,
+            "writable": True,
+        }
+    ]
+
+
+def test_a_rerun_still_reports_where_data_lives_and_which_url_to_open(tmp_path):
+    """The summary is built from this run's detail, so a rerun must carry it.
+
+    ``config.check`` and ``daemon.dashboard`` only read, so the engine
+    revalidates them by running them and records what they observed.  Answering
+    "still true" instead is what printed an empty "Where AQ stores your data"
+    on every second ``aq install``, ``--repair`` and ``--upgrade``.
+    """
+    from src.install.wizard import summarize
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+    state = tmp_path / "install-state.json"
+
+    first = run(
+        registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,), state=state
+    )
+    second = run(
+        registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,), state=state
+    )
+
+    assert second.outcome is InstallOutcome.READY
+    action = {row.step_id: row.action.value for row in second.plan}
+    assert action[STEP_CHECK] == "revalidate"
+    assert action[STEP_DASHBOARD] == "revalidate"
+    assert step(second, STEP_CHECK).detail["revalidated"] is True
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")], (
+        "a rerun must not restart the daemon"
+    )
+
+    before, after = summarize(first), summarize(second)
+    assert after.locations == before.locations != ()
+    assert after.dashboard == before.dashboard
+    assert after.dashboard is not None and after.dashboard.reachable is True
+    assert after.readiness is not None
+    assert {check.id for check in after.readiness.checks if check.ready} == {
+        check.id for check in before.readiness.checks if check.ready
+    }
+
+
+def test_a_rerun_reports_the_configuration_as_it_now_stands(tmp_path):
+    """Revalidation observes the box, so an edited setting is reported, not replayed."""
+    from src.install.wizard import summarize
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+    state = tmp_path / "install-state.json"
+
+    run(registry_for(home, daemon), tmp_path, state=state)
+    config = home / "config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + f"workspace_dir: {tmp_path / 'elsewhere'}\n",
+        encoding="utf-8",
+    )
+    second = run(registry_for(home, daemon), tmp_path, state=state)
+
+    worktrees = next(
+        location for location in summarize(second).locations if location.label == "Worktrees"
+    )
+    assert worktrees.path == str(tmp_path / "elsewhere")
+
+
+def test_the_reported_database_location_carries_no_password(tmp_path):
+    locations = data_locations(
+        tmp_path,
+        {
+            "database": {
+                "url": "postgresql+asyncpg://agent_queue:hunter2@localhost:5432/agent_queue"
+            }
+        },
+    )
+    database = next(entry for entry in locations if entry.label == "Database")
+    assert "hunter2" not in database.path
+    assert "localhost:5432/agent_queue" in database.path
+
+
+# ---------------------------------------------------------------------------
+# Discord is optional
+# ---------------------------------------------------------------------------
+
+
+def test_an_install_that_never_mentions_discord_is_ready(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert result.outcome is InstallOutcome.READY
+    discord = step(result, STEP_DISCORD)
+    assert discord.state is StepState.SKIPPED
+    assert CAPABILITY_DISCORD in discord.summary
+    assert "messaging_platform: none" in (home / "config.yaml").read_text(encoding="utf-8")
+    assert load_yaml(home / "config.yaml")["integration"]["git_first"] == "active"
+
+
+def test_selecting_discord_without_a_token_stops_at_the_human_and_says_where(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"channel_id": CHANNEL, "guild_id": GUILD}},
+    )
+
+    assert result.outcome is InstallOutcome.NEEDS_USER
+    discord = step(result, STEP_DISCORD)
+    assert discord.state is StepState.NEEDS_USER
+    assert "DISCORD_BOT_TOKEN" in discord.summary
+    assert str(home / ".env") in (discord.remediation or "")
+    assert "fully usable without it" in (discord.remediation or "") or "0600" in (
+        discord.remediation or ""
+    )
+
+
+def test_discord_without_a_channel_says_which_setting_is_missing(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"guild_id": GUILD}},
+    )
+
+    discord = step(result, STEP_DISCORD)
+    assert discord.state is StepState.NEEDS_USER
+    assert discord.detail["missing"] == ["channel_id"]
+
+
+def test_configured_discord_writes_a_reference_and_never_the_token(tmp_path):
+    home = configured(tmp_path)
+    (home / ".env").write_text(
+        f"AQ_DB_PASSWORD=local-development\nDISCORD_BOT_TOKEN={TOKEN}\n", encoding="utf-8"
+    )
+    daemon = FakeDaemon(up=True)
+    state_path = tmp_path / "install-state.json"
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"channel_id": CHANNEL, "guild_id": GUILD}},
+        state=state_path,
+    )
+
+    assert step(result, STEP_DISCORD).state is StepState.SUCCEEDED
+    body = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "messaging_platform: discord" in body
+    assert "${DISCORD_BOT_TOKEN}" in body
+    assert TOKEN not in body
+    # Neither the machine-readable result nor the resume record may carry it.
+    assert TOKEN not in json.dumps(result.to_dict())
+    assert TOKEN not in state_path.read_text(encoding="utf-8")
+    assert find_secrets(result.to_dict()) == []
+
+
+# ---------------------------------------------------------------------------
+# The daemon
+# ---------------------------------------------------------------------------
+
+
+def test_a_daemon_that_is_already_answering_is_reused_not_restarted(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,))
+
+    started = step(result, STEP_DAEMON)
+    assert started.state is StepState.SUCCEEDED
+    assert started.detail["started"] is False
+    assert daemon.commands == []
+
+
+def test_a_daemon_that_does_not_come_up_names_the_log_and_the_doctor(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(starts=False)
+
+    result = run(registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,))
+
+    assert result.outcome is InstallOutcome.FAILED
+    failure = step(result, STEP_DAEMON)
+    assert failure.state is StepState.FAILED
+    assert "daemon.log" in (failure.remediation or "")
+    assert "aq doctor" in (failure.remediation or "")
+
+
+def test_a_missing_aq_executable_is_reported_rather_than_guessed(tmp_path, monkeypatch):
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+    # The step also accepts the console script beside the running interpreter, so
+    # "no aq anywhere" has to include that: on a machine where AQ is installed
+    # next to the interpreter running the tests -- CI, a venv -- an injected
+    # `which` returning None is not by itself an absent `aq`.
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-venv" / "bin" / "python3"))
+
+    result = run(
+        registry_for(home, daemon, which=lambda name: None),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+    )
+
+    failure = step(result, STEP_DAEMON)
+    assert failure.state is StepState.FAILED
+    assert "not on PATH" in failure.summary
+    assert daemon.commands == []
+
+
+def test_a_rerun_revalidates_the_daemon_instead_of_restarting_it(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+    state_path = tmp_path / "install-state.json"
+
+    first = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        state=state_path,
+    )
+    assert first.outcome is InstallOutcome.READY
+    second = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        state=state_path,
+    )
+
+    assert second.outcome is InstallOutcome.READY
+    # One start across two runs: the second run revalidated /health.
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
+
+
+def test_the_daemon_is_not_started_unless_it_was_selected(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert result.outcome is InstallOutcome.READY
+    assert step(result, STEP_DAEMON).state is StepState.SKIPPED
+    assert daemon.commands == []
+
+
+# ---------------------------------------------------------------------------
+# The dashboard
+# ---------------------------------------------------------------------------
+
+
+def _inspect(tmp_path, *, identity=("none", None), status=None, bundle=True, config=""):
+    path = tmp_path / "config.yaml"
+    path.write_text(config, encoding="utf-8")
+    seen: list[str] = []
+
+    def probe(url):
+        seen.append(url)
+        return status
+
+    info = inspect_dashboard(
+        path, probe=probe, identify=lambda url: identity, bundle_present=lambda: bundle
+    )
+    return info, seen
+
+
+OURS = ("ours", {"service": "aq-dashboard-server", "bundle": {"verified": True}})
+
+
+def test_a_served_dashboard_is_reported_at_the_dashboard_server_url(tmp_path):
+    info, seen = _inspect(tmp_path, identity=OURS, status=200)
+
+    assert info.url == DASHBOARD_URL
+    assert info.reachable is True
+    assert info.source == DASHBOARD_SERVER
+    assert info.hint == ""
+    # The daemon serves no page, so it is never asked for one.
+    assert seen == [DASHBOARD_URL]
+
+
+def test_a_dashboard_server_whose_daemon_is_down_says_to_start_it(tmp_path):
+    down = ("ours", {**OURS[1], "upstream_ok": False})
+    info, _ = _inspect(tmp_path, identity=down, status=200)
+
+    assert info.reachable is True
+    assert "aq start" in info.hint
+
+
+def test_the_dashboard_url_follows_the_dashboard_server_configuration(tmp_path):
+    info, _ = _inspect(tmp_path, config="dashboard:\n  server:\n    port: 9191\n")
+    assert info.url == "http://127.0.0.1:9191/"
+
+
+def test_an_unbuilt_dashboard_is_told_to_rerun_the_install_not_to_run_vite(tmp_path):
+    """A newcomer must never be sent to keep a Vite dev server running by hand.
+
+    `dashboard.build` builds the bundle and `dashboard.serve` starts the
+    dashboard server on it, so no bundle means those steps have not completed,
+    and rerunning the install is the fix.
+    """
+    info, _ = _inspect(tmp_path, bundle=False)
+
+    assert info.source == DASHBOARD_UNBUILT
+    assert info.url == DASHBOARD_URL
+    assert "Rerun the install command" in info.hint
+    assert "npm" not in info.hint and "5173" not in info.url
+
+
+def test_a_stopped_dashboard_server_names_the_command_that_starts_it(tmp_path):
+    info, _ = _inspect(tmp_path)
+
+    assert info.source == DASHBOARD_STOPPED
+    assert info.reachable is False
+    assert "aq dashboard start" in info.hint
+
+
+def test_a_port_held_by_another_program_is_named_with_the_key_that_moves_it(tmp_path):
+    info, _ = _inspect(tmp_path, identity=("foreign", None), status=404)
+
+    assert info.source == DASHBOARD_PORT_CONFLICT
+    assert "8082" in info.hint and "dashboard.server.port" in info.hint
+
+
+def test_a_disabled_dashboard_server_points_at_serving_it_by_hand(tmp_path):
+    info, _ = _inspect(tmp_path, config="dashboard:\n  server:\n    enabled: false\n")
+
+    assert info.source == DASHBOARD_DISABLED
+    assert "dashboard.server.enabled" in info.hint and "aq dashboard serve" in info.hint
+
+
+def test_a_dashboard_server_setting_that_does_not_load_is_named(tmp_path):
+    info, _ = _inspect(
+        tmp_path, config="mcp_server:\n  port: 8082\ndashboard:\n  server:\n    port: 8082\n"
+    )
+
+    assert info.source == DASHBOARD_MISCONFIGURED
+    assert info.url == ""
+    assert "dashboard.server" in info.hint
+
+
+def test_a_daemon_that_is_not_answering_says_so_without_failing_the_run(tmp_path):
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=False)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    dashboard = step(result, STEP_DASHBOARD)
+    assert dashboard.state is StepState.SUCCEEDED
+    assert dashboard.detail["dashboard"]["reachable"] is False
+    assert "aq start" in dashboard.detail["dashboard"]["hint"]
+
+
+def test_the_api_url_follows_the_configuration_and_the_environment():
+    assert api_base_url({}, {}) == "http://127.0.0.1:8081"
+    assert api_base_url({"mcp_server": {"host": "0.0.0.0", "port": 9000}}, {}) == (
+        "http://0.0.0.0:9000"
+    )
+    assert api_base_url({"mcp_server": {"port": 9000}}, {"AQ_API_URL": "http://box:1234/"}) == (
+        "http://box:1234"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Interruption and resume
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_stopped_at_a_login_resumes_into_the_daemon_step(tmp_path):
+    """A harness login is a human checkpoint, not a lost install.
+
+    The first run stops at the login and starts nothing; the human signs in;
+    the second run revalidates everything that was already done and continues
+    into the daemon.  Nothing before the checkpoint is repeated.
+    """
+    from src.install.results import StepResult
+    from src.install.steps import StepSpec
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+    signed_in: list[bool] = [False]
+
+    def login(context):
+        if signed_in[0]:
+            return StepResult.succeeded("provider.claude-login", "Claude Code is authenticated")
+        return StepResult.needs_user(
+            "provider.claude-login",
+            "Claude Code is installed but not authenticated",
+            "Run `claude auth login`, then rerun `aq install`.",
+        )
+
+    checkpoint = StepSpec(
+        id="provider.claude-login",
+        title="Sign in to Claude Code",
+        run=login,
+        depends_on=(STEP_DATA_DIR,),
+        verify=lambda context: signed_in[0],
+    )
+    state_path = tmp_path / "install-state.json"
+
+    first = run(
+        registry_for(home, daemon, extra=(checkpoint,)),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        state=state_path,
+    )
+    assert first.outcome is InstallOutcome.NEEDS_USER
+    assert first.blocking_step.step_id == "provider.claude-login"
+    assert daemon.commands == []
+    assert step(first, STEP_DAEMON).state is StepState.SKIPPED
+
+    signed_in[0] = True
+    second = run(
+        registry_for(home, daemon, extra=(checkpoint,)),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        state=state_path,
+    )
+
+    assert second.outcome is InstallOutcome.READY
+    assert step(second, STEP_DAEMON).detail["started"] is True
+    backups = list(home.glob("config.yaml.bak*"))
+
+    third = run(
+        registry_for(home, daemon, extra=(checkpoint,)),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        state=state_path,
+    )
+
+    # A third run repeats nothing: no second backup, no second `aq start`.
+    assert third.outcome is InstallOutcome.READY
+    assert list(home.glob("config.yaml.bak*")) == backups
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
+
+
+def test_skipping_every_provider_still_reaches_ready(tmp_path):
+    """No harness selected is a complete install of *this machine*.
+
+    A provider is a capability, so an install that selects none records them
+    skipped and finishes ready — the machine is set up, and a harness can be
+    added later with another `aq install --with provider.<name>`.
+    """
+    from src.install.prerequisites import tmux_step
+    from src.install.providers import provider_steps
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+    registry = registry_for(
+        home,
+        daemon,
+        extra=(
+            tmux_step(which=lambda name: f"/usr/bin/{name}"),
+            *provider_steps(which=lambda name: None),
+        ),
+    )
+
+    result = run(registry, tmp_path)
+
+    assert result.outcome is InstallOutcome.READY
+    skipped = {row.step_id for row in result.steps if row.state is StepState.SKIPPED}
+    assert {"provider.claude-cli", "provider.codex-cli", "provider.gemini-cli"} <= skipped
+
+
+# ---------------------------------------------------------------------------
+# The published contract
+# ---------------------------------------------------------------------------
+
+
+def test_the_documented_onboarding_steps_and_capabilities_match_the_registry():
+    """``docs/reference/cli/install.md`` is the published surface, not a summary."""
+    from src.install import build_registry
+
+    doc = (
+        Path(__file__).resolve().parent.parent / "docs" / "reference" / "cli" / "install.md"
+    ).read_text(encoding="utf-8")
+    registry = build_registry(WSL2)
+    for step_id in (
+        STEP_CONFIG,
+        STEP_GIT_IDENTITY,
+        STEP_CHECK,
+        STEP_DISCORD,
+        STEP_DAEMON,
+        STEP_DASHBOARD,
+    ):
+        assert step_id in registry, f"{step_id} is not registered by build_registry"
+        assert step_id in doc, f"{step_id} is not documented"
+    assert CAPABILITY_DISCORD in registry.capabilities()
+    assert CAPABILITY_DAEMON in registry.capabilities()
+    assert "--with discord" in doc
+    assert "--advanced" in doc
+    assert "--git-name" in doc and "settings.git_identity" in doc
+
+
+def test_an_unknown_discord_setting_is_refused_by_name(tmp_path):
+    """A misspelled setting must not deliver to the wrong channel, or to none."""
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"chanel_id": CHANNEL, "guild_id": GUILD}},
+    )
+
+    failure = step(result, STEP_DISCORD)
+    assert failure.state is StepState.FAILED
+    assert "chanel_id" in failure.summary
+    assert failure.retryable is False
+
+
+def test_a_dry_run_on_a_bare_machine_reports_a_plan_rather_than_a_failure(tmp_path):
+    """A dry run must not fail because of what a dry run did not do.
+
+    ``config.defaults`` is mutating, so a dry run never writes the file that
+    ``config.check`` would read; reporting "it does not parse" there would be a
+    failure the dry run itself caused.
+    """
+    home = home_with_config(tmp_path)
+    daemon = FakeDaemon()
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        dry_run=True,
+    )
+
+    assert result.outcome is InstallOutcome.READY
+    check = step(result, STEP_CHECK)
+    assert check.state is StepState.SKIPPED
+    assert "dry run" in check.summary
+    assert not (home / "config.yaml").exists()
+    assert daemon.commands == []
+
+
+def test_a_dry_run_still_reports_a_configuration_that_is_already_broken(tmp_path):
+    """A read-only finding is not caused by the dry run, so it is not softened."""
+    home = home_with_config(tmp_path, body="database:\n  url: ''\n")
+    daemon = FakeDaemon()
+
+    result = run(registry_for(home, daemon), tmp_path, dry_run=True)
+
+    assert step(result, STEP_CHECK).state is StepState.FAILED
+
+
+def test_the_reported_worktree_directory_is_the_one_the_daemon_uses(tmp_path):
+    """A configuration that names no worktree directory still reports the real one."""
+    from src.config import AppConfig
+    from src.install.onboarding import DEFAULT_WORKSPACE_DIR
+
+    assert DEFAULT_WORKSPACE_DIR == AppConfig().workspace_dir
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+    result = run(registry_for(home, daemon), tmp_path)
+
+    worktrees = next(
+        entry
+        for entry in step(result, STEP_CHECK).detail["locations"]
+        if entry["label"] == "Worktrees"
+    )
+    assert worktrees["path"] == AppConfig().workspace_dir
+
+
+def test_a_configured_worktree_directory_is_reported_as_configured(tmp_path):
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\nworkspace_dir: {tmp_path / 'checkouts'}\n"
+            f"database:\n  url: {VALID_DSN}\n"
+        ),
+    )
+    env_with_password(home)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    worktrees = next(
+        entry
+        for entry in step(result, STEP_CHECK).detail["locations"]
+        if entry["label"] == "Worktrees"
+    )
+    assert worktrees["path"] == str(tmp_path / "checkouts")
+
+
+def test_a_channel_name_where_an_id_belongs_is_caught_by_the_installer(tmp_path):
+    """The daemon refuses it at the next start; the installer says so now."""
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"channel_id": "#general", "guild_id": GUILD}},
+    )
+
+    discord = step(result, STEP_DISCORD)
+    assert discord.state is StepState.NEEDS_USER
+    assert discord.detail["malformed"] == ["channel_id"]
+    assert "Copy ID" in (discord.remediation or "")
+    assert "messaging_platform: none" in (home / "config.yaml").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# A running daemon that predates the install's changes is restarted
+# ---------------------------------------------------------------------------
+
+
+class _RestartableDaemon:
+    """A healthy daemon that has been up for ``uptime`` seconds at ``now``."""
+
+    def __init__(self, *, uptime: float, restart_ok: bool = True):
+        self.uptime = uptime
+        self.restart_ok = restart_ok
+        self.commands: list[tuple[str, ...]] = []
+
+    def probe(self, url: str) -> int | None:
+        return 200
+
+    def read_uptime(self, url: str) -> float | None:
+        return self.uptime
+
+    def run(self, argv, **kwargs):
+        from src.install.command import CommandOutput
+
+        command = tuple(str(part) for part in argv)
+        self.commands.append(command)
+        if command[1:] == ("restart", "--no-dashboard"):
+            if self.restart_ok:
+                self.uptime = 0.5
+                return CommandOutput(argv=command, returncode=0, stdout="Daemon started")
+            return CommandOutput(argv=command, returncode=1, stderr="port in use")
+        raise AssertionError(f"unexpected command: {command}")
+
+
+def _daemon(tmp_path, daemon, *, config_age: float, now: float = 10_000.0):
+    import os
+
+    from src.install.onboarding import daemon_step
+
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    os.utime(config, (now - config_age, now - config_age))
+    return daemon_step(
+        environ={"HOME": str(home)},
+        home=home,
+        runner=daemon.run,
+        which=lambda name: f"/usr/bin/{name}",
+        probe=daemon.probe,
+        uptime=daemon.read_uptime,
+        watched=lambda: [config],
+        clock=lambda: now,
+    )
+
+
+def test_a_daemon_started_before_the_configuration_changed_is_restarted(tmp_path):
+    """The supervisor kept "does not support interactive terminal input".
+
+    A rerun wrote `sessions.provider: tmux`, but the daemon that was already up
+    had loaded `subprocess` and was reused as it was.
+    """
+    daemon = _RestartableDaemon(uptime=3_600)
+    step = _daemon(tmp_path, daemon, config_age=60)  # config written after start
+
+    assert step.verify(None) is False
+    result = step.run(None)
+
+    assert result.state is StepState.SUCCEEDED, result.summary
+    assert result.detail["restarted"] is True
+    assert ("/usr/bin/aq", "restart", "--no-dashboard") in daemon.commands
+
+
+def test_a_daemon_newer_than_its_configuration_is_reused_untouched(tmp_path):
+    daemon = _RestartableDaemon(uptime=60)
+    step = _daemon(tmp_path, daemon, config_age=3_600)  # config written before start
+
+    assert step.verify(None) is True
+    result = step.run(None)
+
+    assert result.detail["started"] is False
+    assert daemon.commands == []
+
+
+def test_a_restart_that_does_not_come_back_is_reported(tmp_path):
+    daemon = _RestartableDaemon(uptime=3_600, restart_ok=False)
+
+    result = _daemon(tmp_path, daemon, config_age=60).run(None)
+
+    assert result.state is StepState.FAILED
+    assert "port in use" in result.summary
+    assert "aq restart" in (result.remediation or "")
+
+
+def test_an_injected_probe_never_reads_uptime_over_the_network(tmp_path, monkeypatch):
+    from src.install import onboarding
+
+    monkeypatch.setattr(
+        onboarding,
+        "daemon_uptime",
+        lambda url, timeout=2.0: (_ for _ in ()).throw(AssertionError("network read")),
+    )
+    home = configured(tmp_path)
+    step = onboarding.daemon_step(environ={"HOME": str(home)}, home=home, probe=lambda url: 200)
+
+    assert step.verify(None) is True
+
+
+def test_uptime_is_read_from_a_degraded_daemon_too(monkeypatch):
+    import io
+    import urllib.error
+
+    from src.install import onboarding
+
+    body = io.BytesIO(b'{"status": "degraded", "uptime_seconds": 42.5}')
+
+    def degraded(url, timeout):
+        raise urllib.error.HTTPError(url, 503, "degraded", {}, body)
+
+    monkeypatch.setattr(onboarding.urllib.request, "urlopen", degraded)
+
+    assert onboarding.daemon_uptime("http://127.0.0.1:8081/health") == 42.5
+
+
+def test_the_daemon_is_started_with_the_aq_this_installer_is_running_as(tmp_path):
+    """ "the `aq` command is not on PATH" -- while the installer was that command.
+
+    An operator who runs ``~/.local/bin/aq install`` from a shell whose profile
+    has not been re-read, or a virtualenv nobody activated, has no ``aq`` on
+    PATH; the console script beside the running interpreter is the same
+    installation and is what the step now uses.
+    """
+    from src.install.onboarding import aq_aware_which
+
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python3"
+    python.write_text("", encoding="utf-8")
+    aq = bin_dir / "aq"
+    aq.write_text("#!/bin/sh\n", encoding="utf-8")
+    aq.chmod(0o755)
+
+    which = aq_aware_which(lambda command: None, interpreter=str(python))
+
+    assert which("aq") == str(aq)
+    assert which("agent-queue") is None, "only a console script that exists is offered"
+    assert which("tmux") is None, "the fallback is about aq, not about PATH in general"
+
+
+def test_an_aq_on_path_still_wins(tmp_path):
+    from src.install.onboarding import aq_aware_which
+
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "aq").write_text("#!/bin/sh\n", encoding="utf-8")
+    (bin_dir / "aq").chmod(0o755)
+
+    which = aq_aware_which(
+        lambda command: "/usr/local/bin/aq", interpreter=str(bin_dir / "python3")
+    )
+
+    assert which("aq") == "/usr/local/bin/aq"

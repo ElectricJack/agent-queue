@@ -1,5 +1,11 @@
 # SQLite Removal — PostgreSQL as the Only Backend
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-07
 **Status:** Proposed
 **Scope:** Delete SQLite support from `agent-queue` entirely — production, tests,
