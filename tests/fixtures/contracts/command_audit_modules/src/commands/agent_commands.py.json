@@ -1,0 +1,504 @@
+{
+  "add_workspace": {
+    "argument_reads_diagnostic_only": [
+      "enabled",
+      "kind_id",
+      "name",
+      "path",
+      "project_id",
+      "source"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_add_workspace",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Kind '{kind_id}' is not defined for project '{project_id}' and no system default exists. Define it in vault/[projects/<pid>/]workspace-kinds/{kind_id}.md or use a known kind id (e.g. 'project-repo').\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Unsupported workspace source_type '{source}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"Link workspaces require a 'path' parameter\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Path '{path}' does not exist or is not a directory\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Path '{path}' is already a workspace for project '{ws.project_id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Unsupported workspace source_type '{source}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Clone failed: {e}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'git init failed: {e}'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:11ea180b4fddb66606785399c9eadbd86b83306ba388a728fb85ca98f2a0ac7b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_command_edges.py",
+      "tests/test_workspace_commands.py"
+    ]
+  },
+  "agent_message": {
+    "argument_reads_diagnostic_only": [
+      "all_running",
+      "body",
+      "profile",
+      "project_id",
+      "reply_to",
+      "target",
+      "wait"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cmd_message_send": "sha256:b5f366331763d8148f6d74df2fea686fffd11b9eedda3c0bf55d0232bcb7b39f",
+      "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
+      "_queue_supervisor_message": "sha256:223414b14df20c1521c418a92e77ce6480cf407182eec73cbd7b26af90e90061",
+      "_send_collaboration_message": "sha256:47207c4d2dcca9b0e53bb086936bf805ab07722ac121832c2d0cb94abd998632",
+      "_system_message_scope_error": "sha256:bb8b3907d3e936931d43b2c4f37118e164281848c268d5477789213e2ed1afb7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_agent_message",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'body is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'wait must be an integer from 0 to 60'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'reply_to must be a message id'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"reply_to answers one worker's message; it cannot use all_running\"}"
+      },
+      {
+        "protocol": "explicit_boolean: all((row['success'] for row in rows))",
+        "return": "{'success': all((row['success'] for row in rows)), 'count': len(rows), 'recipients': rows}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'target is required unless all_running=true'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Message '{reply_to}' is not a message of the target's project '{session.project_id}': reply_to threads guidance onto that worker's own message. Send without reply_to, and answer '{reply_to}' with `aq message reply {reply_to}`.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Message '{reply_to}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:42db4c0ab0f2cfb2139757b51c2b078fdf693c6e766341acc46142c6cf533fe0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_wait_commands.py",
+      "tests/test_message_commands.py"
+    ]
+  },
+  "edit_workspace": {
+    "argument_reads_diagnostic_only": [
+      "enabled",
+      "force",
+      "name",
+      "source_type",
+      "workspace_id",
+      "workspace_path"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_edit_workspace",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'updated': ws.id, 'fields': changed_fields, 'workspace_path': new_path, 'source_type': new_source_type.value, 'enabled': updates.get('enabled', ws.enabled)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workspace_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{workspace_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'updated': ws.id, 'fields': [], 'workspace_path': new_path, 'source_type': new_source_type.value, 'enabled': ws.enabled}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Workspace binding changed or is locked; edit was not applied'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workspace_path must be a non-empty string'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{ws.id}' is locked by task '{ws.locked_by_task_id}'. Disable the workspace and wait for the task to finish, or release the lock first.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Unsupported source_type '{args['source_type']}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Register a new base and use workspace_cutover; linked slot paths cannot be relocated in place'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Path '{candidate}' does not exist. Set force=true to edit anyway (e.g. when relocating before the directory exists).\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Path '{candidate}' is already a workspace ({other.id} in project '{other.project_id}').\"}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d665a3fcdb6122f4b55b5a0a8d13e0bd9a5405d89c01d7412eb0691449f99cd9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_command_edges.py"
+    ]
+  },
+  "find_merge_conflict_workspaces": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_find_merge_conflict_workspaces",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required (no active project set)'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"No workspaces found for project '{project_id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': project_id, 'workspaces_scanned': len(workspaces), 'workspaces_with_conflicts': len(results), 'conflicts': results}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:04d7333216fee2593aced7828343b81f8915d1fb2b755d4f5389c927e04cde3e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "list_workspace_kinds": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_list_workspace_kinds",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': project_id, 'workspace_kinds': [{'id': k.id, 'scope': 'project' if k.project_id == project_id else 'system', 'description': k.description, 'writable': k.writable, 'lockable': k.lockable, 'is_git_repo': k.is_git_repo, 'repo_url': k.repo_url, 'default_lock_mode': k.default_lock_mode, 'auto_attach': k.auto_attach, 'mode': k.mode, 'max_slots': k.max_slots} for k in kinds]}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:5b49dde6af85b540804a3be8e384a39701b24231a7e95ad718d88458bc530b17",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_commands.py"
+    ]
+  },
+  "list_workspaces": {
+    "argument_reads_diagnostic_only": [
+      "deadline_seconds",
+      "git",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_list_workspaces",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workspaces': rows, 'diagnostics': diagnostics}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'git must be a boolean'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "getattr(kind, 'mode', None) if kind is not None else None"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc) or 'deadline_seconds must be a number'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "None"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9fa9cff8d41e0bacae3f2d7c0bcefbc3278f25bd48234db71d5906625828e23a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_commands.py"
+    ]
+  },
+  "queue_sync_workspaces": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_queue_sync_workspaces",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required (no active project set)'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"No workspaces found for project '{project_id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'already_queued': True, 'existing_task_ids': [t.id for t in existing_sync], 'project_id': project_id, 'message': f\"Sync Workspaces task already exists for '{project_id}': {existing_ids}. Skipping duplicate.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'already_synced': True, 'project_id': project_id, 'workspace_count': len(workspaces), 'default_branch': default_branch, 'message': f\"All {len(workspaces)} workspace(s) for '{project_id}' are already on '{default_branch}' with no feature branches. No sync needed.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'queued': task_id, 'project_id': project_id, 'title': task.title, 'priority': 1, 'workspace_count': len(workspaces), 'default_branch': default_branch, 'message': f\"Sync Workspaces task queued with highest priority (id: {task_id}). When it starts, it will pause the project, wait for active tasks to complete, merge all feature branches into '{default_branch}', then resume.\"}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9a65fe6a49f536e4c35a01de4ab078d4c752cff83864d711e5990ff59af2437f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "release_workspace": {
+    "argument_reads_diagnostic_only": [
+      "workspace_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_release_workspace",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{workspace_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workspace_id': workspace_id, 'status': 'already_unlocked'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workspace_id': workspace_id, 'released_from_agent': ws.locked_by_agent_id, 'released_from_task': ws.locked_by_task_id}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:8c65240bf8bc5960abfc4731b289a01e1541d0231c26583278b86b9659ef3fef",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "remove_workspace": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "workspace",
+      "workspace_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_remove_workspace",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'deleted': ws.id, 'name': ws.name, 'project_id': ws.project_id, 'workspace_path': ws.workspace_path}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workspace_id or workspace is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{workspace_ref}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{ws.id}' is locked by '{ws.locked_by_agent_id or ws.locked_by_task_id}'. Release it first.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{ws.id}' cleanup refused: {exc}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workspace '{ws.id}' cleanup refused: matching repository is still referenced; reconcile its references before removal\"}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:0e4714a9382fa6f5c07e690a9de1ac70ea9cd7c7bd7a2b7253c323dc393e995b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

@@ -91,10 +91,9 @@ no reviewer tasks or PR gates on downstream work. If you want different
 routing, keep a project-scope copy of the routing playbook — no code change,
 and no config key.
 
-The one routing-adjacent knob the tuner writes is
-`max_concurrent_playbook_runs`, scaled to the fleet size, because playbook
-runs compete with agent sessions for the same box and the same provider
-quota.
+The tuner also writes `max_concurrent_playbook_runs`, scaled to the fleet size.
+The current V2 event dispatcher does not enforce this legacy concurrency setting;
+it is not a limit on simultaneous V2 runs.
 
 ## Retry, recovery and integration
 
@@ -109,18 +108,20 @@ quota.
 
 ## Playbooks
 
-The tuner sets `playbooks.enabled: true`. On an absent or empty vault's first
-installation, the daemon installs six reviewed bundles and activates
-`default-assignment-routing`, `provider-usage-probe`, `provider-failover`,
-`supervisor-failure-triage` and `default-pipeline`. `morning-report` is installed
-but needs explicit activation and `reports.morning.enabled`.
-`blocked-task-escalation` is not an automatically activated default.
-
+The tuner sets `playbooks.enabled: true`; the code default remains `false`.
+On a fresh, empty vault the installation receipt installs six reviewed system
+bundles. Its first activation attempt enables three required policies
+(`default-assignment-routing`, `provider-usage-probe`, `provider-failover`) and two
+shared defaults (`default-pipeline`, `supervisor-failure-triage`). `morning-report`
+stays inactive and needs explicit activation and `reports.morning.enabled`.
 An existing non-empty vault gets an installation receipt without new activation.
-Restarts rehydrate durable activations; they do not restore deleted policy or
-replace an operator's active artifact. Use explicit playbook import/activation or
-operator doctor repair for changes. With playbooks disabled, mandatory routing
-cannot route new work. The code default remains `false`.
+`blocked-task-escalation` is retired, and the stateful stuck-task
+watch is optional. Later restarts only observe activations; repair and bundle
+refresh require explicit operator commands. See [installation and recovery](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+
+The bound routing playbook is the normal writer of a task's route, so disabling
+playbooks prevents new ordinary routing. Agent cron remains independent of the
+playbook switch.
 
 ## Pull-based worker pools
 
@@ -130,11 +131,12 @@ be pushed one — and the code default is `false` only because the pull path
 post-dates the push path. `swarm.fresh_context_per_task` stays on so one
 task's context does not leak into the next on a shared worker.
 
-`swarm.max_starts_per_tick` (1 / 2 / 3 by size class) and
+`swarm.max_starts_per_tick` (1 / 2 / 3 by size class, shared across all profiles
+and projects) and
 `swarm.scale_down_grace` (300s on a small box, 120s elsewhere) exist to stop
-start/drain churn on a bursty queue. `swarm.enabled: false` disables pool
-scheduling; it does not rewrite a profile’s lifecycle or turn pool profiles into
-push workers. Operator detail:
+start/drain churn on a bursty queue. `swarm.enabled: false` stops pool scheduling
+without changing profile lifecycle. To use push workers instead, explicitly
+change the relevant profiles to `lifecycle: task` before disabling pools. Operator detail:
 [worker pools](worker-pools.md).
 
 ## What is deliberately *not* written

@@ -10,18 +10,20 @@ import logging
 import time
 import uuid
 
-from sqlalchemy import exists, insert, or_, select, update
+from sqlalchemy import exists, insert, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
-    admission_reservations, tasks, wait_deadlines, wait_escalations, wait_records,
+    admission_reservations, escalations, tasks, wait_deadlines, wait_escalations, wait_records,
 )
 from src.integration.stacked_branches import shared_stack_inputs
 from src.waits.admission import AdmissionReader, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
-from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
+from src.waits.graph import (
+    add_edges, background_graph_work, clear_edges, lock_graph, recompute_from,
+)
 from src.waits.registry import build_registry
 from src.waits.reservations import SchedulerPolicy, enabled
 
@@ -52,6 +54,7 @@ class SchedulerWaitService:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
 
     @shared_stack_inputs()
+    @background_graph_work()
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]
@@ -278,6 +281,38 @@ class SchedulerWaitService:
                     generation=due["generation"], due_at=now + seconds,
                 ).on_conflict_do_nothing(constraint="uq_wait_deadlines_wait_type_gen"))
         elif due["deadline_type"] == "escalation" and reservation is not None:
+            capacity = [admission_reservations.c.project_id == task["project_id"]]
+            for key in ("profile_id", "repository_id"):
+                capacity.append(admission_reservations.c.scope[key].astext.is_not_distinct_from(
+                    reservation["scope"].get(key),
+                ))
+            recent = (await conn.execute(select(
+                admission_reservations.c.granted_at, admission_reservations.c.consumed_at,
+            ).where(*capacity, or_(
+                admission_reservations.c.granted_at > now - seconds,
+                admission_reservations.c.consumed_at > now - seconds,
+            )))).all()
+            progress = max((timestamp for entry in recent for timestamp in entry
+                            if timestamp is not None and timestamp <= now), default=None)
+            existing = await conn.scalar(select(escalations.c.id).join(
+                admission_reservations,
+                escalations.c.source_identity == literal("branch-admission:")
+                + admission_reservations.c.id,
+            ).where(
+                *capacity, escalations.c.project_id == task["project_id"],
+                escalations.c.source_kind == "wait",
+                escalations.c.state.in_(("needs_human", "reply_received", "resolving")),
+                admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+            ).limit(1))
+            if progress is not None or existing:
+                # Keep this deadline live: once capacity stops moving and the
+                # existing episode clears, a genuine new stall can still alert.
+                await conn.execute(update(wait_deadlines).where(
+                    wait_deadlines.c.id == due["id"],
+                ).values(due_at=progress + seconds if progress is not None else now + seconds))
+                return {"success": True, "fired": False,
+                        "reason": "admission_queue_progressing" if progress is not None
+                        else "admission_incident_coalesced"}
             incident = f"branch-admission:{reservation['id']}"
             escalation, created = await self.db.create_escalation(
                 conn=conn, id=str(uuid.uuid4()), project_id=task["project_id"],
