@@ -89,6 +89,20 @@ class TestVaultIndexGenerator:
 
         assert (refs / "references.md").exists()
 
+    def test_config_dirs_never_get_a_hub(self, tmp_path):
+        vault = tmp_path / "vault"
+        classes = vault / "intelligence-classes"
+        classes.mkdir(parents=True)
+        for i in range(15):
+            (classes / f"class-{i}.md").write_text(f"# Class {i}")
+        stale = classes / "intelligence-classes.md"
+        stale.write_text("---\ntype: hub\n---\n")
+
+        VaultIndexGenerator(vault).generate_all()
+
+        assert not stale.exists()
+        assert "intelligence-classes/class-0" in (vault / "vault.md").read_text()
+
     def test_groups_reference_stubs(self, tmp_path):
         vault = tmp_path / "vault"
         refs = vault / "references"

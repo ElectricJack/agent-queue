@@ -2,7 +2,9 @@
 """Operator tool: record git-proven delivery of pre-provenance completions.
 
 Preview (default) lists what git proves and what it cannot; ``--apply`` writes
-``integration_legacy_deliveries`` rows for the proven ones only. Where git can
+``integration_legacy_deliveries`` rows for the proven ones only. Originless passing
+completions and children with deleted epic refs retain their final source under strict
+ancestry on the target, including repair of previously backfilled rows. Where git can
 prove nothing and the work must not be delivered now either, ``--abandon-task``
 (one completed task, leaf or container) and ``--abandon-epic`` (a container by
 name) record an explicit, reasoned ``abandoned`` decision instead. Where the

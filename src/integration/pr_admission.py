@@ -357,14 +357,20 @@ class PRAdmission:
 
     async def verify_workspace(self, task_id, path):
         try:
-            return all(
-                [
-                    await self.service.git.ais_ancestor(path, oid, "HEAD")
-                    for oid in self.workspace_sources.get(task_id, ())
-                ]
+            for oid in self.workspace_sources.get(task_id, ()):
+                if not await self.service.git.ais_ancestor(path, oid, "HEAD"):
+                    return self.record_change(
+                        "pr_admission_workspace_missing_source",
+                        f"Prepared workspace {path} HEAD does not contain source {oid}; "
+                        "inspect the checkout base before retrying", task_id,
+                    )
+            return True
+        except (GitError, OSError) as exc:
+            return self.record_change(
+                "pr_admission_workspace_unavailable",
+                f"Prepared workspace {path} ancestry unavailable ({type(exc).__name__}); retry",
+                task_id,
             )
-        except (GitError, OSError):
-            return False
 
 
 def _identity(pull):

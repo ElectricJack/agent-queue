@@ -4,6 +4,7 @@ promotion_flow:
     source: dev
     target: staging
     type: continuous
+    ci: reuse_source
     gate:
       checks: inherit
       attestation: Agent Queue Promotion Attestation (staging)
@@ -20,6 +21,7 @@ promotion_flow:
     source: staging
     target: main
     type: request
+    ci: reuse_source
     gate:
       checks: inherit
       attestation: Agent Queue Promotion Attestation (release)

@@ -22,6 +22,7 @@ from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import task_dependencies, tasks, wait_edges, wait_priority_projection
 from src.models import BLOCKING_DEP_TYPES
+from src.metrics.operation_profile import current_profile
 from src.metrics.perf import timed_operation
 from src.waits.conditions import WaitError
 
@@ -48,6 +49,8 @@ def _release_graph_lock(sync_conn):
     state = _graph_holders.pop(sync_conn, None)
     if state:
         state["timer"].cancel()
+        if state["profile"] is not None:
+            state["profile"].record("db.hold_graph_lock", time.monotonic() - state["started"])
     if state and not state["warned"] and time.monotonic() - state["started"] >= GRAPH_LOCK_WARN_SECONDS:
         _warn_graph_holder(state)
 
@@ -71,6 +74,7 @@ def track_graph_lock(conn):
     caller = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
     del frame
     state = {"started": time.monotonic(), "caller": caller, "warned": False,
+             "profile": current_profile(),
              "transaction": conn.sync_connection.get_transaction()}
     timer = asyncio.get_running_loop().call_later(GRAPH_LOCK_WARN_SECONDS, _warn_graph_holder, state)
     state["timer"] = timer

@@ -594,6 +594,32 @@ A notification cannot restart a still-live preparation. Deferred responses are
 fenced to their session instance and claim binding, and one failed preparation
 records one refusal even when several callers await its result.
 
+The daemon-owned preparation bounds owner/lease acquisition by
+`swarm.prepare_timeout`; the later queue/reset window retains the configured slot
+reset budget plus its mutation allowance. Expiry interrupts the owning job,
+awaits Git/transaction unwinding, and reports `prepare_failed` with the ordinary
+refusal cooldown. Release to READY uses the exact session instance, task and claim
+epoch; an attached owner needs the normal detached/published checkout proof.
+Unproved child cleanup or handoff retains the claim and ownership. An activation
+that already committed remains `claimed`, even if its event delivery timed out.
+The reconciler must never release resources beneath a still-running preparation.
+
+`aq task claim-abort --task-id ID --session-id ID --claim-epoch N
+--instance-token TOKEN --reason TEXT` is available only to the local operator or
+a live supervisor in the task's project. It cancels the exact registered
+preparation without taking its potentially blocked task-control lock. It waits
+up to ten seconds for cleanup, returns `cleanup_pending` if it is still unwinding,
+and never treats cancellation alone as termination proof. Active or stale claim
+identities are refused. Repeating an abort never cancels cleanup a second time.
+
+Before reopening a producer whose own worker branch still names a stopped pool
+predecessor, settle its pending handoff under the task-control lock. Require a
+fresh provider stop probe, unchanged retired worker/session/workspace identities,
+and a clean published checkout before detach and fenced self-transfer. Keep the
+task terminal until that proof completes; an unproved handoff refuses reopen.
+This avoids presenting READY and then attempting to use an already-superseded
+claim epoch as predecessor release proof.
+
 A completed refusal is observable before new-work drain/disable admission checks:
 the preparation itself may have stopped the session after refusing a foreign
 claim. Its original diagnostic is consumed once, without charging the refusal

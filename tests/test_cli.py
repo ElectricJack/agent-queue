@@ -695,6 +695,17 @@ class TestCLIClient:
             assert kwargs["timeout"] == _DEFAULT_TIMEOUT
             await client.close()
 
+    @pytest.mark.asyncio
+    async def test_source_redispatch_timeout_allows_listener_queue_and_work(self):
+        mock_http = self._mock_httpx_for_typed(200, {"redispatched": True})
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            await client.execute("wait_source_redispatch", {
+                "project_id": "p", "source_seq": 42, "note": "recover source"})
+            assert mock_http.post.call_args.kwargs["timeout"] > 60 + 30 + 5
+            await client.close()
+
 
 # ---------------------------------------------------------------------------
 # Styles tests (unchanged from original)

@@ -721,6 +721,15 @@ already run** or, when you ask it to, **install and run a local one**. It never
 does the second without being asked: a server, a role and a database are things
 other software may already depend on.
 
+Managed installation uses native apt/Homebrew services. For Docker, use the
+repository's committed [`docker-compose.yml`](../../../docker-compose.yml),
+which sets `shm_size: 1g` for PostgreSQL; Docker's default 64 MiB can fill with
+shared statistics and parallel query allocations. Configure the installer to
+reuse that server (`postgres.port: 5533` for the daemon service). Existing
+containers require an operator recreation to apply this setting. See
+[shared memory diagnostics and rollout](../../guides/postgres-shared-memory.md)
+and run `aq doctor --check db.shared_memory` after installation.
+
 | Step | Mutating | What it does |
 | --- | --- | --- |
 | `postgres.package` | yes | Installs PostgreSQL with the platform's package manager — `apt-get install -y postgresql` on Ubuntu, `brew install postgresql@17` on macOS. Requires `--with postgres-managed`. |

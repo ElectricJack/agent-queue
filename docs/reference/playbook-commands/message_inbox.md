@@ -3,7 +3,7 @@
 
 # `message_inbox`
 
-**Message Inbox.** List a recipient's pending messages, optionally marking them delivered.
+**Message Inbox.** List unread, unarchived mail; inject claims only undelivered messages.
 
 | Property | Value |
 |---|---|

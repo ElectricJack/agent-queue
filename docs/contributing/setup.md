@@ -89,6 +89,11 @@ used by the operator's daemon and must not be used for tests. The test service
 has `fsync`, `synchronous_commit`, and `full_page_writes` disabled; a crash can
 corrupt its data, so discard and recreate it if that happens.
 
+Both services reserve a 1 GiB `/dev/shm` capacity for PostgreSQL shared
+statistics and parallel queries. Existing containers keep their old capacity
+until recreated; the daemon service's recreation belongs to the operator. See
+[shared memory diagnostics](../guides/postgres-shared-memory.md).
+
 If the daemon's `postgres` service was created before the PostgreSQL 18 mount
 correction, its live cluster sits on an anonymous volume even though the named
 `pgdata` volume exists. Recreating that container would start an empty cluster;

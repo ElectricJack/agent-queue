@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from urllib.parse import quote, urlsplit
 
 from src.conversations.limits import MAX_INPUT_CHARS, MAX_REPLY_CHARS, WINDOW_SECONDS
+from src.dashboard_paths import conversation_path
+from src.discord.links import (
+    LINK_PATTERN,
+    format_links,
+    links_in,
+    reserve_links,
+    text_prefix,
+    text_units,
+)
+from src.discord.render_budget import link_line
 from src.escalations.render import sanitise
 
-_URL = re.compile(r"https?://[^\s<>()\[\]`]+", re.IGNORECASE)
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 
 
@@ -62,41 +70,20 @@ def status_line_text(state: str, *, queued: int) -> str:
 
 
 def conversation_pointer(base_url: str, conversation_id: str) -> str:
-    return f"{base_url.rstrip('/')}/conversations/{quote(conversation_id, safe='')}"
+    return link_line(base_url, conversation_path(conversation_id))
 
 
 def sanitise_reply(text: str, *, base_url: str) -> str:
-    """Strip controls and foreign links, then apply the shared mention policy."""
+    """Strip controls and neutralise mentions while preserving authored links."""
     text = _ANSI.sub("", text)
     text = "".join(
         char
         for char in text
         if char in "\n\t" or unicodedata.category(char) not in {"Cc", "Cf", "Cs"}
     )
-    base = base_url.rstrip("/")
-    allowed = urlsplit(base)
-
-    def link(match: re.Match[str]) -> str:
-        url = match.group()
-        try:
-            parsed = urlsplit(url)
-        except ValueError:
-            return "[link removed]"
-        if (
-            base
-            and allowed.scheme in {"http", "https"}
-            and allowed.netloc
-            and parsed.scheme == allowed.scheme
-            and parsed.netloc == allowed.netloc
-            and (url == base or url.startswith((base + "/", base + "?", base + "#")))
-        ):
-            return url
-        return "[link removed]"
-
-    text = _URL.sub(link, text)
     # Mention neutralisation can add one character per @. Do not let the
     # escalation field limit truncate the full answer before we add a pointer.
-    return sanitise(text, limit=2 * len(text) + 1)
+    return format_links(text, lambda part: sanitise(part, limit=2 * len(part) + 1)).strip()
 
 
 def conversation_marker(dedup_key: str) -> str:
@@ -111,16 +98,15 @@ def render_reply(text: str, *, dedup_key: str, base_url: str, conversation_id: s
     body = sanitise_reply(text, base_url=base_url)
     marker = conversation_marker(dedup_key)
     complete = f"{body}{marker}"
-    if len(complete) <= MAX_REPLY_CHARS:
+    if text_units(complete) <= MAX_REPLY_CHARS:
         return complete
     suffix = f" … {conversation_pointer(base_url, conversation_id)}{marker}"
-    budget = MAX_REPLY_CHARS - len(suffix)
+    authored_links = links_in(body)
+    if authored_links:
+        retained = reserve_links(authored_links, room=MAX_REPLY_CHARS - text_units(suffix) - 1)
+        suffix = "\n" + "\n".join(retained) + suffix
+        body = LINK_PATTERN.sub("", body)
+    budget = MAX_REPLY_CHARS - text_units(suffix)
     if budget < 0:
         raise ValueError("conversation pointer and marker exceed the reply limit")
-    # A partial allowed URL could point elsewhere. Drop the whole link when
-    # the cut would bisect it, then append the complete trusted pointer.
-    for match in _URL.finditer(body):
-        if match.start() < budget < match.end():
-            budget = match.start()
-            break
-    return body[:budget].rstrip() + suffix
+    return text_prefix(body, budget).rstrip() + suffix

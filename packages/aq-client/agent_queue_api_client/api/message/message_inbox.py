@@ -65,15 +65,17 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: MessageInboxRequest,
 ) -> Response[MessageInboxResponse | MessageInboxResponse422]:
-    """List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+    """List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
-     List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+     List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
     Args:
         body (MessageInboxRequest):
@@ -102,15 +104,17 @@ def sync(
     client: AuthenticatedClient | Client,
     body: MessageInboxRequest,
 ) -> MessageInboxResponse | MessageInboxResponse422 | None:
-    """List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+    """List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
-     List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+     List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
     Args:
         body (MessageInboxRequest):
@@ -134,15 +138,17 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: MessageInboxRequest,
 ) -> Response[MessageInboxResponse | MessageInboxResponse422]:
-    """List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+    """List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
-     List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+     List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
     Args:
         body (MessageInboxRequest):
@@ -169,15 +175,17 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: MessageInboxRequest,
 ) -> MessageInboxResponse | MessageInboxResponse422 | None:
-    """List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+    """List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
-     List the pending (undelivered) messages for one recipient.  With inject=true it also marks them
-    delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns
-    rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery
-    before it could render the bodies can still read them.
+     List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor
+    aliases and the current named session UUID share an inbox. With inject=true, return only undelivered
+    messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed
+    additionally returns other consumed rows for this recipient, read-only, so a worker whose inject
+    consumed delivery before it could render the bodies can still read them.
 
     Args:
         body (MessageInboxRequest):

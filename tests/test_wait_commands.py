@@ -1042,8 +1042,9 @@ async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
 
 @pytest.mark.parametrize("lost_owner", ["terminal", "session", "claim"])
 @pytest.mark.parametrize("caller", ["supervisor", "local"])
+@pytest.mark.parametrize("outcome", ["pending", "satisfied", "cancelled"])
 async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
-    env, lost_owner, caller,
+    env, lost_owner, caller, outcome,
 ):
     receipt = await register(env)
     service, handler = await wait_service(env)
@@ -1060,8 +1061,13 @@ async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
         await conn.execute(insert(continuations).values(
             id="old-intent", task_id="owner", wait_id=receipt["wait_id"], suspension_generation=1,
             summary="Preserved checkpoint", facts={}, branch="aq/owner", saved_head="a" * 40,
-            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="held", created_at=NOW,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="held",
+            hold_reason="stop_uncertain", created_at=NOW,
         ))
+        if outcome != "pending":
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(outcome=outcome, resolved_at=NOW - 1, result_ref="original-result"))
         for rid, subject in (("old-reservation", {"continuation_id": "old-intent"}),
                              ("replacement-reservation", {"task_id": "owner"})):
             await conn.execute(insert(admission_reservations).values(
@@ -1078,7 +1084,13 @@ async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
             await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
     before = await env.db.get_task("owner")
     # Neither a stale worker nor a supervisor of another project may do this.
-    assert not (await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}))["success"]
+    worker_result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    if outcome == "pending":
+        assert not worker_result["success"]
+    else:
+        assert worker_result["success"] and not worker_result["changed"]
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(continuations.c.resume_state)) == "held"
     denied = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
                            replace(principal, project_id="q"))
     assert not denied["success"]
@@ -1086,7 +1098,10 @@ async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
                            principal if caller == "supervisor" else TRUSTED_LOCAL)
     assert result["success"], result
     wait = result["wait"]
-    assert wait["outcome"] == "cancelled" and wait["cleared_at"] == NOW
+    assert wait["outcome"] == ("cancelled" if outcome == "pending" else outcome)
+    assert wait["cleared_at"] == NOW
+    if outcome != "pending":
+        assert wait["resolved_at"] == NOW - 1 and wait["result_ref"] == "original-result"
     assert not wait["blocking"] and wait["decision_inputs"]["registration_receipt"] == receipt
     assert await env.db.get_task("owner") == before
     async with env.db._engine.connect() as conn:
@@ -1095,11 +1110,33 @@ async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
         assert all(r.cancelled_at == NOW for r in (await conn.execute(select(wait_deadlines))).all())
         intent = (await conn.execute(select(continuations))).mappings().one()
         assert intent["resume_state"] == "cancelled" and intent["summary"] == "Preserved checkpoint"
+        assert intent["saved_head"] == "a" * 40 and intent["stopped_at"] is None
         reservations = {r.id: r.state for r in (await conn.execute(select(admission_reservations)))}
         assert reservations == {"old-reservation": "cancelled", "replacement-reservation": "pending"}
     replay = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, principal)
-    assert replay["success"] and replay["warnings"] == ["wait already resolved: cancelled"]
+    assert replay["success"] and replay["warnings"] == [f"wait already resolved: {wait['outcome']}"]
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(events).where(
+            events.c.event_type == "wait.orphan_cancelled",
+        )) == 1
     source_lock.assert_not_awaited()
+
+
+async def test_cancel_resolved_hold_with_current_owner_preserves_delivery(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="current-intent", task_id="owner", wait_id=receipt["wait_id"],
+            suspension_generation=1, facts={}, branch="aq/owner", prior_status="IN_PROGRESS",
+            held_cursor_seq=0, resume_state="held", hold_reason="stop_uncertain", created_at=NOW,
+        ))
+        await conn.execute(update(wait_records).values(outcome="satisfied", resolved_at=NOW))
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, TRUSTED_LOCAL)
+    assert result["success"] and not result["changed"]
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(continuations.c.resume_state)) == "held"
+        assert await conn.scalar(select(wait_records.c.cleared_at)) is None
 
 
 @pytest.mark.parametrize("consume", [False, True], ids=["ack", "show-consume"])
@@ -1348,11 +1385,29 @@ def test_cli_requeue_sends_continuation_and_generation(cli_transport):
         expected_generation=2, note='Infrastructure repaired'))
 
 
-async def test_source_redispatch_requires_live_scoped_supervisor(commands, env):
+@pytest.mark.parametrize('missing', ['continuation_id', 'expected_generation'])
+def test_retire_requires_explicit_continuation_generation(missing):
+    args = dict(decision='retire', continuation_id='c', expected_generation=1, note='Retire')
+    args.pop(missing)
+    with pytest.raises(ValidationError, match='retire requires'):
+        WaitDecideArgs.model_validate(args)
+
+
+def test_cli_retire_dispatches_supervisor_decision_by_continuation_id(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ['retire', 'c', '--expected-generation', '2',
+                                      '--note', 'Stranded holder', '--project', 'p'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ('wait_decide', dict(decision='retire', continuation_id='c',
+        expected_generation=2, note='Stranded holder', project_id='p'))
+
+
+@pytest.mark.parametrize("action", ["redispatch", "blockers", "retire"])
+async def test_source_redispatch_requires_live_scoped_supervisor(commands, env, action):
     name = "wait_source_redispatch"
     callback = AsyncMock(return_value={"success": True, "result": {}})
     commands.orchestrator.wait_v2_handlers[name] = callback
-    args = {"project_id": "p", "source_seq": 1, "note": "recover completion"}
+    args = {"project_id": "p", "source_seq": 1, "note": "recover completion", "action": action}
     denied = await execute(commands, name, args)
     assert denied["error_code"] == "wait.out_of_scope"
     denied = await execute(commands, name, args, replace(WORKER, elevated=True))
@@ -1373,3 +1428,15 @@ def test_cli_source_redispatch_uses_scoped_command(cli_transport):
     assert result.exit_code == 0, result.output
     assert calls == [("wait_source_redispatch", {"source_seq": 42, "project_id": "p",
                                                "note": "retry completion"})]
+
+
+@pytest.mark.parametrize("verb", ["source-blockers", "source-retire"])
+def test_cli_source_controls_share_scoped_recovery_authority(cli_transport, verb):
+    group, calls = cli_transport
+    options = (["--limit", "10"] if verb == "source-blockers" else
+               ["--source-seq", "42", "--note", "obsolete candidate"])
+    result = CliRunner().invoke(group, [verb, "--project", "p", *options])
+    assert result.exit_code == 0, result.output
+    assert calls == [("wait_source_redispatch", {"project_id": "p", **(
+        {"action": "blockers", "limit": 10} if verb == "source-blockers" else
+        {"action": "retire", "source_seq": 42, "note": "obsolete candidate"})})]

@@ -111,7 +111,7 @@ const setKeyboard = (t, covered) => t.page.evaluate((px) => {
 export async function run(t) {
   const wide = t.page.viewport().width >= 768;
   t.stub.allowTerminal(SESSION, SCREEN);
-  await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url(`/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
   await t.page.waitForFunction((selector) => document.querySelector(selector)?.textContent === "connected", { timeout: 15_000 }, STATUS);
   const vp = t.page.viewport();
 
@@ -213,6 +213,6 @@ export async function run(t) {
   assert.deepEqual(t.stub.statePuts(), [], "the phone terminal wrote roaming preferences");
 
   // Leaving closes the attach, which is when the daemon gives the agent its size back.
-  await t.page.goto(t.url("/focus"), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url("/inbox"), { waitUntil: "domcontentloaded" });
   await poll(() => viewer.open, (open) => !open, 5_000, "leaving left the attach open");
 }
