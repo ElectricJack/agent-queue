@@ -6,8 +6,8 @@ import type { ProposalDetail } from "../hooks";
 
 const mockUseProposal = vi.fn();
 const mockUseProposalGate = vi.fn();
-const mockUseResolveGate = vi.fn();
-const mockUseDiscardProposal = vi.fn();
+const mockUsePrepareProposalDecision = vi.fn();
+const mockUseApplyProposalDecision = vi.fn();
 
 vi.mock("../hooks", async () => {
   const actual = await vi.importActual<typeof import("../hooks")>("../hooks");
@@ -15,8 +15,8 @@ vi.mock("../hooks", async () => {
     ...actual,
     useProposal: (...args: unknown[]) => mockUseProposal(...args),
     useProposalGate: (...args: unknown[]) => mockUseProposalGate(...args),
-    useResolveGate: (...args: unknown[]) => mockUseResolveGate(...args),
-    useDiscardProposal: (...args: unknown[]) => mockUseDiscardProposal(...args),
+    usePrepareProposalDecision: (...args: unknown[]) => mockUsePrepareProposalDecision(...args),
+    useApplyProposalDecision: (...args: unknown[]) => mockUseApplyProposalDecision(...args),
   };
 });
 
@@ -69,15 +69,35 @@ function renderPane(overrides: Partial<Parameters<typeof ProposalPreviewPane>[0]
 beforeEach(() => {
   mockUseProposal.mockReset();
   mockUseProposalGate.mockReset();
-  mockUseResolveGate.mockReset();
-  mockUseDiscardProposal.mockReset();
+  mockUsePrepareProposalDecision.mockReset();
+  mockUseApplyProposalDecision.mockReset();
   mockOpen.mockReset();
-  mockUseResolveGate.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-  mockUseDiscardProposal.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+  mockUsePrepareProposalDecision.mockReturnValue({ mutateAsync: vi.fn().mockImplementation(async (args) => ({ args, preview_id: "preview", idempotency_key: "key", effect: "Confirm the exact proposed effect." })), isPending: false });
+  mockUseApplyProposalDecision.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   mockUseProposalGate.mockReturnValue({ data: [], gate: undefined });
 });
 
 describe("ProposalPreviewPane — header + graph + list", () => {
+  it("shows existing-task diff, controls, removed dependencies and comments for approval", () => {
+    mockUseProposal.mockReturnValue({
+      data: {
+        ...fixtureProposal,
+        tasks: [],
+        edges: [],
+        edits: [{ task_id: "existing", action: "pause" }],
+        remove_edges: [{ from: "existing", to: "old", dep_type: "blocks" }],
+        comments: [{ task_id: "existing", body: "Review this finding" }],
+        diff: { tasks: [{ task_id: "existing", before: { status: "READY" }, after: { status: "PAUSED" } }] },
+      },
+      isPending: false, isError: false, refetch: vi.fn(),
+    });
+    renderPane();
+    expect(screen.getByTestId("proposal-change-diff")).toHaveTextContent('"READY" → "PAUSED"');
+    expect(screen.getByText(/existing:.*pause/)).toBeInTheDocument();
+    expect(screen.getByTestId("proposal-edge-changes")).toHaveTextContent("Remove existing → old (blocks)");
+    expect(screen.getByTestId("proposal-comments")).toHaveTextContent("Review this finding");
+  });
+
   it("renders header (id, status pill, source line) for a ready proposal", () => {
     mockUseProposal.mockReturnValue({
       data: fixtureProposal,
@@ -160,7 +180,7 @@ describe("ProposalPreviewPane — terminal states", () => {
 });
 
 describe("ProposalPreviewPane — approve / discard", () => {
-  it("clicking Approve with a resolved gate calls resolveGate.mutateAsync and then close()", async () => {
+  it("approval confirms the prepared packet before applying and closing", async () => {
     mockUseProposal.mockReturnValue({
       data: fixtureProposal,
       isPending: false,
@@ -168,15 +188,18 @@ describe("ProposalPreviewPane — approve / discard", () => {
       refetch: vi.fn(),
     });
     const mutateAsync = vi.fn().mockResolvedValue({});
-    mockUseResolveGate.mockReturnValue({ mutateAsync, isPending: false });
+    mockUseApplyProposalDecision.mockReturnValue({ mutateAsync, isPending: false });
     mockUseProposalGate.mockReturnValue({ data: [{ id: "g1" }], gate: { id: "g1" } });
     const close = vi.fn();
     renderPane({ close });
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    const confirm = await screen.findByRole("button", { name: /confirm approval/i });
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
-      gate_id: "g1",
-      resolved_by: "dashboard",
-      resolution: "approved",
+      args: { gate_id: "g1", option_key: "approve" }, preview_id: "preview",
+      idempotency_key: "key", effect: "Confirm the exact proposed effect.",
     }));
     await vi.waitFor(() => expect(close).toHaveBeenCalled());
   });
@@ -202,12 +225,12 @@ describe("ProposalPreviewPane — approve / discard", () => {
       refetch: vi.fn(),
     });
     const mutateAsync = vi.fn().mockResolvedValue({});
-    mockUseDiscardProposal.mockReturnValue({ mutateAsync, isPending: false });
+    mockUseApplyProposalDecision.mockReturnValue({ mutateAsync, isPending: false });
     mockUseProposalGate.mockReturnValue({ data: [{ id: "g1" }], gate: { id: "g1" } });
     const close = vi.fn();
     renderPane({ close });
     fireEvent.click(screen.getByRole("button", { name: /^discard$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^yes$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /confirm decline/i }));
     await vi.waitFor(() => expect(mutateAsync).toHaveBeenCalled());
     await vi.waitFor(() => expect(close).toHaveBeenCalled());
   });
@@ -219,13 +242,14 @@ describe("ProposalPreviewPane — approve / discard", () => {
       isError: false,
       refetch: vi.fn(),
     });
+    mockUseProposalGate.mockReturnValue({ data: [{ id: "g1" }], gate: { id: "g1" } });
     const mutateAsync = vi.fn().mockRejectedValue(new Error("boom"));
-    mockUseDiscardProposal.mockReturnValue({ mutateAsync, isPending: false });
+    mockUseApplyProposalDecision.mockReturnValue({ mutateAsync, isPending: false });
     const close = vi.fn();
     renderPane({ close });
     fireEvent.click(screen.getByRole("button", { name: /^discard$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^yes$/i }));
-    await vi.waitFor(() => expect(screen.getByText(/Discard failed: boom/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole("button", { name: /confirm decline/i }));
+    await vi.waitFor(() => expect(screen.getByText(/Decision failed: boom/)).toBeInTheDocument());
     expect(close).not.toHaveBeenCalled();
   });
 });

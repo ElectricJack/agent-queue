@@ -16,7 +16,8 @@ class ReviewDispatchRequest:
     """
     Attributes:
         review_id (str):
-        to (list[Any]):
+        count (int | None | Unset): Number of reviewer tasks (default 1).
+        intelligence_class (None | str | Unset): Class hint for the reviewers (default deep-high).
         revision (int | None | Unset):
         with_comments (bool | None | Unset):
         focus (None | str | Unset):
@@ -24,7 +25,8 @@ class ReviewDispatchRequest:
     """
 
     review_id: str
-    to: list[Any]
+    count: int | None | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
     revision: int | None | Unset = UNSET
     with_comments: bool | None | Unset = UNSET
     focus: None | str | Unset = UNSET
@@ -34,7 +36,17 @@ class ReviewDispatchRequest:
     def to_dict(self) -> dict[str, Any]:
         review_id = self.review_id
 
-        to = self.to
+        count: int | None | Unset
+        if isinstance(self.count, Unset):
+            count = UNSET
+        else:
+            count = self.count
+
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
 
         revision: int | None | Unset
         if isinstance(self.revision, Unset):
@@ -65,9 +77,12 @@ class ReviewDispatchRequest:
         field_dict.update(
             {
                 "review_id": review_id,
-                "to": to,
             }
         )
+        if count is not UNSET:
+            field_dict["count"] = count
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
         if revision is not UNSET:
             field_dict["revision"] = revision
         if with_comments is not UNSET:
@@ -84,7 +99,23 @@ class ReviewDispatchRequest:
         d = dict(src_dict)
         review_id = d.pop("review_id")
 
-        to = cast(list[Any], d.pop("to"))
+        def _parse_count(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        count = _parse_count(d.pop("count", UNSET))
+
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
         def _parse_revision(data: object) -> int | None | Unset:
             if data is None:
@@ -124,7 +155,8 @@ class ReviewDispatchRequest:
 
         review_dispatch_request = cls(
             review_id=review_id,
-            to=to,
+            count=count,
+            intelligence_class=intelligence_class,
             revision=revision,
             with_comments=with_comments,
             focus=focus,

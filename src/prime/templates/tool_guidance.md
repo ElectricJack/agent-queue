@@ -1,44 +1,70 @@
-This session's surface is CLI-first (docs/specs/design/aq-surface.md D6). Prefer shelling
-out to `aq <command>` for anything exploratory or administrative — `aq task show <id>`,
-`aq task comments <id>`, `aq schema` (never guess enum values; look them up), etc. The CLI
-costs far less context than reasoning about a large tool schema, and it works identically
-across harnesses. Your session token is scoped to this task, this session and this project:
-operator surfaces (`aq task list`, `aq doctor`, `aq session ...`, deleting or restarting
-tasks) answer `out of scope: <command>` and are not worth retrying.
+Use the CLI first; inspect specific commands with `--help` and enums with `aq schema`.
+Read authoritative project AGENTS.md/CLAUDE.md, applicable directory instructions and
+linked task specs before editing. Profile Role/Rules above remain authoritative.
+Discover applicable skills in the harness catalogue and read their SKILL.md before use;
+load workflow details on demand (aq-cli, aq-tasks, aq-knowledge,
+aq-workspaces-and-git, aq-reviews).
+Keep plugins available; avoid reprinting unchanged catalogues, help or transcripts.
 
-Run tests with `aq test <pytest args>` rather than bare `pytest` for anything past a single
-file. It takes one of this box's global test slots before running, and applies the per-session
-worker cap and the default marker deselects; everything that is not an `--aq-*` option is passed
-to pytest untouched. A `waiting for 1 of N test slot(s)` line means the box is busy, not that you
-are stuck; exit code 75 means no slot came free, which is retryable and not a test failure. Never
-raise `-n` above what the session was given — the cap is what keeps concurrent agents from
-saturating the machine.
+Your token is scoped to the held task/session/project. Operator commands (`aq task list`,
+`aq doctor`, `aq session`, daemon lifecycle) are out of scope; never bypass a rejection.
+Native equivalents include task_show, task_set, task_comment, task_comments, task_close,
+task_heartbeat, task_claim, task_handoff, message_send, message_inbox. Use the
+convenient surface; both dispatch through CommandHandler.
 
-For a supported job, task, message or timer condition, use `aq wait register` with
-an idempotency key and end your turn. An active durable wait retains your claim,
-workspace and pool seat without heartbeat turns. Resume from the result pointer
-with `aq wait show WAIT_ID --json`. Registration returns immediately. For managed validation, use
-`aq job submit --preset test --wait --idempotency-key KEY -- TEST_ARGS` or
-`aq test --aq-detach --aq-wait TEST_ARGS`; submission and its wait commit
-together. Job admission requires the operator to enable `resources.jobs.enabled`.
+Read your project's vault plans/specs with `aq file read --path projects/<project>/plans/<file>`
+or `aq file read --path projects/<project>/specs/<file>`. Absolute vault paths also work.
+These reads are read-only and project-scoped; knowledge activation is separate.
 
-Run focused tests for what changed and the related area suite, and record the exact commands.
-Full-suite runs belong to CI and tasks whose subject is the suite; do not run one as a routine
-close check. Compare failures with the project's recorded known-failing baseline note instead
-of capturing your own baseline. A pre-existing failure does not fail your task and is never a
-reason to weaken or skip a test; name it in your close summary. When authoring a task, specify
-focused and area checks, not "run the full suite before closing". For the agent-queue project,
-see `docs/guides/resource-gating.md` for the baseline-note path and comparison workflow.
+For durable references, findings, decisions and procedures, use `aq knowledge create`
+and `aq record search` with the aq-knowledge skill. Check current `aq record capabilities`
+and effective granted operations for an explicit project, then use scoped lexical search
+to avoid duplicates. Profile grants alone do not enable knowledge. If the operation is
+unavailable, report its refusal reason to the supervisor; workers cannot enable features.
+PostgreSQL owns canonical knowledge; legacy notes, vault
+files and Markdown exports do not prove graph ingestion. Optional semantic
+memory is separate. Verify a save with its record identity, revision and
+`aq knowledge show` readback; guard `aq knowledge update` with the observed `--if-revision`.
+Informational record links do not create execution dependencies. A normal save
+does not confer verification, policy authority or permission to enable features.
+Keep the session's scope; a global supervisor selects an explicit project only
+for the targeted operation.
 
-A small, fixed set of native tools also exists for calls you'll make mid-turn where a native
-tool call beats shelling out: `task_show`, `task_set`, `task_comment`, `task_comments`, `task_close`, `task_heartbeat`,
-`task_claim`, `task_handoff`, `message_send`, `message_inbox`, `memory_save`,
-`memory_search`. Use whichever of the two paths (CLI or native tool) is more convenient —
-both hit the same command handler and return identical results. The ask_human command is not
-part of the supported surface; report blockers with message_send to the user. `task_close`'s only two
-outcomes are `pass` and `fail` (`aq schema`'s `outcome` enum). If you're missing context to
-finish, say so in the summary and close `fail`.
+Commit with plain `git` in your own worktree. `aq git commit` is a daemon-side
+command unavailable to worker scope; `out of scope: git_commit` is expected.
+A local `git commit` is authorized and is not a bypass. For a first publication of a
+new task branch or a later fast-forward update, use the guarded `aq git push`. For a
+later rewrite, use
+`aq git push --expected-remote-oid <your-last-observed-remote-oid>`: that exact lease
+must name the remote OID you last observed for your own branch, never another worker's
+commit. If the remote moves, escalate; never guess a lease or use plain `git push`.
+Never bypass any other AQ rejection.
 
-If your task shows a `## Subtasks` checklist, settle each one with `aq task subtask-done N` /
-`aq task subtask-skip N --note …` as you go — closing with `--outcome pass` while any remain
-pending or in progress is refused (`subtasks.open`) unless you pass `--skip-open-subtasks`.
+The daemon injects `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`
+and `GIT_COMMITTER_EMAIL` into task and pool worker sessions. New commits use the
+project override, else installation default, else `Agent Queue <agent-queue@localhost>`
+(`src/git/identity.py`). Keep these variables; do not set an identity yourself or
+change Git config. If they are absent, report the launch bug rather than supplying
+an identity. Never pass `--no-verify` or amend a pushed commit.
+
+Run focused tests and the related area suite with `aq test`; record exact commands/results.
+Keep its worker cap and marker defaults; never raise `-n`. Slot timeout 75 is retryable.
+Full-suite runs belong to CI and tasks about the suite. Use the recorded known-failing
+baseline instead of capturing your own baseline. A pre-existing failure does not fail
+your task or justify changing tests: never weaken or skip a test; name it when closing.
+Task authors specify focused/area checks, not "run the full suite before closing".
+For agent-queue, see docs/guides/resource-gating.md.
+
+{wait_guidance}
+
+If close returns `messages.pending_before_close`, handle each mailbox named in the refusal
+with `--inject --json` before retrying; a plain inbox or status read does not consume
+delivery. After an accepted close, follow its next-claim result; do not keep polling the
+closed task or retrying close.
+
+Summarize normal success with `--brief`. For large evidence, use `--save-output PATH`
+on an emit-based CLI command: read the saved JSON by relevant keys/pages as needed.
+The receipt gives exact bytes/hash/path; failures, warnings, gates, claim outcomes and
+instructions stay visible. Save full error details to files and link evidence paths in task comments.
+Save non-CLI logs to files and page relevant ranges; never replace required instructions
+or failures with a success summary.
