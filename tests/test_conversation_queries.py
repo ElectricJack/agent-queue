@@ -20,18 +20,15 @@ from src.database.tables import (
     messages,
     supervisor_conversations,
 )
-from tests.db_fixtures import lease_dsn
 
 AUTHOR = "111111111111111111"
 CHANNEL = "222222222222222222"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("conversation-queries"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("conversation-queries")
     yield database
-    await database.close()
 
 
 def accept_args(**overrides) -> dict:
@@ -46,6 +43,7 @@ def accept_args(**overrides) -> dict:
         "verified_actor": f"human:discord:{AUTHOR}",
         "text": "hello supervisor",
         "audience": [AUTHOR],
+        "kind": "thread",
         "source": "gateway",
         "received_at": 1000.0,
         "conversation_id": None,
@@ -93,12 +91,17 @@ async def test_accept_writes_conversation_input_and_supervisor_message(db):
         "thread_id": f"conversation:{conversation['id']}",
         "created_by": f"human:discord:{AUTHOR}",
         "audience": [AUTHOR],
+        "kind": "thread",
         "state": "opening",
         "created_at": 1000.0,
         "updated_at": 1000.0,
         "closed_at": None,
     }
     assert item == {
+        "ask_id": None, "project_id": None, "routing_state": "conversation",
+        "routing_evidence": {}, "receipt": {}, "guild_id": None,
+        "reference_message_id": None, "external_thread_id": None,
+        "source_version": None, "retention_entry_id": None,
         "id": item["id"],
         "conversation_id": conversation["id"],
         "transport": "discord",
@@ -685,3 +688,42 @@ async def test_backfill_cursor_and_gaps_round_trip(db):
             reason="unknown",
             now=3.0,
         )
+
+
+async def test_stalled_conversation_queue_counts_only_unowned_undelivered_inputs(db):
+    """The sweep's evidence: what no supervisor is live to answer.
+
+    Nothing delivers an input addressed to ``conversation-queued`` and nothing
+    retries it, so this count is the only honest report that one is waiting.
+    An input a live supervisor owns is not stalled, however long it waits.
+    """
+    from src.database.queries.conversation_queries import QUEUED_SUPERVISOR_RECIPIENT
+    from src.models import Project
+
+    assert await db.stalled_conversation_queue() == {"unowned": 0, "oldest_at": None}
+    waiting = await db.accept_conversation_input(
+        **accept_args(
+            external_message_id="901",
+            now=1000.0,
+            supervisor_recipient=QUEUED_SUPERVISOR_RECIPIENT,
+            supervisor_project_id=None,
+        )
+    )
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    await db.accept_conversation_input(
+        **accept_args(
+            external_message_id="902",
+            external_root_message_id="902",
+            now=1100.0,
+            supervisor_recipient="supervisor-agent-queue",
+            supervisor_project_id="agent-queue",
+        )
+    )
+    assert await db.stalled_conversation_queue() == {"unowned": 1, "oldest_at": 1000.0}
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            messages.update()
+            .where(messages.c.id == waiting["supervisor_message_id"])
+            .values(delivered_at=1200.0)
+        )
+    assert await db.stalled_conversation_queue() == {"unowned": 0, "oldest_at": None}
