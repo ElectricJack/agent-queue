@@ -37,3 +37,12 @@ No-op checks do not flood the history. A failed automatic target remains held
 until a newer commit arrives or an operator retries `aq update --yes`.
 Disabling tracking stops new checks; it does not cancel an update already begun.
 Workers remain unable to update, restart or migrate the operator installation.
+
+Daemon-triggered updates require an explicit tag glob or tracked branch; an
+unconfigured `update_and_restart` refuses with configuration guidance. Operators
+may still run standalone `aq update` for its guarded branch-following path.
+Tag deploys validate the pinned migration graph with the same single-head
+preflight as tracked branches. Updater backups use the shared PostgreSQL backup
+implementation: matching local clients or the running container serving the
+configured endpoint, private custom archives, and archive inspection before
+any service is stopped. Failed or invalid archives stop the update.
