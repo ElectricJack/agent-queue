@@ -1,0 +1,962 @@
+{
+  "claude_usage": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_probe_claude_rate_limit": "sha256:75b0d9f138230fd0c4064415fa7ecc8532c9c6b16efc48399575e9dd2346efcb"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_claude_usage",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ad66d5460f46f0d345071f4c85678b7bd54c52033296c206de566655c84ef3ed",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_claude_usage.py"
+    ]
+  },
+  "delete_intelligence_class": {
+    "argument_reads_diagnostic_only": [
+      "class_id",
+      "expected_revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_delete_intelligence_class",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: intelligence-class settings require global admin'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await asyncio.shield(operation)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'error_code': 'revision_conflict', 'current_revision': exc.current_revision}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Intelligence class could not be retired'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:824c4fe93c8062c6638069022b6b0e28bde894fd48ae2fbd1d59b019b66b9a8a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_intelligence_class_deletion.py"
+    ]
+  },
+  "edit_intelligence_class": {
+    "argument_reads_diagnostic_only": [
+      "class_id",
+      "description",
+      "expected_revision",
+      "mapping",
+      "name"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_edit_intelligence_class",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: intelligence-class settings require global admin'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await asyncio.shield(operation)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'error_code': 'revision_conflict', 'current_revision': exc.current_revision}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Intelligence class could not be saved'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:01a37ba72393d610335e786db86f9f968cbc4a56795926eb201a07369760a978",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_api_execute_contract.py",
+      "tests/test_intelligence_class_editing.py"
+    ]
+  },
+  "export_portable_config": {
+    "argument_reads_diagnostic_only": [
+      "destination"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_export_portable_config",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'destination is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No config file path is set on this daemon.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d05832527865a5a0908dd3e7474898468feaeb9653f74932550ec5664566dffd",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_portable_config.py"
+    ]
+  },
+  "get_config": {
+    "argument_reads_diagnostic_only": [
+      "section"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_get_config",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No config file path is set on this daemon.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Config file does not exist: {path}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Configuration contains an invalid integration credential section; edit the file directly.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'deployment_history': deployment_history, 'path': path, 'config': redacted_config, 'section': section, 'hot_reloadable': classification['hot_reloadable'], 'restart_required': classification['restart_required'], 'unclassified': classification['other'], 'env_var_references': env_refs, 'redacted': redacted_paths, 'secret_placeholder': SECRET_PLACEHOLDER}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:55a22fdb34743ba5eb51064acf8b7ee1ed2c209112af54732e445d91c86e98f7",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_config_editor.py"
+    ]
+  },
+  "get_config_schema": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_get_config_schema",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schema': build_config_schema()}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:588bbc30d2e8805749733f66ef99c08944813765fee2eb527a0730cbde45d91a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_config_editor.py"
+    ]
+  },
+  "get_stuck_tasks": {
+    "argument_reads_diagnostic_only": [
+      "assigned_threshold_seconds",
+      "in_progress_threshold_seconds",
+      "now",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_get_stuck_tasks_observation": "sha256:c28e10dd18e3d94cad2fb43131cc7ea7fbc5e6fa27969f85c22df2e3d4e36c2e"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_get_stuck_tasks",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._get_stuck_tasks_observation(args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'get_stuck_tasks', args)"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:86259a1c10c3cb79d27873ad3adcab2e363fa08f33d192e89955afde8e053423",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
+    ]
+  },
+  "import_portable_config": {
+    "argument_reads_diagnostic_only": [
+      "conflict",
+      "dry_run",
+      "source"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_import_portable_config",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'source is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No config file path is set on this daemon.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: 'error' not in result",
+        "return": "{'success': 'error' not in result, **result}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:8dbc30a0126e2c95f973806f9a1b5557b541286e528c7a93aed6ef9ec7390d6c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_portable_config.py"
+    ]
+  },
+  "list_intelligence_classes": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_list_intelligence_classes",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'classes': rows, 'errors': errors}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:df1bb340fb73e9d4c29bf7881f13798af6adf175c01ecee308aacd43e880887f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_intelligence_class_deletion.py",
+      "tests/test_intelligence_class_editing.py",
+      "tests/test_intelligence_class_registry.py"
+    ]
+  },
+  "list_prompts": {
+    "argument_reads_diagnostic_only": [
+      "category",
+      "project_id",
+      "tag"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_list_prompts",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{args['project_id']}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': args['project_id'], 'prompts': [t.to_dict() for t in templates], 'categories': pm.get_categories(), 'total': len(templates)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9bf64dd4f9ab3a4fc649c0e18fae0953250db63d973edc2ab30fb10fff9bb328",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "orchestrator_control": {
+    "argument_reads_diagnostic_only": [
+      "action"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_orchestrator_control",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'paused', 'message': 'Orchestrator paused — no new tasks will be scheduled'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'running', 'message': 'Orchestrator resumed'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'paused' if orch._paused else 'running', 'running_tasks': running}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a281276d7e20f865e7f87883c4a9e857ac7529bbb61111436068ffa64517f6a4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "preview_portable_config": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_preview_portable_config",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No config file path is set on this daemon.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:906f32d44241f2ae5bd8f315115a850b48d62cfd2f6a60d45af5c9d5055dad7a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "read_prompt": {
+    "argument_reads_diagnostic_only": [
+      "name",
+      "path",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_load_prompt_from_path": "sha256:3167139ff1d100f5bd85f386959dc4e92e27b3d9d89c958c707b84d8c3f162c2"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_read_prompt",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{args['project_id']}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Prompt template '{args['name']}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9b7a1bc98302aac460736f825d38e1536630cf970728654616a9f97535386000",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "reload_config": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_reload_config",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Config watcher is not active (no config file path)'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Config reload failed: {result['error']}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'message': 'No configuration changes detected.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'message': 'Config reloaded.', 'changed_sections': result['changed_sections'], 'applied': result.get('applied', []), 'restart_required': result.get('restart_required', []), 'summary': '; '.join(parts) if parts else 'No changes.'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:fad576dfbfc9d086dabd5214220b908cfcf524fb2093b93565e8043aa769b7bc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_config_watcher.py"
+    ]
+  },
+  "render_prompt": {
+    "argument_reads_diagnostic_only": [
+      "name",
+      "path",
+      "project_id",
+      "variables"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_render_prompt",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'path': path, 'name': tmpl.name, 'rendered': rendered, 'variables_used': variables}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{args['project_id']}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Prompt template '{args['name']}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'name': args['name'], 'rendered': rendered, 'variables_used': variables}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:43805e7c48c2d87cdc9ed333da1599cbee19014991f48671b6f67d7aa98636da",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "restart_daemon": {
+    "argument_reads_diagnostic_only": [
+      "reason",
+      "wait_for_tasks"
+    ],
+    "denial_reason": "Daemon lifecycle commands are forbidden in playbooks.",
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_restart_daemon",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'restarting', 'message': 'Daemon restart initiated', 'reason': reason, 'waited_for_tasks': wait_for_tasks and running_count > 0}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a2e5e6439d6d0163b28dbed83d6d107385f2a7a79d8f61fe4d116d5c2a6d2bb2",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "run_command": {
+    "argument_reads_diagnostic_only": [
+      "command",
+      "timeout",
+      "working_dir"
+    ],
+    "denial_reason": "Arbitrary host shell execution is forbidden in playbooks.",
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_run_command",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'command is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'working_dir is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Access denied: working directory is outside allowed directories'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Directory not found: {working_dir}'}"
+      },
+      {
+        "protocol": "explicit_boolean: rc == 0",
+        "return": "{'success': rc == 0, 'returncode': rc, 'stdout': stdout, 'stderr': stderr, 'env_scrubbed': len(scrubbed.dropped)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Command timed out after {timeout}s'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:246e6ecceb758a617885cb08bc31df2c22378b526003ce58beb6274a1f1e282c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_env_scrub.py",
+      "tests/test_system_commands.py"
+    ]
+  },
+  "scan_stub_staleness": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_scan_stub_staleness",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Vault projects directory not found.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Failed to list vault project directories.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'projects': [], 'summary': 'No projects with reference stubs found.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'projects': all_results, 'totals': totals, 'summary': summary}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:94812bf67756ae04d4ad4377b9ea2731fdef266759ea0ac359b51bf9192fe7c2",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "shutdown": {
+    "argument_reads_diagnostic_only": [
+      "force",
+      "reason"
+    ],
+    "denial_reason": "Daemon lifecycle commands are forbidden in playbooks.",
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_shutdown",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'shutting_down', 'mode': mode, 'reason': reason, 'timestamp': timestamp, 'tasks_stopped': len(orch._running_tasks) if force else 0}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:0efd4f442e4b8822139c273a41441e02b26ad302ac0e20a88e18ccae9f8e64d0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "update_and_restart": {
+    "argument_reads_diagnostic_only": [
+      "automatic",
+      "reason",
+      "wait_for_tasks"
+    ],
+    "denial_reason": "Daemon lifecycle commands are forbidden in playbooks.",
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_update_and_restart",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'automatic branch deployment is disabled'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'deployment_not_configured', 'remediation': 'Configure deploy.tag_glob and deploy.target for releases, or deploy.track_branch for branch tracking. Alternatively, run `aq update` as the operator from your own terminal for a guarded branch update.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'migration_recovery_required', 'remediation': 'Follow deployment history remediation, then run aq update --yes --resume-after-recovery as operator after restoring the installation.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'updating', 'log': str(state_dir / 'update.log')}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': refused.reason, 'remediation': refused.remediation}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'deployment_failed', 'remediation': 'This commit previously failed; retry aq update --yes as operator.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'up_to_date', 'commit': plan.current}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'could not start aq update: {error}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'status': 'updating', 'pid': process.pid, 'message': 'Operator updater started; read update.log for the outcome', 'selector': plan.upstream, 'commit': plan.target, 'log': str(log), 'reason': reason, 'waited_for_tasks': wait_for_tasks and running_count > 0}"
+      }
+    ],
+    "review_notes": "All return branches carry explicit boolean success. An unconfigured daemon update refuses with operator/configuration remediation before planning, subprocesses, scheduling changes or restart. Configured updates retain migration recovery and failed-target holds and launch the detached guarded updater. Removed the implicit legacy producer; standalone operator aq update remains guarded.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e92c640b839645c4fe1befc2b9ced546628a27c652020578dba4b995f30dd545",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_system_commands.py"
+    ]
+  },
+  "update_config": {
+    "argument_reads_diagnostic_only": [
+      "data",
+      "dry_run",
+      "section"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_update_config",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Missing required arg: section'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Missing required arg: data (use null to delete)'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No config file path is set on this daemon.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'applied': False, 'changed': False, 'validation_errors': [f'Redacted placeholder {SECRET_PLACEHOLDER!r} cannot be resolved at: ' + ', '.join(unresolved) + '. Re-read the section, or send the real value to change the credential.']}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'applied': False, 'changed': False, 'validation_errors': [str(e)]}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'applied': False, 'dry_run': True, 'changed': True, 'requires_restart': requires_restart, 'validation_errors': []}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'applied': False, 'changed': False, 'validation_errors': [f'Write failed: {e}']}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'applied': bool(applied_sections), 'changed': True, 'requires_restart': requires_restart, 'applied_sections': applied_sections, 'validation_errors': []}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:62109d9041b52e6a686e435650f5e7cce6606e986cf673b13ac03a7aa8a7654f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_api_codegen_input_models.py",
+      "tests/test_config_editor.py"
+    ]
+  },
+  "vault_rebuild_index": {
+    "argument_reads_diagnostic_only": [
+      "with_summaries"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_vault_rebuild_index",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'LLM is not configured (config.llm) — cannot generate summaries.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'hubs_written': len(written), 'with_summaries': with_summaries, 'paths': [os.path.relpath(p, vault_root) for p in written]}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:aacf15c6e23a72504f6c1e44308a6195168a253c8950aff7298cfe92cff751bc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

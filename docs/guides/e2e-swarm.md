@@ -17,7 +17,7 @@ It comes in two tiers.
 | Who is the worker | `scripts/e2e-smoke.sh` | a real `claude` process |
 | Command-only playbooks / supervisor | on / off | on / on (a live agent needs the supervisor) |
 | Durable messages | local sink only | on |
-| Runtime | ~4 minutes | as long as the model takes |
+| Runtime | several minutes; varies with PostgreSQL and host load | as long as the model takes |
 | Deterministic | yes | no |
 | Costs tokens | no | yes |
 | Use it for | every change to claims / pools / formulas / hierarchy | before shipping a change to the bootstrap prompt or the harness |
@@ -84,14 +84,17 @@ override. Production still refuses overrides of claimed or running tasks.
 S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
 (the `provb` worker, the probation canary and the pinned task) retry
 `no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
-skip a READY fixture while another transaction holds its row. Other claim outcomes and claims of an unexpected
-task fail immediately. S2 and S3 accept only the remaining S1 fixtures, including
-when separate pytest items run them in different subprocesses. A timeout reports
-the last claim and the fixture state.
+skip a READY fixture while another transaction holds its row. Each claim waits
+one second so an unlock without a `task.ready` event cannot consume the retry
+budget in a few long polls. `claim_in_progress` for an expected fixture resumes
+the same preparation on the next call. Other claim outcomes and claims or
+preparations of an unexpected task fail immediately. S2 and S3 accept only the
+remaining S1 fixtures, including when separate pytest items run them in different
+subprocesses. A timeout reports the last claim and the fixture state.
 
 CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
-S17, S20), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S14, S16a).
+S17, S20), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S15, S16a).
 S16a covers outage detection/rerouting; S16b prepares a separate outage through
 public commands and covers recovery/undo/all-down. Select `S16` in the shell
 runner to run the original full serial transcript.
@@ -101,6 +104,11 @@ selecting S2 or S3 alone prepares its missing predecessors. Other item boundarie
 remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.
+
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
 
 Each item has its own 540-second pytest limit. The scenario step has an
 eleven-minute deadline and a cache-miss dependency install has a separate
@@ -157,7 +165,8 @@ Timeouts report the last claim response and the fixture's current route and
 status. S18 still requires the terminal failure, completed triage playbook and
 durable supervisor notice after claiming its fixture.
 
-A clean run:
+A historical clean transcript (before S19 and S20 were added; current runs
+report all 20 scenarios):
 
 ```
 swarm e2e (Tier 1) — daemon at http://127.0.0.1:8099
@@ -272,7 +281,7 @@ explain the operator behavior these checks verify.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 18 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 20 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -386,10 +395,10 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
 `aq prime` a task in project `other`. Before those assertions, the holder
-retries only `no_ready_work` within the convergence budget and must claim the
-exact fixture: even a routed `READY` row can be skipped while another transaction
-locks it. A timeout reports the last claim and fixture state; other claim
-failures stop immediately. *Regression it catches: a token being
+retries `no_ready_work` and observes fixture preparation within the convergence
+budget, then must claim the exact fixture: even a routed `READY` row can be skipped
+while another transaction locks it. A timeout reports the last claim and fixture
+state; other claim failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and
@@ -449,11 +458,12 @@ including a missing-project refusal. Vault migration is invoked only with
 `--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
 control remain explicitly untested.
 
-**S15 — retired.** The old development integration scenario depended on the
-removed adoption, provenance migration and autonomous sweep commands. It was
-retired with that engine on 2026-10-04. Current root delivery is exercised by the
-reconciler Git scenarios in `tests/test_integration_root_scenarios.py`; the
-remaining swarm scenarios retain their original numbers.
+**S15 — integration surface cleanup.** The runner parses `aq integration
+--help`, requires the current `status` command, and verifies that `adopt`,
+`adopt-legacy-deliveries`, `develop`, `migrate-provenance` and `sweep` are absent.
+It replaces the old development integration scenario retired with that engine
+on 2026-10-04. S20 now exercises ordinary train-mode delivery; the focused root
+Git scenarios also live in `tests/test_integration_root_scenarios.py`.
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake
@@ -561,9 +571,13 @@ launch, and a canary nobody works holds that provider's launches for
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
-uvicorn is listening and never touches the database. `GET /ready` runs the
-daemon's own health provider, so its `checks.database` entry is a real query
-through the engine the daemon is using.
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
 
 The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
@@ -575,9 +589,9 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the eighteen scenarios then run against an empty database
+serving `/api/health`; the scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
-eighteen product regressions rather than one broken environment.
+twenty product regressions rather than one broken environment.
 
 ### Running two kits at once
 
@@ -717,9 +731,9 @@ and then sits idle holding a workspace.
 ### Two things that will bite you first
 
 **`aq` inside the session must be *this* worktree's.** The pip-installed
-`aq` resolves `src` through the editable install — usually a different
-checkout, with no `aq task claim` in it at all — so a worker fails its very
-first command with "No such command". `e2e-env.sh` writes
+`aq` resolves `src` through the editable install, which may point to a different
+checkout and expose a different claim protocol or command surface.
+`e2e-env.sh` writes
 `$AQ_E2E_HOME/bin/aq` (a wrapper around `scripts/e2e/aq.py`) and
 `e2e-daemon.sh start` puts that directory first on the daemon's PATH, which
 tmux sessions inherit. Verify before blaming the agent:
@@ -796,8 +810,9 @@ Add a scenario as a function in `scripts/e2e/smoke.py` taking the shared
 `SCENARIOS`. Raise `Failure("…")` (or use `check(cond, "…")`) for an
 assertion — the message is what the operator reads at 3am, so name what was
 expected and what was actually there. Use `wait_for(pred, what="…")` rather
-than `sleep`; every wait is on the 5s cascade and its `what` becomes the
-timeout message.
+than `sleep`; the production-style shell kit defaults to a five-second cycle,
+while pytest uses the one-second backstop described above. The wait's `what`
+becomes the timeout message.
 
 Assertions must go through a public surface — `aq …` with `--json`, or
 `POST /api/execute`. Reading the database directly would let the kit pass
