@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/sessions/exit_classifier.py::ExitVerdict": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/exit_classifier.py::Verdict": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
