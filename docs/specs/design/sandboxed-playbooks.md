@@ -8,7 +8,11 @@
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-> **Status:** v1 implemented on `feature/sandboxed-playbooks`.
+> **Status:** Historical V1 capability design. V2 uses per-step profiles and
+> run-bound authority; it has no playbook-level `profile_id`. See
+> [current playbooks](../../concepts/playbooks.md). The current
+> [script runner](../../guides/playbook-script-runner.md) runs ordinary host
+> processes and provides no OS sandbox; this design does not describe it.
 
 ## Threat model
 

@@ -373,8 +373,9 @@ async def test_a_foreign_committer_is_refused_by_the_publish_identity(env):
 
 @pytest.mark.parametrize("foreign_repair", [False, True])
 @pytest.mark.parametrize("base_branch", ["main", "dev"])
+@pytest.mark.parametrize("stale_base", [False, True])
 async def test_published_base_merge_is_inherited_but_repair_only_commits_are_checked(
-    env, foreign_repair, base_branch,
+    env, foreign_repair, base_branch, stale_base,
 ):
     old, _ = await _scenario(env)
     if base_branch != "main":
@@ -387,7 +388,8 @@ async def test_published_base_merge_is_inherited_but_repair_only_commits_are_che
          committer=("GitHub", "noreply@github.com"))
     base = _git("rev-parse", "HEAD", cwd=env.work)
     _git("push", "origin", base_branch, cwd=env.work)
-    env.github.pulls[PR]["base"]["sha"] = base
+    if not stale_base:
+        env.github.pulls[PR]["base"]["sha"] = base
     _git("switch", "aq/repair", cwd=env.work)
     _git("merge", "--no-ff", "-m", "inherit published base", base_branch, cwd=env.work)
     if foreign_repair:
@@ -408,8 +410,45 @@ async def test_published_base_merge_is_inherited_but_repair_only_commits_are_che
         assert await _published_events(env) == []
     else:
         assert result["outcome"] == "published", result
+        assert result["remote_base_oid"] == base
         assert _remote_head(env, "aq/root") == tip
-        assert len(await _published_events(env)) == 1
+        [event] = await _published_events(env)
+        assert event["base_oid"] == env.github.pulls[PR]["base"]["sha"]
+        assert event["remote_base_oid"] == base
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_missing_remote_base_refuses_even_when_its_commit_is_in_the_store(env, dry_run):
+    old, _ = await _scenario(env)
+    _git("update-ref", "-d", "refs/heads/main", cwd=env.remote)
+
+    result = await _apply(env, old, dry_run=dry_run)
+
+    assert result["outcome"] == "blocked"
+    assert "remote base branch main is unavailable" in result["reason"]
+    assert _remote_head(env, "aq/root") == old
+    assert await _published_events(env) == []
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_remote_base_tip_absent_from_the_fetched_store_refuses(env, monkeypatch, dry_run):
+    old, _ = await _scenario(env)
+    _git("switch", "main", cwd=env.work)
+    _commit(env, "new-base.txt", "published after the retained fetch\n")
+    fetch = env.promotion._fetch_all_heads
+
+    async def publish_base_after_fetch(*args):
+        await fetch(*args)
+        _git("push", "origin", "main", cwd=env.work)
+
+    monkeypatch.setattr(env.promotion, "_fetch_all_heads", publish_base_after_fetch)
+
+    result = await _apply(env, old, dry_run=dry_run)
+
+    assert result["outcome"] == "blocked"
+    assert "GitError" in result["reason"]
+    assert _remote_head(env, "aq/root") == old
+    assert await _published_events(env) == []
 
 
 @pytest.mark.parametrize("base,expected", [
