@@ -29,7 +29,7 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     SubjectTrustError,
 )
-from src.integration.main_promotion import RootAttestationSubject
+from src.integration.promotion_contracts import RootAttestationSubject
 from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
@@ -1411,21 +1411,6 @@ async def test_enablement_projection_is_read_only_and_fail_closed(attestation_db
         "branch_protection_incompatible",
         "scratch_probe_missing_or_failed",
     )
-
-
-@pytest.mark.asyncio
-async def test_green_candidate_remains_retryable_until_main_promotion(attestation_db):
-    rows = await attestation_db.pending_candidate_ci_page(after=None, limit=10)
-    assert [(row["batch_id"], row["revision"]) for row in rows] == [("batch", 0)]
-
-    async with attestation_db.immediate() as conn:
-        await conn.execute(
-            update(integration_batches)
-            .where(integration_batches.c.id == "batch")
-            .values(lifecycle="promoting")
-        )
-
-    assert await attestation_db.pending_candidate_ci_page(after=None, limit=10) == []
 
 
 @pytest.mark.asyncio

@@ -630,10 +630,4 @@ TRIGGERS = (
         "integration_history_waiver_consumptions",
         """CREATE TRIGGER trg_integration_history_waiver_consumptions_immutable BEFORE UPDATE OR DELETE ON integration_history_waiver_consumptions FOR EACH ROW EXECUTE FUNCTION integration_control_history_immutable()""",
     ),
-    # a11a5e1e4f04
-    (
-        "trg_integration_legacy_gate_applicability_immutable",
-        "integration_legacy_gate_applicability",
-        """CREATE TRIGGER trg_integration_legacy_gate_applicability_immutable BEFORE UPDATE OR DELETE ON integration_legacy_gate_applicability FOR EACH ROW EXECUTE FUNCTION integration_control_history_immutable()""",
-    ),
 )

@@ -2,7 +2,7 @@
 
 > Historical runbook: the old train/development publisher, shadow cutover and
 > rollback controls were removed on 2026-10-04. Commands for those paths below
-> are retained as historical context. Use the [current Subject integration guide](../guides/hierarchical-integration-trains.md)
+> are retained as historical context. Use the [current Git-first train runbook](../guides/git-first-train-runbook.md)
 > for configuration, delivery and recovery. `app-setup`, `app-verify` and
 > `trust-manifest` remain available for App diagnostics.
 
@@ -443,10 +443,8 @@ review until its workflow lands.
 
 ### Local remotes: matter-engine-web, quilt-trader-web, agent-queue-site
 
-These push to bare repositories under `~/.agent-queue/local-remotes/`.
-Hierarchy and train need github.com (`delivery_path_problems` and the
-`integration.delivery_path` doctor check), and no pull request can exist on
-disk. Their train is the **development publisher**. It keeps the batch
+These push to bare repositories under `~/.agent-queue/local-remotes/`, which
+cannot host pull requests. Their train is the **development publisher**. It keeps the batch
 journal, dependency ordering and the exact-lease push, needs no forge, and
 replaces agile-ridge's per-task direct delivery for these projects:
 
