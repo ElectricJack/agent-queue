@@ -272,6 +272,32 @@ describe("toFlowElements", () => {
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 
+  it("rebuilds a READY card when only its delivery hold changes", () => {
+    const tiles = { nodes: [n("a", "card", 0, 0, { agg_children: 0 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1 };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    const claim_readiness = { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev" };
+    const next = toFlowElements(wire({ ...tiles, nodes: [{ ...tiles.nodes[0], claim_readiness }] }), ctx, first.cache);
+    expect(next.nodes[0]).not.toBe(first.nodes[0]);
+    expect((next.nodes[0]!.data as { task: unknown }).task).toMatchObject({ claim_readiness });
+  });
+
+  it("passes canonical batch membership to cards and repaints on release", () => {
+    const held_batch = { batch_id: "batch", state: "reviewing", structure_revision: 2,
+      source: "spec:approved", lineage: { lineage_kind: "none" } };
+    const tiles = { nodes: [n("a", "card", 0, 0, { status: "DEFINED", agg_children: 0, held_batch })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1 };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    expect((first.nodes[0]!.data as { task: unknown }).task).toMatchObject({ held_batch });
+    const released = { ...held_batch, state: "released" };
+    const next = toFlowElements(wire({ ...tiles, nodes: [{ ...tiles.nodes[0], held_batch: released }] }), ctx, first.cache);
+    expect(next.nodes[0]).not.toBe(first.nodes[0]);
+    expect((next.nodes[0]!.data as { task: unknown }).task).toMatchObject({ held_batch: released });
+  });
+
   it("rebuilds a card when descendant activity changes while lifecycle stays IN_PROGRESS", () => {
     const tiles = {
       nodes: [n("a", "collapsed", 0, 0, { status: "IN_PROGRESS", display_state: "waiting", child_state_counts: { waiting: 2 } })],
@@ -394,12 +420,39 @@ describe("toFlowElements", () => {
       const root = toFlowElements(entered(), { ...ctx, upTarget: null }).nodes.find((x) => x.id === "box")!.data as { upTarget?: unknown };
       expect(root.upTarget).toBeUndefined();
     });
-    it("never grows the frame past its persisted box", () => {
+    it("grows an undersized frame to enclose its children's full boxes", () => {
       const store = mergeTiles(emptyStore(), ["0:0"], {
-        nodes: [n("box", "container", 0, 0, { w: 1.2, h: 1.3 }), n("c", "card", 0.1, 0.25, { container_id: "box" })],
+        nodes: [n("box", "container", 0, 0, { w: 1.2, h: 1.3 }),
+          n("c", "card", 3.55, 2.89, { container_id: "box", depth: 1 }),
+          n("other", "card", 100, 100)],
         edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
       } as never);
-      expect(enteredFrame(store, "box")).toEqual({ x: 0, y: 0, w: 1.2, h: 1.3 });
+      const frame = enteredFrame(store, "box")!;
+      expect(frame.w).toBeCloseTo(4.7);
+      expect(frame.h).toBeCloseTo(4.04);
+      for (const density of ["compact", "comfortable", "spacious"] as const) {
+        const { nodes } = toFlowElements(store, { ...inside, density });
+        const box = nodes.find((node) => node.id === "box")!;
+        const child = nodes.find((node) => node.id === "c")!;
+        expect(child.position.x).toBeGreaterThanOrEqual(box.position.x);
+        expect(child.position.y).toBeGreaterThanOrEqual(box.position.y);
+        expect(child.position.x + child.width!).toBeLessThan(box.position.x + box.width!);
+        expect(child.position.y + child.height!).toBeLessThan(box.position.y + box.height!);
+      }
+    });
+    it("measures nested descendants and excludes carried nodes from other generations", () => {
+      const store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("box", "container", 2, 3, { w: 1, h: 1 }),
+          n("nested", "container", 2.1, 3.45, { container_id: "box", w: 3, h: 2 }),
+          n("leaf", "card", 4, 6, { container_id: "nested" }),
+          n("old", "card", 100, 100, { container_id: "box" })],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      } as never);
+      store.carried.add("old");
+      const frame = enteredFrame(store, "box")!;
+      expect(frame).toMatchObject({ x: 2, y: 3 });
+      expect(frame.w).toBeCloseTo(3.25);
+      expect(frame.h).toBeCloseTo(4.15);
     });
     it("docks same-project stubs beside the frame in reading order, and edges follow", () => {
       const { nodes, edges } = toFlowElements(entered(), inside);
@@ -467,6 +520,9 @@ describe("relationsByTask (reason-line neighbours, spec §3.4)", () => {
       leaf("t1", 2, { priority: 80 }), leaf("t2", 3, { priority: 80 }),
       leaf("held", 4, { priority: 1, is_blocked: true }),
       leaf("run", 5, { priority: 1, status: "IN_PROGRESS" }),
+      leaf("delivery", 7, { priority: 1, claim_readiness: {
+        state: "waiting_on_delivery", claimable: false, label: "Waiting on delivery", reason: "Land source on dev",
+      } }),
       // A parent is never claimable (claim_queries' has_children rule), so a
       // READY epic neither ranks nor pushes a leaf down the frontier.
       n("epic", "card", 6, 0, { priority: 1 }),
@@ -475,6 +531,7 @@ describe("relationsByTask (reason-line neighbours, spec §3.4)", () => {
     expect(rel.get("p50")?.readyAhead).toBe(1);
     expect(rel.get("t1")?.readyAhead).toBeNull();
     expect(rel.get("held")?.readyAhead ?? null).toBeNull();
+    expect(rel.get("delivery")?.readyAhead ?? null).toBeNull();
     expect(rel.get("run")?.readyAhead ?? null).toBeNull();
     expect(rel.get("epic")?.readyAhead ?? null).toBeNull();
   });

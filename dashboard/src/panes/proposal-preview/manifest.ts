@@ -4,6 +4,7 @@ import type { PaneManifest } from "../types";
 
 export const argsSchema = z.object({
   proposalId: z.string().min(1),
+  batchProjectId: z.string().min(1).optional(),
 });
 
 export type ProposalPreviewArgs = z.infer<typeof argsSchema>;

@@ -10,18 +10,21 @@ the invocation ``task_route_apply`` checks is the artifact's own.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.claim_file import read_claim_file
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Project, Task, TaskStatus, TaskType
+from src.models import AgentProfile, Project, RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.orchestrator import Orchestrator
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
@@ -30,7 +33,9 @@ from src.playbooks.executors.base import EngineServices
 from src.playbooks.executors.llm import _result as llm_result
 from src.profiles.capabilities import CapabilityPolicy
 from src.routing.sources import LEGACY, ROUTER, UNROUTED
+from src.scheduler import PoolKey
 from src.sessions.harness_parser import Harness
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
@@ -119,6 +124,7 @@ async def handler(tmp_path):
         yield handler
     finally:
         set_handler_provider(None)
+        await orchestrator.cancel_claim_preparations()
         await db.close()
 
 
@@ -132,6 +138,7 @@ def _engine(handler):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -207,6 +214,124 @@ async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     assert (routed.profile_id, routed.intelligence_class) == ("deep-high-codex", "deep-high")
     assert routed.route["rule"] == "kinds.research"
     assert routed.route["classification"] is None
+
+
+@pytest.mark.parametrize("class_hint", ["standard-high", "deep-high"])
+async def test_reviewed_router_routes_launches_and_claims_operator_work(
+    handler, monkeypatch, tmp_path, class_hint,
+):
+    # Exercise the actual compiled policy and live profile snapshot, rather
+    # than injecting operator candidates into a pure planner fixture.
+    for profile in _profiles():
+        if profile.lifecycle == "pool":
+            await handler.db.create_profile(replace(
+                profile, id="operator-" + profile.id, max_active=1,
+                aq_commands=["operator_execute"],
+            ))
+    task = await _create(handler, "setup", task_type=TaskType.OPERATOR, class_hint=class_hint)
+    llm = _ScriptedLlm({
+        "task_type": "operator", "intelligence_class": class_hint,
+        "narrow": False, "test_verified": False, "independent_verifier": False,
+        "risk": "medium", "risk_reason": "project setup", "reason": "operator setup",
+    })
+
+    result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
+    assert tuple(result.rules_selected) == ("route-task",)
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    routed = await handler.db.get_task(task.id)
+    assert routed.route_source == ROUTER
+    assert routed.profile_id == f"operator-{class_hint}-codex"
+    assert routed.intelligence_class == class_hint
+    assert routed.route["rule"] == "kinds.operator"
+    assert all(c["profile_id"].startswith("operator-") for c in routed.route["candidates"])
+
+    # A stale ordinary route must neither inflate demand nor win a claim
+    # against valid operator work, even when its priority is higher.
+    decoy = await _create(
+        handler, "ordinary", task_type=TaskType.FEATURE, priority=0,
+        profile_id=routed.profile_id, intelligence_class=class_hint, route_source=ROUTER,
+    )
+    orch = handler.orchestrator
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey(routed.profile_id)] == 1
+    # The fake harness adapter still runs the real reservation, capability
+    # and session construction path on an isolated PostgreSQL database.
+    kind = await handler.db.resolve_workspace_kind("__system__", "project-repo")
+    await handler.db.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
+    workspace = tmp_path / "operator-workspace"
+    workspace.mkdir()
+    await handler.db.create_workspace(Workspace(
+        id="operator-ws", project_id="p", workspace_path=str(workspace),
+        source_type=RepoSourceType.LINK, kind_id="project-repo",
+    ))
+    orch._ensure_control_files_excluded = AsyncMock(return_value=True)
+    session_id = await orch._launch_pool_session(
+        await handler.db.get_project("p"), await handler.db.get_profile(routed.profile_id),
+    )
+    assert session_id is not None
+    session = await handler.db.get_session(session_id)
+    assert (session.profile_id, session.harness, session.intelligence_class) == (
+        routed.profile_id, "codex", class_hint,
+    )
+    assert (await handler.db.get_agent(session.agent_id)).profile_id == routed.profile_id
+    orch._worktree_slots = MagicMock(return_value=MagicMock(
+        reset_slot_for_task=AsyncMock(return_value="aq/setup"),
+    ))
+    handler._current_scope = {
+        "kind": "session", "session_id": session.id, "project_id": "p",
+        "task_id": None, "elevated": False,
+    }
+    # Exercise the early response deterministically; routing and ownership
+    # assertions concern the settled claim, regardless of preparation speed.
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
+    claimed = await handler._cmd_task_claim({"next": True})
+    assert claimed["result"] == "claim_in_progress", claimed
+    key = (session.id, claimed["task_id"], claimed["claim_epoch"])
+    preparation = orch.claim_preparations.get(key)
+    if preparation is not None:
+        await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+    claimed = await handler._cmd_task_claim({"next": True})
+    assert claimed["result"] == "claimed", claimed
+    assert claimed["task"]["id"] == task.id
+    assert (await handler.db.get_task(decoy.id)).status == TaskStatus.READY
+    held = await handler.db.get_task(task.id)
+    session = await handler.db.get_session(session.id)
+    assert held.status == TaskStatus.IN_PROGRESS
+    assert held.assigned_agent_id == session.agent_id
+    assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (
+        held.id, "active", held.claim_epoch,
+    )
+    claim = read_claim_file(session.work_dir)
+    assert (claim["task_id"], claim["claim_epoch"], claim["session_id"]) == (
+        held.id, held.claim_epoch, session.id,
+    )
+    assert claim["claimed_at"] > 0
+
+
+@pytest.mark.parametrize("mismatch", ["unrouted", "class", "operator-role", "worker-role"])
+async def test_pool_scaler_does_not_launch_for_unclaimable_operator_routes(handler, mismatch):
+    profile = AgentProfile(
+        id="setup-pool", name="Setup", lifecycle="pool", harness="codex",
+        default_class="standard-high", max_active=1, aq_commands=["operator_execute"],
+    )
+    await handler.db.create_profile(profile)
+    ordinary = mismatch == "worker-role"
+    profile_id = "standard-high-codex" if ordinary else profile.id
+    await _create(
+        handler, "setup", task_type=TaskType.FEATURE if mismatch == "operator-role"
+        else TaskType.OPERATOR, profile_id=None if mismatch == "unrouted" else profile_id,
+        intelligence_class="deep-high" if mismatch == "class" else "standard-high",
+        route_source=UNROUTED if mismatch == "unrouted" else ROUTER,
+    )
+    orch = handler.orchestrator
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey(profile_id)] == 0
+    orch._launch_pool_session = AsyncMock()
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    orch._launch_pool_session.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
