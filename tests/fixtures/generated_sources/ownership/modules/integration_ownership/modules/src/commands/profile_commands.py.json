@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/profile_commands.py::ProfileCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
