@@ -90,6 +90,7 @@ def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_
     assert parsed.frontmatter.template is True
     policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
     assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("read_file")
     assert policy.allows_plugin_tool("git_create_pr")
     assert parsed.capabilities == _parsed("worker-codex").capabilities
 
@@ -199,6 +200,12 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
 def test_supervisor_can_diagnose_and_repair_repository_checkouts():
     granted = set(_parsed("supervisor").capabilities["aq_commands"])
     assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
+
+
+def test_spec_ingest_can_follow_the_prime_wait_lifecycle():
+    granted = set(_parsed("spec-ingest").capabilities["aq_commands"])
+    assert {"approved_spec_packet", "wait_register", "wait_get", "wait_checkpoint"} <= granted
+    assert {"wait_decide", "wait_lift", "wait_source_commit"}.isdisjoint(granted)
 
 
 # ---------------------------------------------------------------------------
