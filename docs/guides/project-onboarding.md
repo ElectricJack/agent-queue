@@ -136,7 +136,7 @@ value; `''` means the project has no repository binding:
 ```bash
 aq project bind-repository agent-q-sprint-eval \
   --repo-url https://github.com/ElectricJack/agent-q-sprint-eval.git \
-  --expected-repo-url '' \
+  --expected-repo-url='' \
   --reason 'User-authorized Agent Q Sprint Eval: bind the repository created after init'
 ```
 
@@ -146,7 +146,7 @@ repair. The daemon validates GitHub access with its configured credentials,
 then commits the project URL and an operator/reason audit event atomically.
 No checkout, pending commit, task assignment or human approval gate changes.
 Resume the existing worker's guarded `aq git push` after successful binding;
-retain its implementation at `6dda504577f2e21e183d211d2eb2c7c4ef2f7590`.
+preserve its branch and unpublished commits while authorization is repaired.
 
 The command refuses a changed expectation, reassignment of a nonempty URL,
 active Git pushes, and configured or durable integration publication state.
@@ -186,7 +186,7 @@ stable error code to take the matching recovery action:
 | `github_repository_conflict` | Pick a different GitHub owner or repository name, or use the existing repository through clone/link mode; use a new request ID when changing those inputs. |
 | `clone_failed` | Check host network and GitHub access, remove only an AQ-reported request-owned staging directory if recovery asks for it, then retry with a new request ID. |
 | `init_failed` | Check the destination root is writable and the target does not exist, then retry with a new request ID. |
-| `commit_failed` | Configure Git author identity on the daemon host or disable the initial README/commit option, then retry. |
+| `commit_failed` | Inspect the reported Git or hook failure. AQ supplies its installation Git identity (or deterministic fallback), rather than requiring host Git config. An operator can inspect it with `aq system get-git-identity`; correct the cause or disable the initial README/commit option, then use a new request ID. |
 | `push_failed` | Correct GitHub access and run the returned `recovery_command` to adopt the retained remote with a new request ID. Request-owned local resources and registration are rolled back. |
 | `registration_failed` | For a pending request, resume with the same ID. For a failed request, resolve the reported database or vault issue and use the recovery command or a new ID; inspect the resource summary first. |
 
@@ -268,3 +268,78 @@ aq project doctor --project-id widgets
 The diagnosis offers `aq project bind-repository widgets --repo-url ...
 --expected-repo-url '' --reason ...`. Review the destination and run that command
 to authorize the existing project; the doctor never changes authorization itself.
+
+## Repair a moved repository checkout
+
+For a repository registration that still names an absent checkout, a local operator
+or global supervisor can preview a replacement:
+
+```bash
+aq project repair-repository-checkout --project-id widgets \
+  --repository-id widgets-repo --expected-path /old/widgets \
+  --replacement-path /home/me/dev/widgets --reason 'Checkout moved' --json
+```
+
+Review `before` and `after`, then repeat with `--apply`. Save each response for
+before/after evidence; the applied response also names the atomic audit event.
+The replacement must already be a Git checkout whose origin matches the registered
+repository URL. The old path must be confirmed missing. The command updates only
+matching repository path fields and preserves the repository ID and all workspace,
+task and integration records. Workspace registrations have their own lifecycle;
+repair those separately if the sweep names a missing workspace too.
+
+The daily branch sweep skips missing source and checkout-base paths, delivers one
+warning to the project supervisor, and suppresses repeats across days and daemon
+restarts. Once the path is repaired, the next sweep drops that warning state.
+Shipped supervisor capabilities merge into installed profiles on daemon startup
+and profile reload, unless that profile opts out with `capability_sync: false`.
+
+When slots share a different clone from their registered base, preview the base
+metadata repair instead:
+
+```bash
+aq project repair-workspace-checkout --project-id widgets \
+  --workspace-id widgets-primary --expected-path /mnt/d/old/widgets \
+  --replacement-path /home/me/dev/widgets --reason 'Correct base clone registration' --json
+```
+
+Review the full `before`/`after` and `identity` evidence, then repeat with `--apply
+--expected-proof <proof-from-preview>`. Save both responses and the returned audit
+event ID. The old clone may still exist: matching origins and every slot's shared
+Git common directory and object directory identity prove the replacement. A third
+clone with the same origin fails this check. The base must be idle; existing slot
+locks, claims, dirty files and source sentinels remain intact. This command changes
+only the base's registered path and allows the normal slot identity preflight to
+succeed. It does not change repository registration paths; repair those separately
+when needed.
+
+A slot whose `.aq-worktree.json` was deleted can recover during its next claim
+preparation. AQ proves the registered slot and base share the exact Git repository,
+checks the slot's Git registration and ownership fences, records the proof on the
+incoming task, and preserves unpublished commits before reconstructing that file.
+The normal reset then salvages dirty files and reruns workspace setup. A valid
+sentinel naming a completed predecessor already permits reuse; keep it in place
+so salvage retains its task attribution. Conflicting or unreadable identity files,
+foreign claims and mismatched clones remain preserved for investigation.
+
+To switch admission to a separate clone while preserving a retained source, a
+local operator can preview a base cutover:
+
+```bash
+aq project workspace-cutover --project-id widgets \
+  --source-id widgets-primary --target-id widgets-native --json
+```
+
+The source must be enabled and the target disabled, independent, idle and of the
+same kind, with matching origins and a clean target. Review the proof, then repeat
+with `--apply --expected-proof <proof-from-preview>`. Apply disables the source
+base and its slots and enables the target. It preserves source directories,
+claims, locks and retained writers; it does not copy files or release their owners.
+
+The repair commands above update registrations for existing directories. To copy an entire
+project to new native storage, use `aq project relocate` and the
+[storage relocation runbook](matter-engine-storage-relocation.md). It previews
+the inventory, retains verified recovery copies and atomically publishes repository,
+workspace, retained-store and compiler-cache bindings. It requires a local operator,
+paused admission, a disabled/drained train, no live writers and current required CI.
+It does not enable the train after copying.

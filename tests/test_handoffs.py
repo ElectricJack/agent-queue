@@ -57,6 +57,9 @@ def test_unicode_optional_prose_is_trimmed_and_critical_fields_survive():
     assert len((handoff + facts).encode("utf-8")) <= WAKE_BYTES
     assert "Run focused tests" in handoff and "Race still open" in handoff
     assert "trimmed; see full note" in handoff
+    assert "context row h1" in handoff
+    assert "aq task show task-1 --field context --offset 0 --limit 4096" in handoff
+    assert "follow next_offset until null" in handoff
     assert "claim_epoch: 9" in facts and "current" in facts
     assert "\ufffd" not in handoff + facts
 
@@ -159,6 +162,25 @@ def test_measured_context_counts_input_once_and_ignores_cumulative_spend(tmp_pat
     assert observation["input_tokens"] == 130000
     assert observation["transcript_path"] == str(path)
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("window, expected", [
+    (258400, 258400), (None, None), (0, None), (-1, None), (True, None), ("258400", None),
+])
+def test_model_window_comes_from_fresh_pinned_codex_observation(tmp_path, window, expected):
+    from src.sessions.context import context_from_tail
+    from src.sessions.transcripts.base import parse_iso_ts
+
+    path = tmp_path / "log.jsonl"
+    record = _context_record("codex")
+    record["payload"]["info"]["model_context_window"] = window
+    path.write_text(json.dumps(record) + "\n")
+    now = parse_iso_ts(record["timestamp"])
+    assert context_from_tail(path, "codex", now=now)["model_context_window"] == expected
+    assert context_from_tail(path, "codex", now=now + 301)["model_context_window"] is None
+    with path.open("a") as stream:
+        stream.write(json.dumps({"type": "compacted"}) + "\n")
+    assert context_from_tail(path, "codex", now=now)["model_context_window"] is None
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])
