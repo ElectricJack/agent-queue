@@ -17,7 +17,8 @@ class GitCreatePrRequest:
     Attributes:
         title (str): PR title
         body (None | str | Unset): PR body/description
-        branch (None | str | Unset): Source branch (default: current)
+        branch (None | str | Unset): Source branch (default: the held task's branch for a worker session, else the
+            current branch)
         base (None | str | Unset): Target branch (default: project default)
         project_id (None | str | Unset): Project ID
         workspace (None | str | Unset): Workspace name or ID (optional)

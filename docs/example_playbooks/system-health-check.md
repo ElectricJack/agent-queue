@@ -7,6 +7,12 @@ scope: system
 
 # System Health Check
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 Every 30 minutes, check overall system health and surface problems
 that need attention. Focus on conditions that block progress or
 indicate something is silently broken.

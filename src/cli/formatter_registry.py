@@ -52,6 +52,8 @@ class FormatterSpec:
     many: bool = True
     sort_key: Callable | None = None
     empty_message: str | None = None
+    entity: str | None = None
+    output_extract: str | None = None
 
 
 # The registry: command_name → FormatterSpec
@@ -66,6 +68,8 @@ def formatter_for(
     many: bool = True,
     sort_key: Callable | None = None,
     empty_message: str | None = None,
+    entity: str | None = None,
+    output_extract: str | None = None,
 ):
     """Decorator to register a render function for a command."""
 
@@ -77,13 +81,51 @@ def formatter_for(
             many=many,
             sort_key=sort_key,
             empty_message=empty_message,
+            entity=entity,
+            output_extract=output_extract,
         )
         return fn
 
     return decorator
 
 
-def apply_formatter(command: str, result: dict, console) -> bool:
+def command_output(command: str, result: Any) -> tuple[Any, str | None, int | None]:
+    """Return the documented JSON payload, entity kind, and list total.
+
+    Rich formatters already declare which collection field they render.  The
+    generated CLI reuses that declaration so human and JSON modes describe
+    the same logical payload instead of exposing a wrapper in one mode and a
+    list in the other.  Commands without a declared extraction keep their
+    scalar/object/list payload unchanged.
+    """
+    spec = FORMATTERS.get(command)
+    data = result
+    extract = (spec.output_extract or spec.extract) if spec is not None else None
+    if extract:
+        if isinstance(result, dict):
+            data = result.get(extract, [] if spec.many else result)
+        else:
+            data = getattr(result, extract, [] if spec.many else result)
+            if type(data).__name__ == "Unset":
+                data = [] if spec.many else result
+
+    total = None
+    if isinstance(data, list):
+        for key in ("total", "count"):
+            if isinstance(result, dict):
+                candidate = result.get(key)
+            else:
+                candidate = getattr(result, key, None)
+            if type(candidate).__name__ != "Unset" and isinstance(candidate, int):
+                total = candidate
+                break
+    return data, spec.entity if spec is not None else None, total
+
+
+_NO_OVERRIDE = object()
+
+
+def apply_formatter(command: str, result: dict, console, *, data_override: Any = _NO_OVERRIDE) -> bool:
     """Try to format a command's result using the registry.
 
     Returns True if a formatter was found and applied, False otherwise
@@ -106,8 +148,15 @@ def apply_formatter(command: str, result: dict, console) -> bool:
     if spec is None:
         return False
 
-    # Extract data from result (handle both dicts and typed objects)
-    if spec.extract:
+    # Extract data from result (handle both dicts and typed objects).  The
+    # generated CLI passes a projected override in human --brief mode so Rich
+    # sees the same fields as JSON mode.
+    if data_override is not _NO_OVERRIDE:
+        if spec.output_extract and not spec.extract:
+            data = {spec.output_extract: data_override}
+        else:
+            data = data_override
+    elif spec.extract:
         if isinstance(result, dict):
             data = result.get(spec.extract, [] if spec.many else result)
         else:
@@ -153,7 +202,6 @@ def apply_formatter(command: str, result: dict, console) -> bool:
 def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
-        agent_proxy,
         plain_proxy,
         project_proxy,
         task_proxy,
@@ -161,7 +209,7 @@ def _register_all():
     from .formatters import (
         format_active_tasks_all,
         format_task_recent_activity,
-        format_agent_table,
+        format_flock,
         format_archived_tasks,
         format_available_tools,
         format_chain_health,
@@ -173,9 +221,16 @@ def _register_all():
         format_playbook_graph,
         format_pool_table,
         format_profile_detail,
+        format_provider_held_tasks,
+        format_provider_allocation_status,
+        format_provider_allocation_preview,
+        format_provider_allocation_apply,
+        format_provider_table,
         format_profile_list,
         format_prompt_list,
         format_project_table,
+        format_review_detail,
+        format_review_table,
         format_task_deps,
         format_task_detail,
         format_task_table,
@@ -193,6 +248,9 @@ def _register_all():
             {
                 "IN_PROGRESS": 0,
                 "WAITING_INPUT": 1,
+                "WAITING": 4,
+                "HIBERNATED": 5,
+                "RESUME_PENDING": 5,
                 "ASSIGNED": 2,
                 "READY": 3,
                 "VERIFYING": 6,
@@ -212,6 +270,7 @@ def _register_all():
         many=True,
         sort_key=_task_sort,
         empty_message="No tasks found.",
+        entity="task",
     )
 
     def _render_task_detail(task):
@@ -220,8 +279,10 @@ def _register_all():
         deps_raw = task.depends_on or []
         blocks_raw = task.blocks or []
         subtasks_raw = task.subtasks or []
-        deps_on = [d.id if hasattr(d, "id") else d["id"] for d in deps_raw]
-        dependents = [d.id if hasattr(d, "id") else d["id"] for d in blocks_raw]
+        # Keep typed dicts (they carry dep_type) so format_task_detail can
+        # group edges by type ("Part of" vs "Blocked by" vs provenance).
+        deps_on = list(deps_raw)
+        dependents = list(blocks_raw)
         subtask_stats = None
         if subtasks_raw:
             total = len(subtasks_raw)
@@ -244,17 +305,12 @@ def _register_all():
         extract=None,
         proxy=task_proxy,
         many=False,
+        entity="task",
     )
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
 
     # -- Task extra commands ---------------------------------------------------
 
@@ -269,6 +325,7 @@ def _register_all():
         proxy=task_proxy,
         many=True,
         empty_message="No children.",
+        entity="task",
     )
 
     def _render_progress(p):
@@ -351,13 +408,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
     FORMATTERS["list_profiles"] = FormatterSpec(
         render=format_profile_list,
         extract=None,
@@ -403,6 +454,7 @@ def _register_all():
         proxy=project_proxy,
         many=True,
         empty_message="No projects found.",
+        entity="project",
     )
 
     # -- Worker pools (global-worker-pools §6.2) -----------------------------
@@ -412,6 +464,34 @@ def _register_all():
         extract="pools",
         many=True,
         empty_message="No worker pools configured.",
+        entity="pool",
+    )
+
+    # -- Provider availability (provider-failover D20) ------------------------
+
+    for command, render in (
+        ("provider_allocation_status", format_provider_allocation_status),
+        ("provider_allocation_preview", format_provider_allocation_preview),
+        ("provider_allocation_apply", format_provider_allocation_apply),
+    ):
+        # Keep the entire typed object in JSON: projects, diagnostics, ceilings
+        # and warnings are part of the response, alongside the profile rows.
+        FORMATTERS[command] = FormatterSpec(render=render, many=False)
+
+    FORMATTERS["provider_status"] = FormatterSpec(
+        render=format_provider_table,
+        extract="providers",
+        many=True,
+        empty_message="No providers tracked.",
+        entity="provider",
+    )
+
+    FORMATTERS["provider_held_tasks"] = FormatterSpec(
+        render=format_provider_held_tasks,
+        extract="tasks",
+        many=True,
+        empty_message="No task is held by a provider.",
+        entity="task",
     )
 
     # -- Formulas (swarm-work-model §13) -------------------------------------
@@ -425,6 +505,8 @@ def _register_all():
         render=format_workspace_list,
         extract=None,
         many=False,
+        entity="workspace",
+        output_extract="workspaces",
     )
     FORMATTERS["get_project"] = FormatterSpec(
         render=format_entity_detail,
@@ -435,6 +517,31 @@ def _register_all():
         render=format_entity_detail,
         extract=None,
         many=False,
+    )
+
+    # -- Document reviews ----------------------------------------------------
+
+    from .formatters import (
+        format_ask_list, format_ask_detail, format_ask_preview, format_ask_receipt,
+    )
+    for name, renderer in {
+        "ask_list": format_ask_list, "ask_show": format_ask_detail,
+        "ask_prepare_decision": format_ask_preview, "ask_reply": format_ask_receipt,
+        "ask_decide": format_ask_receipt, "ask_history": format_ask_receipt,
+    }.items():
+        FORMATTERS[name] = FormatterSpec(render=renderer, extract=None, many=False, entity="ask")
+
+    FORMATTERS["review_show"] = FormatterSpec(
+        render=format_review_detail,
+        extract=None,
+        many=False,
+    )
+    FORMATTERS["review_list"] = FormatterSpec(
+        render=format_review_table,
+        extract="reviews",
+        many=True,
+        empty_message="No reviews found.",
+        entity="review",
     )
 
     # Project confirmations

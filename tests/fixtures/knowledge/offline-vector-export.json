@@ -1,0 +1,70 @@
+{
+  "export_version": 1,
+  "snapshot_id": "synthetic-only-2026-10-01",
+  "exporter": {"name": "synthetic fixture", "read_only": true},
+  "collections": [
+    {
+      "name": "aq_project_fixture",
+      "scope_alias": "fixture",
+      "schema": {"original": "VARCHAR", "content": "VARCHAR", "valid_from": "INT64", "valid_to": "INT64"},
+      "collection_metadata": {"embedding_model": "synthetic", "dimension": 2},
+      "entries": [
+        {
+          "chunk_hash": "paired-document",
+          "entry_type": "document",
+          "source_root_id": "notes",
+          "relative_path": "paired.md",
+          "original": "Exact retained original.\n",
+          "content": "Indexed summary",
+          "embedding": [0.25, 0.75],
+          "retrieval_count": 42,
+          "last_retrieved": 1700000100,
+          "tags": "[\"synthetic\"]",
+          "source_task": "synthetic-task"
+        },
+        {
+          "chunk_hash": "vector-only-document",
+          "entry_type": "document",
+          "original": "Lost-file original\r\n",
+          "content": "Short summary",
+          "source_root_id": "notes",
+          "relative_path": "lost.md"
+        },
+        {
+          "chunk_hash": "summary-only-document",
+          "entry_type": "document",
+          "content": "The original was not exported"
+        },
+        {
+          "chunk_hash": "temporal-old",
+          "entry_type": "temporal",
+          "namespace": "procedure",
+          "key": "deploy",
+          "value": "old procedure",
+          "valid_from": 1700000000,
+          "valid_to": 1700000200,
+          "status": "historically approved",
+          "audit": {"actor": "synthetic"}
+        },
+        {
+          "chunk_hash": "temporal-new",
+          "entry_type": "temporal",
+          "namespace": "procedure",
+          "key": "deploy",
+          "value": "new procedure",
+          "valid_from": 1700000200,
+          "valid_to": 0,
+          "original": "Full temporal evidence",
+          "retrieval_count": 7
+        },
+        {
+          "entry_type": "kv",
+          "namespace": "project",
+          "key": "stack",
+          "value": "synthetic Python",
+          "updated_at": 1700000200
+        }
+      ]
+    }
+  ]
+}

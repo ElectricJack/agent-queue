@@ -9,7 +9,12 @@ found in one audit:
   ``aq gate list``) — the code moved and the doc did not;
 * a positional id passed to an auto-generated command, which takes ``--task-id``
   and nothing else (``aq task children <id>``);
-* a group-level flag written after the subcommand (``aq task list --json``).
+* an option the resolved command does not take (``aq task list --nope``).
+
+The global output flags are *not* one of these shapes any more: since design
+§4.0 ``--json`` / ``--brief`` / ``--api-url`` parse at every position, so
+``aq task list --json`` is as correct as ``aq --json task list`` and the scan
+below accepts both.
 
 This module resolves each documented invocation against the live Click tree and
 fails on any of the three.  It is the ``TestStaticGuidanceStaysOnTheAgentSurface``
@@ -37,9 +42,18 @@ PRIME_TEMPLATES_DIR = _REPO_ROOT / "src" / "prime" / "templates"
 OPERATOR_DOCS = (
     _REPO_ROOT / "docs" / "guides" / "discord-migration.md",
     _REPO_ROOT / "docs" / "guides" / "discord-commands.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-conversations.md",
     _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
     _REPO_ROOT / "docs" / "guides" / "escalations.md",
+    _REPO_ROOT / "docs" / "guides" / "smart-test-selection.md",
+    _REPO_ROOT / "docs" / "guides" / "reviews.md",
 )
+#: The CLI reference itself.  Its whole job is to show the reader the current
+#: command surface, so a leaf that has been renamed or an option that has been
+#: dropped is exactly the rot this scan exists to catch — and the pages quote
+#: several hundred invocations, which is more coverage than every other
+#: guidance file combined.
+CLI_REFERENCE_DIR = _REPO_ROOT / "docs" / "reference" / "cli"
 
 _FENCE = re.compile(r"^```(\w*)\s*$")
 _INLINE = re.compile(r"`([^`]+)`")
@@ -133,6 +147,13 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
             found.append(f"{source}:{lineno}: `{name}` has no subcommand {following!r} — {command}")
         return found
 
+    from src.cli.global_options import is_passthrough
+
+    if is_passthrough(node):
+        # ``aq test`` / ``aq stream start`` forward everything they do not
+        # recognise to a child program, so no option is wrong there.
+        return found
+
     flags, valued = {"--help"}, set()
     for param in node.params:
         if isinstance(param, click.Option):
@@ -146,8 +167,12 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
 
     positional = 0
     remaining = iter(rest)
+    after_separator = False
     for token in remaining:
-        if token.startswith("-") and token != "-":
+        if token == "--" and not after_separator:
+            after_separator = True
+            continue
+        if not after_separator and token.startswith("-") and token != "-":
             option = token.split("=", 1)[0]
             if option in flags:
                 continue
@@ -172,6 +197,7 @@ def _guidance_files() -> list[Path]:
         sorted(SKILLS_DIR.glob("*/SKILL.md"))
         + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
         + [path for path in OPERATOR_DOCS if path.exists()]
+        + sorted(CLI_REFERENCE_DIR.glob("*.md"))
     )
 
 
@@ -190,6 +216,9 @@ def test_both_guidance_trees_are_where_we_think_they_are():
     assert any(label.startswith("src/prime/templates/") for label in labels), PRIME_TEMPLATES_DIR
     for path in OPERATOR_DOCS:
         assert path.exists(), f"{path} moved; the operator-runbook scan would be a no-op"
+    assert any(
+        label.startswith("docs/reference/cli/") for label in labels
+    ), CLI_REFERENCE_DIR
 
 
 @pytest.mark.parametrize("path", _guidance_files(), ids=_label)
@@ -202,8 +231,10 @@ def test_every_documented_aq_invocation_matches_the_click_signature(path: Path):
         "static guidance does not match the real CLI:\n  "
         + "\n  ".join(found)
         + "\n\nRun `aq <group> <cmd> --help` and correct the doc. Auto-generated "
-        "commands take `--task-id`, not a positional id; `--json` / `--brief` are "
-        "options on the top-level `aq` group and go before the subcommand."
+        "commands take `--task-id`, not a positional id. `--json` / `--brief` / "
+        "`--api-url` are global and valid at any position (design §4.0), except "
+        "after a passthrough command such as `aq test`, where they belong to the "
+        "child program."
     )
 
 
@@ -215,9 +246,21 @@ def test_the_guard_catches_each_shape_it_exists_to_catch():
     positional_id = _problems("x.md", 1, "aq task children <id>")
     assert positional_id and "takes 0 positional arg(s), doc passes 1" in positional_id[0]
 
-    misplaced_global = _problems("x.md", 1, "aq task list --json --brief")
-    assert [p for p in misplaced_global if "has no option --json" in p]
-    assert [p for p in misplaced_global if "has no option --brief" in p]
+    unknown_option = _problems("x.md", 1, "aq task list --nope --also-nope")
+    assert [p for p in unknown_option if "has no option --nope" in p]
+    assert [p for p in unknown_option if "has no option --also-nope" in p]
+
+
+def test_the_guard_accepts_a_global_flag_in_every_position():
+    """Design §4.0: position does not change what a global flag means."""
+    for command in (
+        "aq task list --json --brief",
+        "aq --json task list",
+        "aq task --json list",
+        "aq task show <task_id> --brief",
+        "aq task list --api-url http://127.0.0.1:8081",
+    ):
+        assert _problems("x.md", 1, command) == [], command
 
 
 def test_the_guard_accepts_the_corrected_forms():
@@ -259,3 +302,11 @@ def test_invocations_are_read_from_shell_blocks_and_inline_code_only():
         (1, "aq task show <id>"),
         (4, 'aq task close <id> --outcome pass --summary "..."'),
     ]
+
+
+def test_the_guard_honors_the_end_of_options_separator():
+    assert _problems("x.md", 1, 'aq job submit --preset test -- -k "term" tests/') == []
+    assert "has no option --nope" in _problems(
+        "x.md", 1, "aq job submit --nope -- -k term"
+    )[0]
+    assert "takes 0 positional" in _problems("x.md", 1, "aq task list -- --nope")[0]

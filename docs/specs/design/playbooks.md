@@ -4,13 +4,40 @@ tags: [design, playbooks, automation, workflows]
 
 # Playbooks — Agent Workflow Graphs
 
-**Status:** Active — **Paused** ([[feature-pauses]]; `playbooks.enabled=false`)
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+**Status:** Superseded V1 design. The current [Playbooks V2 guide](../../concepts/playbooks.md) and [system map](../systems/playbooks.md) describe execution and configuration; the original design below is retained as history.
 **Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[vault]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
+**Related:** [vault](vault.md), [agent-coordination](agent-coordination.md), [specs/event-bus](../event-bus.md), [specs/supervisor](../supervisor.md), [specs/plugin-system](../plugin-system.md)
 
 ---
+
+## Current V2 authoring contract (2026-10-14)
+
+The historical model below is superseded for executable V2 policy by the
+[building-block authoring and rollout guide](../../guides/playbook-building-blocks.md).
+The compiler emits exactly `rules` and `steps`; the server derives metadata from
+reviewed source. Catalogue coverage and caller authority are independent, including
+review verbs. The four denied commands remain `run_command`, `shutdown`,
+`restart_daemon`, `update_and_restart`; registered commands retain scope, capability,
+claim and human-decision checks.
+
+V2 supports bounded lexical collections, finite immutable observation snapshots,
+state CAS and notification episodes, plus script steps. State is retained through
+recompile/disable/removal; operator reset or reviewed version migration can re-alert.
+Incomplete coverage never authorizes absence clearing. Scripts run as ordinary
+processes with timeout/output caps and JSON parsing, enabled by default via config.
+There is no sandbox isolation, launcher prerequisite or real-host acceptance gate.
+Protected output uses authorized readback; ambiguous launches are not replayable.
+Installation, targeted artifact rebuilds and rollback remain explicit operator work.
 
 ## 1. Problem Statement
 
@@ -172,7 +199,7 @@ The only structured portion. Kept minimal:
 | `enabled` | no | Default `true`. Set `false` to disable without deleting |
 | `cooldown` | no | Minimum seconds between executions. Default varies by trigger |
 | `version` | no | Auto-incremented on each compilation |
-| `profile_id` | no | Sandbox the run to this profile's `allowed_tools` and `mcp_servers`. Capability inheritance and runtime tool gating are described in [[sandboxed-playbooks]]. The compiler **drops** any `profile_id` injected from the markdown body during merge so attacker-influenced text can't widen scope past what the frontmatter author wrote. |
+| `profile_id` | no | Sandbox the run to this profile's `allowed_tools` and `mcp_servers`. Capability inheritance and runtime tool gating are described in [sandboxed-playbooks](sandboxed-playbooks.md). The compiler **drops** any `profile_id` injected from the markdown body during merge so attacker-influenced text can't widen scope past what the frontmatter author wrote. |
 
 ### Referencing Resources
 
@@ -738,7 +765,7 @@ behavioral rules. Behavioral rules ("always run tests before committing") live i
 the agent's `profile.md` under `## Rules` and are injected into the agent's prompt
 as trust-based guidance. Agent-type playbooks are event-driven workflows that run
 alongside agents, not instructions injected into them. See
-[[profiles|profiles as markdown]] for the profile model.
+[profiles as markdown](profiles.md) for the profile model.
 
 ### Scope Resolution
 
@@ -754,7 +781,7 @@ sequencing.
 
 ### Storage
 
-Playbooks live inside the [[vault|vault]].
+Playbooks live inside the [vault](vault.md).
 Compiled JSON lives outside the vault in `~/.agent-queue/compiled/`.
 
 ```
@@ -915,7 +942,7 @@ for the initial implementation.
 
 ## 11. Memory Integration
 
-Playbooks interact with the [[memory-scoping|vault memory system]] in two
+Playbooks interact with the [vault memory system](memory-scoping.md) in two
 directions: reading memories for context, and writing insights as output.
 
 ### Reading: Memory via Tools
@@ -959,7 +986,7 @@ object references in async SQLAlchemy sessions...
 
 ### Playbook-Driven Self-Improvement
 
-Two categories of playbooks directly drive the [[self-improvement|self-improvement loop]]:
+Two categories of playbooks directly drive the [self-improvement loop](self-improvement.md):
 
 **Reflection playbooks** (agent-type scoped) run after task completion and extract
 insights from the agent's work into its type memory. These live at
@@ -1095,7 +1122,7 @@ inspector reads them before creating duplicate tasks).
 ## 13. Migration Path
 
 The transition from rules + hooks to playbooks is incremental, not a big bang. This
-migration runs in parallel with the vault migration described in [[vault]].
+migration runs in parallel with the vault migration described in [vault](vault.md).
 
 ### Phase 1: Vault Structure + Playbook Runtime
 
@@ -1182,11 +1209,11 @@ unloaded while a playbook run is in progress, tool calls to that plugin's tools
 will fail. The playbook's error handling (fail the node, preserve context) applies.
 
 **Plugins do NOT register playbooks.** Playbooks are user/system-authored artifacts
-in the [[vault|vault]]. A plugin that wants to provide
+in the [vault](vault.md). A plugin that wants to provide
 automation ships a default playbook markdown in its package, which gets installed to
 the vault via `install_defaults()` — the same pattern as current default rules.
 
-[[agent-coordination|Coordination playbooks]] are a special case — they use the same
+[Coordination playbooks](agent-coordination.md) are a special case — they use the same
 playbook execution model but their purpose is orchestrating multi-agent workflows
 rather than single-agent automation.
 
@@ -1228,8 +1255,9 @@ EVENT_SCHEMAS = {
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
         # no_code: the close path's "left no commits behind" verdict —
-        # by construction (read_only profile / --work-outcome no-op) or in
-        # fact (the branch ended with no commits ahead of its base);
+        # by construction (read_only or needs_workspace: false profile /
+        # --work-outcome no-op) or in fact (the branch ended with no
+        # commits ahead of its base);
         # review rules skip it.
         # review_task: the task is one the pipeline created as a review
         # (review:task: / branch-review: dedup key, or a reviewer /
@@ -1344,3 +1372,27 @@ These were originally open questions, now resolved:
    unreachable nodes, missing entry point, cycles without exit conditions,
    transitions referencing nonexistent nodes. Should this be a post-compilation
    check or part of the compilation prompt?
+
+## System source recovery (2026-10-13)
+
+Reviewed bundle import retains the exact Markdown with the immutable artifact.
+Import and activation do not overwrite authored vault sources. Installation is
+one-shot and restart preserves sources, deletions and activation state. Legacy
+explicit seeding must copy Markdown from the reviewed bundle, rather than a
+second packaged source.
+
+When explicit required-playbook repair replaces an activation, it advances an
+existing system source only if its digest still matches the previous artifact.
+Edited or deleted sources remain unchanged. Source write failures are reported
+in daemon logs; the activation continues to serve its immutable artifact.
+
+A supervisor or local operator can restore a drifted system source with
+`aq playbook source-resync --playbook-id ID --artifact-sha256 SHA
+--expected-source-hash HASH`. Read SHA from activation-health and HASH from
+get-playbook-source. The command requires the pinned artifact to be the active
+system artifact, verifies its retained source digest, refuses stale hashes and
+unsafe paths, and atomically replaces the Markdown while preserving the old
+bytes in a unique `.bak-*` sibling. It never compiles, changes activation,
+replays events or reads backups as restoration inputs. Repeating it against
+the restored source makes no further write. Activation-health must then report
+`source_drift=false`, including after installation and restart.

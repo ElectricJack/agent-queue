@@ -70,6 +70,13 @@ function renderInbox() {
 }
 
 describe("Escalation inbox", () => {
+  it("shows the paused hold instead of a delivery warning", () => {
+    api.escalations[0]!.held_while_paused = true;
+    renderInbox();
+    expect(screen.getByText("held while paused")).toBeInTheDocument();
+    expect(screen.queryByText("delivery pending")).not.toBeInTheDocument();
+  });
+
   it("lists escalations with state, project, open count and pending delivery", () => {
     renderInbox();
     expect(screen.getByText(/1 open of 2\./)).toBeInTheDocument();
@@ -96,7 +103,7 @@ describe("Escalation inbox", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send to supervisor" }));
 
     await waitFor(() => expect(api.reply).toHaveBeenCalledTimes(1));
-    const payload = api.reply.mock.calls[0][0] as Record<string, string>;
+    const payload = api.reply.mock.calls[0]![0] as Record<string, string>;
     expect(payload.escalation_id).toBe("esc-1");
     expect(payload.text).toBe("Pin it to 2.4.1");
     expect(payload.external_message_id).toMatch(/^dashboard:esc-1:\d+$/);
