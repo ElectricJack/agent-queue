@@ -12,7 +12,11 @@ import json
 import time
 from typing import Any
 
-from src.integration.reconciler_repair_close import reconciler_batch_subject
+from pydantic import ValidationError
+
+from src.waits.sources import insert_message_with_source_event
+from src.commands.operator_authority import local_or_operator
+from src.commands.detached import detached_operations
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.git.manager import GitError
@@ -20,16 +24,14 @@ from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 from src.models import TaskStatus
 
 
 _TASK_OWNER_ROLES = frozenset({"worker", "repair", "verifier"})
 
-#: Stored origin of a source-CI repair.  The router reads it as the policy's
-#: ``integration_repair`` origin; the delegate claim, restart and release
-#: paths that key on a stored ``integration_repair`` never see it, because a
-#: source-CI repair is a root with its own branch, not a stage delegate.
+#: Historical source-CI delegate origin, retained for routing and lineage.
+#: New recovery reopens the original task instead of filing a delegate.
 SOURCE_CI_REPAIR_ORIGIN = "source_ci_repair"
 
 
@@ -40,10 +42,8 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
 #: Root-train subject commands an elevated live supervisor may re-drive.
 #: Sealing, scheduling and parent-delivery writers stay service/playbook-only.
 _SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
-    "integration_build_candidate",
     "integration_ci_evidence",
     "integration_cleanup",
-    "integration_promote_main",
     "integration_release",
     "integration_repair_close_current",
 })
@@ -63,64 +63,444 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_continue_close(self, args: dict) -> dict:
+        """Resume only this author's saved close through all ordinary close guards."""
+        from src.integration.close_merge import CloseStore
+
+        op = await CloseStore(self.db).get(args["operation_id"])
+        principal = current_principal()
+        if (not op or principal.session_id != op["session_id"]
+                or principal.project_id != op["project_id"]):
+            return _failure("refused", "operation is not owned by this author session")
+        response = await self._cmd_task_close({
+            **op["close_args"], "task_id": op["task_id"], "session_id": op["session_id"],
+            "claim_epoch": op["claim_epoch"], "claim_next": False,
+        })
+        return {"success": response.get("success", False),
+                "outcome": "completed" if response.get("success") else "pending",
+                "operation_id": op["id"], "close": response}
+
+    async def _cmd_integration_batch_fix(self, args: dict) -> dict:
+        """Only the bound task-free fixer may inspect or publish its batch."""
+        from src.integration.fixers import BatchFixerService
+        from src.integration.lock import PublishWithdrawn
+
+        train = getattr(self.orchestrator, "integration_train", None)
+        train = getattr(train, "train", train)
+        service = getattr(train, "repair", None)
+        if not isinstance(service, BatchFixerService):
+            return _failure("unavailable", "the in-place batch fixer is not active")
+        try:
+            return await service.command(current_principal(), action=args.get("action", "status"))
+        except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
+            return _failure("refused", str(exc))
+    async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
+        from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
+
+        request = IntegrationDelegatePublicationArgs.model_validate(args)
+        if self.config.integration.git_first != "active":
+            return _failure("refused", "publication delegation requires Git-first active mode")
+        try:
+            row = await PublicationDelegations(self.db).issue(request)
+        except DELEGATION_ERRORS as exc:
+            return _failure("refused", str(exc))
+        return self._publication_delegation_result("issued", row)
+
+    async def _cmd_integration_revoke_publication(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRevokePublicationArgs
+        from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
+
+        request = IntegrationRevokePublicationArgs.model_validate(args)
+        try:
+            row = await PublicationDelegations(self.db).revoke(request)
+        except DELEGATION_ERRORS as exc:
+            return _failure("refused", str(exc))
+        return self._publication_delegation_result("revoked", row)
+
+    @staticmethod
+    def _publication_delegation_result(outcome, row):
+        return {"success": True, "outcome": outcome, "delegation_id": row["id"], **{
+            key: row.get(key) for key in ("project_id", "target_branch", "owner_fence",
+                                        "expires_at", "revoked_at", "published_oid")
+        }}
+
+    async def retained_repository_recovery(self, state, *, load=False):
+        """Daemon port for its managed cache, never a caller-supplied repair command."""
+        from src.integration.repository_incidents import record_incident
+
+        return await record_incident(self, state, load=load)
+
+    async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
+        """Lift a retained-cache admission hold after the store passes a full fsck."""
+
+        from src.commands.contracts.integration import IntegrationClearRetainedRecoveryArgs
+        from src.integration.repository_incidents import admission_holds, clear_incident
+        from src.integration.repository_recovery import clear_retained_recovery
+
+        try:
+            request = IntegrationClearRetainedRecoveryArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_found", f"invalid clear request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        holds = [state for state in await admission_holds(self.db, request.project_id)
+                 if request.incident_id in (None, state["id"])]
+        if not holds:
+            return _failure("not_found", "no retained recovery incident holds this project")
+        incidents = []
+        for state in holds:
+            try:
+                result = await clear_retained_recovery(
+                    self.orchestrator.git, state, by=principal,
+                    record=lambda cleared, state=state: clear_incident(self, state, cleared),
+                )
+            except (GitError, OSError, ValueError) as exc:
+                incidents.append({"id": state["id"], "cache": state["cache"],
+                                  "outcome": "unavailable", "error": str(exc)})
+                continue
+            incidents.append({"id": state["id"], "cache": state["cache"],
+                              "outcome": "cleared" if result["cleared"] else "not_clean",
+                              "fsck": result["fsck"]})
+        outcomes = {item["outcome"] for item in incidents}
+        outcome = next(name for name in ("not_clean", "unavailable", "cleared")
+                       if name in outcomes)
+        payload = {"outcome": outcome, "project_id": request.project_id,
+                   "evidence": {"incidents": incidents}}
+        if outcome != "cleared":
+            payload["reason"] = "a held retained cache failed its full fsck or is unavailable"
+        return _with_reason(outcome == "cleared", payload)
+
+    async def _cmd_integration_supersede_completion(self, args: dict) -> dict:
+        """Preview/apply one human-directed supersession, without the close pipeline."""
+        from src.commands.contracts.integration import IntegrationSupersedeCompletionArgs
+        from src.integration.finished_owners import stop_confirmer_for
+        from src.integration.superseded_completion import SupersededCompletion
+        from src.sessions.obsolete import (
+            ObsoleteClose, ObsoleteCloseRefused, obsolete_owner_release_for,
+        )
+
+        request = IntegrationSupersedeCompletionArgs.model_validate(args)
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("refused", refusal)
+        closer = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
+        )
+        try:
+            result = await SupersededCompletion(
+                self.db, closer=closer, confirm_stopped=stop_confirmer_for(self.orchestrator),
+            ).run(request, principal=principal)
+        except (ValueError, GitError, HierarchyError, ObsoleteCloseRefused) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_off(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationOffArgs
+        from src.integration.manual_control import ManualIntegration
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "manual integration controls require the local operator")
+        request = IntegrationOffArgs.model_validate(args)
+        try:
+            result = await ManualIntegration(self.db).run(
+                request, operator_id="human:local-operator")
+        except (ValueError, HierarchyError, GitError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        if (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "provenance namespace migration requires the local operator")
+        request = IntegrationMigrateProvenanceRefsArgs.model_validate(args)
+        project = await self.db.get_project(request.project_id)
+        repository = await self.db.get_repo(project.integration_repository_id or "") if project else None
+        if repository is None or repository.project_id != request.project_id:
+            return _failure("refused", "project has no designated integration repository")
+        try:
+            result = await ProvenanceMigration(self.orchestrator.git).run(
+                repository.url, dry_run=request.dry_run, limit=request.limit,
+                checkout=request.checkout,
+            )
+        except (GitError, ValueError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] != "blocked", "project_id": request.project_id,
+                **result}
+
+    async def repair_root_pr_checks(self, observation) -> dict:
+        """Daemon-only port for the admission gate's trusted failure observation."""
+        from src.integration.root_pr_recovery import recover_root_pr_checks
+
+        try:
+            return await recover_root_pr_checks(self, observation)
+        except (HierarchyError, BranchBusy, ValueError) as exc:
+            return _failure("recovery_deferred", str(exc))
+
+    async def _cmd_integration_retire_legacy_park(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRetireLegacyParkArgs
+        from src.integration.legacy_park_retirement import LegacyParkRetirement
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "historical park retirement requires the local operator")
+        request = IntegrationRetireLegacyParkArgs.model_validate(args)
+        try:
+            result = await LegacyParkRetirement(self.db).run(request)
+        except (ValueError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_reconcile_expired_mutation(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationReconcileExpiredMutationArgs
+        from src.integration.mutation_recovery import ExpiredMutationRecovery
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "expired mutation recovery requires the local operator")
+        request = IntegrationReconcileExpiredMutationArgs.model_validate(args)
+        try:
+            result = await ExpiredMutationRecovery(self.db).run(request)
+        except (ValueError, GitError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+
+    async def _cmd_integration_cutover_plan(self, args: dict) -> dict:
+        return await self._integration_cutover(args, read_only=True)
+
+    async def _cmd_integration_cutover_containment(self, args: dict) -> dict:
+        from dataclasses import asdict
+        from pathlib import Path
+
+        from sqlalchemy.exc import DBAPIError
+
+        from src.commands.contracts.integration import IntegrationContainmentCutoverArgs
+        from src.git.github_contracts import GitHubAccessError
+        from src.integration.containment_cutover import ContainmentCutover
+        from src.integration.containment_git import ContainmentGit
+        from src.integration.cutover import CutoverGit
+        from src.integration.protection import LocalRulesetReader
+        from src.install.deploy import DeployRefused, read_record
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "containment cutover requires the local operator")
+        request = IntegrationContainmentCutoverArgs.model_validate(args)
+
+        async def protection(facts):
+            resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+            factory = getattr(self.orchestrator, "github_client_factory", None)
+            if resolver is None or factory is None:
+                return None
+            repository = await self.db.get_repo(facts["repository"]["id"])
+            binding = resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+            if binding is None:
+                return None
+            client = factory(binding)
+            if inspect.isawaitable(client):
+                client = await client
+            reader = LocalRulesetReader(self._promotion_user_client(binding))
+            branches = {repository.default_branch.removeprefix("refs/heads/")}
+            branches.update(row["parent_ref"].removeprefix("refs/heads/")
+                            for row in facts["inventory"]["origins"] if row["parent_ref"])
+            return await CutoverGit(self.db, client, ruleset_admin_reader=reader).remote_state(
+                branches,
+            )
+
+        def runtime_bindings():
+            config = self.orchestrator.config
+            fields = ("default_mode", "merge_ci_policy", "merge_required_checks",
+                      "merge_require_up_to_date", "git_first", "reconciler_active",
+                      "reconciler_shadow", "owner_recovery_sweep")
+            return {"integration": {n: getattr(config.integration, n) for n in fields},
+                    "deploy": asdict(config.deploy),
+                    "deployment": read_record(Path(config.data_dir))}
+
+        try:
+            result = await ContainmentCutover(
+                self.db, ContainmentGit(protection=protection), runtime_bindings=runtime_bindings,
+            ).run(request.project_id, choices=request.choices, plan=request.plan,
+                  expected_digest=request.expected_digest, dry_run=request.dry_run,
+                  operator_id="local")
+        except (ValueError, GitError, GitHubAccessError, OSError, DBAPIError,
+                DeployRefused, TimeoutError) as exc:
+            # Database driver text can contain parameters; expose only the fixed refusal.
+            error = str(exc) if isinstance(exc, ValueError) else "cutover_fence_unavailable"
+            return _failure("refused", error)
+        return {"success": result["outcome"] in {"preview", "prepared"}, **result}
+
+    async def _cmd_integration_cutover(self, args: dict) -> dict:
+        return await self._integration_cutover(args, read_only=False)
+
+    async def _integration_cutover(self, args, *, read_only):
+        from src.commands.contracts.integration import IntegrationCutoverArgs
+        from src.integration.cutover import Cutover, CutoverGit
+        from src.git.github_contracts import GitHubAccessError
+        from src.integration.protection import LocalRulesetReader
+
+        request = IntegrationCutoverArgs.model_validate(args)
+        if not read_only and not local_or_operator("integration_cutover"):
+            return _failure("unauthorized", "cutover and reverse require a local operator")
+        operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        project = await self.db.get_project(request.project_id)
+        repository = await self.db.get_repo(project.integration_repository_id or "") if project else None
+        if repository is None or repository.project_id != request.project_id:
+            return _failure("refused", "project has no designated integration repository")
+        try:
+            resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+            factory = getattr(self.orchestrator, "github_client_factory", None)
+            if resolver is None or factory is None:
+                return _failure("refused", "GitHub repository access is unavailable")
+            binding = resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+            if binding is None:
+                return _failure("refused", "repository identity cannot be verified")
+            client = factory(binding)
+            if inspect.isawaitable(client):
+                client = await client
+            admin_reader = None
+            if (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
+                admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
+            service = Cutover(self.db, CutoverGit(
+                self.db, client, ruleset_admin_reader=admin_reader,
+            ))
+            options = {"allow_epics": request.allow_epics, "reverse": request.reverse}
+            if read_only:
+                result = {"outcome": "planned", "plan": await service.plan(
+                    request.project_id, request.flow, **options)}
+            else:
+                result = await service.run(
+                    request.project_id, request.flow, dry_run=request.dry_run,
+                    expected_generation=request.expected_generation, operator_id=operator,
+                    baseline=request.baseline, **options)
+        except (ValueError, GitError, GitHubAccessError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] in {"planned", "preview", "configured"}, **result}
+
+    async def _cmd_integration_quiesce(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationQuiesceArgs
+        from src.integration.quiesce import TrainQuiesce
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "quiesce requires the local operator")
+        request = IntegrationQuiesceArgs.model_validate(args)
+        try:
+            result = await TrainQuiesce(self.db).run(request)
+        except (ValueError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_record_delivered(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRecordDeliveredArgs
+        from src.integration.delivered_close import DeliveredClose
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "record-delivered requires the local operator")
+        request = IntegrationRecordDeliveredArgs.model_validate(args)
+        try:
+            result = await DeliveredClose(self.db).record(request)
+        except (ValueError, GitError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _train_control(self, args, operation, model_name, scope, *, with_train=False,
+                             expected_project=False, named_refusal=False, intent=None,
+                             extra_errors=()):
+        """Share train-control dispatch while keeping each command's refusal boundary."""
+        from src.commands.contracts import integration as contracts
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControlError, TrainControls
+
+        request = getattr(contracts, model_name).model_validate(args)
+        identifier = getattr(request, scope)
+        if scope == "project_id":
+            project_id = identifier
+        else:
+            subject = (await BatchStore(self.db).get(identifier) if scope == "batch_id"
+                       else await self.db.get_task(identifier))
+            project_id = subject.project_id if subject else None
+        operator, refusal = await integration_operator(self.db, project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        values = request.model_dump(exclude={scope})
+        positional = [identifier]
+        train = getattr(getattr(self, "orchestrator", None), "integration_train", None)
+        if operation == "seal_now":
+            values["train"] = train
+        else:
+            values["operator_id"] = operator
+        if intent is not None:
+            positional.append(intent)
+        if expected_project:
+            values["expected_project_id"] = project_id
+        if operation == "release_withheld_source":
+            positional.append(values.pop("task_id"))
+            values["human_authority"] = operator.startswith(("human:", "operator session:"))
+        controls = TrainControls(self.db, train=train) if with_train else TrainControls(self.db)
+        # Root no-op historically does not absorb OS errors; retain that boundary.
+        errors = (ValueError, GitError) + (() if operation == "record_root_noop" else (OSError,))
+        try:
+            result = await getattr(controls, operation)(*positional, **values)
+        except TrainControlError as exc:
+            if named_refusal:
+                return _failure(exc.outcome, str(exc))
+            return _failure("refused", str(exc))
+        except errors + extra_errors as exc:
+            return _failure("refused", str(exc))
+        return {"success": operation != "reverify_epic" or result["outcome"] != "changed", **result}
+
+    async def _cmd_integration_record_root_noop(self, args: dict) -> dict:
+        return await self._train_control(args, "record_root_noop", "IntegrationRecordRootNoopArgs",
+                                         "task_id", expected_project=True,
+                                         extra_errors=(HierarchyError, BranchBusy, TimeoutError))
+
+
     async def _cmd_integration_pause_batch(self, args: dict) -> dict:
         return await self._integration_batch_intent(args, "paused")
 
     async def _cmd_integration_resume_batch(self, args: dict) -> dict:
         return await self._integration_batch_intent(args, "open")
 
-    async def _integration_batch_intent(self, args, intent):
-        from src.commands.contracts.integration import IntegrationAbortBatchArgs
-        from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControls
+    async def _cmd_integration_repair_target(self, args: dict) -> dict:
+        return await self._train_control(args, "repair_target", "IntegrationRepairTargetArgs",
+                                         "batch_id", with_train=True,
+                                         extra_errors=(BranchBusy, TimeoutError))
 
-        request = IntegrationAbortBatchArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).set_batch_intent(
-                request.batch_id, intent, dry_run=request.dry_run,
-                operator_id=operator, reason=request.reason,
-            )
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+    async def _cmd_integration_rerequest_check(self, args: dict) -> dict:
+        return await self._train_control(args, "rerequest_check", "IntegrationRerequestCheckArgs",
+                                         "batch_id", with_train=True,
+                                         extra_errors=(BranchBusy, TimeoutError))
+
+    async def _integration_batch_intent(self, args, intent):
+        return await self._train_control(args, "set_batch_intent", "IntegrationAbortBatchArgs",
+                                         "batch_id", intent=intent)
 
     async def _cmd_integration_seal_now(self, args: dict) -> dict:
-        from src.commands.contracts.integration import IntegrationSealNowArgs
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationSealNowArgs.model_validate(args)
-        _operator, refusal = await integration_operator(self.db, request.project_id)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).seal_now(request.project_id,
-                train=getattr(self.orchestrator, "integration_train", None),
-                dry_run=request.dry_run)
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+        return await self._train_control(args, "seal_now", "IntegrationSealNowArgs",
+                                         "project_id")
 
     async def _cmd_integration_refresh_epic(self, args: dict) -> dict:
         """Preview or refresh an epic from the default branch through the train."""
-        from src.commands.contracts.integration import IntegrationRefreshEpicArgs
-        from src.integration.train_controls import TrainControls
+        return await self._train_control(args, "refresh_epic", "IntegrationRefreshEpicArgs",
+                                         "task_id", with_train=True)
 
-        request = IntegrationRefreshEpicArgs.model_validate(args)
-        task = await self.db.get_task(request.task_id)
-        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db, train=getattr(
-                self.orchestrator, "integration_train", None)).refresh_epic(
-                request.task_id, dry_run=request.dry_run, operator_id=operator)
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+    async def _cmd_integration_reverify_epic(self, args: dict) -> dict:
+        """Request ordinary aggregate verification without reopening a completed epic."""
+        return await self._train_control(args, "reverify_epic", "IntegrationReverifyEpicArgs",
+                                         "task_id", with_train=True, expected_project=True)
 
     async def _cmd_integration_promotion_publish(self, args: dict) -> dict:
         """Mechanism entry for one admitted promotion; no worker can publish a target."""
@@ -139,8 +519,12 @@ class IntegrationCommandsMixin:
         if row is None:
             return _failure("not_found", "promotion batch does not exist")
         principal = current_principal()
-        if principal is None or principal.kind is not PrincipalKind.SERVICE:
-            return _failure("unauthorized", "promotion publication requires a daemon service")
+        if principal is None or principal.kind not in {PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK}:
+            return _failure("unauthorized", "promotion publication requires a daemon service or reviewed playbook")
+        if principal.kind is PrincipalKind.PLAYBOOK and (
+            principal.unresolved or principal.project_id != row["project_id"]
+        ):
+            return _failure("unauthorized", "promotion publication is outside the playbook project")
         snapshot = row["policy_snapshot"] or {}
         if (row["trigger"] != "promotion" or not isinstance(snapshot, dict)
                 or not isinstance(snapshot.get("promotion_step"), dict)
@@ -164,53 +548,38 @@ class IntegrationCommandsMixin:
                 "source_sha": observation.candidate_sha, "target_sha": observation.target_sha,
                 "detail": observation.detail}
 
+    async def _cmd_integration_settle_batch(self, args: dict) -> dict:
+        """Preview or settle an ordinary batch already proven on its target."""
+        return await self._train_control(args, "settle_batch", "IntegrationSettleBatchArgs",
+                                         "batch_id", with_train=True, named_refusal=True)
+
+    async def _cmd_integration_release_withheld_source(self, args: dict) -> dict:
+        """Preview or release one exact source an aborted batch withholds.
+
+        The owning supervisor or a local operator may apply. Operator workers
+        still need a grant bound to an exact human decision.
+        """
+        return await self._train_control(
+            args, "release_withheld_source", "IntegrationReleaseWithheldSourceArgs",
+                                         "batch_id", with_train=True, named_refusal=True)
+
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
-        from src.commands.contracts.integration import IntegrationAbortBatchArgs
-        from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationAbortBatchArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).abort_batch(
-                request.batch_id, dry_run=request.dry_run, operator_id=operator,
-                reason=request.reason,
-            )
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+        return await self._train_control(args, "abort_batch", "IntegrationAbortBatchArgs",
+                                         "batch_id")
 
     async def _cmd_integration_retire_origin(self, args: dict) -> dict:
         """Retire only the previewed origin of a proven delivered completion."""
-        from src.commands.contracts.integration import IntegrationRetireOriginArgs
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationRetireOriginArgs.model_validate(args)
-        task = await self.db.get_task(request.task_id)
-        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).retire_origin(
-                request.task_id, dry_run=request.dry_run, origin_id=request.origin_id,
-                operator_id=operator, reason=request.reason,
-            )
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+        return await self._train_control(args, "retire_origin", "IntegrationRetireOriginArgs",
+                                         "task_id")
 
     async def _cmd_integration_release_held_gate(self, args: dict) -> dict:
         """A human may lift a hold without changing its immutable gate answer."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReleaseHeldGateArgs
         from src.integration.engine import EngineRefused
         from src.integration.gates import GatePrimitives
-        from src.integration.subjects import Subject
+        from src.integration.runtime_contracts import Subject
 
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is not PrincipalKind.LOCAL:
@@ -248,28 +617,22 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "parent head must be server-observed")
         try:
             result = await ParentSourceReverification(
-                self.db, self._integration_promotion_service(),
+                self.db, self._integration_repository_git(),
             ).run(observation.task_id, observation)
         except (HierarchyError, _ProofFailed, BranchBusy, StaleFence) as exc:
             return _failure("blocked", str(exc))
         return _with_reason(result["outcome"] == "reverifying", result)
 
-    async def _cmd_integration_parent_action(self, args: dict) -> dict:
-        """Internal visit dispatch: process-bound engine scope is the authority."""
-        from src.integration.parent_engine import active_parent_scope
-        from src.integration.subjects import Subject
-
-        row = await self.db.get_integration_subject(args.get("subject_id"))
-        if row is None or row["version"] != args.get("expected_version"):
-            return _failure("stale", "parent subject version changed")
-        subject = Subject.from_row(row)
-        if not active_parent_scope(self.db, subject.task_id):
-            return _failure("unauthorized", "parent action needs the active visit exclusion")
-        runtime = getattr(self.orchestrator, "parent_subject_runtime", None)
-        if runtime is None:
-            return _failure("unavailable", "parent runtime unavailable")
-        value = await runtime.adapters.perform(self, subject, args["request"])
-        return {"success": not value.is_unknown, "value": value.model_dump(mode="json")}
+    async def _cmd_integration_reconcile_git_truth(self, args: dict) -> dict:
+        """Daemon-only repair of Git-derived integration projections."""
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SERVICE:
+            return _failure("unauthorized", "only the daemon may reconcile Git truth")
+        reconciler = getattr(self.orchestrator, "git_truth_reconciler", None)
+        if reconciler is None:
+            return _failure("unavailable", "the Git truth reconciler is not attached")
+        now = args.get("now")
+        return {"success": True, **await reconciler.tick(time.time() if now is None else now)}
 
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
         """Start one level-triggered visit per idle target (git_first: active).
@@ -284,14 +647,36 @@ class IntegrationCommandsMixin:
         train = getattr(self.orchestrator, "integration_train", None)
         if train is None:
             return _failure("unavailable", "the integration train is not active")
-        return {"success": True, **await train.tick(args.get("now"))}
+        visit_now = args.get("now")
+        now = time.time() if visit_now is None else visit_now
+        # The check reads durable batches even when every snapshot fails before
+        # selection. It is independent of lane errors and retry scheduling.
+        checked_at = getattr(self, "_train_stall_checked_at", None)
+        if (getattr(self, "db", None) is not None
+                and (checked_at is None or now < checked_at or now - checked_at >= 60)):
+            from src.integration.stall_alerts import alert_stalled_batches
+
+            await alert_stalled_batches(self, now=now)
+            observer = getattr(self.orchestrator, "delivery_observer", None)
+            if observer is not None:
+                import logging
+
+                from src.integration.delivery_watchdog import scan_stuck_deliveries
+
+                # The watchdog only observes and hands over; it never holds the train.
+                try:
+                    await scan_stuck_deliveries(self.db, observer=observer, now=now)
+                except Exception:
+                    logging.getLogger(__name__).exception("delivery watchdog scan failed")
+            self._train_stall_checked_at = now
+        result = await train.tick(visit_now)
+        return {"success": True, **result}
 
     async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationEngineTransferArgs
         from src.integration.engine import EngineRefused, RootEngineOwnership
-        from src.integration.subjects import SubjectEngine
+        from src.integration.runtime_contracts import SubjectEngine
 
         try:
             request = IntegrationEngineTransferArgs.model_validate(args)
@@ -307,7 +692,7 @@ class IntegrationCommandsMixin:
             and not self.config.integration.reconciler_active):
             return _failure("refused", "enable the active loop before transferring subjects")
         try:
-            from src.integration.parent_engine import ParentEngineOwnership
+            from src.integration.owner_guards import ParentEngineOwnership
             owner = (ParentEngineOwnership(self.db) if request.parent_task_id
                      else RootEngineOwnership(self.db))
             parent_args = {"task_id": request.parent_task_id} if request.parent_task_id else {}
@@ -321,45 +706,6 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
-    async def _cmd_integration_development_engine_transfer(self, args: dict) -> dict:
-        """Activate the project's subjects under the reconciler's exclusive fence."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import (
-            IntegrationDevelopmentEngineTransferArgs,
-        )
-        from src.integration.development_runtime import transfer_development_engine
-
-        try:
-            request = IntegrationDevelopmentEngineTransferArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("refused", str(exc))
-        if await self.db.get_project(request.project_id) is None:
-            return _failure("refused", "project does not exist")
-        operator, error = await integration_operator(self.db, request.project_id)
-        if error:
-            return _failure("unauthorized", error)
-        if (not request.dry_run and request.engine == "reconciler"
-            and not self.config.integration.reconciler_active):
-            return _failure(
-                "refused", "enable the active loop before transferring development subjects"
-            )
-        try:
-            result = await transfer_development_engine(
-                self.db,
-                request.project_id,
-                engine=request.engine,
-                expected_versions=dict(request.expected_versions),
-                reason=request.reason,
-                evidence=tuple(request.evidence),
-                operator_id=operator,
-                dry_run=request.dry_run,
-            )
-        except ValueError as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
-
-
     """Implemented integration command handlers are registered incrementally."""
 
     async def _cmd_observe_integration_source_ci(self, observation) -> dict:
@@ -369,9 +715,9 @@ class IntegrationCommandsMixin:
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
         identity = self._integration_source_ci_identity(observation)
-        # Serialize the complete observe/file/link sequence across daemons.
-        # A restart releases this transaction lock; ensure_task recovers a
-        # filed-but-not-yet-linked assignment by its immutable dedup key.
+        # Serialize the complete observe/reopen sequence across daemons.
+        # A restart releases this transaction lock; the reopen and its
+        # durable budget commit together, so replay cannot spend it twice.
         async with self.db._engine.begin() as conn:
             await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                                {"key": identity})
@@ -387,16 +733,16 @@ class IntegrationCommandsMixin:
         return "source-ci:" + hashlib.sha256(json.dumps(key).encode()).hexdigest()
 
     async def _record_integration_source_ci(self, observation) -> dict:
-        from sqlalchemy import select, update
+        from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from src.database.tables import (
             archived_tasks, integration_source_ci, projects, task_completion_records,
             task_metadata, tasks,
         )
         from src.integration.models import HierarchicalIntegrationPolicy
-        from src.integration.review_evidence import ReviewEvidenceProducer
-        from src.integration.source_ci import SourceCIObservation, repair_description
-        from src.integration.source_delivery import RETIREMENT_KEY, prove_source_delivered
+        from src.integration.reviews import ReviewEvidenceProducer
+        from src.integration.source_ci import SourceCIObservation
+        from src.integration.source_repairs import RETIREMENT_KEY, prove_source_delivered
 
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
@@ -466,9 +812,6 @@ class IntegrationCommandsMixin:
                     ).limit(1))
                 if status != TaskStatus.FAILED.value and retired is None:
                     delegate_open = True
-                elif status == TaskStatus.FAILED.value and policy.root.repair.on_exhausted != "continue":
-                    return _failure("human_required", "source repair failed under finite policy")
-            attempt = record["repair_attempt"] + (0 if delegate_open else 1)
         # Canonical delivery truth, asked of the same evidence the root
         # scheduler admits a delivered root on: the exact completion
         # generation, the exact repository and the exact default target.  It
@@ -504,38 +847,120 @@ class IntegrationCommandsMixin:
                 "source_head": source["head"], "generation": source["generation"],
                 "delivery": proof.as_evidence(),
             }
-        # Creation stays on the normal CommandHandler filing/routing path.
-        # The enclosing source lock protects replay and competing ticks.
-        created = await self._cmd_ensure_task({
-            "project_id": source["project_id"], "repo_id": source["repository_id"],
-            "dedup_key": f"{self._integration_source_ci_identity(observation)}:{attempt}",
-            "title": f"Repair source CI: {observation.task_id} ({source['head'][:12]})",
-            "description": repair_description(observation), "task_type": "bugfix",
-            "root": True, "reason": "authorized exact source CI recovery",
-            "intelligence_class": policy.root.repair.debug_intelligence_class,
-            "_created_by_kind": SOURCE_CI_REPAIR_ORIGIN,
-            "_created_by_id": self._integration_source_ci_identity(observation),
-        })
-        if not created.get("success"):
-            return created
+        return await self._reopen_source_ci_once(observation, producer, conditions, proof)
+
+    async def _reopen_source_ci_once(self, observation, producer, conditions, proof) -> dict:
+        """Reopen the original branch once; further failures notify its supervisor."""
+        import uuid
+
+        from sqlalchemy import insert, select, update
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from src.database.tables import (
+            archived_tasks, integration_source_ci, messages, projects, task_context, tasks,
+        )
+        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.source_ci import repair_description
+
+        source = observation.source
+        try:
+            delivery = await self.db.observe_removal_delivery(
+                [observation.task_id], for_mutation=True,
+            )
+        except (GitError, OSError):
+            return _failure("delivery_unknown", "Git delivery evidence is unavailable")
+        transition = None
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
-            current = (await conn.execute(select(integration_source_ci).where(*conditions)
-                       .with_for_update())).mappings().one()
-            if current["repair_attempt"] >= attempt:
-                return {"success": True, "outcome": "already_repairing",
-                        "repair_task_id": current["repair_task_id"]}
-            history = list(current["repair_history"] or [])
-            if current["repair_task_id"]:
-                history.append({"task_id": current["repair_task_id"],
-                                "attempt": current["repair_attempt"]})
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == source["project_id"]))).mappings().one()
+            policy = HierarchicalIntegrationPolicy.model_validate(
+                project["hierarchical_integration_policy"])
+            if (not policy.root.repair.source_ci
+                    or project["hierarchical_integration_generation"] != observation.policy_generation
+                    or await producer._pull_request_source_on(conn, observation.task_id) != source
+                    or not await producer._authorization_on(
+                        conn, observation.task_id, source, observation.policy_generation,
+                        allow_reviewed=True)):
+                return _failure("stale", "source policy, authorization or exact identity changed")
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == observation.task_id).with_for_update())).mappings().one()
+            previous = await conn.scalar(select(task_context.c.id).where(
+                task_context.c.task_id == observation.task_id,
+                task_context.c.type == "reopen_feedback",
+                task_context.c.label.in_(["Source CI Repair", "Root PR check failure"]),
+            ).limit(1))
+            legacy_delegate = await conn.scalar(select(integration_source_ci.c.task_id).where(
+                integration_source_ci.c.repair_task_id == observation.task_id,
+            ).limit(1))
+            past_attempt = await conn.scalar(select(integration_source_ci.c.task_id).where(
+                integration_source_ci.c.task_id == observation.task_id,
+                integration_source_ci.c.repair_attempt > 0,
+            ).limit(1))
+            exhausted = bool(previous or legacy_delegate or past_attempt
+                             or task["created_by_kind"] == SOURCE_CI_REPAIR_ORIGIN)
+            container = False
+            for table in (tasks, archived_tasks):
+                if await conn.scalar(select(table.c.id).where(
+                    table.c.parent_task_id == observation.task_id,
+                ).limit(1)):
+                    container = True
+                    break
+            if exhausted or container:
+                blocker = ("source_ci_repair_exhausted" if exhausted
+                           else "source_ci_repair_needs_owner")
+                guidance = ("One automatic source-CI repair is the limit." if exhausted else
+                            "A container cannot be claimed by a pool worker. Coordinate repair "
+                            "of its original branch with the existing owner.")
+                # One notification per original task, across heads and restarts.
+                await conn.execute(pg_insert(messages).values(
+                    id=("msg-source-ci-budget-" if exhausted else "msg-source-ci-owner-")
+                       + observation.task_id,
+                    project_id=source["project_id"], from_kind="system",
+                    from_id="integration-source-ci", to_kind="session",
+                    to_id=f"supervisor-{source['project_id']}",
+                    subject=f"Source CI repair requires supervisor: {observation.task_id}",
+                    body=(guidance + " Preserve the source "
+                          "branch and PR; diagnose or explicitly route further recovery. "
+                          "Do not file a repair of this repair.\n\n"
+                          + repair_description(observation)),
+                    created_at=time.time(), priority=50, archive_after_inject=1,
+                    body_kind="integration_source_ci",
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+                return {"success": True, "outcome": "supervisor_notified",
+                        "blocker": blocker, "task_id": observation.task_id,
+                        "delivery": proof.as_evidence()}
+            feedback = repair_description(observation)
+            # Feedback and budget commit with READY. A crash cannot spend the
+            # budget without reopening, or reopen twice without recording it.
+            transition = await self.db._apply_transition(
+                conn, observation.task_id, TaskStatus.READY,
+                context="reopen_with_feedback", integration_delivery=delivery,
+                description=task["description"] + "\n\n---\n**Reopen Feedback:**\n" + feedback,
+                assigned_agent_id=None,
+            )
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=observation.task_id,
+                type="reopen_feedback", label="Source CI Repair", content=feedback,
+                created_at=time.time(),
+            ))
             await conn.execute(update(integration_source_ci).where(*conditions).values(
-                repair_task_id=created["task_id"], repair_attempt=attempt, repair_history=history))
-        return {
-                "success": True, "outcome": "repair_created",
-                "repair_task_id": created["task_id"],
-                "delivery": proof.as_evidence(),
-            }
+                repair_attempt=1))
+            await self.db.add_task_comment(
+                observation.task_id, feedback, author_kind="agent",
+                author_id="service:integration-source-ci", conn=conn,
+            )
+            await self.db.log_event(
+                "integration.source_ci_reopened", project_id=source["project_id"],
+                task_id=observation.task_id,
+                payload=json.dumps({"source_head": source["head"],
+                    "generation": source["generation"], "attempt": 1}), conn=conn,
+            )
+        await self.db.log_blocked_flips(transition.flipped)
+        await self.db._notify_settled(transition.settled)
+        await self.db._notify_ready(transition.ready)
+        return {"success": True, "outcome": "reopened", "task_id": observation.task_id,
+                "delivery": proof.as_evidence()}
 
     async def _record_source_ci_infrastructure(
         self, conn, conditions, record, observation, policy
@@ -607,7 +1032,7 @@ class IntegrationCommandsMixin:
         from sqlalchemy import select, update
 
         from src.database.tables import integration_source_ci
-        from src.integration.source_delivery import record_delivery_evidence
+        from src.integration.source_repairs import record_delivery_evidence
 
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
@@ -648,7 +1073,7 @@ class IntegrationCommandsMixin:
 
         from src.database.tables import messages, projects, task_context
         from src.integration.models import HierarchicalIntegrationPolicy
-        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.reviews import ReviewEvidenceProducer
         from src.integration.source_ancestry import describe, repair_feedback
 
         producer = ReviewEvidenceProducer(self.db, None)
@@ -685,7 +1110,7 @@ class IntegrationCommandsMixin:
             else:
                 why = None
             if why is not None:
-                await conn.execute(pg_insert(messages).values(
+                await insert_message_with_source_event(conn, pg_insert(messages).values(
                     id=f"msg-source-ancestry-{evidence['id']}",
                     project_id=source["project_id"],
                     from_kind="system",
@@ -833,7 +1258,6 @@ class IntegrationCommandsMixin:
     @parent_engine_guard("command_target", outcome="human_required")
     async def _cmd_integration_transfer_owner(self, args: dict) -> dict:
         """Fence out one branch writer only after a proven server-side handoff."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationTransferOwnerArgs
 
@@ -970,25 +1394,16 @@ class IntegrationCommandsMixin:
             )
         return principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}
 
-    def _integration_promotion_service(self):
-        service = getattr(self.orchestrator, "promotion_service", None)
+    def _integration_repository_git(self):
+        """Read-only canonical Git port; no legacy publisher is constructed."""
+        service = getattr(self.orchestrator, "repository_git", None)
         if service is not None:
             return service
-        from src.integration.promotion import PromotionService
+        from src.integration.repository_git import RepositoryGit
 
-        return PromotionService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.orchestrator.git,
+        return RepositoryGit(
+            self.db, data_dir=self.config.data_dir, git_manager=self.orchestrator.git,
         )
-
-    def _integration_scheduler(self):
-        scheduler = getattr(self.orchestrator, "integration_scheduler", None)
-        if scheduler is not None:
-            return scheduler
-        from src.integration.scheduler import IntegrationScheduler
-
-        return IntegrationScheduler(self.db)
 
 
     async def _integration_operator_for_operation(
@@ -1064,20 +1479,16 @@ class IntegrationCommandsMixin:
 
 
     async def _integration_app_inputs(
-        self, args: dict
+        self, args: dict, *, allow_hosted_check_policy: bool = False
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        """``(refusal, inputs)`` shared by the read-only App-mode commands.
+        """Resolve supplied/bound policy and supplied/designated repository.
 
-        The policy is the caller's ``policy`` when given, so the anchors can be
-        prepared before the policy is bound, else the project's bound policy.
-        The repository is ``repository_id`` when given, else the designated
-        one.  Every identity comes from the daemon: the binding from the
-        authenticated resolver and the credential from the GitHub client.
+        Identities come only from the authenticated resolver and daemon client.
+        Return ``(refusal, inputs)`` for the read-only App-mode commands.
         """
-        from pydantic import ValidationError
 
         from src.git.github_contracts import credential_identity_from_client
-        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.models import HierarchicalIntegrationPolicy, HostedCheckPolicy
 
         project_id = str(args.get("project_id") or "")
         if not project_id:
@@ -1090,14 +1501,44 @@ class IntegrationCommandsMixin:
             return _failure("not_found", f"project {project_id} does not exist"), {}
 
         supplied = args.get("policy")
-        raw_policy = supplied if supplied is not None else project.hierarchical_integration_policy
+        hosted = args.get("hosted_check_policy")
+        if hosted is not None and (not allow_hosted_check_policy or supplied is not None):
+            return _failure(
+                "policy_invalid", "hosted_check_policy is only supported for trust-manifest "
+                "and is mutually exclusive with policy",
+            ), {}
+        raw_policy = (hosted if hosted is not None else supplied if supplied is not None
+                      else project.hierarchical_integration_policy)
         if raw_policy is None:
             return _failure(
                 "policy_missing", f"{project_id} has no bound integration policy; pass --policy FILE"
+                + (" or --hosted-check-policy FILE" if allow_hosted_check_policy else ""),
             ), {}
         try:
-            policy = HierarchicalIntegrationPolicy.model_validate(raw_policy)
+            policy_model = HostedCheckPolicy if hosted is not None else HierarchicalIntegrationPolicy
+            policy = policy_model.model_validate(raw_policy)
         except (ValidationError, TypeError, ValueError) as exc:
+            # Development settings share this column but contain local
+            # commands/budgets, not the hosted check and producer identities
+            # needed by either App-mode diagnostic. Do not infer that trust
+            # from commands or silently fall back when --policy is supplied.
+            from src.integration.development import DevelopmentPolicy
+
+            try:
+                DevelopmentPolicy.model_validate(raw_policy).checked()
+            except (ValidationError, TypeError, ValueError):
+                pass
+            else:
+                source = "supplied" if supplied is not None else "bound"
+                return _failure(
+                    "policy_missing",
+                    f"{project_id}'s {source} development policy defines local validation, "
+                    "but has no hosted required check names, check-set version, or CI producer "
+                    "App id. Pass --policy FILE with a reviewed hierarchical integration "
+                    "policy: parent.required_checks and root.required_checks must include "
+                    "the exact names, version, and the same numeric producer_id. This reads "
+                    "the candidate policy without changing the project's bound policy.",
+                ), {}
             return _failure("policy_invalid", f"the integration policy is invalid: {exc}"), {}
 
         repository_id = str(args.get("repository_id") or project.integration_repository_id or "")
@@ -1146,7 +1587,8 @@ class IntegrationCommandsMixin:
             "project": project,
             "project_id": project_id,
             "policy": policy,
-            "policy_source": "argument" if supplied is not None else "bound",
+            "policy_source": ("hosted_check_policy" if hosted is not None
+                              else "argument" if supplied is not None else "bound"),
             "repository_id": repository_id,
             "repository": repository,
             "binding": binding,
@@ -1155,19 +1597,16 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_trust_manifest(self, args: dict) -> dict:
-        """Render the App-mode trust manifest and compare the default-branch copy.
+        """Render from authenticated App inputs; compare the exact default-branch SHA.
 
-        Read-only (App-mode integration train spec §6.1), on the inputs
-        :meth:`_integration_app_inputs` resolves: ``repository_id`` and
-        ``full_name`` from the authenticated binding, ``attestation_app_id``
-        from the App client, and the committed copy read through the App at
-        the default branch's exact SHA.
+        Read-only (App-mode integration train spec §6.1).
         """
         from src.git.github_contracts import GitHubAccessError, GitHubCredentialMode
         from src.integration import trust_manifest
         from src.integration.preflight import read_committed_trust_manifest
+        from src.integration.promotion_steps import read_stored_promotion_flow
 
-        refusal, inputs = await self._integration_app_inputs(args)
+        refusal, inputs = await self._integration_app_inputs(args, allow_hosted_check_policy=True)
         if refusal is not None:
             return refusal
         binding, identity = inputs["binding"], inputs["identity"]
@@ -1180,13 +1619,19 @@ class IntegrationCommandsMixin:
             )
 
         try:
+            # Project DTOs omit this column; the retained reader is also used
+            # by app-verify and functional preflight. Lightweight adapters may
+            # expose it directly when they have no database engine.
+            flow = await read_stored_promotion_flow(self.db, inputs["project_id"])
+            if flow is None:
+                flow = getattr(inputs["project"], "promotion_flow", None)
             manifest = trust_manifest.manifest_for_policy(
                 inputs["policy"],
                 canonical_repository_id=inputs["repository_id"],
                 repository_id=binding.repository_id,
                 full_name=binding.full_name,
                 attestation_app_id=identity.app_id,
-                promotion_flow=getattr(inputs["project"], "promotion_flow", None) or (),
+                promotion_flow=flow or (),
             )
         except trust_manifest.TrustManifestRefusal as exc:
             return _failure(exc.code, str(exc))
@@ -1207,6 +1652,22 @@ class IntegrationCommandsMixin:
                 error=f"the default-branch copy could not be read: {exc}",
             )
         else:
+            # Named sets are authored in committed trust, not in the routing
+            # policy. Preserve them when rendering so --write cannot erase a
+            # configured promotion source audit or step-specific check set.
+            if raw is not None:
+                try:
+                    committed_trust = trust_manifest.IntegrationTrustManifest.model_validate_json(raw)
+                except ValueError:
+                    pass
+                else:
+                    if committed_trust.check_sets:
+                        manifest["check_sets"] = {
+                            **{name: list(checks)
+                               for name, checks in committed_trust.check_sets.items()},
+                            **manifest.get("check_sets", {}),
+                        }
+                        text = trust_manifest.canonical_text(manifest)
             committed.update(sha=sha, **trust_manifest.compare(manifest, raw).as_dict())
         return {
             "success": True,
@@ -1233,12 +1694,44 @@ class IntegrationCommandsMixin:
         cannot disagree.  Existing-login credentials are reported as the
         ``credential`` item's ``not_app_mode``, not refused.
         """
+        if args.get("repository_access_only"):
+            from src.projects.github import GitHubError
+
+            project_id = args.get("project_id", "")
+            _, refusal = await integration_operator(self.db, project_id)
+            if refusal:
+                return _failure("unauthorized", refusal)
+            project = await self.db.get_project(project_id)
+            if project is None:
+                return _failure("not_found", "Project not found")
+            try:
+                binding = await self._github_client().validate_repository(project.repo_url)
+            except GitHubError as exc:
+                return _failure("repository_binding_failed", exc.message)
+            return {
+                "success": True, "outcome": "verified", "project_id": project_id,
+                "github_repository_id": binding.repository_id, "full_name": binding.full_name,
+                "default_branch": project.repo_default_branch, "ready": True,
+                "items": [{"id": "repository", "status": "ok", "code": "repository_accessible",
+                           "observed": {"full_name": binding.full_name}, "expected": {}, "fix": ""}],
+            }
+
         from src.integration import app_mode
 
         refusal, inputs = await self._integration_app_inputs(args)
         if refusal is not None:
             return refusal
+        from src.integration.promotion_steps import read_stored_promotion_flow
+
         binding = inputs["binding"]
+        missing_origins = ()
+        if getattr(self.db, "_engine", None) is not None:
+            from src.integration.hierarchy import missing_origin_tasks_on
+
+            async with self.db._engine.connect() as conn:
+                missing_origins = tuple(await missing_origin_tasks_on(
+                    conn, inputs["project_id"], inputs["repository_id"],
+                ))
         report = await app_mode.evaluate(
             app_mode.AppModeContext(
                 project_id=inputs["project_id"],
@@ -1251,6 +1744,8 @@ class IntegrationCommandsMixin:
                 mode=getattr(inputs["project"], "hierarchical_integration_mode", None),
                 policy_path=args.get("policy_path") if args.get("policy") is not None else None,
                 repository_arg=args.get("repository_id") or None,
+                promotion_flow=await read_stored_promotion_flow(self.db, inputs["project_id"]),
+                missing_origins=missing_origins,
             )
         )
         return {
@@ -1270,20 +1765,15 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_eject(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationEjectArgs
         from src.integration.batches import BatchStore
-        from src.integration.engine import current_policy_ejection
         from src.integration.train_controls import TrainControlError, TrainControls
 
         batch_id = str(args.get("batch_id") or "")
-        task_id = str(args.get("task_id") or "")
-        reason = str(args.get("reason") or "")
         if not batch_id.strip():
             return _failure("invalid_state", "batch_id is required")
-        policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
-        if policy_ejection is None:
-            principal = current_principal() or TRUSTED_LOCAL
-            _operator, refusal = await integration_operator(self.db, principal.project_id)
-            if refusal:
-                return _failure("unauthorized", refusal)
+        principal = current_principal() or TRUSTED_LOCAL
+        _operator, refusal = await integration_operator(self.db, principal.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
 
         batch = await BatchStore(self.db).get(batch_id)
         if batch is not None:
@@ -1312,41 +1802,12 @@ class IntegrationCommandsMixin:
                 return _failure("refused", str(exc))
             return {"success": True, **result}
 
-        if policy_ejection is None:
-            # An absent Git-first batch has no project binding. A project's
-            # supervisor must get the same refusal for foreign and missing IDs.
-            _operator, refusal = await integration_operator(self.db, None)
-            if refusal:
-                return _failure("unauthorized", refusal)
-        if not await self.db.get_integration_batch(batch_id):
-            return _failure("unknown_batch", "batch is missing")
-        if not batch_id or not task_id or not reason.strip():
-            return _failure("invalid_state", "batch_id, task_id and reason are required")
-        if args.get("dry_run"):
-            return _failure("invalid_state", "legacy batch ejection does not support preview")
-        if policy_ejection is None:
-            return _failure("unauthorized", "ejection requires the active root policy visit")
-        operator_id = "service:root-reconciler"
+        # Historical engine batches cannot be ejected by the train control.
+        _operator, refusal = await integration_operator(self.db, None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        return _failure("unknown_batch", "batch is missing or belongs to the retired engine")
 
-        async def observe_resolution(resolution):
-            batch = await self.db.get_integration_batch(resolution["batch_id"])
-            if batch is None:
-                return None
-            service = await self._integration_candidate_service(batch)
-            return await service.app_client.exact_head_ref(
-                resolution["target_branch"].removeprefix("refs/heads/"),
-            )
-
-        from src.integration.gates import RootMemberEjection
-
-        return await RootMemberEjection(self.db).eject(
-            batch_id,
-            task_id=task_id,
-            reason=reason,
-            operator_id=operator_id,
-            resolution_observer=observe_resolution,
-            policy_ejection=policy_ejection,
-        )
 
     async def _reconcile_integration_completion(self, project_id: str) -> None:
         from src.integration.completion_recovery import (
@@ -1355,17 +1816,13 @@ class IntegrationCommandsMixin:
 
         await reconcile_closed_integration_owners(self.orchestrator, project_id)
         recovered = await recover_completed_pr_links(
-            self.db, self._integration_promotion_service(), project_id
+            self.db, self._integration_repository_git(), project_id
         )
         if recovered:
             await self.db.log_event(
                 "integration.pr_links_recovered", project_id=project_id,
                 payload=json.dumps({"task_ids": recovered}),
             )
-
-
-
-
 
 
     async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
@@ -1398,50 +1855,8 @@ class IntegrationCommandsMixin:
         }, result)
 
 
-
-
-
-    async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
-        """Recover a durable pushed root-candidate repair."""
-        from pydantic import ValidationError
-        from sqlalchemy import select
-
-        from src.commands.contracts.integration import IntegrationRecoverCandidateMemberArgs
-        from src.database.tables import integration_candidate_resolutions
-        from src.integration.candidates import CandidateAuthorizationError
-
-        try:
-            request = IntegrationRecoverCandidateMemberArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("stale", f"invalid candidate member recovery: {exc}")
-        async with self.db._engine.connect() as conn:
-            reservation = (
-                await conn.execute(
-                    select(integration_candidate_resolutions).where(
-                        integration_candidate_resolutions.c.id == request.reservation_id
-                    )
-                )
-            ).mappings().one_or_none()
-        if reservation is None:
-            return _failure("stale", "candidate repair reservation does not exist")
-        batch = await self.db.get_integration_batch(reservation["batch_id"])
-        if batch is None:
-            return _failure("stale", "candidate repair batch does not exist")
-        _label, refusal = await integration_operator(getattr(self, "db", None), str(batch["project_id"]))
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await (await self._integration_candidate_service(batch)).recover_repair(
-                request.reservation_id
-            )
-        except CandidateAuthorizationError as exc:
-            return _failure("stale", str(exc))
-        return {"success": result.outcome in {"accepted", "already_accepted", "rejected"},
-                **result.model_dump(mode="json")}
-
     async def _cmd_integration_release_owner(self, args: dict) -> dict:
         """Run the fenced owner-recovery check for one owner or task."""
-        from pydantic import ValidationError
         from sqlalchemy import select
 
         from src.commands.contracts.integration import IntegrationReleaseOwnerArgs
@@ -1480,15 +1895,25 @@ class IntegrationCommandsMixin:
         if refusal is not None:
             return _failure("unauthorized", refusal)
 
-        recovery = owner_recovery_for(self.orchestrator)
-        if recovery is None:
-            return _failure("runtime_error", "owner recovery is unavailable")
-        owner_row_ids = [row["id"] for row in rows]
-        if request.owner_row_id is not None and not owner_row_ids:
-            owner_row_ids = [request.owner_row_id]
-        outcomes = await recovery.recover_many(
-            owner_row_ids, principal=principal, dry_run=request.dry_run
-        )
+        if request.self_owned:
+            from src.integration.preparation_handoff import recover_preparation_handoffs
+
+            if self.orchestrator is None:
+                return _failure("runtime_error", "preparation recovery is unavailable")
+            outcomes = await recover_preparation_handoffs(
+                self.orchestrator, rows, principal=principal, dry_run=request.dry_run,
+            )
+        else:
+            recovery = owner_recovery_for(self.orchestrator)
+            if recovery is None:
+                return _failure("runtime_error", "owner recovery is unavailable")
+            owner_row_ids = [row["id"] for row in rows]
+            if request.owner_row_id is not None and not owner_row_ids:
+                owner_row_ids = [request.owner_row_id]
+            outcomes = await recovery.recover_many(
+                owner_row_ids, principal=principal, dry_run=request.dry_run,
+                no_push=request.no_push,
+            )
         serialized = [outcome.to_dict() for outcome in outcomes]
         if not serialized:
             outcome = "not_found"
@@ -1502,12 +1927,36 @@ class IntegrationCommandsMixin:
             outcome = "not_eligible"
         return {"success": True, "outcome": outcome, "outcomes": serialized}
 
+    async def _cmd_integration_restore_task_origin(self, args: dict) -> dict:
+        """Preview/apply restoration of a task's branch to its recorded origin."""
+
+        from src.commands.contracts.integration import IntegrationRestoreTaskOriginArgs
+        from src.integration.owner_recovery import owner_recovery_for
+
+        try:
+            request = IntegrationRestoreTaskOriginArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_eligible", f"invalid origin restore request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", "task does not exist")
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        recovery = owner_recovery_for(self.orchestrator)
+        if recovery is None:
+            return _failure("not_eligible", "owner recovery is unavailable")
+        result = await recovery.restore_task_origin(request, principal=principal)
+        return _with_reason(result["outcome"] in {"preview", "restored"}, result)
+
     async def _cmd_integration_reserve_owner(self, args: dict) -> dict:
         """Restore one stopped producer's missing canonical branch reservation."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReserveOwnerArgs
-        from src.integration.canonical_reservation import reserve_canonical_task_branch
+        from src.integration.canonical_reservation import (
+            reserve_canonical_task_branch, reserve_ordinary_repair_branch,
+        )
+        from src.integration.repair import OrdinaryRepairService
 
         try:
             request = IntegrationReserveOwnerArgs.model_validate(args)
@@ -1519,15 +1968,30 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        if task.created_by_kind == "integration_repair":
-            result = await self._integration_repair_service().reserve_delegate(task.id)
-        else:
-            result = await reserve_canonical_task_branch(self.db, task.id)
-        return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
+        orchestrator = getattr(self, "orchestrator", None)
+
+        async def reserve() -> dict:
+            repair = OrdinaryRepairService(self.db)
+            original = await repair.input(task.id)
+            if original is not None:
+                result = await reserve_ordinary_repair_branch(
+                    self.db, task, repair, original,
+                    getattr(orchestrator, "integration_train", None),
+                )
+            elif await self.db.get_active_integration_repair_for_task(task.id) is not None:
+                result = await self._integration_repair_service().reserve_delegate(task.id)
+            else:
+                result = await reserve_canonical_task_branch(self.db, task.id)
+            return _with_reason(result["outcome"] in {"acquired", "already_reserved"}, result)
+
+        # Train recovery fetches origin; answer within the CLI timeout with a poll handle.
+        return await detached_operations(orchestrator or self).run(
+            f"reserve_owner:{task.id}", reserve,
+            poll=f"aq integration reserve-owner --task-id {task.id}",
+        )
 
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:
         """Release a project's provably safe reserved owners; report every other."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReleaseStaleOwnersArgs
         from src.commands.provider_commands import parse_duration
@@ -1556,7 +2020,6 @@ class IntegrationCommandsMixin:
 
     async def _cmd_integration_redrive_root(self, args: dict) -> dict:
         """Diagnose a completed train root's missing PR; open it for the reported head."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationRedriveRootArgs
         from src.integration.root_pull_requests import RootDeliveryRedrive
@@ -1589,7 +2052,6 @@ class IntegrationCommandsMixin:
 
     async def _cmd_integration_authorize_root(self, args: dict) -> dict:
         """Record an operator's authorization of one exact completed train root source."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationAuthorizeRootArgs
         from src.integration.root_authorization import RootAuthorization
@@ -1604,7 +2066,15 @@ class IntegrationCommandsMixin:
         )
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        result = await RootAuthorization(self.db).run(
+        train = getattr(self.orchestrator, "integration_train", None)
+        train_blockers = None
+        if train is not None:
+            from src.integration.status import IntegrationStatusService
+
+            train_blockers = IntegrationStatusService(
+                self.db, git_first="active", train=train,
+            ).train_task_blockers
+        result = await RootAuthorization(self.db, train_blockers=train_blockers).run(
             request.task_id, dry_run=request.dry_run,
             expected_head_sha=request.expected_head_sha, reason=request.reason,
             operator_id=principal,
@@ -1618,7 +2088,6 @@ class IntegrationCommandsMixin:
 
     async def _cmd_integration_redrive_child(self, args: dict) -> dict:
         """Diagnose a completed child its parent never assembled; advance it for the head."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationRedriveChildArgs
         from src.integration.child_delivery import ChildDelivery
@@ -1640,13 +2109,14 @@ class IntegrationCommandsMixin:
                 return await collection.collect_parent(parent_id, time.time())
 
         result = await ChildDelivery(
-            self.db, self._integration_promotion_service(), collect=collect
+            self.db, self._integration_repository_git(), collect=collect
         ).run(
             request.task_id,
             dry_run=request.dry_run,
             expected_head_sha=request.expected_head_sha,
             reason=request.reason,
             operator_id=principal,
+            adopt_source=request.adopt_source,
         )
         return {
             "success": result["outcome"] in {"would_advance", "advanced", "nothing_to_redrive"},
@@ -1654,9 +2124,27 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_recover_completed_container(self, args: dict) -> dict:
+
+        from src.commands.contracts.integration import IntegrationRecoverCompletedContainerArgs
+        from src.integration.completed_container_recovery import CompletedContainerRecovery
+
+        try:
+            request = IntegrationRecoverCompletedContainerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", str(exc))
+        operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        result = await CompletedContainerRecovery(
+            self.db, self._integration_repository_git(),
+            git_first=lambda: self.config.integration.git_first,
+            authorize=lambda: integration_operator(self.db, request.project_id),
+        ).run(request, operator_id=operator)
+        return _with_reason(result["outcome"] != "refused", result)
+
     async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
         """Recover a suspended producer, cancelled collection or failed verifier."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReopenCollectionArgs
         from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
@@ -1668,7 +2156,7 @@ class IntegrationCommandsMixin:
         except ValidationError as exc:
             return _failure("invalid", f"invalid collection reopen request: {exc}")
         task = await self.db.get_task(request.task_id)
-        from src.integration.parent_engine import active_parent_scope
+        from src.integration.owner_guards import active_parent_scope
         if task is not None and active_parent_scope(self.db, task.id):
             principal, refusal = "policy:parent-reconciler", None
         else:
@@ -1712,7 +2200,7 @@ class IntegrationCommandsMixin:
                 getattr(self, "orchestrator", None), "aconfirm_integration_owner_handoff", None
             )
         result = await recovery_type(
-            self.db, self._integration_promotion_service(), **recovery_options
+            self.db, self._integration_repository_git(), **recovery_options
         ).run(
             request.task_id,
             dry_run=request.dry_run,
@@ -1727,127 +2215,8 @@ class IntegrationCommandsMixin:
         }
 
 
-    async def _cmd_integration_rebind_repair(self, args: dict) -> dict:
-        """Prove a live repair candidate and reserve it under the current intent."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRebindRepairArgs
-        from src.integration.promotion import PromotionError
-        from src.integration.repair_rebind import RepairRebind
-
-        try:
-            request = IntegrationRebindRepairArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("blocked", f"invalid repair rebind request: {exc}")
-        task = await self.db.get_task(request.task_id)
-        if task is None:
-            return _failure("not_found", f"task {request.task_id} not found")
-        _principal, refusal = await integration_operator(self.db, task.project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await RepairRebind(self._integration_promotion_service()).run(
-                request.task_id,
-                dry_run=request.dry_run,
-                expected_head_sha=request.expected_head_sha,
-            )
-        except (PromotionError, GitError, ValueError) as exc:
-            return _failure("blocked", str(exc))
-        return {
-            "success": result["outcome"] in {"would_rebind", "rebound", "already_reserved"},
-            **result,
-        }
-
-    async def _cmd_integration_recover_parent_head(self, args: dict) -> dict:
-        """Reconcile a completed post-collection repair with its immutable receipts."""
-        from src.commands.contracts.integration import IntegrationRecoverParentHeadArgs
-        from src.integration.parent_repair_heads import ParentHeadRecovery
-        from src.integration.promotion import PromotionError
-
-        try:
-            request = IntegrationRecoverParentHeadArgs.model_validate(args)
-        except ValueError as exc:
-            return _failure("blocked", str(exc))
-        principal, refusal = await self._integration_operator_for_operation(request.operation_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await ParentHeadRecovery(self._integration_promotion_service()).run(
-                request, principal=principal,
-            )
-        except (PromotionError, GitError, ValueError, HierarchyError) as exc:
-            return _failure("blocked", str(exc))
-        return {
-            "success": result["outcome"] in {"would_recover", "recovered", "already_recovered"},
-            **result,
-        }
-
-    async def _cmd_integration_recover_preserved_repair(self, args: dict) -> dict:
-        """Consume an audited completed candidate without renewing repair authority."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRecoverPreservedRepairArgs
-        from src.integration.preserved_repair import PreservedRepairRecovery
-        from src.integration.promotion import PromotionError
-
-        try:
-            request = IntegrationRecoverPreservedRepairArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("blocked", str(exc))
-        principal, refusal = await self._integration_operator_for_operation(request.operation_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await PreservedRepairRecovery(
-                self._integration_promotion_service(), self._integration_repair_service()
-            ).run(request, principal=principal)
-        except (PromotionError, GitError, ValueError, BranchBusy, StaleFence) as exc:
-            return _failure("blocked", str(exc))
-        return {
-            "success": result["outcome"] in {"would_recover", "recovered", "already_recovered"},
-            **result,
-        }
-
-    async def _cmd_integration_rebind_detached_repair(self, args: dict) -> dict:
-        """Rebind a detached debug stage frozen on an unpublished head to its conflict."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRebindDetachedRepairArgs
-        from src.integration.detached_repair_rebind import DetachedRepairRebind
-        from src.integration.promotion import PromotionError
-
-        try:
-            request = IntegrationRebindDetachedRepairArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("blocked", f"invalid detached repair rebind request: {exc}")
-        principal, refusal = await self._integration_operator_for_operation(
-            request.operation_id
-        )
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await DetachedRepairRebind(
-                self._integration_promotion_service(), self._integration_repair_service()
-            ).run(
-                request.operation_id,
-                dry_run=request.dry_run,
-                expected_stage=request.expected_stage,
-                expected_remote_head_sha=request.expected_remote_head_sha,
-                reason=request.reason,
-                principal=principal,
-            )
-        except (PromotionError, GitError, ValueError) as exc:
-            return _failure("blocked", str(exc))
-        return {
-            "success": result["outcome"] in {"would_rebind", "rebound", "already_rebound"},
-            **result,
-        }
-
-
-
     async def _cmd_integration_close_delivered_pr(self, args: dict) -> dict:
         """Close one open PR only once Git proves its work is on the default branch."""
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
         from src.integration.pr_delivery import DeliveredPullRequestClosure
@@ -1867,7 +2236,7 @@ class IntegrationCommandsMixin:
         if refusal is not None:
             return _failure("unauthorized", refusal)
         result = await DeliveredPullRequestClosure(
-            self.db, self._integration_promotion_service()
+            self.db, self._integration_repository_git()
         ).run(
             request.project_id,
             request.pr_number,
@@ -1883,40 +2252,6 @@ class IntegrationCommandsMixin:
             **result,
         }
 
-    def _integration_train_service(self):
-        service = getattr(self.orchestrator, "integration_train_service", None)
-        if service is not None:
-            return service
-        from src.integration.scheduler import TrainService
-        from src.integration.migration_heads import MigrationInspector
-        from src.integration.source_ci import RootAdmissionReader
-
-        return TrainService(
-            self.db,
-            default_mode=self.config.integration.default_mode,
-            migration_inspector=MigrationInspector(self._integration_promotion_service()),
-            admission_reader=RootAdmissionReader(self._integration_promotion_service()),
-            delivery_observer=getattr(self.orchestrator, "delivery_observer", None),
-        )
-
-    def _integration_root_promotion_service(self):
-        service = getattr(self.orchestrator, "root_promotion_service", None)
-        if service is not None:
-            return service
-        from src.integration.main_promotion import RootPromotionService
-
-        return RootPromotionService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.orchestrator.git,
-            app_client=getattr(self.orchestrator, "integration_app_client", None),
-            github_client_factory=getattr(
-                self.orchestrator, "github_client_factory", None
-            ),
-            attestation_resolver=getattr(
-                self.orchestrator, "integration_attestation_resolver", None
-            ),
-        )
 
     def _integration_cleanup_service(self):
         service = getattr(self.orchestrator, "integration_cleanup_service", None)
@@ -1936,61 +2271,6 @@ class IntegrationCommandsMixin:
             ),
         )
 
-    async def _integration_candidate_service(
-        self, batch: dict[str, Any], *, repair_session=None
-    ):
-        service = getattr(self.orchestrator, "integration_candidate_service", None)
-        if service is not None:
-            return service
-        from src.integration.candidates import CandidateService
-
-        app_client = None
-        binding_resolver = getattr(
-            self.orchestrator, "github_repository_binding_resolver", None
-        )
-        github_client_factory = getattr(
-            self.orchestrator, "github_client_factory", None
-        )
-        repository = await self.db.get_repo(batch["repository_id"])
-        if repository is not None and binding_resolver is not None and github_client_factory is not None:
-            binding = binding_resolver(repository)
-            if inspect.isawaitable(binding):
-                binding = await binding
-            if binding is not None:
-                app_client = github_client_factory(binding)
-                if inspect.isawaitable(app_client):
-                    app_client = await app_client
-        branch_ownership = None
-        confirm_published_repair = None
-        if repair_session is not None:
-            callback_name = (
-                "aconfirm_integration_pool_owner_handoff"
-                if repair_session.lifecycle == "pool"
-                else "aconfirm_integration_owner_stopped_for_repair"
-            )
-            branch_ownership = BranchOwnership(
-                self.db,
-                confirm_handoff=getattr(self.orchestrator, callback_name, None),
-            )
-            if repair_session.lifecycle == "pool" and app_client is not None:
-                callback = getattr(
-                    self.orchestrator, "aconfirm_integration_pool_published_repair_handoff", None
-                )
-                if callback is not None:
-                    async def confirm_published_repair(owner, reservation_id):
-                        return await callback(
-                            owner, reservation_id, remote_head_reader=app_client.exact_head_ref
-                        )
-        return CandidateService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.orchestrator.git,
-            app_client=app_client,
-            forge_provider=app_client,
-            repair_service=self._integration_repair_service(),
-            branch_ownership=branch_ownership,
-            confirm_published_repair=confirm_published_repair,
-        )
 
     def _integration_release_service(self):
         service = getattr(self.orchestrator, "integration_release_service", None)
@@ -2000,85 +2280,8 @@ class IntegrationCommandsMixin:
 
         return IntegrationReleaseService(self.db)
 
-    async def _cmd_integration_schedule_due(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationScheduleDueArgs
-
-        try:
-            request = IntegrationScheduleDueArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("runtime_error", f"invalid integration schedule trigger: {exc}")
-        project = await self.db.get_project(request.project_id)
-        if project is None:
-            return _failure("runtime_error", "integration schedule project does not exist")
-        if not await self._integration_delivery_authorized(
-            request.project_id, "integration_schedule_due"
-        ):
-            return _failure("unauthorized", "caller cannot schedule this project")
-        result = await self._integration_scheduler().mark_due(
-            request.project_id, request.now, request.trigger
-        )
-        return {
-            "success": result["outcome"] in {"due", "not_due", "coalesced"},
-            **result,
-        }
-
-    async def _cmd_integration_seal(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationSealArgs
-
-        try:
-            request = IntegrationSealArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("runtime_error", f"invalid integration seal request: {exc}")
-        project = await self.db.get_project(request.project_id)
-        if project is None:
-            return _failure("runtime_error", "integration seal project does not exist")
-        if not await self._integration_delivery_authorized(
-            request.project_id, "integration_seal"
-        ):
-            return _failure("unauthorized", "caller cannot seal this project")
-        result = await self._integration_train_service().seal(
-            request.project_id,
-            request.request_id,
-            request.now if request.now is not None else time.time(),
-        )
-        return {
-            "success": result["outcome"] in {"sealed", "empty"},
-            **result,
-        }
-
-    async def _cmd_integration_promote_main(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationPromoteMainArgs
-        from src.integration.main_promotion import RootPromotionInvariantError
-
-        try:
-            request = IntegrationPromoteMainArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("runtime_error", f"invalid root promotion request: {exc}")
-        batch = await self.db.get_integration_batch(request.batch_id)
-        if batch is None:
-            return _failure("runtime_error", "integration batch does not exist")
-        if not await self._integration_delivery_authorized(
-            batch["project_id"], "integration_promote_main"
-        ):
-            return _failure("unauthorized", "caller cannot promote this root batch")
-        try:
-            result = await self._integration_root_promotion_service().promote(
-                request.batch_id, request.revision
-            )
-        except RootPromotionInvariantError as exc:
-            return _failure("runtime_error", str(exc))
-        return _with_reason(
-            result.outcome in {"promoted", "already_promoted"}, result.model_dump(mode="json")
-        )
 
     async def _cmd_integration_cleanup(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationCleanupArgs
 
@@ -2152,112 +2355,9 @@ class IntegrationCommandsMixin:
             "conflict_count": conflicts,
         }
 
-    async def _cmd_integration_build_candidate(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationBuildCandidateArgs
-
-        try:
-            request = IntegrationBuildCandidateArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("runtime_error", f"invalid candidate build request: {exc}")
-        batch = await self.db.get_integration_batch(request.batch_id)
-        if batch is None:
-            return _failure("runtime_error", "integration batch does not exist")
-        if not await self._integration_delivery_authorized(
-            batch["project_id"], "integration_build_candidate"
-        ):
-            return _failure("unauthorized", "caller cannot build this root batch")
-        if (
-            request.expected_revision is not None
-            and batch["current_revision"] != request.expected_revision
-        ):
-            return _failure("stale_revision", "candidate revision changed before build")
-        service = await self._integration_candidate_service(batch)
-        moved_main = False
-        if batch["lifecycle"] == "building":
-            from sqlalchemy import select
-
-            from src.database.tables import integration_promotion_intents
-
-            async with self.db._engine.connect() as conn:
-                moved_main = (
-                    await conn.execute(
-                        select(integration_promotion_intents.c.id).where(
-                            integration_promotion_intents.c.intent_kind == "root",
-                            integration_promotion_intents.c.root_batch_id == request.batch_id,
-                            integration_promotion_intents.c.root_candidate_revision
-                            == batch["current_revision"],
-                            integration_promotion_intents.c.state == "superseded",
-                        )
-                    )
-                ).scalar_one_or_none() is not None
-        if request.expected_base_sha is not None and not moved_main:
-            # A built revision whose construction base is not the caller's
-            # observed main is stale: ``build`` would answer ``already_built``
-            # for it forever (the reconciler's base-moved loop).
-            from sqlalchemy import select
-
-            from src.database.tables import integration_candidate_revisions
-
-            async with self.db._engine.connect() as conn:
-                built_base = (
-                    await conn.execute(
-                        select(integration_candidate_revisions.c.construction_base_sha).where(
-                            integration_candidate_revisions.c.batch_id == request.batch_id,
-                            integration_candidate_revisions.c.revision
-                            == batch["current_revision"],
-                            integration_candidate_revisions.c.head_sha.is_not(None),
-                        )
-                    )
-                ).scalar_one_or_none()
-            moved_main = built_base is not None and built_base != request.expected_base_sha
-        if moved_main and batch["policy_snapshot"].get("on_main_moved", "rebuild") != "rebuild":
-            return {
-                "success": False,
-                "outcome": "base_moved",
-                "batch_id": request.batch_id,
-                "revision": int(batch["current_revision"]),
-            }
-        rebuilt = False
-        if moved_main and getattr(service, "app_client", None) is not None:
-            rebuilt = True
-            repository = await service._repository(batch["repository_id"])
-            new_base = await service.app_client.exact_head_ref(repository.default_branch)
-            result = (
-                await service.rebuild(
-                    request.batch_id, int(batch["current_revision"]), new_base
-                )
-                if new_base is not None
-                else await service.build(request.batch_id)
-            )
-        else:
-            result = await service.build(request.batch_id)
-        if (
-            result.outcome == "base_moved"
-            and batch["policy_snapshot"].get("on_main_moved", "rebuild") == "rebuild"
-            and getattr(service, "app_client", None) is not None
-        ):
-            repository = await service._repository(batch["repository_id"])
-            new_base = await service.app_client.exact_head_ref(repository.default_branch)
-            if new_base is not None:
-                rebuilt = True
-                result = await service.rebuild(
-                    request.batch_id, int(batch["current_revision"]), new_base
-                )
-        if (
-            request.expected_revision is not None
-            and result.revision != request.expected_revision
-            and not (rebuilt and result.outcome in {"built", "already_built"})
-        ):
-            return _failure("stale_revision", "candidate revision changed during build")
-        return _with_reason(
-            result.outcome in {"empty", "built", "already_built"}, result.model_dump(mode="json")
-        )
 
     async def _cmd_integration_repair_close_current(self, args: dict) -> dict:
         """Resolve a closed root writer only while its adopted revision is current."""
-        from pydantic import ValidationError
         from sqlalchemy import select
 
         from src.commands.contracts.integration import IntegrationRepairCloseCurrentArgs
@@ -2341,7 +2441,6 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_ci_evidence(self, args: dict) -> dict:
-        from pydantic import ValidationError
         from sqlalchemy import select
 
         from src.commands.contracts.integration import IntegrationCIEvidenceArgs
@@ -2412,10 +2511,9 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_release(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReleaseArgs
-        from src.integration.scheduler import empty_seal_request
+        from src.integration.release import empty_seal_request
 
         try:
             request = IntegrationReleaseArgs.model_validate(args)
@@ -2447,19 +2545,51 @@ class IntegrationCommandsMixin:
             verify_workspace_checkpoint,
         )
 
-        async def resolve_head(repo, branch):
-            promotion = self._integration_promotion_service()
+        def origin_git(repo):
+            # Activation may have just bound/inserted the repository in its
+            # transaction. Resolve that fenced row, rather than reading an old
+            # binding through a second database connection.
+            from src.integration.repository_git import RepositoryGit
+
+            return RepositoryGit(
+                self.db, data_dir=self.config.data_dir, git_manager=self.orchestrator.git,
+                repository_resolver=lambda rid: repo if rid == repo.id else None,
+            )
+
+        async def branch_head(repo, branch):
+            promotion = origin_git(repo)
             resolved = await promotion._resolve_repository(repo.id)
             await promotion._ensure_retained_repository(resolved)
             remote = await promotion.git.als_remote_ref(str(resolved.retained_git_dir), branch)
             if remote.state is RemoteRefState.ERROR:
                 raise GitError(remote.error or "repository head state is unknown")
-            if remote.state is not RemoteRefState.PRESENT or remote.oid is None:
+            if remote.state is RemoteRefState.ABSENT:
+                return None
+            if remote.oid is None:
                 raise GitError(f"repository branch {branch!r} does not exist")
             return remote.oid
 
+        async def resolve_head(repo, branch):
+            head = await branch_head(repo, branch)
+            if head is None:
+                raise GitError(f"repository branch {branch!r} does not exist")
+            return head
+
+        async def branch_base(repo, head, parent_head):
+            promotion = origin_git(repo)
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
+                await promotion.git.afetch_origin(
+                    str(resolved.retained_git_dir), repository_url=resolved.origin_url,
+                    lock_held=True,
+                )
+                return await promotion.git.amerge_base(
+                    str(resolved.retained_git_dir), head, parent_head,
+                )
+
         async def materialize(repo, branch, base_sha):
-            promotion = self._integration_promotion_service()
+            promotion = self._integration_repository_git()
             resolved = await promotion._resolve_repository(repo.id)
             await promotion._ensure_retained_repository(resolved)
             async with promotion.git.arepository_transaction(
@@ -2478,6 +2608,8 @@ class IntegrationCommandsMixin:
         return HierarchyIntegration(
             self.db,
             default_head_resolver=resolve_head,
+            branch_head_resolver=branch_head,
+            branch_base_resolver=branch_base,
             branch_materializer=materialize,
             checkpoint_verifier=verify_checkpoint,
             git_manager=self.orchestrator.git,
@@ -2503,7 +2635,7 @@ class IntegrationCommandsMixin:
                 None,
             ),
             owner_recovery=owner_recovery_for(self.orchestrator),
-            promotion=self._integration_promotion_service(),
+            promotion=self._integration_repository_git(),
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:
@@ -2524,39 +2656,38 @@ class IntegrationCommandsMixin:
             project_id, capability
         )
 
-    async def _cmd_integration_repair_start(self, args: dict) -> dict:
-        from pydantic import ValidationError
+    async def _repair_request(self, args, model_name, label, invalid_outcome, capability):
+        """Validate and authorize repair requests against their operation's project."""
 
-        from src.commands.contracts.integration import IntegrationRepairStartArgs
+        from src.commands.contracts import integration as contracts
 
         try:
-            request = IntegrationRepairStartArgs.model_validate(args)
+            request = getattr(contracts, model_name).model_validate(args)
         except ValidationError as exc:
-            return _failure("stale", f"invalid repair start: {exc}")
-        _operation, authorized = await self._repair_command_authorized(
-            request.operation_id, "integration_repair_start"
-        )
-        if not authorized:
-            return _failure("unauthorized", "repair start authority is outside the operation")
+            return None, None, _failure(invalid_outcome, f"invalid {label}: {exc}")
+        operation, authorized = await self._repair_command_authorized(
+            request.operation_id, capability)
+        if not authorized or operation is None:
+            return None, operation, _failure(
+                "unauthorized", f"{label} authority is outside the operation")
+        return request, operation, None
+
+    async def _cmd_integration_repair_start(self, args: dict) -> dict:
+        request, _operation, refusal = await self._repair_request(
+            args, "IntegrationRepairStartArgs", "repair start", "stale", "integration_repair_start")
+        if refusal:
+            return refusal
         result = await self._integration_repair_service().start(
             request.operation_id, request.starting_sha, request.trigger_id
         )
         return {"success": result["outcome"] in {"started", "already_started"}, **result}
 
     async def _cmd_integration_record_repair(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRecordRepairArgs
-
-        try:
-            request = IntegrationRecordRepairArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("budget_exhausted", f"invalid repair evidence: {exc}")
-        _operation, authorized = await self._repair_command_authorized(
-            request.operation_id, "integration_record_repair"
-        )
-        if not authorized:
-            return _failure("unauthorized", "repair evidence authority is outside the operation")
+        request, _operation, refusal = await self._repair_request(
+            args, "IntegrationRecordRepairArgs", "repair evidence", "budget_exhausted",
+            "integration_record_repair")
+        if refusal:
+            return refusal
         result = await self._integration_repair_service().record_result(
             request.operation_id, request.evidence_id
         )
@@ -2566,38 +2697,22 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_repair_timeout(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRepairTimeoutArgs
-
-        try:
-            request = IntegrationRepairTimeoutArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("stale", f"invalid repair timeout: {exc}")
-        _operation, authorized = await self._repair_command_authorized(
-            request.operation_id, "integration_repair_timeout"
-        )
-        if not authorized:
-            return _failure("unauthorized", "repair timeout authority is outside the operation")
+        request, _operation, refusal = await self._repair_request(
+            args, "IntegrationRepairTimeoutArgs", "repair timeout", "stale",
+            "integration_repair_timeout")
+        if refusal:
+            return refusal
         result = await self._integration_repair_service().expire(
             request.operation_id, request.stage
         )
         return {"success": result["outcome"] != "stale", **result}
 
     async def _cmd_integration_repair_dispatch(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRepairDispatchArgs
-
-        try:
-            request = IntegrationRepairDispatchArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("stale", f"invalid repair dispatch: {exc}")
-        operation, authorized = await self._repair_command_authorized(
-            request.operation_id, "integration_repair_dispatch"
-        )
-        if not authorized or operation is None:
-            return _failure("unauthorized", "repair dispatch authority is outside the operation")
+        request, operation, refusal = await self._repair_request(
+            args, "IntegrationRepairDispatchArgs", "repair dispatch", "stale",
+            "integration_repair_dispatch")
+        if refusal:
+            return refusal
         if request.batch_id is not None:
             from sqlalchemy import select
 
@@ -2635,10 +2750,8 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_file_children(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationFileChildrenArgs
-        from src.database.queries.hierarchy_queries import HierarchyError
 
         try:
             request = IntegrationFileChildrenArgs.model_validate(args)
@@ -2663,10 +2776,8 @@ class IntegrationCommandsMixin:
         return {"success": True, **result}
 
     async def _cmd_integration_checkpoint_parent(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationCheckpointParentArgs
-        from src.database.queries.hierarchy_queries import HierarchyError
 
         try:
             request = IntegrationCheckpointParentArgs.model_validate(args)
@@ -2691,10 +2802,8 @@ class IntegrationCommandsMixin:
         return {"success": True, **result}
 
     async def _cmd_integration_mutate_hierarchy(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationMutateHierarchyArgs
-        from src.database.queries.hierarchy_queries import HierarchyError
 
         try:
             request = IntegrationMutateHierarchyArgs.model_validate(args)
@@ -2722,10 +2831,8 @@ class IntegrationCommandsMixin:
         return {"success": True, **result}
 
     async def _cmd_integration_delivery_readiness(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationDeliveryReadinessArgs
-        from src.database.queries.hierarchy_queries import HierarchyError
 
         try:
             request = IntegrationDeliveryReadinessArgs.model_validate(args)
@@ -2745,12 +2852,11 @@ class IntegrationCommandsMixin:
         return {"success": result["outcome"] == "ready", **result}
 
     async def _cmd_integration_record_noop(self, args: dict) -> dict:
-        from pydantic import ValidationError
         from sqlalchemy import select
 
         from src.commands.contracts.integration import IntegrationRecordNoopArgs
         from src.database.tables import integration_review_evidence
-        from src.integration.promotion import PromotionError, PromotionSourceMoved
+        from src.integration.promotion_contracts import PromotionError, PromotionSourceMoved
 
         try:
             request = IntegrationRecordNoopArgs.model_validate(args)
@@ -2789,7 +2895,7 @@ class IntegrationCommandsMixin:
             if review_id is None:
                 return _failure("invalid", "approved reviewer evidence is missing")
         try:
-            promotion = self._integration_promotion_service()
+            promotion = self._integration_repository_git()
             resolved = await promotion._resolve_repository(child.repo_id)
             if resolved.repo.project_id != child.project_id:
                 return _failure("invalid", "child repository project changed")
@@ -2835,10 +2941,8 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_parent_verify(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationParentVerifyArgs
-        from src.database.queries.hierarchy_queries import HierarchyError
 
         try:
             request = IntegrationParentVerifyArgs.model_validate(args)
@@ -2863,10 +2967,8 @@ class IntegrationCommandsMixin:
         return {"success": result["outcome"] == "verified", **result}
 
     async def _cmd_integration_complete_parent(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationCompleteParentArgs
-        from src.database.queries.hierarchy_queries import HierarchyError
 
         try:
             request = IntegrationCompleteParentArgs.model_validate(args)
@@ -2893,13 +2995,13 @@ class IntegrationCommandsMixin:
             # the review poller retries under the same authorization and Git
             # guards after a crash, unavailable remote, or delayed PR opening.
             import logging
-            from src.integration.review_evidence import ReviewEvidenceProducer
+            from src.integration.reviews import ReviewEvidenceProducer
 
             try:
                 project = await self.db.get_project(task.project_id)
                 if project.hierarchical_integration_mode == "train":
                     await ReviewEvidenceProducer(
-                        self.db, self._integration_promotion_service(),
+                        self.db, self._integration_repository_git(),
                     ).snapshot_authorized(
                         request.task_id, reviewed_sha=request.head_sha,
                         policy_generation=project.hierarchical_integration_generation,
@@ -2914,464 +3016,8 @@ class IntegrationCommandsMixin:
             **result,
         }
 
-    async def _cmd_delivery_promote(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import DeliveryPromoteArgs
-        from src.integration.models import PromotionInput
-        from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
-            PromotionConflict,
-            PromotionInvariantError,
-            PromotionRuntimeError,
-            PromotionSourceMoved,
-            PromotionTargetMoved,
-        )
-
-        try:
-            parsed = DeliveryPromoteArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("source_moved", f"invalid promotion request: {exc}")
-        task = await self.db.get_task(parsed.source_task_id)
-        repository = await self.db.get_repo(parsed.fence.target.repository_id)
-        if (
-            task is None
-            or repository is None
-            or task.project_id != repository.project_id
-            or task.repo_id != repository.id
-        ):
-            return _failure("source_moved", "source task and repository identity do not match")
-        if not await self._integration_delivery_authorized(task.project_id, "delivery_promote"):
-            return _failure("unauthorized", "caller cannot promote delivery for this project")
-
-        request = PromotionInput.model_validate(parsed.model_dump(mode="json"))
-        service = self._integration_promotion_service()
-        try:
-            prepared = await service.prepare(request)
-            existing = await self.db.get_integration_promotion_intent(prepared.intent_id)
-            if existing is not None and existing["state"] == "committed":
-                return self._promotion_result("already_promoted", prepared)
-            owner = await BranchOwnership(self.db).get_owner(request.fence.target)
-            if (
-                owner is None
-                or owner["owner_id"] != request.fence.owner_id
-                or int(owner["fence_token"]) != request.fence.token
-                or owner["owner_role"] != "collector"
-                or owner["handoff_state"] != "reserved"
-                or not await self._integration_collector_matches_target(
-                    owner["owner_id"], request.fence.target, repository.project_id
-                )
-            ):
-                return _failure(
-                    "target_moved",
-                    "actual promotion requires the current persisted collector owner",
-                )
-            promoted = await service.push(prepared.intent_id, request.fence)
-        except PromotionConflict as exc:
-            return self._promotion_result("conflict", exc.value, success=False, error=str(exc))
-        except PromotionSourceMoved as exc:
-            return _failure("source_moved", str(exc))
-        except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
-            return _failure("target_moved", str(exc))
-        except (PromotionInvariantError, ValueError) as exc:
-            return _failure("runtime_error", str(exc))
-        except (PromotionRuntimeError, GitError) as exc:
-            return _failure("runtime_error", str(exc))
-        return self._promotion_result("promoted", promoted)
-
-    async def _cmd_integration_reconcile_promotion(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationReconcilePromotionArgs
-        from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
-            PromotionConflict,
-            PromotionInvariantError,
-            PromotionNotApplied,
-            PromotionRecovery,
-            PromotionRuntimeError,
-            PromotionTargetMoved,
-        )
-
-        try:
-            parsed = IntegrationReconcilePromotionArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invariant_error", f"invalid promotion reconciliation: {exc}")
-        intent = await self.db.get_integration_promotion_intent(parsed.intent_id)
-        if intent is None or not intent.get("project_id"):
-            return _failure("invariant_error", "promotion intent does not exist")
-        if not await self._integration_delivery_authorized(
-            intent["project_id"], "integration_reconcile_promotion"
-        ):
-            return _failure("unauthorized", "caller cannot reconcile this project")
-        try:
-            service = self._integration_promotion_service()
-            if parsed.fence is None:
-                value = await service.reconcile(parsed.intent_id)
-            else:
-                value = await service.reconcile(parsed.intent_id, fence=parsed.fence)
-        except PromotionRecovery as exc:
-            return self._promotion_result(
-                exc.outcome, exc.value, success=exc.outcome in {"continued", "superseded"}
-            )
-        except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
-            return _failure("target_moved", str(exc))
-        except PromotionNotApplied as exc:
-            return _failure("not_applied", str(exc))
-        except (PromotionConflict, PromotionInvariantError, ValueError) as exc:
-            return _failure("invariant_error", str(exc))
-        except (PromotionRuntimeError, GitError) as exc:
-            return _failure("runtime_error", str(exc))
-        return self._promotion_result("applied", value)
-
-    async def _cmd_integration_resolve_conflict(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationResolveConflictArgs
-        from src.integration.models import ConflictResolutionInput
-        from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
-            PromotionAuthorizationError,
-            PromotionInvariantError,
-            PromotionSourceMoved,
-            PromotionRuntimeError,
-            PromotionTargetMoved,
-        )
-
-        try:
-            parsed = IntegrationResolveConflictArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invariant_error", f"invalid conflict resolution: {exc}")
-        try:
-            value, replay = await self._integration_promotion_service().reserve_resolution(
-                ConflictResolutionInput.model_validate(parsed.model_dump(mode="json"))
-            )
-        except PromotionAuthorizationError as exc:
-            return _failure("unauthorized", str(exc))
-        except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
-            return _failure("stale", str(exc))
-        except (PromotionInvariantError, PromotionSourceMoved, ValueError) as exc:
-            return _failure("invariant_error", str(exc))
-        except (PromotionRuntimeError, GitError) as exc:
-            return _failure("runtime_error", str(exc))
-        return self._promotion_result("already_reserved" if replay else "reserved", value)
-
-    async def _cmd_integration_push_conflict_resolution(self, args: dict) -> dict:
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationPushConflictResolutionArgs
-        from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
-            PromotionAuthorizationError,
-            PromotionInvariantError,
-            PromotionRuntimeError,
-            PromotionSourceMoved,
-            PromotionTargetMoved,
-        )
-
-        try:
-            parsed = IntegrationPushConflictResolutionArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("runtime_error", f"invalid resolution push: {exc}")
-        try:
-            value, replay = await self._integration_promotion_service().push_resolution(
-                parsed.intent_id, parsed.fence
-            )
-        except PromotionAuthorizationError as exc:
-            return _failure("unauthorized", str(exc))
-        except (StaleFence, BranchBusy) as exc:
-            return _failure("stale", str(exc))
-        except PromotionTargetMoved as exc:
-            outcome = "stale" if "authority is stale" in str(exc) else "target_moved"
-            return _failure(outcome, str(exc))
-        except (PromotionInvariantError, PromotionSourceMoved, PromotionRuntimeError) as exc:
-            return _failure("runtime_error", str(exc))
-        return self._promotion_result("already_applied" if replay else "pushed", value)
-
-    async def _cmd_integration_resolve_candidate_member(self, args: dict) -> dict:
-        """Resolve only the candidate conflict assigned to the authenticated writer.
-
-        Candidate identity and every authority-bearing value are derived from
-        the current session attachment.  The request carries only Git object
-        evidence plus the pool claim fence; in particular it cannot select a
-        batch/member/operation or supply trusted lineage/a branch fence.
-        """
-        from dataclasses import replace
-
-        from pydantic import ValidationError
-        from sqlalchemy import select
-
-        from src.commands.contracts.integration import IntegrationResolveCandidateMemberArgs
-        from src.commands.principal import ExecutionPrincipal, principal_context
-        from src.database.tables import (
-            integration_candidate_member_results,
-            integration_candidate_resolutions,
-            integration_candidate_revisions,
-        )
-        from src.integration.candidates import (
-            CandidateAuthorizationError,
-            CandidateResolutionInput,
-            CandidateStaleAuthority,
-        )
-
-        try:
-            request = IntegrationResolveCandidateMemberArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invariant_error", f"invalid candidate member repair: {exc}")
-
-        principal = current_principal()
-        if (
-            principal is None
-            or principal.kind is not PrincipalKind.SESSION
-            or principal.session_id is None
-            or principal.session_instance_token is None
-        ):
-            return _failure(
-                "unauthorized", "candidate member repair requires an authenticated session"
-            )
-        session = await self.db.get_session(principal.session_id)
-        task_id = getattr(session, "task_id", None) if session is not None else None
-        if (
-            session is None
-            or task_id is None
-            or session.state not in {"starting", "running", "draining"}
-            or session.instance_token != principal.session_instance_token
-            or request.task_id not in (None, task_id)
-            or request.session_id not in (None, principal.session_id)
-            or request.project_id not in (None, session.project_id)
-            or principal.task_id not in (None, task_id)
-            or principal.project_id not in (None, session.project_id)
-        ):
-            return _failure("unauthorized", "candidate repair session identity is stale")
-
-        claim_error = await self._assert_session_owns(
-            task_id,
-            session_id=principal.session_id,
-            claim_epoch=request.claim_epoch,
-        )
-        if claim_error is not None:
-            outcome = "stale" if claim_error.get("result") == "stale_claim" else "unauthorized"
-            return _failure(outcome, str(claim_error.get("error") or "claim is stale"))
-        task = await self.db.get_task(task_id)
-        if (
-            task is None
-            or (session.lifecycle == "pool" and session.last_claim_epoch is None)
-            or (
-                session.last_claim_epoch is not None
-                and int(session.last_claim_epoch) != int(task.claim_epoch)
-            )
-        ):
-            return _failure("stale", "candidate repair claim is no longer current")
-
-        exact_principal: ExecutionPrincipal = replace(principal, task_id=task_id)
-        exact_values = {
-            "repair_task_id": task_id,
-            "repair_session_id": principal.session_id,
-            "repair_session_instance_token": principal.session_instance_token,
-            "resolved_head_sha": request.resolved_head_sha,
-            "resolved_tree_sha": request.resolved_tree_sha,
-        }
-        async with self.db._engine.connect() as conn:
-            exact_rows = (
-                await conn.execute(
-                    select(integration_candidate_resolutions).where(
-                        *(
-                            integration_candidate_resolutions.c[key] == value
-                            for key, value in exact_values.items()
-                        )
-                    )
-                )
-            ).mappings().all()
-        exact_rows = [
-            dict(row)
-            for row in exact_rows
-            if tuple(row["repair_commit_shas"]) == request.repair_commit_shas
-            and (
-                session.lifecycle != "pool"
-                or session.claim_phase_at is not None
-                and float(row["created_at"]) >= float(session.claim_phase_at)
-            )
-        ]
-        if len(exact_rows) > 1:
-            return _failure("invariant_error", "candidate repair identity is ambiguous")
-
-        scope = await self.db.get_repair_filing_scope(
-            task_id, session_id=principal.session_id
-        )
-        reservation = exact_rows[0] if exact_rows else None
-        if reservation is not None and reservation["state"] in {"pushed", "accepted"}:
-            batch = await self.db.get_integration_batch(reservation["batch_id"])
-            if batch is None:
-                return _failure("stale", "candidate repair batch is absent")
-            service = await self._integration_candidate_service(batch, repair_session=session)
-            try:
-                with principal_context(exact_principal):
-                    accepted = await service.accept_repair(reservation["id"])
-                continuation = None
-                if (accepted.outcome in {"accepted", "already_accepted"}
-                    and await reconciler_batch_subject(self.db, batch["id"], include_done=True) is None):
-                    continuation = await service.build(batch["id"])
-            except CandidateAuthorizationError as exc:
-                return _failure("unauthorized", str(exc))
-            except (CandidateStaleAuthority, StaleFence, BranchBusy) as exc:
-                return _failure("stale", str(exc))
-            except ValueError as exc:
-                return _failure("invariant_error", str(exc))
-            except (GitError, RuntimeError) as exc:
-                return _failure("runtime_error", str(exc))
-            return {
-                "success": accepted.outcome in {"accepted", "already_accepted"},
-                "outcome": accepted.outcome,
-                "invariant": accepted.invariant,
-                "reservation_id": reservation["id"],
-                "batch_id": reservation["batch_id"],
-                "revision": int(reservation["revision"]),
-                "member_ordinal": int(reservation["member_ordinal"]),
-                "partial_head_sha": reservation["partial_head_sha"],
-                "continuation": (
-                    continuation.model_dump(mode="json")
-                    if continuation is not None
-                    else None
-                ),
-            }
-
-        if (
-            scope is None
-            or not scope["active"]
-            or scope["writer_kind"] != "repair_delegate"
-            or scope["target_kind"] != "batch"
-            or scope["fence_token"] is None
-        ):
-            return _failure("unauthorized", "candidate repair writer authority is stale")
-
-        operation = await self.db.get_integration_operation(scope["operation_id"])
-        batch = (
-            await self.db.get_integration_batch(operation["batch_id"])
-            if operation is not None and operation.get("batch_id")
-            else None
-        )
-        if batch is None or batch["project_id"] != session.project_id:
-            return _failure("unauthorized", "candidate repair batch is outside the session")
-
-        async with self.db._engine.connect() as conn:
-            revision = (
-                await conn.execute(
-                    select(integration_candidate_revisions).where(
-                        integration_candidate_revisions.c.batch_id == batch["id"],
-                        integration_candidate_revisions.c.revision
-                        == batch["current_revision"],
-                    )
-                )
-            ).mappings().one_or_none()
-            member = None
-            if revision is not None:
-                member = (
-                    await conn.execute(
-                        select(integration_candidate_member_results).where(
-                            integration_candidate_member_results.c.batch_id == batch["id"],
-                            integration_candidate_member_results.c.revision
-                            == revision["revision"],
-                            integration_candidate_member_results.c.member_ordinal
-                            == revision["next_member_ordinal"],
-                        )
-                    )
-                ).mappings().one_or_none()
-        evidence = member["conflict_evidence"] if member is not None else None
-        if (
-            revision is None
-            or member is None
-            or member["result"] != "conflict"
-            or not evidence
-            or evidence.get("operation_id") != scope["operation_id"]
-            or int(evidence.get("revision", -1)) != int(revision["revision"])
-            or int(evidence.get("ordinal", -1)) != int(member["member_ordinal"])
-        ):
-            return _failure("stale", "the assigned candidate member is no longer conflicted")
-
-        fence = Fence(
-            target=BranchKey(
-                repository_id=batch["repository_id"], branch=batch["integration_branch"]
-            ),
-            owner_id=task_id,
-            token=int(scope["fence_token"]),
-        )
-        candidate_request = CandidateResolutionInput(
-            batch_id=batch["id"],
-            revision=int(revision["revision"]),
-            member_ordinal=int(member["member_ordinal"]),
-            operation_id=scope["operation_id"],
-            resolved_head_sha=request.resolved_head_sha,
-            resolved_tree_sha=request.resolved_tree_sha,
-            repair_commit_shas=request.repair_commit_shas,
-            fence=fence,
-        )
-        service = await self._integration_candidate_service(batch, repair_session=session)
-        try:
-            with principal_context(exact_principal):
-                reservation_id = await service.reserve_repair(candidate_request)
-                await service.push_repair(reservation_id, fence)
-                accepted = await service.accept_repair(reservation_id)
-            continuation = None
-            if (accepted.outcome in {"accepted", "already_accepted"}
-                and await reconciler_batch_subject(self.db, batch["id"], include_done=True) is None):
-                continuation = await service.build(batch["id"])
-        except CandidateAuthorizationError as exc:
-            return _failure("unauthorized", str(exc))
-        except (CandidateStaleAuthority, StaleFence, BranchBusy) as exc:
-            return _failure("stale", str(exc))
-        except ValueError as exc:
-            return _failure("invariant_error", str(exc))
-        except (GitError, RuntimeError) as exc:
-            return _failure("runtime_error", str(exc))
-
-        return {
-            "success": accepted.outcome in {"accepted", "already_accepted"},
-            "outcome": accepted.outcome,
-            "invariant": accepted.invariant,
-            "reservation_id": reservation_id,
-            "batch_id": accepted.batch_id,
-            "revision": accepted.revision,
-            "member_ordinal": accepted.member_ordinal,
-            "partial_head_sha": evidence["partial_head_sha"],
-            "continuation": (
-                continuation.model_dump(mode="json") if continuation is not None else None
-            ),
-        }
-
-    async def _cmd_integration_recover_unwritten_resolution(self, args: dict) -> dict:
-        """Operator-only recovery for a malformed reservation with no write attempt."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRecoverUnwrittenResolutionArgs
-        from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
-            PromotionAuthorizationError,
-            PromotionInvariantError,
-            PromotionRuntimeError,
-            PromotionTargetMoved,
-        )
-
-        try:
-            parsed = IntegrationRecoverUnwrittenResolutionArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("not_recoverable", f"invalid resolution recovery: {exc}")
-        intent = await self.db.get_integration_promotion_intent(parsed.intent_id)
-        project_id = intent.get("project_id") if intent is not None else None
-        _label, refusal = await integration_operator(self.db, project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            value, replay = await self._integration_promotion_service().recover_unwritten_resolution(
-                parsed.intent_id
-            )
-        except (PromotionAuthorizationError, PromotionInvariantError, PromotionTargetMoved, StaleFence, BranchBusy) as exc:
-            return _failure("not_recoverable", str(exc))
-        except (PromotionRuntimeError, GitError) as exc:
-            return _failure("runtime_error", str(exc))
-        return self._promotion_result("already_recovered" if replay else "recovered", value)
 
     async def _cmd_delivery_receipts(self, args: dict) -> dict:
-        from pydantic import ValidationError
 
         from src.commands.contracts.integration import DeliveryReceiptsArgs
 
@@ -3405,17 +3051,6 @@ class IntegrationCommandsMixin:
             "outcome": "found" if receipts else "not_found",
             "receipts": receipts,
         }
-
-    @staticmethod
-    def _promotion_result(outcome, value, *, success: bool = True, error: str | None = None):
-        result = {
-            "success": success,
-            "outcome": outcome,
-            **value.model_dump(mode="json"),
-        }
-        if error:
-            result["error"] = error
-        return result
 
 
     def _development_integration(self):

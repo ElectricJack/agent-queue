@@ -45,6 +45,13 @@ git diff <base>..HEAD --stat
 git branch --show-current
 ```
 
+## Updating your task branch
+
+Use `aq git pull --branch main` (or the required dependency branch) to bring
+remote changes into your assigned worktree using daemon-managed credentials.
+The current checkout must still be your live task branch. This updates your
+branch locally; publication remains the guarded `aq git push` workflow.
+
 ## Committing your work
 
 Every task closes with commits on its branch. The typical pattern:
@@ -162,7 +169,12 @@ aq project workspace-reap --project-id <pid>      # (elevated) cull dead worktre
 ```
 
 There is no per-workspace show command — `list-workspaces` is the detail
-view, filtered by project.
+view, filtered by project. It answers within `--deadline-seconds` (default
+10s); each row's `owner.classification`, `presence` and `git_status` say what
+was proven, and `timeout` / `not_started` / `unknown` / `unverified` mean *not
+known* — never "stale" or "free". `--no-git` skips the checkout probes. Decide
+reaps and releases with `workspace-doctor` / `workspace-reap`, not from a
+partial listing.
 
 ## Release + attach
 
