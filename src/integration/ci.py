@@ -1,50 +1,44 @@
 """Strict trusted CI manifest, attestation, and durable evidence contracts."""
 
 from __future__ import annotations
+
+import hashlib
+import json
+import re
 import time
 import uuid
-import re
-from typing import Any
+from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Any, Literal
+from urllib.parse import quote
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import insert, select, update
+
+from src.waits.sources import execute_batch_mutation
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
-    integration_check_evidence,
+    integration_batches,
     integration_branch_owners,
+    integration_candidate_revisions,
+    integration_check_evidence,
     integration_parent_verification_evidence,
     integration_parent_verifications,
     integration_repair_operations,
     integration_repair_stages,
     projects,
     task_integration_checkpoints,
-    tasks,
-)
-from src.integration.parent_engine import (
-    parent_engine_guard,
-)
-from src.integration.models import HierarchicalIntegrationPolicy
-from src.integration.outbox import enqueue_integration_event
-import hashlib
-import json
-from dataclasses import dataclass
-from collections.abc import Iterable, Mapping
-from typing import Literal
-from urllib.parse import quote
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
-from src.database.tables import (
-    integration_batches,
-    integration_candidate_revisions,
 )
 from src.git.github_contracts import (
     GitHubCredentialMode,
     credential_identity_from_client,
 )
-
-
-
-
-
-
-
+from src.integration.row_query import select_row
+from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.outbox import enqueue_integration_event
+from src.integration.owner_guards import parent_engine_guard
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 
@@ -112,11 +106,6 @@ def binding_diagnosis(
     }
 
 
-
-
-
-
-
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
 _SHA_PATTERN = r"^[0-9a-f]{40}$"
@@ -177,7 +166,7 @@ class RequiredChecksManifest(BaseModel):
     names: tuple[str, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def unique_nonempty_names(self) -> "RequiredChecksManifest":
+    def unique_nonempty_names(self) -> RequiredChecksManifest:
         if any(not name.strip() for name in self.names) or len(set(self.names)) != len(self.names):
             raise ValueError("required check names must be unique and non-empty")
         return self
@@ -195,7 +184,7 @@ class IntegrationCITrust(BaseModel):
     required_checks: RequiredChecksManifest
 
     @model_validator(mode="after")
-    def valid_producer_identity(self) -> "IntegrationCITrust":
+    def valid_producer_identity(self) -> IntegrationCITrust:
         if self.producer_id.isdecimal() and int(self.producer_id) <= 0:
             raise ValueError("numeric CI producer identity must be positive")
         return self
@@ -231,10 +220,7 @@ def ci_trust_from_policy(
             repository_id=repository_id,
             full_name=full_name,
             producer_id=producer_id,
-            required_checks={
-                "version": required.get("version"),
-                "names": required.get("names"),
-            },
+            required_checks={'version': required.get('version'), 'names': required.get('names')},
         )
     except (TypeError, ValueError) as exc:
         raise AttestationError("CI policy producer or required checks are malformed") from exc
@@ -251,11 +237,20 @@ class IntegrationTrustManifest(BaseModel):
     attestation_app_id: StrictInt = Field(gt=0)
     attestation_name: Literal["Agent Queue Integration Attestation"]
     required_checks: RequiredChecksManifest
+    promotion_attestation_names: tuple[str, ...] = ()
+    check_sets: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def distinct_apps(self) -> "IntegrationTrustManifest":
+    def distinct_apps(self) -> IntegrationTrustManifest:
         if self.ci_producer_app_id == self.attestation_app_id:
             raise ValueError("CI and attestation App identities must be distinct")
+        names = self.promotion_attestation_names
+        if len(set(names)) != len(names) or any(not name or name == self.attestation_name for name in names):
+            raise ValueError("promotion attestation names must be distinct and nonempty")
+        for name, checks in self.check_sets.items():
+            if (not name or not checks or any(not check for check in checks)
+                    or len(set(checks)) != len(checks)):
+                raise ValueError("named check sets must contain distinct nonempty checks")
         return self
 
 
@@ -283,12 +278,23 @@ class AttestedWorkflowRun(BaseModel):
     run_attempt: StrictInt = Field(gt=0)
     check_suite_id: StrictInt = Field(gt=0)
     head_sha: str = Field(pattern=_SHA_PATTERN)
-    conclusion: Literal["success"]
+    # Workflow aggregates include jobs outside the required set. Their real
+    # conclusion is metadata; only the selected check runs establish green.
+    conclusion: Literal[
+        "success", "failure", "cancelled", "skipped", "neutral", "timed_out",
+        "action_required", "startup_failure", "stale",
+    ] | None
 
 
-class AttestationPayload(BaseModel):
+class _CanonicalPayload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(self.model_dump(mode="json", by_alias=True), sort_keys=True,
+                          separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+class AttestationPayload(_CanonicalPayload):
     schema_: Literal["aq.integration-attestation.v1"] = Field(alias="schema")
     canonical_repository_id: str = Field(min_length=1)
     repository_id: StrictInt = Field(gt=0)
@@ -300,25 +306,14 @@ class AttestationPayload(BaseModel):
     workflow_runs: tuple[AttestedWorkflowRun, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def coherent_attempts(self) -> "AttestationPayload":
-        names = [check.name for check in self.checks]
-        check_ids = [check.check_run_id for check in self.checks]
-        suites = [workflow.check_suite_id for workflow in self.workflow_runs]
-        if len(set(names)) != len(names) or len(set(check_ids)) != len(check_ids):
-            raise ValueError("attested checks contain duplicates")
-        if len(set(suites)) != len(suites):
-            raise ValueError("workflow attempts contain duplicate suites")
-        workflow_by_suite = {workflow.check_suite_id: workflow for workflow in self.workflow_runs}
-        if set(workflow_by_suite) != {check.check_suite_id for check in self.checks}:
-            raise ValueError("workflow attempt coverage does not match check suites")
-        for check in self.checks:
-            workflow = workflow_by_suite[check.check_suite_id]
-            if check.head_sha != self.head_sha or workflow.head_sha != self.head_sha:
-                raise ValueError("attestation head identity is incoherent")
+    def coherent_attempts(self) -> AttestationPayload:
+        _validate_check_workflow_coverage(
+            self.checks, self.workflow_runs, self.head_sha, label="attestation",
+        )
         return self
 
     @classmethod
-    def from_canonical_bytes(cls, value: bytes) -> "AttestationPayload":
+    def from_canonical_bytes(cls, value: bytes) -> AttestationPayload:
         try:
             decoded = json.loads(value, object_pairs_hook=_reject_duplicate_keys)
         except (UnicodeDecodeError, json.JSONDecodeError, AttestationError) as exc:
@@ -328,23 +323,67 @@ class AttestationPayload(BaseModel):
             raise AttestationError("attestation bytes are noncanonical")
         return payload
 
-    def canonical_bytes(self) -> bytes:
-        return json.dumps(
-            self.model_dump(mode="json", by_alias=True),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ).encode("ascii")
-
     @property
     def external_id(self) -> str:
         return "aq-attestation-v1:" + hashlib.sha256(self.canonical_bytes()).hexdigest()
 
 
-class CIReceiptPayload(BaseModel):
-    """Canonical live-GitHub evidence retained by the daemon, not published as a check."""
+class PromotionRepositoryIdentity(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+    canonical_repository_id: str = Field(min_length=1)
+    repository_id: StrictInt = Field(gt=0)
+    full_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    ci_producer_app_id: StrictInt = Field(gt=0)
+    attestation_app_id: StrictInt = Field(gt=0)
+
+
+class PromotionAttestationPayload(_CanonicalPayload):
+    """An admitted step's proof; never interchangeable with a default-lane proof."""
+
+    schema_: Literal["aq.promotion-attestation.v1"] = Field(alias="schema")
+    repository: PromotionRepositoryIdentity
+    step: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")
+    target_ref: str = Field(pattern=r"^refs/heads/.+")
+    attestation_name: str = Field(min_length=1)
+    version: str | None
+    request_id: str = Field(min_length=1)
+    batch_id: str = Field(min_length=1)
+    source_sha: str = Field(pattern=_SHA_PATTERN)
+    base_sha: str = Field(pattern=_SHA_PATTERN)
+    checks_version: str = Field(min_length=1)
+    checks: tuple[AttestedCheck, ...] = Field(min_length=1)
+    workflow_runs: tuple[AttestedWorkflowRun, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def coherent_attempts(self) -> "PromotionAttestationPayload":
+        _validate_check_workflow_coverage(self.checks, self.workflow_runs, self.source_sha)
+        if (self.repository.ci_producer_app_id == self.repository.attestation_app_id
+                or any(c.producer_app_id != self.repository.ci_producer_app_id for c in self.checks)):
+            raise ValueError("promotion check producer identity is incoherent")
+        return self
+
+    @property
+    def head_sha(self) -> str:
+        return self.source_sha
+
+    @property
+    def external_id(self) -> str:
+        return "aq-promotion-attestation-v1:" + hashlib.sha256(self.canonical_bytes()).hexdigest()
+
+    @classmethod
+    def from_canonical_bytes(cls, value: bytes) -> "PromotionAttestationPayload":
+        try:
+            payload = cls.model_validate(json.loads(value, object_pairs_hook=_reject_duplicate_keys))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise AttestationError("promotion attestation JSON is invalid") from exc
+        if payload.canonical_bytes() != value:
+            raise AttestationError("promotion attestation bytes are noncanonical")
+        return payload
+
+
+class CIReceiptPayload(_CanonicalPayload):
+    """Canonical live-GitHub evidence retained by the daemon, not published as a check."""
 
     schema_: Literal["aq.integration-ci-receipt.v1"] = Field(alias="schema")
     canonical_repository_id: str = Field(min_length=1)
@@ -357,17 +396,9 @@ class CIReceiptPayload(BaseModel):
     workflow_runs: tuple[AttestedWorkflowRun, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def coherent_attempts(self) -> "CIReceiptPayload":
+    def coherent_attempts(self) -> CIReceiptPayload:
         _validate_check_workflow_coverage(self.checks, self.workflow_runs, self.head_sha)
         return self
-
-    def canonical_bytes(self) -> bytes:
-        return json.dumps(
-            self.model_dump(mode="json", by_alias=True),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ).encode("ascii")
 
     @property
     def external_id(self) -> str:
@@ -438,6 +469,7 @@ def select_trusted_attestation(
 class TrustedCIObservation:
     payload: AttestationPayload | CIReceiptPayload
     workflow_ids: dict[int, int]
+    check_details: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -467,15 +499,6 @@ def failed_run_verdict(
     if "cancelled" in conclusions or "cancelled" in runs:
         return "cancelled"
     return "red" if "failure" in runs else "infra"
-
-
-class ParentCISubject(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    operation_id: str = Field(min_length=1)
-    parent_task_id: str = Field(min_length=1)
-    generation: StrictInt = Field(ge=0)
-    head_sha: str = Field(pattern=_SHA_PATTERN)
 
 
 class CandidateCISubject(BaseModel):
@@ -508,7 +531,7 @@ class IntegrationCIEvidence(BaseModel):
     observed_at: float
 
     @model_validator(mode="after")
-    def exact_subject(self) -> "IntegrationCIEvidence":
+    def exact_subject(self) -> IntegrationCIEvidence:
         parent = (
             self.batch_id is None
             and self.candidate_revision is None
@@ -613,34 +636,6 @@ class CIService:
         self.clock = clock
         self.adapter = IntegrationCIEvidenceAdapter()
 
-    async def observe_parent(self, subject: ParentCISubject) -> dict[str, Any]:
-        if not isinstance(subject, ParentCISubject):
-            raise TypeError("observe_parent requires ParentCISubject")
-        async with self.db.immediate() as conn:
-            declared_trust = await self._lock_parent_subject_on(conn, subject)
-        if declared_trust is None:
-            return {"outcome": "stale_subject", "evidence_ids": []}
-        try:
-            observation = await self.observer.observe(declared_trust, subject.head_sha)
-        except AttestationError:
-            outcome = (
-                "full_suite_required"
-                if declared_trust.required_checks != self.trust.required_checks
-                else "not_green"
-            )
-            return {"outcome": outcome, "evidence_ids": []}
-        async with self.db.immediate() as conn:
-            rechecked_trust = await self._lock_parent_subject_on(conn, subject)
-            if rechecked_trust != declared_trust:
-                return {"outcome": "stale_subject", "evidence_ids": []}
-            evidence_ids = await self._append_observation_on(
-                conn, subject, observation, trust=declared_trust
-            )
-            return {
-                "outcome": "green" if isinstance(observation, TrustedCIObservation) else "red",
-                "evidence_ids": evidence_ids,
-            }
-
     async def observe_candidate(self, subject: CandidateCISubject) -> dict[str, Any]:
         if not isinstance(subject, CandidateCISubject):
             raise TypeError("observe_candidate requires CandidateCISubject")
@@ -716,7 +711,7 @@ class CIService:
             )
             .values(state="green", ci_evidence_id=aggregate_id, updated_at=self.clock())
         )
-        batch_changed = await conn.execute(
+        batch_changed = await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == subject.batch_id,
@@ -756,140 +751,40 @@ class CIService:
         )
         return aggregate_id
 
-    async def _lock_parent_subject_on(
-        self, conn: Any, subject: ParentCISubject
-    ) -> IntegrationTrustManifest | IntegrationCITrust | None:
-        parent = (
-            await conn.execute(select(tasks).where(tasks.c.id == subject.parent_task_id))
-        ).mappings().one_or_none()
-        project = None
-        if parent is not None:
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == parent["project_id"])
-                )
-            ).mappings().one_or_none()
-        if not self._enabled_project_repository(project):
-            return None
-        await self.db.lock_hierarchy_project(conn, project["id"])
-        project = (
-            await conn.execute(
-                select(projects)
-                .where(projects.c.id == project["id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        parent = (
-            await conn.execute(
-                select(tasks)
-                .where(tasks.c.id == subject.parent_task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        if (
-            not self._enabled_project_repository(project)
-            or parent is None
-            or parent["project_id"] != project["id"]
-        ):
-            return None
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == subject.parent_task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        operation = None
-        if checkpoint is not None and checkpoint["episode_id"] is not None:
-            operation = (
-                await conn.execute(
-                    select(integration_repair_operations)
-                    .where(
-                        integration_repair_operations.c.parent_task_id
-                        == subject.parent_task_id,
-                        integration_repair_operations.c.episode_id
-                        == checkpoint["episode_id"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
-        declared_trust = self._operation_trust(operation, "parent")
-        if (
-            operation is None
-            or checkpoint is None
-            or parent["repo_id"] != self.trust.canonical_repository_id
-            or checkpoint["repository_id"] != self.trust.canonical_repository_id
-            or checkpoint["state"] != "verifying"
-            or operation["target_kind"] != "parent"
-            or operation["id"] != subject.operation_id
-            or operation["parent_task_id"] != subject.parent_task_id
-            or operation["episode_id"] != checkpoint["episode_id"]
-            or operation["state"] not in {"active", "escalated"}
-            or declared_trust is None
-            or checkpoint["generation"] != subject.generation
-            or checkpoint["checkpoint_sha"] != subject.head_sha
-        ):
-            return None
-        return declared_trust
-
     async def _lock_candidate_subject_on(
         self, conn: Any, subject: CandidateCISubject
     ) -> bool:
-        initial_batch = (
-            await conn.execute(
-                select(integration_batches).where(
-                    integration_batches.c.id == subject.batch_id
-                )
-            )
-        ).mappings().one_or_none()
+        initial_batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == subject.batch_id
+        )
         project = None
         if initial_batch is not None:
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == initial_batch["project_id"])
-                )
-            ).mappings().one_or_none()
+            project = await select_row(conn, projects, projects.c.id == initial_batch["project_id"])
         if not self._enabled_project_repository(project):
             return False
         await self.db.lock_hierarchy_project(conn, project["id"])
-        project = (
-            await conn.execute(
-                select(projects)
-                .where(projects.c.id == project["id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        project = await select_row(conn, projects, projects.c.id == project["id"], lock=True)
         if not self._enabled_project_repository(project):
             return False
-        batch = (
-            await conn.execute(
-                select(integration_batches)
-                .where(integration_batches.c.id == subject.batch_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        candidate = (
-            await conn.execute(
-                select(integration_candidate_revisions)
-                .where(
-                    integration_candidate_revisions.c.batch_id == subject.batch_id,
-                    integration_candidate_revisions.c.revision == subject.revision,
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == subject.batch_id, lock=True
+        )
+        candidate = await select_row(
+            conn,
+            integration_candidate_revisions,
+            integration_candidate_revisions.c.batch_id == subject.batch_id,
+            integration_candidate_revisions.c.revision == subject.revision,
+            lock=True,
+        )
         operation = None
         if batch is not None:
-            operation = (
-                await conn.execute(
-                    select(integration_repair_operations)
-                    .where(
-                        integration_repair_operations.c.batch_id == batch["id"],
-                        integration_repair_operations.c.episode_id == batch["id"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            operation = await select_row(
+                conn,
+                integration_repair_operations,
+                integration_repair_operations.c.batch_id == batch["id"],
+                integration_repair_operations.c.episode_id == batch["id"],
+                lock=True,
+            )
         return bool(
             operation is not None
             and batch is not None
@@ -920,14 +815,12 @@ class CIService:
     async def _append_observation_on(
         self,
         conn: Any,
-        subject: ParentCISubject | CandidateCISubject,
+        subject: CandidateCISubject,
         observation: TrustedCIObservation | FailedCIObservation,
         *,
         trust: IntegrationTrustManifest | IntegrationCITrust,
     ) -> list[str]:
-        expected_head = (
-            subject.head_sha if isinstance(subject, ParentCISubject) else subject.candidate_sha
-        )
+        expected_head = subject.candidate_sha
         if isinstance(observation, TrustedCIObservation):
             payload = observation.payload
             _require_payload_matches_trust(payload, trust, expected_head)
@@ -964,23 +857,6 @@ class CIService:
             evidence_id = "ci-" + hashlib.sha256(
                 json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
-            subject_values = (
-                {
-                    "batch_id": None,
-                    "candidate_revision": None,
-                    "parent_task_id": subject.parent_task_id,
-                    "parent_generation": subject.generation,
-                    "parent_head_sha": subject.head_sha,
-                }
-                if isinstance(subject, ParentCISubject)
-                else {
-                    "batch_id": subject.batch_id,
-                    "candidate_revision": subject.revision,
-                    "parent_task_id": None,
-                    "parent_generation": None,
-                    "parent_head_sha": None,
-                }
-            )
             evidence = IntegrationCIEvidence(
                 id=evidence_id,
                 operation_id=subject.operation_id,
@@ -993,7 +869,8 @@ class CIService:
                 conclusion=overall_conclusion,
                 classification="conclusive",
                 observed_at=self.clock(),
-                **subject_values,
+                batch_id=subject.batch_id,
+                candidate_revision=subject.revision,
             )
             evidence_ids.append(await self.adapter.append_on(conn, evidence))
         return sorted(evidence_ids)
@@ -1027,12 +904,45 @@ class CIService:
         return derived
 
 
+_HOSTED_LISTINGS: ContextVar[dict | None] = ContextVar("hosted_visit_listings", default=None)
+
+
+@contextmanager
+def hosted_observation_scope():
+    """Share raw authenticated listings across policies/events in one visit."""
+    token = _HOSTED_LISTINGS.set({})
+    try:
+        yield
+    finally:
+        _HOSTED_LISTINGS.reset(token)
+
+
+async def _hosted_listing(client, path, *, key):
+    cache = _HOSTED_LISTINGS.get()
+    if cache is None:
+        return await client.paged_items(path, key=key)
+    try:
+        credential = credential_identity_from_client(client)
+    except ValueError:
+        credential = id(client)
+    identity = (credential, path, key)
+    if identity in cache:
+        return cache[identity]
+    rows = await client.paged_items(path, key=key)
+    cache[identity] = rows
+    return rows
+
+
 class AuthenticatedGitHubObserver:
     """Build canonical evidence exclusively from authenticated GitHub API reads."""
 
-    def __init__(self, client: Any, *, expected_event: str | None = None):
+    def __init__(
+        self, client: Any, *, expected_event: str | None = None,
+        ignore_cancelled_batches: bool = False,
+    ):
         self.client = client
         self.expected_event = expected_event
+        self.ignore_cancelled_batches = ignore_cancelled_batches
 
     async def observe(
         self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
@@ -1040,10 +950,32 @@ class AuthenticatedGitHubObserver:
         if not isinstance(head_sha, str) or re.fullmatch(_SHA_PATTERN, head_sha) is None:
             raise AttestationError("invalid CI head")
         owner, repository = trust.full_name.split("/", 1)
-        workflow_records = await self.client.paged_items(
+        workflow_records = await _hosted_listing(self.client,
             f"/repos/{owner}/{repository}/actions/runs?head_sha={head_sha}&per_page=100",
             key="workflow_runs",
         )
+        cancelled_batch_suites: set[int] = set()
+        if self.ignore_cancelled_batches:
+            suites: dict[int, list[dict[str, Any]]] = {}
+            for record in workflow_records:
+                suite_id = _strict_int(record.get("check_suite_id"))
+                if suite_id is not None and suite_id > 0:
+                    suites.setdefault(suite_id, []).append(record)
+            for suite_id, runs in suites.items():
+                # A successful, pending or malformed rerun of the same suite
+                # must still be observed through the normal latest-attempt gate.
+                if all(
+                    run.get("head_sha") == head_sha
+                    and run.get("event") == "push"
+                    and isinstance(run.get("head_branch"), str)
+                    and run["head_branch"].startswith("aq/batches/")
+                    and run.get("status") == "completed"
+                    and run.get("conclusion") in {"cancelled", "skipped"}
+                    and all((_strict_int(run.get(key)) or 0) > 0
+                            for key in ("id", "workflow_id", "run_attempt"))
+                    for run in runs
+                ):
+                    cancelled_batch_suites.add(suite_id)
         allowed_suites = (
             {
                 _strict_int(record.get("check_suite_id"))
@@ -1061,7 +993,7 @@ class AuthenticatedGitHubObserver:
         # query cost one API call per required check (17 per observation) and
         # exhausted the App installation's hourly rate limit within an hour of
         # every daemon restart.
-        all_records = await self.client.paged_items(
+        all_records = await _hosted_listing(self.client,
             f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
             "?filter=all&per_page=100",
             key="check_runs",
@@ -1075,16 +1007,12 @@ class AuthenticatedGitHubObserver:
                     continue
                 app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
                 if app_id is None or app_id <= 0:
-                    raise AttestationError(
-                        f"required check App identity is malformed: {name}"
-                    )
+                    raise AttestationError(f'required check App identity is malformed: {name}')
                 if not _producer_matches(app, trust):
                     continue
                 record_id = _strict_int(record.get("id"))
                 if record_id is None or record_id <= 0:
-                    raise AttestationError(
-                        f"required check ordering identity is malformed: {name}"
-                    )
+                    raise AttestationError(f'required check ordering identity is malformed: {name}')
                 suite = record.get("check_suite")
                 suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
                 if allowed_suites is not None and suite_id not in allowed_suites:
@@ -1093,6 +1021,24 @@ class AuthenticatedGitHubObserver:
             if not candidates:
                 missing.append(name)
                 continue
+            # Source admission can retain evidence on an already tested SHA
+            # when another batch using it was cancelled, including jobs that
+            # finished before cancellation. Preserve failure/pending candidates
+            # and cancellation without alternative evidence for the check name.
+            if cancelled_batch_suites:
+                alternatives = [
+                    item for item in candidates
+                    if not (
+                        item[1].get("head_sha") == head_sha
+                        and item[1].get("status") == "completed"
+                        and item[1].get("conclusion") in {"success", "cancelled", "skipped"}
+                        and isinstance(item[1].get("check_suite"), dict)
+                        and _strict_int(item[1]["check_suite"].get("id"))
+                        in cancelled_batch_suites
+                    )
+                ]
+                if alternatives:
+                    candidates = alternatives
             _, newest = max(candidates, key=lambda item: item[0])
             selected_app = newest.get("app")
             selected_app_id = (
@@ -1107,8 +1053,15 @@ class AuthenticatedGitHubObserver:
             conclusion = newest.get("conclusion")
             if newest.get("head_sha") == head_sha:
                 if newest.get("status") != "completed":
+                    from src.integration.check_reconciliation import stuck_check_diagnostics
+
+                    pending_diagnostics = await stuck_check_diagnostics(
+                        self.client, trust, head_sha, all_records, workflow_records,
+                        expected_event=self.expected_event,
+                    )
                     raise CIObservationDeferred(
-                        f"required check is not conclusive: {name}", classification="pending"
+                        f"required check is not conclusive: {name}", classification="pending",
+                        details={"stuck_checks": pending_diagnostics} if pending_diagnostics else {},
                     )
                 if conclusion in {"timed_out", "action_required", "startup_failure", "stale"}:
                     raise CIObservationDeferred(
@@ -1142,21 +1095,42 @@ class AuthenticatedGitHubObserver:
 
         missing_suite_id: int | None = None
         if missing:
-            # An empty check list immediately after a push is not a CI failure.
-            # Only completed push workflows for this exact head can establish
+            # An empty check list immediately after publication is not a CI failure.
+            # Only completed workflows of the expected event on this head establish
             # that the snapshot's required name was never produced.
-            push_runs = [record for record in workflow_records
-                         if record.get("event") == "push" and record.get("head_sha") == head_sha]
-            if not push_runs or any(record.get("status") != "completed" for record in push_runs):
-                missing_push = self.expected_event == "push" and not push_runs
+            expected_runs = [record for record in workflow_records
+                         if record.get("event") == (self.expected_event or "push")
+                         and record.get("head_sha") == head_sha]
+            if not expected_runs or any(record.get("status") != "completed" for record in expected_runs):
+                missing_push = self.expected_event == "push" and not expected_runs
+                missing_pr = self.expected_event == "pull_request" and not expected_runs
+                if missing_pr:
+                    # Missing PR CI cannot hide a real failing or unavailable
+                    # required check from another event on this exact source.
+                    # Successful push checks still do not replace PR checks.
+                    for name in missing:
+                        alternatives = [record for record in all_records
+                                        if record.get("name") == name
+                                        and record.get("head_sha") == head_sha
+                                        and _producer_matches(record.get("app"), trust)]
+                        if alternatives:
+                            newest = max(alternatives, key=lambda record: record["id"])
+                            if (newest.get("status") != "completed" or
+                                newest.get("conclusion") != "success"):
+                                missing_pr = False
+                                break
                 raise CIObservationDeferred(
                     f"required check is pending: {', '.join(missing)}",
                     classification="none" if missing_push else (
                         "pending" if workflow_records or selected else "none"
                     ),
-                    details={"missing_push_run": True} if missing_push else {},
+                    details={
+                        "missing_required_checks": tuple(missing),
+                        **({"missing_push_run": True} if missing_push else
+                           {"missing_pr_run": True} if missing_pr else {}),
+                    },
                 )
-            for record in push_runs:
+            for record in expected_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))
                 if (
                     record.get("head_sha") != head_sha
@@ -1178,10 +1152,10 @@ class AuthenticatedGitHubObserver:
             missing_suite_id = min(
                 (
                     _strict_int(record["check_suite_id"])
-                    for record in push_runs
+                    for record in expected_runs
                     if _strict_int(record["check_suite_id"]) in selected_suites
                 ),
-                default=min(_strict_int(record["check_suite_id"]) for record in push_runs),
+                default=min(_strict_int(record["check_suite_id"]) for record in expected_runs),
             )
 
         workflow_rows: list[dict[str, Any]] = []
@@ -1214,17 +1188,6 @@ class AuthenticatedGitHubObserver:
             workflow_run_id = _strict_int(record.get("id"))
             workflow_id = _strict_int(record.get("workflow_id"))
             run_attempt = _strict_int(record.get("run_attempt"))
-            if record.get("head_sha") == head_sha:
-                if record.get("status") is not None and record["status"] != "completed":
-                    raise CIObservationDeferred(
-                        "workflow attempt is not conclusive", classification="pending"
-                    )
-                if record.get("conclusion") in {
-                    "timed_out", "action_required", "startup_failure", "stale"
-                }:
-                    raise CIObservationDeferred(
-                        "workflow attempt could not validate", classification="infra"
-                    )
             if (
                 workflow_run_id is None
                 or workflow_run_id <= 0
@@ -1234,10 +1197,19 @@ class AuthenticatedGitHubObserver:
                 or run_attempt <= 0
                 or record.get("head_sha") != head_sha
                 or record.get("conclusion")
-                not in {"success", "failure", "cancelled", "skipped", "neutral"}
+                not in {None, "success", "failure", "cancelled", "skipped", "neutral",
+                        "timed_out", "action_required", "startup_failure", "stale"}
             ):
-                raise AttestationError("workflow attempt is not conclusive")
+                raise AttestationError("workflow attempt identity is malformed")
             if isinstance(trust, IntegrationCITrust):
+                _require_workflow_repository(record, trust)
+            # Completed successful App attestations retain their established
+            # validation path. A partial/unsuccessful aggregate needs explicit
+            # latest-attempt job proof in either credential mode.
+            if (isinstance(trust, IntegrationCITrust)
+                    or (all(check["conclusion"] == "success" for check in selected)
+                        and (record.get("status") not in {None, "completed"}
+                             or record.get("conclusion") != "success"))):
                 _require_workflow_repository(record, trust)
                 jobs = await self.client.paged_items(
                     f"/repos/{owner}/{repository}/actions/runs/{workflow_run_id}"
@@ -1256,7 +1228,10 @@ class AuthenticatedGitHubObserver:
                     head_sha=head_sha,
                     full_name=trust.full_name,
                 )
-                jobs_by_name = {job["name"]: job for job in jobs}
+                required_names = {check["name"] for check in selected}
+                jobs_by_name = {job["name"]: job for job in jobs
+                                if isinstance(job.get("name"), str)
+                                and job["name"] in required_names}
                 for check in selected:
                     if check["check_suite_id"] == suite_id:
                         job = jobs_by_name[check["name"]]
@@ -1280,9 +1255,7 @@ class AuthenticatedGitHubObserver:
                 {"name": name, "check_suite_id": missing_suite_id, "conclusion": "missing"}
                 for name in missing
             )
-        if any(check["conclusion"] != "success" for check in selected) or any(
-            workflow["conclusion"] != "success" for workflow in workflow_rows
-        ):
+        if any(check["conclusion"] != "success" for check in selected):
             verdict = failed_run_verdict(selected, workflow_rows)
             return FailedCIObservation(
                 # Diagnostics are repair evidence, outside the canonical green receipt.
@@ -1317,23 +1290,28 @@ class AuthenticatedGitHubObserver:
                 checks=tuple(CIReceiptCheck.model_validate(check) for check in selected),
                 **common,
             )
-        return TrustedCIObservation(payload=payload, workflow_ids=workflow_ids)
+        return TrustedCIObservation(
+            payload=payload, workflow_ids=workflow_ids, check_details=diagnostics,
+        )
 
     async def publish(
-        self, trust: IntegrationTrustManifest, payload: AttestationPayload
+        self, trust: IntegrationTrustManifest,
+        payload: AttestationPayload | PromotionAttestationPayload,
     ) -> int:
         """Publish one completed canonical attestation through the configured App."""
         _require_payload_matches_trust(payload, trust, payload.head_sha)
+        name = (payload.attestation_name if isinstance(payload, PromotionAttestationPayload)
+                else trust.attestation_name)
         owner, repository = trust.full_name.split("/", 1)
         existing = await self.client.paged_items(
             f"/repos/{owner}/{repository}/commits/{payload.head_sha}/check-runs"
-            f"?check_name={quote(trust.attestation_name, safe='')}&filter=all&per_page=100",
+            f"?check_name={quote(name, safe='')}&filter=all&per_page=100",
             key="check_runs",
         )
         trusted_existing: list[tuple[int, dict[str, Any]]] = []
         for record in existing:
             app = record.get("app")
-            if record.get("name") != trust.attestation_name:
+            if record.get("name") != name:
                 continue
             app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
             if app_id is None or app_id <= 0:
@@ -1342,9 +1320,7 @@ class AuthenticatedGitHubObserver:
                 continue
             record_id = _strict_int(record.get("id"))
             if record_id is None or record_id <= 0:
-                raise AttestationError(
-                    "trusted attestation ordering identity is malformed"
-                )
+                raise AttestationError('trusted attestation ordering identity is malformed')
             trusted_existing.append((record_id, record))
         if trusted_existing:
             _, newest = max(trusted_existing, key=lambda item: item[0])
@@ -1362,13 +1338,13 @@ class AuthenticatedGitHubObserver:
             "POST",
             f"/repos/{owner}/{repository}/check-runs",
             json_body={
-                "name": trust.attestation_name,
+                "name": name,
                 "head_sha": payload.head_sha,
                 "status": "completed",
                 "conclusion": "success",
                 "external_id": payload.external_id,
                 "output": {
-                    "title": trust.attestation_name,
+                    "title": name,
                     "summary": "Authenticated Agent Queue integration evidence",
                     "text": payload.canonical_bytes().decode("ascii"),
                 },
@@ -1382,10 +1358,26 @@ class AuthenticatedGitHubObserver:
 
 
 def _require_payload_matches_trust(
-    payload: AttestationPayload | CIReceiptPayload,
+    payload: AttestationPayload | CIReceiptPayload | PromotionAttestationPayload,
     trust: IntegrationTrustManifest | IntegrationCITrust,
     expected_head_sha: str,
 ) -> None:
+    if isinstance(payload, PromotionAttestationPayload):
+        if not isinstance(trust, IntegrationTrustManifest):
+            raise AttestationError("promotion requires App-mode trust")
+        identity = payload.repository
+        known_sets = [trust.required_checks.names, *trust.check_sets.values()]
+        if (identity.canonical_repository_id != trust.canonical_repository_id
+                or identity.repository_id != trust.repository_id
+                or identity.full_name != trust.full_name
+                or identity.ci_producer_app_id != trust.ci_producer_app_id
+                or identity.attestation_app_id != trust.attestation_app_id
+                or payload.attestation_name not in trust.promotion_attestation_names
+                or payload.head_sha != expected_head_sha
+                or payload.checks_version != trust.required_checks.version
+                or tuple(c.name for c in payload.checks) not in known_sets):
+            raise AttestationError("promotion attestation identity does not match trust manifest")
+        return
     if isinstance(trust, IntegrationCITrust):
         if (
             not isinstance(payload, CIReceiptPayload)
@@ -1452,12 +1444,13 @@ def _producer_matches(
     return isinstance(slug, str) and slug == expected
 
 
-def _require_workflow_repository(record: dict[str, Any], trust: IntegrationCITrust) -> None:
+def _require_workflow_repository(
+    record: dict[str, Any], trust: IntegrationCITrust | IntegrationTrustManifest,
+) -> None:
     repository = record.get("repository")
     head_repository = record.get("head_repository")
     if (
-        record.get("status") != "completed"
-        or not isinstance(repository, dict)
+        not isinstance(repository, dict)
         or not isinstance(head_repository, dict)
         or _strict_int(repository.get("id")) != trust.repository_id
         or repository.get("full_name") != trust.full_name
@@ -1496,8 +1489,11 @@ def _require_latest_attempt_jobs(
     full_name: str,
 ) -> None:
     by_name: dict[str, dict[str, Any]] = {}
+    required_names = {check["name"] for check in checks}
     for job in jobs:
         name = job.get("name")
+        if not isinstance(name, str) or name not in required_names:
+            continue
         job_id = _strict_int(job.get("id"))
         if not isinstance(name, str) or not name or job_id is None or job_id <= 0:
             raise AttestationError("latest workflow attempt job identity is malformed")
@@ -1527,24 +1523,24 @@ def _require_latest_attempt_jobs(
 def _validate_check_workflow_coverage(
     checks: tuple[AttestedCheck, ...],
     workflow_runs: tuple[AttestedWorkflowRun, ...],
-    head_sha: str,
+    head_sha: str, *, label: str = "CI receipt",
 ) -> None:
     names = [check.name for check in checks]
     check_ids = [check.check_run_id for check in checks]
     suites = [workflow.check_suite_id for workflow in workflow_runs]
     if len(set(names)) != len(names) or len(set(check_ids)) != len(check_ids):
-        raise ValueError("CI receipt checks contain duplicates")
+        raise ValueError(f"{label} checks contain duplicates")
     if len(set(suites)) != len(suites):
-        raise ValueError("CI receipt workflow attempts contain duplicate suites")
+        raise ValueError(f"{label} workflow attempts contain duplicate suites")
     workflow_by_suite = {workflow.check_suite_id: workflow for workflow in workflow_runs}
     if set(workflow_by_suite) != {check.check_suite_id for check in checks}:
-        raise ValueError("CI receipt workflow attempt coverage does not match check suites")
+        raise ValueError(f"{label} workflow attempt coverage does not match check suites")
     if any(
         check.head_sha != head_sha
         or workflow_by_suite[check.check_suite_id].head_sha != head_sha
         for check in checks
     ):
-        raise ValueError("CI receipt head identity is incoherent")
+        raise ValueError(f"{label} head identity is incoherent")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1576,9 +1572,7 @@ class ParentVerification:
         on unchanged state returns the same diagnosis.
         """
         async with self.db.immediate() as conn:
-            _parent, _project, checkpoint, operation = await self._locked_context_on(
-                conn, task_id
-            )
+            _parent, _project, checkpoint, operation = await self._locked_context_on(conn, task_id)
             if int(checkpoint["generation"]) != generation:
                 return None
             diagnosis = binding_diagnosis(
@@ -1657,9 +1651,7 @@ class ParentVerification:
         if not evidence_ids or len(set(evidence_ids)) != len(evidence_ids):
             return {"outcome": "invalid_evidence", "task_id": task_id}
         async with self.db.immediate() as conn:
-            parent, project, checkpoint, operation = await self._locked_context_on(
-                conn, task_id
-            )
+            parent, project, checkpoint, operation = await self._locked_context_on(conn, task_id)
             if int(checkpoint["generation"]) != generation:
                 return {"outcome": "stale_generation", "task_id": task_id}
             readiness = await self.readiness_on(
@@ -1706,15 +1698,13 @@ class ParentVerification:
             valid = valid and covered == set(required.names)
             if not valid:
                 return {"outcome": "invalid_evidence", "task_id": task_id}
-            existing = (
-                await conn.execute(
-                    select(integration_parent_verifications).where(
-                        integration_parent_verifications.c.operation_id == operation["id"],
-                        integration_parent_verifications.c.generation == generation,
-                        integration_parent_verifications.c.head_sha == head_sha,
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn,
+                integration_parent_verifications,
+                integration_parent_verifications.c.operation_id == operation["id"],
+                integration_parent_verifications.c.generation == generation,
+                integration_parent_verifications.c.head_sha == head_sha,
+            )
             verification_id = existing["id"] if existing else str(uuid.uuid4())
             if existing is None:
                 await conn.execute(
@@ -1795,9 +1785,7 @@ class ParentVerification:
         from src.models import TaskStatus
 
         async with self.db.immediate() as conn:
-            parent, project, checkpoint, operation = await self._locked_context_on(
-                conn, task_id
-            )
+            parent, project, checkpoint, operation = await self._locked_context_on(conn, task_id)
             readiness = await self.readiness_on(
                 conn,
                 parent=parent,
@@ -1808,15 +1796,12 @@ class ParentVerification:
             if readiness["outcome"] != "ready":
                 return readiness
             expected_owner = operation["verifier_task_id"] or task_id
-            owner = (
-                await conn.execute(
-                    select(integration_branch_owners).where(
-                        integration_branch_owners.c.repository_id
-                        == checkpoint["repository_id"],
-                        integration_branch_owners.c.ref == checkpoint["branch"],
-                    )
-                )
-            ).mappings().one_or_none()
+            owner = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+                integration_branch_owners.c.ref == checkpoint["branch"],
+            )
             if (
                 fence.owner_id != expected_owner
                 or fence.target.repository_id != checkpoint["repository_id"]

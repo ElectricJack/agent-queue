@@ -32,7 +32,11 @@ class FakeTmux:
             return ""
         if cmd == "show-environment" and "-g" in args:
             return "".join(f"{k}={v}\n" for k, v in self.globals.items())
-        target = args[args.index("-t") + 1].lstrip("=")
+        raw = args[args.index("-t") + 1]
+        if cmd in ("set-option", "show-options") and raw.startswith("=") and not raw.endswith(":"):
+            # tmux 3.4 reads a bare "=name" as a pane target for options.
+            raise SessionError(f"no such session: {raw}")
+        target = raw.lstrip("=").removesuffix(":")
         target = target.removeprefix("$")
         session = self.sessions.get(target)
         if session is None:
@@ -171,6 +175,7 @@ def test_api_remote_dashboard_viewer_needs_allow_remote(tmux):
     assert client.get("/api/host-shell", headers=REMOTE_VIEWER).status_code == 403
     refused = client.post("/api/host-shell", headers=REMOTE_VIEWER)
     assert refused.status_code == 403 and "allow_remote" in refused.json()["detail"]
+    assert "local operator or an allowed remote dashboard viewer" in refused.json()["detail"]
     assert tmux.sessions == {} and events == []
 
     client, events = _app(tmux, allow_remote=True)
@@ -192,7 +197,9 @@ def test_api_always_refuses_bearer_tokens(tmux, allow_remote, viewer):
     if viewer:
         headers["x-aq-dashboard-viewer"] = viewer
     for method, path in [("get", "/api/host-shell"), ("post", "/api/host-shell")]:
-        assert getattr(client, method)(path, headers=headers).status_code == 403
+        refused = getattr(client, method)(path, headers=headers)
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "Host shells do not accept bearer tokens"
     assert tmux.sessions == {} and events == []
 
 
@@ -253,6 +260,7 @@ async def test_terminal_attach_admits_remote_viewer_only_with_allow_remote():
         await _attach_service(allow_remote=False)._authorize(
             _edge_ws("other"), None, host_shell=True)
     assert err.value.code == 4403
+    assert "local operator or an allowed remote dashboard viewer" in str(err.value)
     await _attach_service(allow_remote=True)._authorize(_edge_ws("other"), None, host_shell=True)
     await _attach_service(allow_remote=False)._authorize(
         _edge_ws("operator"), None, host_shell=True)
@@ -264,6 +272,7 @@ async def test_terminal_attach_refuses_tokens_even_with_allow_remote(viewer):
         await _attach_service(allow_remote=True)._authorize(
             _edge_ws(viewer), "aqs_supervisor", host_shell=True)
     assert err.value.code == 4403
+    assert str(err.value) == "Host shells do not accept bearer tokens"
 
 
 async def test_allow_remote_does_not_open_disabled_host_shells():
