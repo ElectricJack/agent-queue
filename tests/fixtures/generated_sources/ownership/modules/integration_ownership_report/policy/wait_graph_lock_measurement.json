@@ -1,0 +1,20 @@
+{
+  "wait_graph_lock_measurement": {
+    "authority_task": "sharp-cascade-53",
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 131,
+    "branch": "aq/epic/wait-graph-advisory-lock-held-across-idle-in-transaction",
+    "decision_id": "size-cap-delegation-2026-10-23",
+    "measured_engine_lines": 85544,
+    "measured_owned_total": 161344,
+    "measured_source_revision": "0300be58d47adf905900b108db979240ff4aea16",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_engine_lines": 85544,
+    "previous_owned_total": 161213,
+    "previous_source_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1816",
+    "reason": "Preapproved exact PR #1816 conflict-repair measurement on merged dev tree. Preserve all historical grants and the charged extracted scheduler/resume helpers; no implementation changes beyond conflict resolution.",
+    "task_id": "bold-flare-41"
+  }
+}

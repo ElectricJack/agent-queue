@@ -45,6 +45,7 @@ class Verdict(StrEnum):
     #: Ran for a while, then exited with the task still open.  Never
     #: silently READY: needs_attention or a policy-driven re-queue.
     PRODUCTIVE_DEATH = "productive_death"
+    CONTEXT_THRASH = "context_thrash"
     #: The task was already closed — this is the normal drain path.
     DRAINED = "drained"
 
@@ -137,6 +138,11 @@ def classify_exit(
     status = _status_str(task) if task is not None else ""
     if task is None or status in _CLOSED_STATUSES:
         return ExitVerdict(Verdict.DRAINED, "task already closed" if task is not None else "named session")
+
+    from src.sessions.worker_recovery import thrash_screen
+
+    if thrash_screen(last_peek):
+        return ExitVerdict(Verdict.CONTEXT_THRASH, "Autocompact is thrashing")
 
     screen = detect_usage_limit_screen(last_peek, opencode=opencode)
     if screen is not None or (last_peek and _RATE_LIMIT_RE.search(last_peek)):
