@@ -1,6 +1,10 @@
 # Agent question routing — approved design
 
 <!-- aq:historical -->
+
+> Current routing sends every detected question to the supervisor first. The
+> fifteen-minute timeout sends a notice; it does not automatically escalate.
+> See [session questions](../../specs/systems/sessions-and-harnesses.md#29-agent-questions).
 > **Historical design record.** This spec describes one feature as it was
 > designed, not as the code stands today. Start at [the documentation
 > home](../../README.md) for current behaviour; see [historical

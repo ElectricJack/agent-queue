@@ -34,6 +34,28 @@ export function AgentState({ agent }: { agent: FlockAgent }) {
   return agent.waiting_question ? "Waiting for input" : agent.state || "Idle";
 }
 
+export function supervisorScope(agent: FlockAgent): string {
+  return agent.project_id ? "Supervises " + agent.project_id : "Supervises all AQ projects";
+}
+
+export function SupervisorHealth({ agent }: { agent: FlockAgent }) {
+  if (agent.role !== "supervisor") return null;
+  const health = agent.auth_health;
+  const state = health?.state ?? "unknown";
+  const idle = agent.idle_seconds;
+  const duration = idle == null ? "unknown" : idle < 60 ? Math.floor(idle) + "s"
+    : idle < 3600 ? Math.floor(idle / 60) + "m" : Math.floor(idle / 3600) + "h";
+  return <span className="block space-y-0.5">
+    <span className="block">Idle: {duration} · Last activity: {agent.last_activity
+      ? new Date(agent.last_activity * 1000).toLocaleString() : "unknown"}</span>
+    <span className={"block " + (state === "failed" ? "text-red-400" : state === "healthy" ? "text-emerald-400" : "text-gray-500")}
+      title={health?.observed_at ? "Last API auth outcome: HTTP " + health.status_code + " at "
+        + new Date(health.observed_at * 1000).toLocaleString() : "No recent API auth observation"}>
+      Auth: {state === "failed" ? "failed (HTTP " + health?.status_code + ")" : state}
+    </span>
+  </span>;
+}
+
 export function AgentEligibility({ agent }: { agent: FlockAgent }) {
   return agent.enabled === false ? (
     <span className="block text-[10px] text-amber-400" title="Disabled for new work; current tasks and sessions continue.">

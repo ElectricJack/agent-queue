@@ -1,0 +1,11 @@
+{
+  "exclusions": {
+    "src/collaboration.py::CLOSE_REASONS['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/collaboration.py::CONTENT_RETENTION_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::PARTNER_GRACE_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::TOMBSTONE_RETENTION_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
