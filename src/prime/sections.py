@@ -546,6 +546,11 @@ def build_wait_outcome_section(context: dict) -> PrimeSection:
             '--continuation-id', intent['id'],
             '--generation', str(intent['suspension_generation']),
         ])
+        if context['envelope']['outcome'] == 'cancelled':
+            body += (
+                "\nThe wait was cancelled; you still hold the task claim. "
+                "Acknowledge this cancelled outcome before continuing; do not stop or exit."
+            )
         body += f"\nRun `{command}`, then `aq prime` again before continuing task work."
     return PrimeSection(key="wait_outcome", title="Wait outcome", body=body)
 

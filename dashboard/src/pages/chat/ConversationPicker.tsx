@@ -55,7 +55,7 @@ export default function ConversationPicker({ threadId, onSelect }: {
           aria-label="Conversation"
           value={threadId}
           onChange={(event) => onSelect(event.target.value)}
-          className="min-w-0 flex-1 rounded border border-gray-800 bg-gray-900 px-2 py-1 text-gray-200"
+          className="min-w-0 max-w-full flex-1 rounded border border-gray-800 bg-gray-900 px-2 py-1 text-gray-200"
         >
           <option value="dashboard:global">All</option>
           {threadId !== "dashboard:global" && !conversations.some((row) => row.thread_id === threadId) && (
