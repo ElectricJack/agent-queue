@@ -33,6 +33,9 @@ _AUTO_GENERATED_PREFIXES = ("spec-", "doc-")
 # Natural root files — if present, no hub needed
 _ROOT_FILES = ("profile.md", "readme.md")
 
+# Flat config directories whose loaders read every ``*.md`` never get a hub
+_CONFIG_DIRS = {"intelligence-classes", "workspace-kinds", "mcp-servers"}
+
 # Dirs with >= this many files get a hub for grouping
 _LARGE_DIR_THRESHOLD = 10
 
@@ -358,6 +361,8 @@ class VaultIndexGenerator:
         return f"{rel_dir}/{dirname}" if rel_dir else dirname
 
     def _needs_hub(self, dir_path: Path, md_files: list[str], subdirs: list[str]) -> bool:
+        if dir_path.name in _CONFIG_DIRS:
+            return False
         if _find_root_file(dir_path):
             if len(subdirs) >= 3:
                 return True

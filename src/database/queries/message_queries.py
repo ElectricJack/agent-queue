@@ -508,6 +508,7 @@ class MessageQueriesMixin:
         notification_at: float | None = None,
         notification_delays: tuple[float, ...] = (),
         newest_first: bool = False,
+        include_delivered: bool = False,
     ) -> list[Message]:
         """Undelivered, unarchived messages for one recipient.
 
@@ -519,6 +520,9 @@ class MessageQueriesMixin:
         before the limit so unread mail in backoff cannot starve newer mail.
         A project filter partitions shared profile mailboxes for scoped readers;
         session/task recipient queues remain unfiltered for cross-project reports.
+        Plain inbox reads set ``include_delivered`` to show unread mail even
+        after injection or prime handed it over. Delivery callers keep the
+        default undelivered-only queue; archived and held mail remain excluded.
         """
         stmt = (
             select(messages)
@@ -526,7 +530,6 @@ class MessageQueriesMixin:
                 and_(
                     messages.c.to_kind == to_kind,
                     messages.c.to_id == to_id,
-                    messages.c.delivered_at.is_(None),
                     messages.c.read_at.is_(None),
                     messages.c.archived_at.is_(None),
                     ~message_is_held(),
@@ -540,6 +543,8 @@ class MessageQueriesMixin:
             )
             .limit(limit)
         )
+        if not include_delivered:
+            stmt = stmt.where(messages.c.delivered_at.is_(None))
         if project_id is not None:
             stmt = stmt.where(messages.c.project_id == project_id)
         if notification_at is not None and notification_delays:

@@ -38,7 +38,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import GitError, RemoteRefState, safe_git_detail
+from src.git.manager import GitError, RemoteRefState, bounded_git_reads, safe_git_detail
 from src.integration.promotion_contracts import PromotionError
 from src.models import TaskStatus
 
@@ -293,6 +293,7 @@ class ChildDelivery:
         *,
         collect: Collect | None = None,
         train_blockers: Callable[[str], Awaitable[dict | None]] | None = None,
+        request_visit: Callable[[str, str, str], object] | None = None,
         clock: Callable[[], float] = time.time,
         retry_seconds: float = 60.0,
         max_backoff_seconds: float = 3600.0,
@@ -303,6 +304,7 @@ class ChildDelivery:
         self.promotion = promotion_service
         self.collect = collect
         self.train_blockers = train_blockers
+        self.request_visit = request_visit
         self.clock = clock
         self.retry_seconds = retry_seconds
         self.max_backoff_seconds = max_backoff_seconds
@@ -383,7 +385,8 @@ class ChildDelivery:
                 reason=reason, operator_id=operator_id,
             )
         diagnosis, snapshot, tree = await self._diagnose(task_id)
-        if dry_run or diagnosis["outcome"] != "would_advance":
+        visit = isinstance(tree, tuple)  # Git-first: (repository id, target ref) to revisit
+        if dry_run or not visit and diagnosis["outcome"] != "would_advance":
             return diagnosis
         if diagnosis.get("head_sha") != expected_head_sha:
             return {
@@ -392,6 +395,8 @@ class ChildDelivery:
                 "reason": "the child's head is not the one the dry run reported; "
                 "run the dry run again",
             }
+        if visit:
+            return await self._request_train_visit(diagnosis, snapshot, *tree, reason, operator_id)
         try:
             evidence, created = await self._record(
                 snapshot,
@@ -417,36 +422,36 @@ class ChildDelivery:
                     task_id,
                     exc_info=True,
                 )
-        result = {
-            **diagnosis,
-            "outcome": "advanced",
-            "evidence_id": evidence["id"],
+        result = {**diagnosis, "outcome": "advanced", "evidence_id": evidence["id"],
+                  "collection": collection, "reason": (
+                      "recorded approved completion evidence for the head" if created
+                      else "approved evidence already pinned the head")}
+        await self.db.log_event(REDRIVE_EVENT, project_id=snapshot["project_id"], task_id=task_id,
+                                payload=json.dumps({
+            "operator_id": operator_id, "reason": reason, "at": self.clock(),
+            "parent_task_id": snapshot["parent_task_id"], "head_sha": snapshot["head_sha"],
+            "tree_sha": tree, "evidence_id": evidence["id"], "evidence_created": created,
             "collection": collection,
-            "reason": (
-                "recorded approved completion evidence for the head"
-                if created
-                else "approved evidence already pinned the head"
-            ),
-        }
-        await self.db.log_event(
-            REDRIVE_EVENT,
-            project_id=snapshot["project_id"],
-            task_id=task_id,
-            payload=json.dumps(
-                {
-                    "operator_id": operator_id,
-                    "reason": reason,
-                    "parent_task_id": snapshot["parent_task_id"],
-                    "head_sha": snapshot["head_sha"],
-                    "tree_sha": tree,
-                    "evidence_id": evidence["id"],
-                    "evidence_created": created,
-                    "collection": collection,
-                    "at": self.clock(),
-                }
-            ),
-        )
+        }))
         return result
+
+    async def _request_train_visit(self, diagnosis, snapshot, repository_id, target_ref, reason,
+                                   operator_id) -> dict[str, Any]:
+        """Wake the train lane of a pending child's parent target; never awaits the visit."""
+        if self.request_visit is None:
+            return {**diagnosis, "outcome": "blocked", "reason": (
+                f"{diagnosis['reason']}; no integration train is running to visit {target_ref}")}
+        self.request_visit(snapshot["project_id"], repository_id, target_ref)
+        await self.db.log_event(REDRIVE_EVENT, project_id=snapshot["project_id"],
+                                task_id=snapshot["task_id"], payload=json.dumps({
+            "operator_id": operator_id, "reason": reason, "at": self.clock(),
+            "parent_task_id": snapshot["parent_task_id"], "head_sha": snapshot["head_sha"],
+            "repository_id": repository_id, "target_ref": target_ref,
+            "diagnosis": diagnosis["reason"], "collection": "train_visit_requested",
+        }))
+        return {**diagnosis, "outcome": "advanced", "collection": "train_visit_requested",
+                "reason": f"requested a train visit of {target_ref}; the train collects the "
+                f"child once it observes the target (was: {diagnosis['reason']})"}
 
     async def diagnose(self, task_id: str) -> dict[str, Any]:
         """Report what the child's assembly waits on; writes nothing."""
@@ -606,21 +611,14 @@ class ChildDelivery:
             if snapshot is None:
                 return {"outcome": "not_found", "task_id": task_id}, None, None
             base: dict[str, Any] = {
-                "task_id": task_id,
-                "project_id": snapshot["project_id"],
-                "parent_task_id": snapshot["parent_task_id"],
-                "branch": snapshot["branch"],
+                "task_id": task_id, "project_id": snapshot["project_id"],
+                "parent_task_id": snapshot["parent_task_id"], "branch": snapshot["branch"],
                 "parent_branch": (snapshot["parent"] or {}).get("branch_name"),
-                "head_sha": snapshot["head_sha"],
-                "base_sha": snapshot["base_sha"],
-                "checkpoint": (
-                    {
-                        key: snapshot["checkpoint"][key]
-                        for key in ("state", "generation", "checkpoint_sha", "episode_id")
-                    }
-                    if snapshot["checkpoint"] is not None
-                    else None
-                ),
+                "head_sha": snapshot["head_sha"], "base_sha": snapshot["base_sha"],
+                "checkpoint": {
+                    key: snapshot["checkpoint"][key]
+                    for key in ("state", "generation", "checkpoint_sha", "episode_id")
+                } if snapshot["checkpoint"] is not None else None,
             }
             refusal = _child_refusal(snapshot)
             if refusal is not None:
@@ -643,12 +641,9 @@ class ChildDelivery:
                     }, snapshot, None
                 # Receipts are historical audit; nothing reissues one for a newer
                 # completion. Git-first delivery proves containment instead.
-                return {
-                    **base,
-                    "outcome": "blocked",
-                    "reason": "the matching receipt predates the child's current completion; "
-                    "only Git-first delivery can prove it again",
-                }, snapshot, None
+                return {**base, "outcome": "blocked", "reason": (
+                    "the matching receipt predates the child's current completion; "
+                    "only Git-first delivery can prove it again")}, snapshot, None
             _delivery_query = (
                 select(integration_promotion_intents.c.id, integration_promotion_intents.c.state)
                 .where(
@@ -716,6 +711,7 @@ class ChildDelivery:
             )
         return diagnosis, snapshot, tree
 
+    @bounded_git_reads
     async def _diagnose_git(self, task_id, observer):
         """The Git-first train owns collection; receipts and parent episodes do not."""
         async with self.db._engine.connect() as conn:
@@ -736,6 +732,8 @@ class ChildDelivery:
         if not parent.get("branch_name"):
             return {**base, "outcome": "blocked",
                     "reason": "the parent's target branch is missing"}, snapshot, None
+        target_ref = "refs/heads/" + parent["branch_name"].removeprefix("refs/heads/")
+        pending = snapshot["repository_id"], target_ref  # what a train visit collects into
         view = await observer.observe([task_id])
         fresh = await view.fresh()
         async with self.db._engine.connect() as conn:
@@ -743,10 +741,9 @@ class ChildDelivery:
             verified = await view.verified_on(conn, [task_id]) if fresh else {}
         proof = verified.get(task_id)
         if (current is None or _snapshot_identity(current) != _snapshot_identity(snapshot)
-                or proof is None or proof.request.target_ref !=
-                "refs/heads/" + parent["branch_name"].removeprefix("refs/heads/")):
+                or proof is None or proof.request.target_ref != target_ref):
             return {**base, "outcome": "blocked",
-                    "reason": "current parent containment could not be verified in Git"}, snapshot, None
+                    "reason": "current parent containment could not be verified in Git"}, snapshot, pending
         from src.integration.delivery_truth import DeliveryState
 
         if proof.state is DeliveryState.UNKNOWN:
@@ -754,7 +751,10 @@ class ChildDelivery:
             if reason == "missing_git_provenance":
                 reason += (f"; preview source recovery with `aq integration redrive-child "
                            f"{task_id} --adopt-source`")
-            return {**base, "outcome": "blocked", "reason": reason}, snapshot, None
+                pending = None
+            elif reason == "snapshot_unavailable":
+                reason += f": {target_ref} is not observable now (see `aq integration status`)"
+            return {**base, "outcome": "blocked", "reason": reason}, snapshot, pending
         if not proof.satisfied:
             from src.integration.obsolete_children import obsolete_child_blocker
             from src.integration.status import IntegrationStatusService
@@ -779,17 +779,17 @@ class ChildDelivery:
             if blockers:
                 return {**base, "outcome": "blocked", "reason": "; ".join(
                     f"{item['code']}: {item['detail']}" for item in blockers
-                )}, snapshot, None
+                )}, snapshot, pending
             if not status.get("batches"):
                 return {**base, "outcome": "blocked", "reason": (
                     f"no batch contains this child; {proof.reason}; "
                     "the train has not reported a source admission decision"
-                )}, snapshot, None
+                )}, snapshot, pending
         return {
             **base, "outcome": "nothing_to_redrive",
             "reason": ("already delivered into the parent (Git containment)" if proof.satisfied
                        else "the Git-first train owns delivery of this pending child"),
-        }, snapshot, None
+        }, snapshot, None if proof.satisfied else pending
 
     async def _prove(self, snapshot: dict[str, Any]) -> tuple[str, str]:
         """Return the remote tip and tree of the child's head, or say why not."""

@@ -29,12 +29,12 @@ function Bubble({ msg, replied, deliveryFailed }: { msg: PendingMessage; replied
             : "bg-gray-800 text-gray-100"
         } ${msg.pending ? "opacity-60" : ""}`}
       >
-        <div className="mb-1 flex items-center gap-2 text-xs text-gray-400">
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
           <span>{senderLabel(msg)}</span>
           <span>{fmt(msg.created_at)}</span>
           {outbound && <span className={msg.failed || deliveryFailed ? "text-red-400" : "text-gray-400"}>{state}</span>}
         </div>
-        <div className="whitespace-pre-wrap">{msg.body}</div>
+        <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{msg.body}</div>
       </div>
     </div>
   );
@@ -70,7 +70,7 @@ export default function ChatConversation(props: Props = {}) {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col space-y-3">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col space-y-3">
       <header className="hidden md:block">
         <h2 className="text-lg font-semibold">
           {props.headerText ?? "Chat with supervisor"}
@@ -96,7 +96,7 @@ export default function ChatConversation(props: Props = {}) {
 
       <div
         ref={scrollRef}
-        className="flex-1 space-y-2 overflow-y-auto rounded border border-gray-800 bg-gray-950 p-3"
+        className="min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto rounded border border-gray-800 bg-gray-950 p-3"
       >
         {isLoading && <p className="text-sm text-gray-500">Loading…</p>}
         {!isLoading && items.length === 0 && (
@@ -136,10 +136,12 @@ export default function ChatConversation(props: Props = {}) {
           }}
           rows={2}
           placeholder="Message the supervisor (Enter to send, Shift-Enter for newline)…"
-          className="flex-1 resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
+          className="min-w-0 flex-1 resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
         />
         <button
           type="submit"
+          aria-label="Send"
+          data-primary-control
           disabled={isSending || !body.trim()}
           className="inline-flex items-center gap-1 rounded bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >

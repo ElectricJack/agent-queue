@@ -161,6 +161,8 @@ _CONTINUATION_BOOTSTRAP_PROMPT = (
     "continue to step 2; do not stop or exit.\n"
     "2. Run the exact `aq wait ack` command from prime, with its wait id, "
     "continuation id and generation. Ack requires the outcome delivery from step 1.\n"
+    "A `cancelled` wait outcome still requires `aq wait ack`: cancellation resolves "
+    "the wait, and you still hold the task claim. Do not stop or exit.\n"
     "3. Run `aq prime` again and follow the task instructions.\n"
     + _TASK_BOOTSTRAP_LIFECYCLE
 )
@@ -259,6 +261,8 @@ POOL_BOOTSTRAP_PROMPT = (
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
     "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
     "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
+    "On `claim_in_progress`, claim again now in this same turn: it is progress, not a\n"
+    "retained preparation, and nothing is delivered to an ended turn.\n"
     "On `prepare_failed` or `not_admissible`, respect `retry_after` and the returned instructions.\n"
     "The daemon quarantines the workspace after three identical preparation refusals.\n"
     "On a repeated identical refusal, report the blocker ONCE to the project supervisor.\n"

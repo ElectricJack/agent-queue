@@ -589,7 +589,7 @@ class FilesPlugin(InternalPlugin):
         """Resolve read-only project documents without expanding the write sandbox.
 
         Compare resolved candidates to lexical roots beneath the canonical vault:
-        symlinking a project or its plans/specs directory must not grant a new root.
+        symlinking a project or its plans/specs/notes directory must not grant a new root.
         """
         from src.commands.principal import current_principal
 
@@ -606,7 +606,7 @@ class FilesPlugin(InternalPlugin):
         if len(relative.parts) < 4 or relative.parts[0] != "projects":
             return True, None
         _, project_id, area, *_ = relative.parts
-        if project_id in {".", ".."} or area not in {"plans", "specs"}:
+        if project_id in {".", ".."} or area not in {"plans", "specs", "notes"}:
             return True, None
         principal = current_principal()
         if principal and principal.enforced and (

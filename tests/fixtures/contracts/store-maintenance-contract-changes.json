@@ -1,0 +1,32 @@
+{
+  "source_base": "036ca25bbc82d2c6673186dc645d2149c7a90d4f",
+  "source_commit": "4e9aa23e7017e02e8ea2f2fa877e9649c29735e4",
+  "command": "integration_store_maintenance",
+  "transport_definition": {
+    "name": "integration_store_maintenance",
+    "description": "Preview or consolidate configured retained stores while keeping unreachable objects.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "minLength": 1,
+          "title": "Project Id",
+          "type": "string"
+        },
+        "dry_run": {
+          "default": true,
+          "title": "Dry Run",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "IntegrationStoreMaintenanceArgs",
+      "type": "object"
+    }
+  },
+  "contract_fingerprint": "sha256:026c70ede4bd4227774207ffdce3f2edf4d756867a733e797b04b0c98edf75dc",
+  "cli_catalogue_sha256": "1e613ff31e278712ca87a7fe0f898a180da51b6e4887f2e1c96152ec1826665a",
+  "previous_cli_catalogue_sha256": "75e6ed919ba8c3945cf4c8895fffe7f26fd9907b806236d25f2b8cb301b37b55"
+}

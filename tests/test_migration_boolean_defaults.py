@@ -21,6 +21,14 @@ from __future__ import annotations
 import ast
 import pathlib
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """These source scans never allocate or query a database."""
+
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 #: Files whose ``Column(...)`` declarations reach real DDL.

@@ -388,3 +388,51 @@ def test_slow_operation_logs_structured_fields_and_restores_context(monkeypatch)
         })]
     finally:
         install_registry(None)
+
+
+async def test_operation_profiles_isolate_callers_and_freeze_detached_producers():
+    from src.metrics.operation_profile import operation_profile, profile_timing
+    from src.metrics.perf import operation_timing
+
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def producer():
+        with operation_timing("git.fetch"):
+            started.set()
+            await finish.wait()
+
+    with operation_profile() as first:
+        task = asyncio.create_task(producer())
+        await started.wait()
+        with profile_timing("wait.shared_observation_current"):
+            await asyncio.sleep(0)
+    frozen = first.as_dict()
+    with operation_profile() as second:
+        finish.set()
+        await task
+        with operation_timing("git.diff"):
+            pass
+    assert first.as_dict() == frozen
+    assert set(frozen["operations"]) == {"wait.shared_observation_current"}
+    assert set(second.as_dict()["operations"]) == {"git.diff"}
+
+
+async def test_profiled_lock_records_cancelled_wait_without_releasing_another_holder():
+    from src.metrics.operation_profile import operation_profile, profiled_lock
+
+    lock, started = asyncio.Lock(), asyncio.Event()
+    await lock.acquire()
+    with operation_profile() as profile:
+        async def waiter():
+            started.set()
+            async with profiled_lock(lock, "wait.snapshot_scope_lock"):
+                pytest.fail("contended lock was acquired")
+
+        task = asyncio.create_task(waiter())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert lock.locked()
+    assert profile.as_dict()["operations"]["wait.snapshot_scope_lock"]["calls"] == 1
+    lock.release()

@@ -146,11 +146,11 @@ current identities and checks remote target freshness. Beyond the bound the
 observer refetches; a failed refresh never falls back to the expired snapshot.
 A proven ancestry negative withholds work; a rewind, retarget or reopened
 generation invalidates the current view and retries admission. Unknown or unloaded
-Git evidence permits worker preparation without asserting delivery; no receipt
-can override Git evidence. Claim selection
+Git evidence for `blocks` permits worker preparation without asserting delivery;
+no receipt can override Git evidence. Claim selection
 retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. An
-absent truth-bearing observer permits preparation without a receipt fallback.
+absent truth-bearing observer permits `blocks` preparation without a receipt fallback.
 The agent merges prerequisite state from Git; ancestry at publication remains
 the delivery authority. Non-hierarchy projects keep their source admission policy.
 
@@ -164,10 +164,15 @@ recompute dependent blockedness: they may be read while the scheduler holds
 those task rows under the wait-graph fence on another connection.
 
 `delivery-of` edges require source completion in the persisted graph projection
-and a separate default-target Git observation in `AdmissionView`. Unknown
-observations permit dispatch, pool demand and claims; proven missing ancestry
-can withhold them. This admission choice does not establish delivery. Delivery
-is never persisted as blockedness: a proven rewind withholds the dependent on its
+and positive, current default-target Git proof in `AdmissionView` in every project
+and integration mode. Unknown or unloaded evidence, including an absent observer,
+cold cache or failed fetch, withholds dispatch, pool demand and claims. Explain
+and stall diagnostics name the unproven source with `prerequisite_delivery` and
+the unavailable evidence reason. Cold or failed observations enqueue a coalesced
+background re-observation with bounded backoff, independently of train visits;
+an absent observer is reported without a retry loop. `blocks` retains permissive
+preparation on unknown evidence. Delivery is never persisted as blockedness:
+a proven rewind withholds the dependent on its
 next admission view without waiting for a SQL receipt change.
 
 A cross-epic dependent whose epic already contains every prerequisite's exact
@@ -180,11 +185,12 @@ the checked refresh publishes it.
 
 Interactive `task explain` and `pool status` only read snapshots inside that
 age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.
-Missing or expired evidence is unknown and permits worker demand;
+Missing or expired evidence is unknown and permits `blocks` worker demand;
 current database identities are still revalidated against the pinned observation.
 If a background freshness check has already rejected that exact snapshot,
 diagnostics discard its proof until a new observation or successful check.
-Unknown evidence does not become an admission exclusion.
+Unknown `delivery-of` evidence is an admission exclusion and requests background
+re-observation; the diagnostic request itself never waits on Git.
 Automatic stack overlays additionally require the existing, unexpired remote-ref
 cache. Unavailable stack evidence supplies no overlay and permits normal worker
 preparation; changed refs still invalidate an observed stack. An explanation
@@ -558,6 +564,12 @@ code close must verify its exact task-branch head on origin before releasing its
 claim, including projects outside the train modes.
 
 `aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label ∧ held_batch_id IS NULL`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
+
+A project-ready request's withheld explanations share one cached, batched
+admission read and at most one fleet-wide pool
+measurement, including capacity-spill diagnostics. These observations last only
+for that request; another request reads current inputs. The number of withheld
+tasks must not multiply fleet demand scans or remote Git reads.
 
 ## 10. Events: replay and payload registry
 

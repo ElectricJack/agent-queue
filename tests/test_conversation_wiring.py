@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
 
 import src.main as main_mod
 import tests.test_main_lifecycle as lifecycle_tests
@@ -17,6 +18,7 @@ import tests.test_supervisor_inbox_commands as inbox_tests
 import tests.test_tmux_integration as tmux_tests
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import load_config
+from src.database.tables import conversation_inputs, messages
 from src.conversations.intake import dm_thread_id
 from src.conversations.outbox import UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
@@ -882,7 +884,6 @@ async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
 
 
 @pytest.mark.parametrize("state", ["running", "stopped", "sleeping"])
-@pytest.mark.timeout(120)
 async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state):
     handler, db = env
     await db.create_project(Project(id="agent-queue", name="AQ", supervisor_enabled=True))
@@ -927,23 +928,118 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
         # Synchronize on complete passes, including the real database work.
         # The test timeout guards deadlock; the 3600s routine interval cannot
         # satisfy this test without the committed input's immediate wake.
-        await completed_passes.get()
-        assert seen == []
-        accepted = await post(handler)
-        await completed_passes.get()
-        assert seen == [accepted["supervisor_message_id"]]
-        if state != "running":
-            lens.ensure_started.assert_awaited_once_with(
-                kind="session", target_id="supervisor-global", project_id=None
-            )
-        else:
-            lens.ensure_started.assert_not_awaited()
-        # A gateway replay repairs the event without duplicating the notice/nudge.
-        assert not (await post(handler))["created"]
-        await run_pass()
-        assert len(seen) == 1
+        async with asyncio.timeout(120):
+            await completed_passes.get()
+            assert seen == []
+            accepted = await post(handler)
+            await completed_passes.get()
+            assert seen == [accepted["supervisor_message_id"]]
+            if state != "running":
+                lens.ensure_started.assert_awaited_once_with(
+                    kind="session", target_id="supervisor-global", project_id=None
+                )
+            else:
+                lens.ensure_started.assert_not_awaited()
+            # A gateway replay repairs the event without duplicating the notice/nudge.
+            assert not (await post(handler))["created"]
+            await run_pass()
+            assert len(seen) == 1
     finally:
         await service.stop()
+
+
+@pytest.mark.parametrize("supervisor_exists", [True, False])
+@pytest.mark.parametrize("read_without_delivery", [True, False])
+async def test_restart_recovers_unanswered_conversation_without_event_or_cycle(
+    env, supervisor_exists, read_without_delivery
+):
+    handler, db = env
+    if supervisor_exists:
+        await supervisor(db)
+    # Intake commits while the independent service is stopped. Its event is
+    # deliberately lost; restarting must use only the durable rows.
+    accepted = await post(handler)
+    message_id = accepted["supervisor_message_id"]
+    if read_without_delivery:
+        async with db._engine.begin() as conn:
+            await conn.execute(update(messages).where(messages.c.id == message_id).values(
+                read_at=NOW, last_notified_at=NOW, notification_attempts=3,
+            ))
+    if not supervisor_exists:
+        await supervisor(db)
+    handler.config.messages.delivery_interval = 3600
+    handler.config.messages.transcript_tail_fallback = False
+    bus = EventBus(validate_events=False)
+    lens = SimpleNamespace(
+        activity=AsyncMock(return_value="idle"),
+        nudge=AsyncMock(return_value=True),
+    )
+    engine = MessageDeliveryEngine(db, lens, handler.config, bus=bus)
+    completed = asyncio.Event()
+    run_pass = engine.run_delivery_pass
+
+    async def observed_pass():
+        result = await run_pass()
+        completed.set()
+        return result
+
+    engine.run_delivery_pass = observed_pass
+    service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
+    service.start()
+    try:
+        await asyncio.wait_for(completed.wait(), timeout=10)
+        lens.nudge.assert_awaited_once()
+        target = lens.nudge.await_args.kwargs
+        assert (target["kind"], target["target_id"], target["project_id"]) == (
+            "session", "supervisor-global", None,
+        )
+        assert message_id in target["text"]
+        notice = await db.get_message(message_id)
+        assert notice.read_at is None and notice.delivered_at is None
+        assert notice.notification_attempts == 1
+        # A retry pass must respect the durable notification reservation.
+        await run_pass()
+        lens.nudge.assert_awaited_once()
+    finally:
+        await service.stop()
+    # An actual recipient read stays consumed across a further daemon restart.
+    await db.mark_read(message_id)
+    await MessageDeliveryEngine(db, lens, handler.config).run_delivery_pass()
+    lens.nudge.assert_awaited_once()
+
+
+@pytest.mark.parametrize("settled", [
+    "answered", "reply_recorded", "expired", "revoked", "archived", "closed",
+])
+async def test_recovery_preserves_settled_read_only_conversation_notices(env, settled):
+    handler, db = env
+    await supervisor(db)
+    accepted = await post(handler)
+    message_id = accepted["supervisor_message_id"]
+    if settled == "answered":
+        assert (await reply(handler, reply_args(accepted)))["success"]
+    elif settled == "reply_recorded":
+        await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="user", to_id="dashboard", body="Already answered",
+            reply_to_id=message_id,
+        )
+    elif settled == "closed":
+        await db.set_conversation_state(accepted["conversation_id"], state="closed", now=NOW)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(messages).where(messages.c.id == message_id).values(
+            read_at=NOW, delivered_at=None,
+            archived_at=NOW if settled == "archived" else None,
+        ))
+        if settled in {"expired", "revoked"}:
+            await conn.execute(update(conversation_inputs).where(
+                conversation_inputs.c.id == accepted["input_id"],
+            ).values(state=settled))
+    lens = SimpleNamespace(activity=AsyncMock(), nudge=AsyncMock())
+    await MessageDeliveryEngine(db, lens, handler.config).run_delivery_pass()
+    assert (await db.get_message(message_id)).read_at == NOW
+    lens.activity.assert_not_awaited()
+    lens.nudge.assert_not_awaited()
 
 
 async def test_other_supervisor_injection_and_status_leave_conversation_unread(env):

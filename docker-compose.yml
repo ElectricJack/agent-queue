@@ -4,6 +4,9 @@ services:
   postgres:
     container_name: aq-postgres
     image: postgres:18-alpine
+    # PostgreSQL's shared statistics and parallel queries both allocate DSM.
+    shm_size: 1g
+    restart: unless-stopped
     command:
       - postgres
       - -c
@@ -36,6 +39,7 @@ services:
   postgres-test:
     container_name: aq-postgres-test
     image: postgres:18-alpine
+    shm_size: 1g
     command:
       - postgres
       - -c

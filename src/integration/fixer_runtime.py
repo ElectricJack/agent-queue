@@ -362,6 +362,8 @@ class DaemonFixerRuntime:
                 raise PublishWithdrawn("fixer must merge every frozen member before publication")
         if await self.git.areserved_paths_in_diff(path, state["starting_sha"], tip):
             raise PublishWithdrawn("fixer changed reserved AQ paths")
+        _, lane = await self.lane(state)
+        eligible = await lane.service.publication_eligibility()
         target = BranchKey(repository_id=batch["repository_id"], branch=branch)
         async with enabled_train_write(self.db, batch["repository_id"]):
             # Batch intent and session binding stay locked across the fenced push.
@@ -369,37 +371,9 @@ class DaemonFixerRuntime:
                 current = (await conn.execute(select(integration_batches).where(
                     integration_batches.c.id == batch["id"],
                 ).with_for_update())).mappings().one()
-                bound = current["fixer_state"]
-                live = await self.db.get_session(session.id)
-                if (getattr(self.orchestrator, "_paused", False)
-                        or (current["intent"] != "open" and not (
-                            current["intent"] == "aborted" and
-                            (current["fixer_queue"] or {}).get("status") in {"deferred", "companion"}))
-                        or current["lifecycle"] in {"promoted", "failed", "empty"}
-                        or not bound
-                        or bound["status"] != "active"
-                        or bound["target_ref"] != state["target_ref"]
-                        or bound["session_id"] != session.id
-                        or bound["instance_token"] != session.instance_token
-                        or live is None or live.instance_token != session.instance_token
-                        or live.state not in {"running", "idle", "waiting"}):
-                    raise PublishWithdrawn("batch fixer authority was withdrawn")
-                await conn.execute(select(tasks.c.id).where(
-                    tasks.c.id.in_([member["task_id"] for member in bound["members"]]),
-                ).order_by(tasks.c.id).with_for_update())
-                from src.integration.batches import BatchStore
-
-                current_batch, lane = await self.lane(state)
-                members = await BatchStore(self.db).members(batch["id"])
-                if (current["fixer_queue"] or {}).get("status") in {"deferred", "companion"}:
-                    from src.operator_decisions import OperatorDecisions
-
-                    authorized = (not await OperatorDecisions(self.db).holds("batch", batch["id"])
-                                  and await lane.service.eligible(current_batch, members))
-                else:
-                    authorized = await lane.service._authorized(current_batch, members)
-                if not authorized:
-                    raise PublishWithdrawn("batch source or policy authority changed")
+                bound = await self._check_publication_authority(
+                    conn, current, state, session, lane, eligible,
+                )
                 fence = await self.locks.acquire(target, "session:" + session.id, role="repair")
                 try:
                     actual_branch, dirty = await self.git.aread_status_summary(path)
@@ -429,6 +403,86 @@ class DaemonFixerRuntime:
             train.wake(batch["project_id"], batch["repository_id"])
         return {"success": True, "outcome": "published", "head_sha": tip,
                 "branch": state["target_ref"]}
+
+    async def _check_publication_authority(self, conn, current, state, session, lane, eligible):
+        from src.integration.batches import Batch, BatchStore
+        from src.operator_decisions import OperatorDecisions
+
+        bound = current["fixer_state"]
+        live = await self.db.get_session(session.id)
+        deferred = (current["fixer_queue"] or {}).get("status") in {"deferred", "companion"}
+        if (getattr(self.orchestrator, "_paused", False)
+                or (current["intent"] != "open" and not (
+                    current["intent"] == "aborted" and deferred))
+                or current["lifecycle"] in {"promoted", "failed", "empty"}
+                or not bound or bound["status"] != "active"
+                or any(bound.get(key) != state.get(key) for key in (
+                    "target_ref", "starting_sha", "members", "work_dir"))
+                or bound["session_id"] != session.id
+                or bound["instance_token"] != session.instance_token
+                or live is None or live.instance_token != session.instance_token
+                or live.work_dir != bound.get("work_dir")
+                or live.desired_state != "running"
+                or live.state not in {"running", "idle", "waiting"}):
+            raise PublishWithdrawn("batch fixer authority was withdrawn")
+        await conn.execute(select(tasks.c.id).where(
+            tasks.c.id.in_([member["task_id"] for member in bound["members"]]),
+        ).order_by(tasks.c.id).with_for_update())
+        batch = Batch.from_row(current)
+        members = await BatchStore(self.db).members(batch.id)
+        if deferred:
+            authorized = (not await OperatorDecisions(self.db).holds("batch", batch.id)
+                          and await eligible(batch, members))
+        else:
+            authorized = await lane.service._authorized(batch, members, eligible=eligible)
+        if not authorized:
+            raise PublishWithdrawn("batch source or policy authority changed")
+        return bound
+
+    async def rebind_authority(self, batch, *, operator_id, reason, dry_run=True):
+        """Reconstruct current authority without moving or resetting fixer work."""
+        from src.integration.batches import Batch
+
+        state = batch["fixer_state"]
+        if not state:
+            raise PublishWithdrawn("batch has no retained fixer")
+        session = await self.db.get_session(state["session_id"])
+        if session is None:
+            raise PublishWithdrawn("batch fixer session is unavailable")
+        _, lane = await self.lane(state)
+        eligible = await lane.service.publication_eligibility()
+        repo = await lane.service.gitops.repository(Batch.from_row(batch))
+        target = BranchKey(repository_id=batch["repository_id"],
+                           branch=state["target_ref"].removeprefix("refs/heads/"))
+        async with enabled_train_write(self.db, batch["repository_id"]):
+            async with self.db.immediate() as conn:
+                current = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == batch["id"],
+                ).with_for_update())).mappings().one()
+                bound = await self._check_publication_authority(
+                    conn, current, state, session, lane, eligible,
+                )
+                fence = await self.locks.acquire(target, "session:" + session.id, role="repair")
+                try:
+                    head = await self.git.aremote_branch_head(
+                        repository=repo.binding, branch=target.branch,
+                    )
+                    if head is None:
+                        raise PublishWithdrawn("batch branch disappeared")
+                    evidence = {"batch_id": batch["id"], "session_id": session.id,
+                                "candidate_sha": head, "operator_id": operator_id,
+                                "reason": reason, "refreshed_at": self.clock()}
+                    if not dry_run:
+                        await conn.execute(update(integration_batches).where(
+                            integration_batches.c.id == batch["id"],
+                        ).values(fixer_state={**bound, "authority_refresh": evidence},
+                                 updated_at=self.clock()))
+                        await self.db.log_event("integration.batch_authority_rebound",
+                            project_id=batch["project_id"], payload=json.dumps(evidence), conn=conn)
+                finally:
+                    await self.locks.release(fence)
+        return {"success": True, "outcome": "preview" if dry_run else "rebound",
+                "batch_id": batch["id"], "candidate_sha": head, "evidence": evidence}
 
     async def rebind(self, batch, session):
         """The fixer explicitly yields its clean checkout for a serialized switch.

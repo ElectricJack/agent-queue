@@ -9,6 +9,7 @@ import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 import asyncpg
@@ -20,7 +21,7 @@ def run(world, *, samples=3, idle_seconds=20):
     assert (home / ".aq-e2e").exists()
     config = yaml.safe_load((home / "config.yaml").read_text())
     db_url = config["database"]["url"].replace("postgresql+asyncpg://", "postgresql://")
-    assert db_url.rsplit("/", 1)[-1].startswith("aq_e2e_")
+    assert urlsplit(db_url).path.lstrip("/").startswith("aq_e2e_")
     pid = int((home / "daemon.pid").read_text())
     smoke = world.smoke
 
@@ -57,7 +58,7 @@ def run(world, *, samples=3, idle_seconds=20):
             "reason": "isolated backend responsiveness measurement",
         })
 
-    with patch.dict(os.environ, world.env):
+    with patch.dict(os.environ, world.env, clear=True):
         # Let startup and registration events settle before measuring idle load.
         time.sleep(6)
         before = {"cpu": cpu(), "transactions": asyncio.run(stats()), "cycles": cycles()}

@@ -183,10 +183,17 @@ anything consequential.
 
 ### 2.4 Reading, replying and waiting
 
-- **`aq message inbox`** lists pending rows and changes nothing.
+- **`aq message inbox`** lists unread, unarchived rows, including mail already
+  handed over by inject or prime, without acknowledging them. A supervisor's
+  logical address, runtime name and current named-session UUID share this view.
+  Held mail and obsolete notices remain excluded; priority and the row limit apply
+  across the combined mailboxes.
   **`--inject`** returns the bodies and marks them delivered with no `via`
   and no `read_at` (`message_commands.py`). An injected message is consumed
-  but not read.
+  but not read. Injection returns only pending, undelivered rows, so repeating
+  it cannot deliver the same body twice. **`--include-consumed`** adds other
+  consumed rows (including archived/read history) in `consumed_messages`,
+  without duplicating the main `messages` list or changing delivery state.
 - **`aq message status <id>`** returns the durable body even after it has
   left the inbox, and stamps `via=read` and `read_at`.
 - **`aq prime`** consumes pending mail with `via=prime`.
@@ -334,6 +341,13 @@ allowlist.
    repair a missed wake using the original notice and notification deduplication.
    Another supervisor may inspect the notice but cannot consume it through inbox
    injection or mark it read.
+   The independent delivery pass also reconciles routing before scanning its
+   backlog, including its first pass after restart; it needs no scheduler cycle
+   or replayed event. An undelivered, unarchived notice with a read stamp is
+   returned to pending only when its durable input is still accepted in an
+   active conversation and has no recorded reply. Answered, expired, revoked,
+   archived and delivered inputs retain their consumption history. Recording a
+   conversation reply stamps both read and delivery atomically.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
    `outbound_deliveries`. For channel and DM conversations, the Discord reply
@@ -375,7 +389,18 @@ is the operator guide.
 
 ### 2.8 Links to the dashboard
 
-Every post carries at most one link, to the object it is about.
+Posts carry an explicit Markdown dashboard hyperlink, `[Dashboard](https://host/path)`,
+to the object they describe. Authored HTTP(S) links in supervisor replies, `say`
+and digests are preserved, including external hosts. The 2026-10-26 link
+correction supersedes the older one-link restriction: never filter links by
+origin or reject a digest because it contains URLs. URL destinations are
+validated as absolute HTTP(S), with markup-sensitive path/query characters
+percent-encoded. IP, IPv6 and tailnet host forms use explicit Markdown rather
+than depending on automatic linkification. Mention escaping applies to prose
+and labels, not URL destinations. Trimming prose preserves complete links;
+links that exceed the post limit receive a visible explanation. Missing or
+invalid dashboard configuration also produces a visible notice. Reachability
+is separate from URL syntax and is never inferred from a clickable link.
 `src/dashboard_paths.py` gives every object a `/focus/...` path. Its `SCHEME`
 table marks each kind live (task, session, report) or planned (review,
 escalation, batch, inbox, conversation). `/settings/` is never a link
@@ -764,7 +789,7 @@ These hold today, and changes to this system must keep them.
 4. **External delivery never reposts an unknown.** Every post has a unique
    dedup key and a marker. `sent` requires a receipt. An ambiguous send is
    reconciled from channel history or left `unknown` for an operator.
-5. **One channel, one link per post, budgets enforced.** No post exceeds its
+5. **One channel, clickable links, budgets enforced.** No post exceeds its
    kind's budget, the link and marker are never cut, and mentions are
    stripped from interpolated text.
 6. **A reply never acts by itself.** Inbound human text is stored as

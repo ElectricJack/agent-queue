@@ -1,6 +1,6 @@
 ---
 name: aq-mini-projects
-description: Facilitate an explicitly requested, bounded ideation session in one aq task (quick mode), turning a brief or brain dump into a critiqued roadmap submitted for human plan review. Use for requested mini-project ideation; durable multi-task or cross-provider sessions are outside this skill.
+description: Facilitates an explicitly requested, bounded ideation session inside one held aq task (quick mode) — freezing and hashing the brief, one proposal, one critique and one synthesis pass, and submitting the critiqued roadmap with `aq review submit --kind plan` for human plan review. Use when a task or requester explicitly asks for a mini-project, quick ideation, a brainstorm-to-roadmap or a proposal/critique/synthesis run. Not for ordinary coding, for filing implementation tasks from a roadmap, or for durable multi-task or cross-provider review loops (see aq-reviews).
 allowed-tools:
   - Bash
 ---
@@ -11,6 +11,21 @@ Run one proposal round, one critique and one synthesis in the held task.
 The facilitator alone writes the final artifact. This is an opt-in workflow;
 do not start it during ordinary coding or turn its roadmap into implementation
 tasks. It requires no external brainstorming skill.
+
+Track the run with this checklist; each step is detailed below:
+
+```
+- [ ] Establish: prime, task show, record limits (90 min, 3 sub-agents, 1 revision)
+- [ ] Tell the requester the arrangement and expected cost
+- [ ] Freeze: brief <= 32 KiB valid UTF-8, SHA-256, snapshot envelope via --note
+- [ ] Confirm the snapshot write succeeded
+- [ ] Proposer pass -> publish body + envelope via --note
+- [ ] Critic pass (verify hashes first) -> publish body + envelope via --note
+- [ ] Synthesis: dispositions table, at most one revision, roadmap
+- [ ] Verify every hash before submission
+- [ ] aq review submit --kind plan; aq review show; compare content_sha256
+- [ ] Close: "plan submitted; awaiting human decision" (or fail as incomplete)
+```
 
 ## Establish the run
 
@@ -168,5 +183,5 @@ approves nothing, and even approval does not authorize automatic task creation
 or execution by this skill.
 
 For a code-grounded serial example and failure read-throughs, see
-`docs/guides/mini-projects.md` in the agent-queue repository. This skill contains
-all essential instructions because harness installation copies only SKILL.md.
+`docs/guides/mini-projects.md` in the agent-queue repository. That guide is not
+installed with the skill, so this file keeps every essential instruction.

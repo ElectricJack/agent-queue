@@ -14,6 +14,7 @@ import pytest
 
 from src.git.manager import ChildPreparationConflict, GitError, GitManager, RemoteRefState
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
+from src.git.repository_lock import RepositoryLockTimeout, repository_lock_wait_limit
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
 from tests.git_seed_helpers import clone_seed, init_bare_seed
@@ -234,6 +235,25 @@ async def test_arun_git_result_preserves_status_stdin_and_scoped_environment(clo
     assert result.returncode == 0
     assert len(result.stdout.strip()) == 40
     assert result.stderr == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nice", [None, "/usr/bin/nice"])
+async def test_low_priority_git_uses_owned_process_with_available_nice(clone, mgr, nice):
+    from unittest import mock
+
+    from src.git.manager import run_owned_process
+
+    with (
+        mock.patch("src.git.manager.shutil.which", return_value=nice),
+        mock.patch("src.git.manager.run_owned_process", wraps=run_owned_process) as run,
+    ):
+        result = await mgr.arun_git_result(["rev-parse", "HEAD"], cwd=clone,
+                                          low_priority=True, timeout=25)
+    assert result.returncode == 0
+    prefix = ("nice", "-n", "10") if nice else ()
+    assert run.call_args.args == (*prefix, "git", "rev-parse", "HEAD")
+    assert 0 < run.call_args.kwargs['timeout'] <= 25
 
 
 @pytest.mark.asyncio
@@ -2477,6 +2497,82 @@ class TestRootDeliveryGatesTheWholeTree:
         ]
 
 
+async def test_repository_wait_bound_preserves_owner_and_does_not_bound_body(mgr, tmp_path):
+    reading, release, acquired, finish = (asyncio.Event() for _ in range(4))
+
+    async def owner():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            reading.set()
+            await release.wait()
+
+    async def protected_work():
+        with repository_lock_wait_limit(0.01):
+            async with mgr.arepository_transaction(str(tmp_path)):
+                acquired.set()
+                await finish.wait()
+
+    async def unbounded_work():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            return True
+
+    train = asyncio.create_task(owner())
+    work = unbounded = None
+    try:
+        await asyncio.wait_for(reading.wait(), timeout=5)
+        with repository_lock_wait_limit(0.01):
+            with pytest.raises(RepositoryLockTimeout):
+                async with mgr.arepository_transaction(str(tmp_path)):
+                    pytest.fail("busy repository was entered")
+        assert not train.done()
+        # The scope resets for unrelated callers: this wait survives a bound
+        # that applies only to the timed-out claimant above.
+        unbounded = asyncio.create_task(unbounded_work())
+        await asyncio.sleep(0.03)
+        assert not unbounded.done()
+        release.set()
+        await train
+        assert await unbounded
+        work = asyncio.create_task(protected_work())
+        await asyncio.wait_for(acquired.wait(), timeout=5)
+        await asyncio.sleep(0.03)
+        assert not work.done()
+    finally:
+        release.set()
+        finish.set()
+        await train
+        if unbounded is not None:
+            await unbounded
+        if work is not None:
+            await work
+
+
+async def test_repository_timeout_identifies_current_holder(mgr, tmp_path, caplog):
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def slow_repository_writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            entered.set()
+            await finish.wait()
+
+    owner = asyncio.create_task(slow_repository_writer())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        with repository_lock_wait_limit(0.01), pytest.raises(RepositoryLockTimeout):
+            async with mgr.arepository_transaction(str(tmp_path)):
+                pytest.fail("entered another writer's critical section")
+        record = next(r for r in caplog.records if hasattr(r, "owner_chain"))
+        assert any("slow_repository_writer" in name for name in record.owner_chain)
+        assert record.held_seconds > 0
+        assert record.wait_seconds == 0.01
+        assert not owner.done()
+    finally:
+        finish.set()
+        await owner
+    lock = mgr._repository_operation_locks[str(tmp_path.resolve())]
+    assert lock._owner is None
+    assert lock._acquired_at is None
+
+
 @pytest.mark.parametrize("runner", ["local", "result"])
 @pytest.mark.parametrize("during_spawn", [False, True])
 async def test_cancelling_git_operation_reaps_process_before_next_writer(
@@ -2983,3 +3079,52 @@ async def test_unsettled_startup_is_bounded_and_late_handle_remains_owned(mgr, c
         await asyncio.wait_for(asyncio.gather(*process._pending), timeout=10)
     assert created and all(child.returncode is not None for child in created)
     assert not any(process._group_has_writer(child.pid) for child in created)
+
+
+_TIMEOUT = GitError("authenticated Git push preparation failed (reason=git_timeout, "
+                    "subcommand=fetch, elapsed=100.0s, budget=100.0s)")
+
+
+def test_timeout_budget_doubles_to_ceiling_and_resets():
+    from src.git import manager
+
+    streaks = {}
+
+    def budget():
+        return manager._escalated_budget(streaks, "s", 120.0, 1200.0)
+
+    assert budget() == 120.0
+    seen = []
+    for _ in range(5):
+        manager._record_budget_outcome(streaks, "s", _TIMEOUT)
+        seen.append(budget())
+    assert seen == [240.0, 480.0, 960.0, 1200.0, 1200.0]
+    manager._record_budget_outcome(streaks, "s", GitError("fatal: other failure"))
+    assert budget() == 120.0
+    manager._record_budget_outcome(streaks, "s", _TIMEOUT)
+    manager._record_budget_outcome(streaks, "s", None)
+    assert budget() == 120.0
+
+
+@pytest.mark.asyncio
+async def test_authenticated_fetch_budget_grows_while_timing_out_then_resets(tmp_path):
+    """A timed-out transfer is discarded whole, so a fixed budget would loop forever."""
+    manager = GitManager.__new__(GitManager)
+    budgets, outcomes = [], [_TIMEOUT, _TIMEOUT, None, None]
+
+    async def once(checkout_path, *, budget=None, **options):
+        budgets.append(budget)
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        return "transfer"
+
+    manager._afetch_origin_with_auth_to_url_once = once
+    call = manager._afetch_origin_with_auth_to_url
+    for _ in range(2):
+        with pytest.raises(GitError):
+            await call(str(tmp_path), source_url="u", token=None)
+    assert await call(str(tmp_path), source_url="u", token=None) == "transfer"
+    assert await call(str(tmp_path), source_url="u", token=None) == "transfer"
+    assert budgets == [GitManager._GIT_TIMEOUT, 2 * GitManager._GIT_TIMEOUT,
+                       4 * GitManager._GIT_TIMEOUT, GitManager._GIT_TIMEOUT]

@@ -31,6 +31,7 @@ from sqlalchemy import and_, case, delete, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.waits.holding import message_is_held
 from src.waits.sources import insert_message_with_source_event
 from src.conversations.intake import KIND_CHANNEL, KIND_THREAD
 from src.conversations.limits import (
@@ -215,13 +216,39 @@ class ConversationQueriesMixin:
     async def route_queued_conversation_inputs(self, project_id: str = "") -> int:
         """Route pending chat and reference notices to global, including legacy mail.
 
-        Consumed/archived history is preserved; reply authority is global even
-        for those older inputs. Ask discussions retain their project routing.
+        Repair inconsistent read-only stamps only for still-unanswered inputs.
+        Consumed/archived history is otherwise preserved. Ask discussions retain
+        their project routing. Safe to repeat from the independent delivery loop.
         """
         recipient, scope = await self.resolve_conversation_supervisor(project_id)
         if recipient is None:
             return 0
         async with self.immediate() as conn:
+            reply = messages.alias("conversation_recovery_reply")
+            unanswered = select(conversation_inputs.c.id).join(
+                supervisor_conversations,
+                supervisor_conversations.c.id == conversation_inputs.c.conversation_id,
+            ).where(
+                conversation_inputs.c.supervisor_message_id == messages.c.id,
+                conversation_inputs.c.ask_id.is_(None),
+                conversation_inputs.c.routing_state == "conversation",
+                conversation_inputs.c.state == "accepted",
+                conversation_inputs.c.reply_message_id.is_(None),
+                supervisor_conversations.c.state.in_(JOINABLE_STATES),
+            ).exists()
+            repaired = await conn.execute(update(messages).where(
+                messages.c.to_kind == "session",
+                messages.c.body_kind == "conversation_input",
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_not(None),
+                messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                unanswered,
+                ~select(reply.c.id).where(reply.c.reply_to_id == messages.c.id).exists(),
+            ).values(
+                to_id=recipient, project_id=scope, read_at=None,
+                last_notified_at=None, notification_attempts=0, via=None,
+            ))
             result = await conn.execute(
                 update(messages)
                 .where(
@@ -239,7 +266,7 @@ class ConversationQueriesMixin:
                 )
                 .values(to_id=recipient, project_id=scope)
             )
-            return result.rowcount
+            return repaired.rowcount + result.rowcount
 
     async def find_conversation_input_by_supervisor_message(self, message_id: str) -> dict | None:
         async with self._engine.connect() as conn:
@@ -1200,7 +1227,7 @@ class ConversationQueriesMixin:
             notice = (
                 (
                     await conn.execute(
-                        select(messages.c.to_id, messages.c.read_at, messages.c.project_id).where(
+                        select(messages.c.id).where(
                             messages.c.id == item["supervisor_message_id"]
                         )
                     )
@@ -1240,14 +1267,16 @@ class ConversationQueriesMixin:
                 .mappings()
                 .one()
             )
-            if notice is not None and notice["read_at"] is None:
+            if notice is not None:
                 await conn.execute(
                     update(messages)
                     .where(
                         messages.c.id == item["supervisor_message_id"],
-                        messages.c.read_at.is_(None),
                     )
-                    .values(read_at=now)
+                    .values(
+                        read_at=func.coalesce(messages.c.read_at, now),
+                        delivered_at=func.coalesce(messages.c.delivered_at, now),
+                    )
                 )
             answered = (
                 (
