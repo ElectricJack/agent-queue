@@ -23,8 +23,13 @@ are lighter.
 pip install -e packages/aq-client
 ```
 
-That installs the checkout's copy. Reinstall after every regeneration, or the
-installed package and the daemon you are calling drift apart.
+That installs the checkout's copy, editable: the environment holds a pointer at
+`packages/aq-client/`, so regenerating in place is already what gets imported
+and there is nothing to reinstall afterwards. The regeneration script does not
+install anything unless asked (`--install`), and never from a worker session —
+a slot's `pip` is the venv the daemon and every other slot share
+([why](../../contributing/codegen.md#the-script-leaves-the-environment-alone)).
+A plain run ends by telling you which tree the installed client comes from.
 
 ## Quickstart
 
@@ -207,7 +212,7 @@ artifact owned by the regeneration script.
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `ModuleNotFoundError: agent_queue_api_client` | Not installed. | `pip install -e packages/aq-client`. |
-| The installed client is not the checkout's | An editable install points at another tree. | `python3 -c "import agent_queue_api_client as m; print(m.__file__)"`, then reinstall from this checkout, or run with `PYTHONPATH=packages/aq-client`. |
+| The installed client is not the checkout's | An editable install points at another tree. | `python3 -c "import agent_queue_api_client as m; print(m.__file__)"`, then run with `PYTHONPATH=packages/aq-client`. Reinstalling from this checkout moves the install for **everything** using that environment — do it only from the main checkout, never from a worktree slot. |
 | A call returns `None` | The daemon answered a status the operation does not declare. | Use `sync_detailed` to see `status_code` and `content`, or set `raise_on_unexpected_status=True`. |
 | `Response422` instead of your model | The command ran and returned an error — this is the documented failure path, not a client bug. | Read `.error` on the parsed object. |
 | `403 out of scope: …` | A session token called something outside the agent surface. | See [conventions](conventions.md#what-a-session-token-may-call). |

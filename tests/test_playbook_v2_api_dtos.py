@@ -30,10 +30,12 @@ from src.commands.playbook_v2_commands import (
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
 GRAPH_COMMANDS = {
+    "playbook_commands",
     "playbook_v2_graph",
     "playbook_graph_layout_save",
     "playbook_activation_health",
     "playbook_activate",
+    "playbook_source_resync",
     "playbook_artifact_diff",
     "playbook_pending_events",
     "playbook_pending_event_action",

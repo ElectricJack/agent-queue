@@ -147,3 +147,32 @@ def test_create_stamps_the_registry_byte_cap_onto_the_handle():
     handle = reg.create(title="a", session_id="s1", project_id=None, command=["echo"], cwd="/tmp")
     assert handle.buffer.maxlen == 7
     assert handle.buffer_max_bytes == 1234
+
+
+def test_slow_subscriber_is_disconnected_with_a_resume_cursor():
+    reg = StreamRegistry()
+    handle = reg.create(title="slow", session_id="s", project_id="p", command=[], cwd="/tmp")
+    q = handle.subscribe()
+    for cursor in range(1, 1002):
+        handle.append(ConsoleFrame(seq=cursor, type="line", text="x", after=cursor - 1, next=cursor))
+    assert q not in handle.subscribers
+    frame = q.get_nowait()
+    assert frame.type == "gap" and frame.seq == 0
+    assert "reconnect" in frame.text
+    assert len(handle.buffer) == 1001
+
+
+def test_attachment_limit_is_per_principal_and_finish_is_idempotent():
+    import pytest
+    reg = StreamRegistry()
+    handle = reg.create(title="limited", session_id="s", project_id="p", command=[], cwd="/tmp")
+    first = handle.subscribe("a")
+    handle.subscribe("a")
+    with pytest.raises(ValueError, match="attachments"):
+        handle.subscribe("a")
+    handle.subscribe("b")
+    handle.unsubscribe(first)
+    handle.subscribe("a")
+    reg.finish(handle)
+    reg.finish(handle)
+    assert reg.concurrent_count("s") == 0
