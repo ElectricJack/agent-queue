@@ -1,0 +1,410 @@
+{
+  "source_base": "2fcad876c53308a9d3b0e104258aeb2f4f50f6ce",
+  "spec": "projects/agent-queue/specs/2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md (rev-agile-beacon revision 1, P3)",
+  "previous_cli_catalogue_sha256": "64f173d7f562d58688d72ad5691aec9552dbd1220bf659b2bc6e050c6226253b",
+  "cli_catalogue_sha256": "933dcba27a323845d88a6df6fbd92997975ebb53ac930629375ad847a15c54ff",
+  "transport_definitions": {
+    "doctor": {
+      "previous_sha256": "5ba806432786184d60f2603cbefc09631077a5385a30921e15b097eef2047912",
+      "sha256": "3a5561fc1dc4199b84abbfdac5507fcf1d6f6d9bb83ee30d87d7aa416308e47a"
+    }
+  },
+  "catalogue_delta": {
+    "previous_explicit": {
+      "doctor": {
+        "name": "doctor",
+        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "fix": {
+              "type": "boolean",
+              "description": "Apply fixes for failing fixable checks, then re-run them."
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Restrict the run to these check ids (e.g. 'db.migrations', 'vault.parse')."
+            }
+          }
+        }
+      }
+    },
+    "added_explicit": {
+      "spec_ingest_legacy_adopt": {
+        "name": "spec_ingest_legacy_adopt",
+        "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "proposal_id": {
+              "type": "string"
+            },
+            "decision_id": {
+              "type": "string"
+            },
+            "packet_sha256": {
+              "type": "string"
+            },
+            "leave_gated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "proposal_id"
+          ]
+        }
+      }
+    },
+    "added_fallback": {
+      "task_batch_release": {
+        "name": "task_batch_release",
+        "description": "Verify source approval, the live graph and its fidelity receipt before release.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "minLength": 1,
+              "title": "Batch Id",
+              "type": "string"
+            },
+            "expected_revision": {
+              "minimum": 1,
+              "title": "Expected Revision",
+              "type": "integer"
+            },
+            "expected_digest": {
+              "minLength": 1,
+              "title": "Expected Digest",
+              "type": "string"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Project Id"
+            }
+          },
+          "required": [
+            "batch_id",
+            "expected_revision",
+            "expected_digest"
+          ],
+          "title": "TaskBatchReleaseArgs",
+          "type": "object"
+        }
+      },
+      "task_batch_retire": {
+        "name": "task_batch_retire",
+        "description": "Require prior supported retirement of every member and reviewer; retain evidence.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "minLength": 1,
+              "title": "Batch Id",
+              "type": "string"
+            },
+            "expected_revision": {
+              "minimum": 1,
+              "title": "Expected Revision",
+              "type": "integer"
+            },
+            "reason": {
+              "minLength": 1,
+              "title": "Reason",
+              "type": "string"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Project Id"
+            }
+          },
+          "required": [
+            "batch_id",
+            "expected_revision",
+            "reason"
+          ],
+          "title": "TaskBatchRetireArgs",
+          "type": "object"
+        }
+      }
+    },
+    "added_tool_categories": {
+      "spec_ingest_legacy_adopt": "task"
+    }
+  },
+  "added_contracts": {
+    "task_batch_release": {
+      "transport_sha256": "4cc2fe68edacec291a853e8273249945533e581c673877a7855e9600c7263b49",
+      "execution": {
+        "schema_generation": 1,
+        "name": "task_batch_release",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "expected_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "expected_digest": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "batch_id",
+            "expected_digest",
+            "expected_revision"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "release_receipt": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "released_task_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "error_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retryable": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "already_released",
+            "classification": "success"
+          },
+          {
+            "name": "error",
+            "classification": "failure"
+          },
+          {
+            "name": "released",
+            "classification": "success"
+          }
+        ],
+        "capability": "task_batch_release",
+        "side_effect": "composite",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [
+          {
+            "subject": "task_graph",
+            "when": {
+              "arg_present": null,
+              "arg_equals": null
+            },
+            "kind": "update",
+            "fields_arg": null
+          }
+        ],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:4117101da1f2df83630f1ae6dcf532fcf24b6dea48274308e510742d28b93040"
+    },
+    "task_batch_retire": {
+      "transport_sha256": "4927a4ff2b65daf29dadfcd000f923d43e3ffa3410450b75ed9ee905422cf3c2",
+      "execution": {
+        "schema_generation": 1,
+        "name": "task_batch_retire",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "expected_revision": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "reason": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "batch_id",
+            "expected_revision",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "already_retired": {
+              "default": false,
+              "type": "boolean"
+            },
+            "error_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "already_retired",
+            "classification": "success"
+          },
+          {
+            "name": "error",
+            "classification": "failure"
+          },
+          {
+            "name": "retired",
+            "classification": "success"
+          }
+        ],
+        "capability": "task_batch_retire",
+        "side_effect": "composite",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [
+          {
+            "subject": "task_graph",
+            "when": {
+              "arg_present": null,
+              "arg_equals": null
+            },
+            "kind": "update",
+            "fields_arg": null
+          }
+        ],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:257975b1620a5f397aa54c469ec18fc2322606fc00ec1d0a6a13141344b29ec9"
+    },
+    "spec_ingest_legacy_adopt": {
+      "transport_sha256": "4033ea2ac5ee94242f4de070d5077fb6fe19e1933b165d01122cccc893f96065"
+    }
+  }
+}
