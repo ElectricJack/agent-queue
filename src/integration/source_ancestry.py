@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.git.manager import GitError, is_valid_git_oid
 
@@ -122,50 +123,23 @@ def repair_feedback(observation: SourceAncestryObservation) -> str:
         f"in batch {observation.batch_id}" if observation.batch_id else "at admission"
     )
     return (
-        f"Integration withdrew this source {found}: {describe(observation)}. The train "
-        "merges `recorded base..head` onto main, so a head that does not descend from its "
-        "recorded base can never be built; the history on this branch dropped the base it "
-        "was created from.\n\n"
-        f"Repair on {branch} without discarding the reviewed commits: fetch origin and merge "
-        f"the recorded base `{source['base']}` into the branch (`git merge {source['base']}`; "
-        "merging the current default branch also works, because it contains the base). "
-        "Do not rebase, squash away or force-push the existing history. Resolve conflicts, "
-        "regenerate generated files, re-run the focused checks with `aq test`, publish with "
-        "`aq git push` and close again; the new head is a new source identity and is "
-        "admitted normally once `merge-base --is-ancestor` holds.\n"
-        f"Withdrawn identity: base {source['base']}, head {source['head']}, generation "
-        f"{source['generation']}, PR {source.get('pr_url') or '(none)'}, evidence "
-        f"{rejection_evidence_id(observation)}."
+        render_task_template(
+            "source-ancestry-repair",
+            found=found,
+            observation_details=describe(observation),
+            branch=branch,
+            source_base=source["base"],
+            source_head=source["head"],
+            source_generation=source["generation"],
+            pr_url=source.get("pr_url") or "(none)",
+            evidence_id=rejection_evidence_id(observation),
+        )
     )
 
 
 def rejection_evidence_id(observation: SourceAncestryObservation) -> str:
     identity = ":".join(str(part) for part in (*observation.identity(), observation.reason))
     return f"review-{uuid.uuid5(_ANCESTRY_NAMESPACE, identity)}"
-
-
-async def prove_member_identity(git, store: str, member: dict[str, Any]):
-    """Return ``(reason, merge_base, tree)`` for one frozen batch member.
-
-    ``reason`` is ``None`` when the identity holds.  ``source_base_missing``,
-    ``reviewed_head_missing`` and a failed probe (``ancestry_unknown``) are not
-    proof; the others are in :data:`PROVEN_REASONS`.
-    """
-    base, head = member["source_base_sha"], member["reviewed_head_sha"]
-    for label, oid in (("source_base_missing", base), ("reviewed_head_missing", head)):
-        exists = await git.arun_git_result(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=store)
-        if exists.returncode != 0:
-            return label, None, None
-    tree_result = await git.arun_git_result(["rev-parse", f"{head}^{{tree}}"], cwd=store)
-    tree = tree_result.stdout.strip() if tree_result.returncode == 0 else None
-    ancestor = await git.ais_ancestor(store, base, head, strict=True)
-    if ancestor is None:
-        return "ancestry_unknown", None, tree
-    if not ancestor:
-        return "source_base_not_ancestor", await merge_base_of(git, store, base, head), tree
-    if tree != member["reviewed_tree_sha"]:
-        return "reviewed_tree_mismatch", None, tree
-    return None, None, tree
 
 
 async def merge_base_of(git, store: str, base: str, head: str) -> str | None:

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:16bb17888aaa5174b42aab09c24a69d169a7aef0f4c2721a52d792c2fff91e6b` |
+| Contract fingerprint | `sha256:a2871c59c48ab5283af17c6a5a38f0aea0c53a6a71c06a1f5a37f262ca3692c4` |
 
 ## Parameters
 
@@ -98,6 +98,7 @@ Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_s
 | `already_reserved` | success | — |
 | `not_eligible` | failure | — |
 | `not_found` | failure | — |
+| `running` | success | — |
 
 ## Declared effects
 
