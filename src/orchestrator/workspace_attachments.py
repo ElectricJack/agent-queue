@@ -16,6 +16,7 @@ from src.database.tables import task_session_attempts
 from sqlalchemy import or_, select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
+from src.git.manager import is_valid_git_oid
 from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 from src.models import (
     SYSTEM_KIND_SCOPE,
@@ -84,6 +85,7 @@ async def mark_integration_handoff_released(
     *,
     workspace,
     task_id: str,
+    preparation_epoch: int | None = None,
 ) -> bool:
     """Atomically record detach proof and release the exact old DB lock.
 
@@ -154,6 +156,11 @@ async def mark_integration_handoff_released(
         ):
             return False
 
+        if preparation_epoch is not None and not await _preparation_claim_is_current(
+            conn, session_row, task_id, preparation_epoch
+        ):
+            return False
+
         released_owner = await conn.execute(
             update(integration_branch_owners)
             .where(
@@ -190,8 +197,9 @@ async def mark_integration_handoff_released(
                 raise RuntimeError("integration pool handoff claim changed before release")
             claim_release = await db.release_claim(
                 session_row["id"],
-                # The successor decides when the old writer may run again.
-                task_status=TaskStatus.PAUSED,
+                # An unactivated preparation has no work to hold for a
+                # successor. Other transfers retain the ordinary pause.
+                task_status=(TaskStatus.READY if preparation_epoch is not None else TaskStatus.PAUSED),
                 context="integration_handoff",
                 now=time.time(),
                 expected_task_id=task_id,
@@ -234,104 +242,6 @@ async def mark_integration_handoff_released(
     return True
 
 
-async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
-    """Release one historically stranded pool claim after an exact handoff.
-
-    This is deliberately narrower than an operational cleanup sweep.  The
-    branch owner must still retain the prior workspace as durable handoff
-    evidence *and* be detached from any current writer.  A successor may
-    already hold that slot or the old agent on another slot, so recovery may
-    only clear the exact stopped session's claim -- never its former locks,
-    agent state, or claim file.
-    """
-    claim_release = None
-    async with db.immediate() as conn:
-        task_row = (
-            await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update())
-        ).mappings().one_or_none()
-        if (
-            task_row is None
-            or task_row["status"] != TaskStatus.BLOCKED.value
-            or task_row["assigned_agent_id"] is not None
-            or await db._read_manual_pause(conn, task_id) is not None
-        ):
-            return False
-        session_rows = (
-            await conn.execute(
-                select(sessions)
-                .where(
-                    sessions.c.task_id == task_id,
-                    sessions.c.lifecycle == "pool",
-                    sessions.c.state == "stopped",
-                    sessions.c.desired_state == "stopped",
-                    sessions.c.claim_phase == "active",
-                )
-                .with_for_update()
-            )
-        ).mappings().all()
-        if len(session_rows) != 1:
-            return False
-        session_row = session_rows[0]
-        if (
-            session_row["agent_id"] is None
-            or session_row["last_claim_epoch"] != task_row["claim_epoch"]
-        ):
-            return False
-        workspace_rows = (
-            await conn.execute(
-                select(workspaces)
-                .where(workspaces.c.workspace_path == session_row["work_dir"])
-                .with_for_update()
-            )
-        ).mappings().all()
-        if len(workspace_rows) != 1:
-            return False
-        workspace_row = workspace_rows[0]
-        owner_row = (
-            await conn.execute(
-                select(integration_branch_owners)
-                .where(
-                    integration_branch_owners.c.repository_id == task_row["repo_id"],
-                    integration_branch_owners.c.ref == task_row["branch_name"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        old_session_ownership = (
-            await conn.execute(
-                select(integration_branch_owners.c.id)
-                .where(integration_branch_owners.c.session_id == session_row["id"])
-                .limit(1)
-            )
-        ).first()
-        if (
-            owner_row is None
-            or task_row["created_by_kind"] != "integration_repair"
-            or not task_row["created_by_id"]
-            or (owner_row["owner_id"], owner_row["owner_role"]) not in {
-                (task_id, "repair"), (task_row["created_by_id"], "collector"),
-            }
-            or owner_row["handoff_state"] not in {"reserved", "released"}
-            or owner_row["session_id"] is not None
-            or owner_row["workspace_id"] is not None
-            or owner_row["confirmed_workspace_id"] != workspace_row["id"]
-            or workspace_row["project_id"] != task_row["project_id"]
-            or old_session_ownership is not None
-        ):
-            return False
-        claim_release = await db.release_historical_pool_claim(
-            conn,
-            session_row["id"],
-            task_id=task_id,
-            claim_epoch=session_row["last_claim_epoch"],
-            now=time.time(),
-        )
-        if not claim_release.released:
-            return False
-    await db._after_release(claim_release)
-    return True
-
-
 async def mark_integration_pool_handoff_released(
     db,
     owner: dict,
@@ -340,6 +250,8 @@ async def mark_integration_pool_handoff_released(
     task_id: str,
     session_instance_token: str,
     conn=None,
+    preparation_epoch: int | None = None,
+    require_preparation: bool = False,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -373,7 +285,17 @@ async def mark_integration_pool_handoff_released(
             return await mark_integration_pool_handoff_released(
                 db, owner, workspace=workspace, task_id=task_id,
                 session_instance_token=session_instance_token, conn=owned_conn,
+                preparation_epoch=preparation_epoch,
+                require_preparation=require_preparation,
             )
+    if require_preparation and (
+        preparation_epoch is None or await db.lock_claim_workspace(
+            conn, owner.get("session_id"), task_id, epoch=preparation_epoch,
+            instance_token=session_instance_token, expected_workspace=workspace,
+            allow_retained_preparation=True,
+        ) is None
+    ):
+        return False
     # Match release_claim: session before owner/workspace.
     session_row = (await conn.execute(select(sessions).where(
         sessions.c.id == owner.get("session_id")
@@ -417,6 +339,11 @@ async def mark_integration_pool_handoff_released(
     ):
         return False
 
+    if preparation_epoch is not None and not await _preparation_claim_is_current(
+        conn, session_row, task_id, preparation_epoch
+    ):
+        return False
+
     released_owner = await conn.execute(
         update(integration_branch_owners)
         .where(
@@ -438,6 +365,22 @@ async def mark_integration_pool_handoff_released(
     if released_owner.rowcount != 1:
         raise RuntimeError("integration pool handoff release lost its compare-and-swap")
     return True
+
+
+async def _preparation_claim_is_current(conn, session_row, task_id: str, epoch: int) -> bool:
+    """Revalidate the unactivated claim that permits a published-default checkout."""
+    task_row = (await conn.execute(
+        select(tasks).where(tasks.c.id == task_id).with_for_update()
+    )).mappings().one_or_none()
+    return bool(
+        task_row is not None
+        and session_row["lifecycle"] == "pool"
+        and session_row["claim_phase"] == "preparing"
+        and session_row["last_claim_epoch"] == epoch
+        and task_row["claim_epoch"] == epoch
+        and task_row["status"] == TaskStatus.IN_PROGRESS.value
+        and task_row["assigned_agent_id"] == session_row["agent_id"]
+    )
 
 
 async def mark_stopped_integration_pool_handoff_released(
@@ -754,6 +697,16 @@ async def detach_slot_for_integration_handoff(
     )
 
 
+async def detach_task_slot(db, orch, task, workspace, branch: str, **options) -> bool:
+    """Detach *task*'s slot through its repository binding; False without proof."""
+    project = await db.get_project(task.project_id)
+    repository = await db.get_repo(task.repo_id or project.integration_repository_id)
+    return bool(repository and await detach_slot_for_integration_handoff(
+        db, orch.git, orch._git_mutex, workspace, expected_branch=branch,
+        repository_url=repository.url, default_branch=repository.default_branch, **options,
+    ))
+
+
 async def _probe_workspace_checkout(
     git,
     git_mutex: Callable,
@@ -929,6 +882,37 @@ async def detach_workspace_for_integration_handoff(
         )
         detached_head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
         return detached == "HEAD" and detached_head == head
+
+
+async def detach_retained_preparation(
+    git, git_mutex: Callable, workspace, *, expected_branch: str, retained: dict,
+    mutex_path: str | None = None,
+) -> bool:
+    """Detach an unactivated preparation whose exact clean HEAD is durably pinned.
+
+    This proof is only supplied by preparation retry, after its merge has been
+    aborted or its immutable overlay retained. It does not authorize publication
+    or discard local commits, and ordinary writer handoff still requires a push.
+    """
+    head = retained["head"]
+    store = retained["store"]
+    if not is_valid_git_oid(head) or await git.arev_parse(
+        store, "refs/aq/stacks/" + head,
+    ) != head:
+        return False
+    checkout = workspace.workspace_path
+    async with git_mutex(mutex_path or checkout):
+        branch = await git._arun_unlocked(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout)
+        current = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
+        if (branch not in {expected_branch.removeprefix("refs/heads/"), "HEAD"}
+                or current != head or status):
+            return False
+        await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)
+        return (
+            await git._arun_unlocked(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout) == "HEAD"
+            and await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout) == head
+        )
 
 
 async def effective_requirements(db, task: Task) -> list[ResolvedRequirement]:
@@ -1122,24 +1106,6 @@ __all__ = [
 ]
 
 
-async def orphaned_integration_pool_handoff_is_recoverable(db, owner: dict) -> dict | None:
-    """Return the exact retired pool attachment that may be detached safely.
-
-    This is deliberately more restrictive than the normal pool-close proof.
-    It is only for the historical ordering bug where ``release_claim`` had
-    already dropped the session/task and workspace/task bindings before the
-    attached owner was handed off.  The old session must be demonstrably
-    stopped, its attempt must name this owner task and exact session launch,
-    and no later session may have reused its agent/worktree identity.
-    """
-    session_id = owner.get("session_id")
-    workspace_id = owner.get("workspace_id")
-    if not session_id or not workspace_id:
-        return None
-    async with db.immediate() as conn:
-        return await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
-
-
 @asynccontextmanager
 async def orphaned_integration_pool_handoff_exclusion(db, owner: dict):
     """Hold an exact orphan's workspace exclusion through its Git handoff.
@@ -1155,7 +1121,15 @@ async def orphaned_integration_pool_handoff_exclusion(db, owner: dict):
 
 
 async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict) -> dict | None:
-    """Locked implementation of :func:`orphaned_integration_pool_handoff_is_recoverable`."""
+    """Return the exact retired pool attachment that may be detached safely.
+
+    This is deliberately more restrictive than the normal pool-close proof.
+    It is only for the historical ordering bug where ``release_claim`` had
+    already dropped the session/task and workspace/task bindings before the
+    attached owner was handed off.  The old session must be demonstrably
+    stopped, its attempt must name this owner task and exact session launch,
+    and no later session may have reused its agent/worktree identity.
+    """
     session_id = owner.get("session_id")
     workspace_id = owner.get("workspace_id")
     if not session_id or not workspace_id:
@@ -1231,9 +1205,9 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
                 select(sessions.c.id)
                 .where(
                     sessions.c.id != session_id,
-                    sessions.c.agent_id == session_row["agent_id"],
-                    sessions.c.work_dir == session_row["work_dir"],
-                    sessions.c.started_at > session_row["started_at"],
+                    or_(sessions.c.agent_id == session_row["agent_id"],
+                        sessions.c.work_dir == session_row["work_dir"]),
+                    sessions.c.started_at >= session_row["started_at"],
                 )
                 .limit(1)
             )
@@ -1261,8 +1235,8 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
         or task_row["repo_id"] != owner_row["repository_id"]
         or task_row["branch_name"] != owner_row["ref"]
         or workspace_row["locked_by_task_id"] is not None
-        or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
-        or agent_row["state"] != AgentState.IDLE.value
+        or workspace_row["locked_by_agent_id"] not in {None, session_row["agent_id"]}
+        or agent_row["state"] not in {AgentState.IDLE.value, AgentState.RETIRED.value}
         or agent_row["current_task_id"] is not None
         or newer_session is not None
     ):
@@ -1275,31 +1249,6 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
         "session_name": session_row["name"],
         "session_provider": session_row["provider"],
     }
-
-
-async def mark_orphaned_integration_pool_handoff_released(
-    db,
-    owner: dict,
-    *,
-    session_instance_token: str,
-    session_started_at: float,
-) -> bool:
-    """CAS-release a recovered attachment after its checkout is detached.
-
-    Re-run every identity check at commit time.  In particular, a new session
-    or claim that arrived while Git was proving the checkout makes this a
-    no-op; recovery must never clear or detach a successor's authority.
-    """
-    async with db.immediate() as conn:
-        recovery = await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
-        if recovery is None:
-            return False
-        if (
-            recovery["session_instance_token"] != session_instance_token
-            or recovery["session_started_at"] != session_started_at
-        ):
-            return False
-        return await _mark_orphaned_integration_pool_handoff_released_on(conn, owner, recovery)
 
 
 async def _mark_orphaned_integration_pool_handoff_released_on(
