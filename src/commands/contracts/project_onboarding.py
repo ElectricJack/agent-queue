@@ -370,6 +370,8 @@ class _OnboardProjectCommon(CommandArgs):
     #: Root-relative destination (``link``: the repository; ``init`` /
     #: ``github_clone``: the directory to create).
     relative_path: str
+    credit_weight: float = Field(default=1.0, gt=0)
+    max_concurrent_agents: int = Field(default=2, ge=1)
     project_name: str = Field(min_length=1, max_length=200)
     project_id: str = Field(pattern=PROJECT_ID_PATTERN, max_length=100)
     #: ``None`` means "detect" for ``link``/``github_clone`` and ``main`` for
@@ -407,6 +409,7 @@ class InitOnboardingRequest(_OnboardProjectCommon):
     source_mode: Literal["init"]
     create_readme: bool = True
     create_github: bool = False
+    repo_url: str | None = Field(default=None, min_length=1)
     github_owner: str | None = Field(
         default=None, min_length=1, max_length=100, validate_default=True
     )
@@ -433,6 +436,8 @@ class InitOnboardingRequest(_OnboardProjectCommon):
 
     @model_validator(mode="after")
     def _visibility_follows_create_github(self) -> InitOnboardingRequest:
+        if self.repo_url and self.create_github:
+            raise ValueError("repo_url and create_github are mutually exclusive")
         if "github_visibility" in self.model_fields_set and not self.create_github:
             raise ValueError("github_visibility only applies when create_github is true")
         return self
