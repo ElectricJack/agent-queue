@@ -204,6 +204,35 @@ memory backend is installed; inspect `aq plugin list` and the command result.
 The former in-tree memory manager is removed. Do not revive it or direct users
 to an old `src/memory.py` API.
 
+An installed `aq-memory` package declares the `aq.plugins` entry point
+`memory`, the name of that core group. The CLI treats it as core-surfaced: it
+neither imports the legacy plugin nor mounts a group for it, and reports
+nothing. Any other entry point whose name is already a core command is skipped
+with a warning that names its distribution, for example `Plugin CLI entry point
+'task' from distribution 'some-plugin' conflicts with an existing command;
+skipped`; rename that entry point or uninstall the package.
+
+Older CLIs printed that warning for `memory` on every command when the
+interpreter running `aq` still had an `aq-memory` install, typically an
+editable one in the user site of the system Python behind `~/.local/bin/aq`.
+The install is harmless now. To remove it anyway, uninstall it from that
+interpreter only:
+
+```bash
+python3 -m pip show aq-memory    # Location, Editable project location
+python3 -m pip uninstall aq-memory
+```
+
+On a PEP 668 system Python (Debian, Ubuntu) pip refuses with
+`externally-managed-environment`; when `pip show` reports a `Location` in
+your user site (`~/.local/lib/python3.*/site-packages`), add
+`--break-system-packages`. Pip lists what it would remove and asks first: for
+an editable install that is only the `__editable__` `.pth` file, its finder
+module and the `aq_memory-*.dist-info` directory. The source checkout, its
+dependencies and any stored memory are untouched. The daemon loads plugins
+from its own environment, so check `aq plugin list` before removing a copy
+that the daemon uses.
+
 ## Build a minimal plugin
 
 The preferred plugin format is a normal Python package with an
