@@ -8,6 +8,7 @@ multiple API calls or provide friendly key aliasing.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -33,7 +34,50 @@ def project() -> None:
     pass
 
 
+@project.command("create")
+@click.option("--name", required=True)
+@click.option(
+    "--from-policy", help="Policy profile: default, exported path, or none; prompts in a terminal."
+)
+@click.option("--repo-url")
+@click.option("--default-branch")
+@click.option("--create-repo")
+@click.option("--private/--public", default=True)
+@click.option("--root-id")
+@click.option("--relative-path")
+@click.option("--request-id")
+@click.option("--credit-weight", type=float, default=1.0)
+@click.option("--max-concurrent-agents", type=int, default=2)
+@click.pass_context
+@_handle_errors
+def project_create(ctx, name, from_policy, **options):
+    from src.cli import app
+    from src.cli.policy import creation_policy, select_and_apply
+
+    from_policy = creation_policy(ctx, from_policy)
+
+    async def create():
+        async with app._get_client((ctx.obj or {}).get("api_url")) as client:
+            return await client.execute(
+                "create_project",
+                {
+                    "name": name,
+                    **{key: value for key, value in options.items() if value is not None},
+                },
+            )
+
+    result = app._run(create())
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(f"Created project {data['created']}", markup=False),
+    )
+    if from_policy and result.get("success") is not False:
+        select_and_apply(ctx, from_policy, result["created"])
+
+
 @project.command("onboard")
+@click.option("--from-policy", help="Policy profile: default, exported path, or none.")
 @click.option("--request-id", help="Durable idempotency key (generated when omitted).")
 @click.option(
     "--source-mode",
@@ -58,10 +102,14 @@ def project() -> None:
 )
 @click.option("--github-repository", help="Discovered GitHub repository as OWNER/NAME.")
 @click.option("--github-url", help="GitHub HTTPS/SSH URL or OWNER/NAME shorthand.")
+@click.option("--repo-url", help="init: adopt an existing empty remote.")
+@click.option("--create-repo", help="init: create OWNER/NAME on GitHub.")
+@click.option("--private/--public", "private_repo", default=True)
 @click.pass_context
 @_handle_errors
 def project_onboard(
     ctx: click.Context,
+    from_policy: str | None,
     request_id: str | None,
     source_mode: str,
     root_id: str,
@@ -76,8 +124,14 @@ def project_onboard(
     github_visibility: str,
     github_repository: str | None,
     github_url: str | None,
+    repo_url: str | None,
+    create_repo: str | None,
+    private_repo: bool,
 ) -> None:
     """Link, initialize, or clone a repository and register its AQ project."""
+    from src.cli.policy import creation_policy, select_and_apply
+
+    from_policy = creation_policy(ctx, from_policy)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {
         "request_id": request_id or str(uuid4()),
@@ -88,7 +142,19 @@ def project_onboard(
         "project_id": project_id,
         "default_branch": default_branch,
     }
+    if (repo_url or create_repo) and source_mode != "init":
+        raise click.UsageError("--repo-url and --create-repo require --source-mode init")
+    if repo_url and (create_repo or create_github):
+        raise click.UsageError("Choose --repo-url or --create-repo")
+    if create_repo:
+        if create_repo.count("/") != 1:
+            raise click.UsageError("--create-repo must be OWNER/NAME")
+        github_owner, github_repo = create_repo.split("/")
+        create_github = True
+        github_visibility = "private" if private_repo else "public"
     if source_mode == "init":
+        if repo_url:
+            args["repo_url"] = repo_url
         args.update(create_readme=create_readme, create_github=create_github)
         if create_github:
             args["github_owner"] = github_owner
@@ -120,6 +186,36 @@ def project_onboard(
             f"[dim]{_getval(data, 'canonical_path')}[/]"
         ),
     )
+    if from_policy and result.get("success") is not False:
+        select_and_apply(ctx, from_policy, result["project_id"])
+
+
+@project.command("bind-repository")
+@click.argument("project_id")
+@click.option("--repo-url", required=True, help="GitHub repository to authorize.")
+@click.option(
+    "--expected-repo-url", required=True, help="Exact stored URL; use '' for first binding.",
+)
+@click.option("--reason", required=True, help="Operator authorization and audit reason.")
+@click.pass_context
+@_handle_errors
+def project_bind_repository(
+    ctx: click.Context, project_id: str, repo_url: str, expected_repo_url: str, reason: str,
+) -> None:
+    """Bind an initialized project's first repository (operator/global supervisor only)."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _bind():
+        async with _get_client(api_url) as client:
+            return await client.execute("bind_project_repository", {
+                "project_id": project_id, "repo_url": repo_url,
+                "expected_repo_url": expected_repo_url, "reason": reason,
+            })
+
+    emit(ctx, _run(_bind()), render=lambda data: console.print(
+        f"[green]Repository authorized[/] for [bold cyan]{_getval(data, 'project_id')}[/]: "
+        f"{_getval(data, 'repo_url')}"
+    ))
 
 
 @project.command("details")
@@ -138,7 +234,7 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     async def _details():
         async with _get_client(api_url) as client:
-            proj_result = await client.execute("list_projects")
+            proj_result = await client.execute("get_project", {"project_id": project_id})
             task_result = await client.execute(
                 "list_tasks",
                 {
@@ -150,13 +246,8 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     proj_result, task_result = _run(_details())
 
-    p = None
-    for proj in _getval(proj_result, "projects", []):
-        if _getval(proj, "id") == project_id:
-            p = proj
-            break
-
-    if not p:
+    p = proj_result
+    if _getval(p, "id") != project_id:
         from .exceptions import CommandError
 
         raise CommandError("project_details", f"Project not found: {project_id}")
@@ -170,7 +261,6 @@ def project_details(ctx: click.Context, project_id: str) -> None:
         lines = [Text(f"Status: {status}", style=status_style), Text("")]
         fields = [
             ("Name", _getval(p, "name", "—")),
-            ("Channel", _getval(p, "discord_channel_id", "—") or "—"),
             ("Max Agents", str(_getval(p, "max_concurrent_agents", "—"))),
             ("Credit Weight", str(_getval(p, "credit_weight", "—"))),
         ]
@@ -207,6 +297,17 @@ def project_details(ctx: click.Context, project_id: str) -> None:
     emit(ctx, data, legacy_data={"project": p, "tasks": tasks}, render=_render)
 
 
+def _git_identity_args(value: str) -> dict[str, str]:
+    """``Name <email>`` -> the edit_project pair; ``inherit`` clears both."""
+    text = value.strip()
+    if text.lower() in ("inherit", "clear", "none", "default", ""):
+        return {"git_identity_name": "", "git_identity_email": ""}
+    match = re.fullmatch(r"(.+?)\s*<([^<>]+)>", text)
+    if not match:
+        raise click.UsageError('git-identity must be "Name <email>" or inherit')
+    return {"git_identity_name": match.group(1).strip(), "git_identity_email": match.group(2).strip()}
+
+
 @project.command("set")
 @click.argument("project_id")
 @click.argument("key")
@@ -227,21 +328,41 @@ def project_set(
     expected_integration_generation: int | None,
     reason: str | None,
 ) -> None:
-    """Set a project property. e.g. aq project set myproj channel 123456"""
+    """Set a project property. e.g. aq project set myproj max-agents 4
+
+    \b
+    `router <playbook-id>` re-binds the project to another routing playbook
+    (local operator only). The playbook must be active and grant
+    task_route_apply. A project has no default profile: its router routes
+    every task.
+
+    `git-identity "Name <email>"` overrides the Git commit identity of this
+    project's AQ-authored commits; `git-identity inherit` resets it to the
+    installation default (`aq system get-git-identity`).
+
+    `promotion-flow <file>` activates a YAML or JSON promotion flow (local
+    operator only; `clear` removes it). It validates every layer first and
+    creates missing chain targets with create-only pushes; any refusal
+    writes nothing. Check it first with `aq promote validate --file`.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     KEY_MAP = {
-        "channel": "discord_channel_id",
         "name": "name",
         "max-agents": "max_concurrent_agents",
         "credit-weight": "credit_weight",
         "budget-limit": "budget_limit",
         "branch": "default_branch",
-        "default-profile": "default_profile_id",
+        "router": "assignment_playbook_id",
         "integration-repository": "integration_repository",
         "integration-repository-id": "integration_repository_id",
         "integration-policy": "hierarchical_integration_policy",
+        "integration-mode": "hierarchical_integration_mode",
         "integration-review-mode": "integration_mode",
+        "review-delegate-to": "review_delegate_to",
+        "git-identity": "git_identity",
+        "promotion-flow": "promotion_flow",
+        "supervisor-enabled": "supervisor_enabled",
     }
 
     field = KEY_MAP.get(key)
@@ -251,14 +372,23 @@ def project_set(
     coerced: str | int | float | dict | None = value
     if field == "max_concurrent_agents":
         coerced = int(value)
+    elif field == "supervisor_enabled":
+        if value.lower() not in {"true", "false", "on", "off"}:
+            raise click.UsageError("supervisor-enabled must be true/false or on/off")
+        coerced = value.lower() in {"true", "on"}
     elif field == "credit_weight":
         coerced = float(value)
     elif field == "budget_limit":
         coerced = None if value.lower() in ("none", "null", "unlimited") else int(value)
-    elif field == "default_profile_id":
-        # Clearing falls the task back to the profile-resolution chain rather
-        # than pinning every unpinned task to one lane.
-        coerced = None if value.lower() in ("none", "null", "clear") else value
+    elif field == "review_delegate_to":
+        # Local-operator only; empty clears the delegation back to the default.
+        lowered = value.lower()
+        if lowered in ("clear", "none", "null", ""):
+            coerced = None
+        elif lowered in ("user", "supervisor"):
+            coerced = lowered
+        else:
+            raise click.UsageError("review-delegate-to must be user, supervisor, or clear")
     elif field == "integration_repository_id":
         coerced = None if value.lower() in ("none", "null", "clear") else value
     elif field == "integration_repository":
@@ -284,13 +414,28 @@ def project_set(
                 raise click.UsageError("integration-policy must be a valid JSON object") from exc
             if not isinstance(coerced, dict):
                 raise click.UsageError("integration-policy must be a valid JSON object")
+    elif field == "promotion_flow":
+        if value.lower() in ("none", "null", "clear"):
+            coerced = None
+        else:
+            from pathlib import Path
+
+            import yaml
+
+            try:
+                coerced = yaml.safe_load(Path(value).read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                from .envelope import emit_error
+
+                emit_error("flow_schema_invalid", str(exc), {"pointer": "", "layer": 1})
+                raise SystemExit(1) from exc
 
     if field == "default_branch":
         cmd = "set_default_branch"
         args = {"project_id": project_id, "branch": value}
-    elif field == "discord_channel_id":
-        cmd = "set_project_channel"
-        args = {"project_id": project_id, "channel_id": value}
+    elif field == "git_identity":
+        cmd = "edit_project"
+        args = {"project_id": project_id, **_git_identity_args(value)}
     else:
         cmd = "edit_project"
         args = {"project_id": project_id, field: coerced}
@@ -299,7 +444,9 @@ def project_set(
         "integration_repository",
         "integration_repository_id",
         "hierarchical_integration_policy",
+        "hierarchical_integration_mode",
         "integration_mode",
+        "promotion_flow",
     }
     if sensitive:
         if expected_integration_generation is None:
@@ -317,6 +464,8 @@ def project_set(
     result = _run(_set())
     if sensitive:
         emit(ctx, result, entity="integration")
+        if field == "promotion_flow" and result.get("success") is False:
+            raise SystemExit(1)
         return
     emit(
         ctx,

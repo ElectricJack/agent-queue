@@ -1,5 +1,11 @@
 # Pools final acceptance
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Task:** `smart-orbit.6`
 
 **Date:** 2026-09-02

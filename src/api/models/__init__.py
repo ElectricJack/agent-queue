@@ -46,32 +46,99 @@ class TaskBrief(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def get_all_response_models() -> dict[str, type[BaseModel]]:
-    """Collect RESPONSE_MODELS from every category module."""
+def _category_modules() -> tuple[object, ...]:
     from src.api.models import (
         agent,
+        ask,
+        collaboration,
+        cron,
+        dashboard,
+        decision,
+        digest,
         discord,
+        escalation,
         files,
         gate,
         git,
+        integration,
         mcp,
         memory,
         message,
+        object_loop,
+        operator,
         playbook,
         graph,
         playbook_v2,
         plugin,
         project,
+        policy,
         project_onboarding,
+        review,
+        report,
+        provider,
         session,
+        supervisor_inbox,
         system,
+        test_selection,
         task,
+        wait,
+        job,
+        knowledge,
+        records,
     )
 
+    return (
+        test_selection,
+        task,
+        cron,
+        project,
+        policy,
+        project_onboarding,
+        review,
+        agent,
+        ask,
+        dashboard,
+        git,
+        integration,
+        memory,
+        files,
+        system,
+        plugin,
+        mcp,
+        playbook,
+        playbook_v2,
+        session,
+        supervisor_inbox,
+        gate,
+        message,
+        object_loop,
+        discord,
+        digest,
+        decision,
+        report,
+        escalation,
+        graph,
+        provider,
+        wait,
+        collaboration,
+        job,
+        knowledge,
+        records,
+        operator,
+    )
+
+
+def get_all_response_models() -> dict[str, type[BaseModel]]:
+    """Collect RESPONSE_MODELS from every category module."""
     merged: dict[str, type[BaseModel]] = {}
-    for mod in (
-        task, project, project_onboarding, agent, git, memory, files, system,
-        plugin, mcp, playbook, playbook_v2, session, gate, message, discord, graph,
-    ):
+    for mod in _category_modules():
         merged.update(mod.RESPONSE_MODELS)
+    return merged
+
+
+def get_all_request_models() -> dict[str, object]:
+    """Collect explicit request-model overrides for commands with nested types."""
+    merged: dict[str, object] = {}
+    for mod in _category_modules():
+        merged.update(getattr(mod, "REQUEST_MODELS", {}))
     return merged
