@@ -38,14 +38,23 @@ export function enteredFrame(store: LayoutStore, focusId: string | null | undefi
   let x1 = -Infinity, y1 = -Infinity;
   for (const n of store.nodes.values()) {
     if (n.id === focusId || n.kind === "stub" || store.carried.has(n.id)) continue;
+    // Other scopes can coexist while viewport tiles arrive. Only descendants
+    // belong to this frame; a boundary task must not stretch it to the root.
+    let parent = n.container_id;
+    const seen = new Set<string>();
+    while (parent && parent !== focusId && !seen.has(parent)) {
+      seen.add(parent);
+      parent = store.nodes.get(parent)?.container_id;
+    }
+    if (parent !== focusId) continue;
     x1 = Math.max(x1, n.x + n.w);
     y1 = Math.max(y1, n.y + n.h);
   }
   if (!Number.isFinite(x1)) return { x: focus.x, y: focus.y, w: focus.w, h: focus.h };
   return {
     x: focus.x, y: focus.y,
-    w: Math.min(focus.w, Math.max(1, x1 - focus.x + ENTERED_PAD)),
-    h: Math.min(focus.h, Math.max(1, y1 - focus.y + ENTERED_PAD)),
+    w: Math.max(1, x1 - focus.x + ENTERED_PAD),
+    h: Math.max(1, y1 - focus.y + ENTERED_PAD),
   };
 }
 
@@ -149,7 +158,7 @@ export function relationsByTask(store: LayoutStore): Map<string, TaskRelations> 
   }
   // The frontier never offers a parent (claim_queries' `has_children` rule).
   const ready = [...store.nodes.values()].filter((n) =>
-    n.status === "READY" && !n.is_blocked && n.kind !== "container" && (n.agg_children ?? 0) === 0);
+    n.status === "READY" && !n.is_blocked && n.claim_readiness?.claimable !== false && n.kind !== "container" && (n.agg_children ?? 0) === 0);
   const priorities = ready.map((n) => n.priority ?? 100).sort((a, b) => a - b);
   for (const n of ready) {
     const p = n.priority ?? 100;
@@ -169,6 +178,9 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     id: n.id, title: n.title, status: n.status, priority: n.priority, is_blocked: n.is_blocked,
     profile_id: n.profile_id, intelligence_class: n.intelligence_class, assigned_agent_id: n.assigned_agent_id,
     branch_name: n.branch_name, pr_url: n.pr_url, playbook_run_id: n.playbook_run_id,
+    display_state: n.display_state, display_reason: n.display_reason,
+    claim_readiness: n.claim_readiness,
+    child_state_counts: n.child_state_counts, descendant_state_counts: n.descendant_state_counts,
   };
   return {
     task, gates, projectId: ctx.projectId,
@@ -203,6 +215,8 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
     n.agg_running, n.agg_blocked, n.profile_id, n.intelligence_class, n.assigned_agent_id,
     n.branch_name, n.pr_url, n.playbook_run_id, n.subtasks_total, n.subtasks_settled,
     n.phase_order, n.phase_label,
+    n.display_state, n.display_reason, JSON.stringify(n.child_state_counts), JSON.stringify(n.descendant_state_counts),
+    JSON.stringify(n.claim_readiness),
     // Only epics carry one; the canvas must repaint when its delivery moves.
     n.delivery ? JSON.stringify(n.delivery) : "",
     // The review strip draws id, state, kind and title from every wait.

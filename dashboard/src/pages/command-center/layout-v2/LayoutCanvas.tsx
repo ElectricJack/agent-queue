@@ -151,6 +151,7 @@ interface LayerElements {
 }
 
 interface LayerProps {
+  layoutReady: boolean;
   projectId: string;
   projectNames: ReadonlyMap<string, string>;
   offsetY: number;
@@ -189,7 +190,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  */
 function ProjectLayer({
   projectId, projectNames, offsetY, params, viewport, width, height, focusId, upTarget, handlers,
-  onElements, density, hideEdgeLabels,
+  onElements, density, hideEdgeLabels, layoutReady,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -209,7 +210,7 @@ function ProjectLayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rect = useMemo<Rect | null>(() => rawRect, [coverage]);
 
-  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect);
+  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect, layoutReady);
 
   useEffect(
     () => registerLayoutRefetch(projectId, refetchVisible),
@@ -257,7 +258,7 @@ function Inner(props: LayoutCanvasProps) {
   // hidden, read only from whatever the "all" variant's extent already sits
   // in the query cache -- never a request of its own.
   const hiddenFinishedCount = useHiddenFinishedCount(projectIds, requestVariant);
-  const { fitBounds, setCenter } = useReactFlow();
+  const { fitBounds, fitView, setCenter, zoomIn, zoomOut } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [viewport, setViewport] = useState<Viewport | null>(initialViewport);
@@ -316,26 +317,6 @@ function Inner(props: LayoutCanvasProps) {
     // rebuilds on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectIds, heightsKey]);
-
-  // A layout that was still building answered 202 for its tiles too, and
-  // nothing re-fires when the job finishes: ask the layers to load once the
-  // extent arrives.
-  const pendingExtents = projectIds.map((_, i) => {
-    const extent = extents[i];
-    return !extent || "pending" in extent;
-  }).join(",");
-  const previousPendingRef = useRef<string | null>(null);
-  useEffect(() => {
-    const previous = previousPendingRef.current?.split(",");
-    previousPendingRef.current = pendingExtents;
-    if (!previous) return;
-    pendingExtents.split(",").forEach((value, i) => {
-      const pid = projectIds[i];
-      if (pid && previous[i] === "true" && value === "false") refetchLayout(pid);
-    });
-    // projectIds is covered by pendingExtents' positional identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingExtents]);
 
   // One scope per view: the project root, or the container entered. Nothing
   // is ever expanded in place, so `expanded` is always empty and no zoom
@@ -672,6 +653,15 @@ function Inner(props: LayoutCanvasProps) {
       wrapRef.current?.focus({ preventScroll: true });
       return;
     }
+    if (!event.ctrlKey && !event.metaKey && !event.altKey
+      && (event.key === "+" || event.key === "=" || event.key === "-" || event.key === "0")) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "0") void fitView({ duration: 200 });
+      else if (event.key === "-") void zoomOut({ duration: 200 });
+      else void zoomIn({ duration: 200 });
+      return;
+    }
     const taskButton = target.closest<HTMLButtonElement>("button[data-task-id], button[data-graph-node-id]");
     if (target.closest("button, a, summary") && !taskButton) return;
     const fromId = taskButton?.dataset.graphNodeId ?? taskButton?.dataset.taskId ?? kbFocusId ?? selectedId;
@@ -725,8 +715,9 @@ function Inner(props: LayoutCanvasProps) {
         showEmpty={false} loading={pending} error={layerError} />}
       <div ref={wrapRef} role="region" aria-label="Task graph" tabIndex={0} onKeyDown={onKeyDown}
         className="relative min-h-0 flex-1 outline-none">
-        {projectIds.map((pid) => (
+        {projectIds.map((pid, i) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
+            layoutReady={!!extents[i] && !("pending" in extents[i]!)}
             viewport={viewport} width={size.w} height={size.h} focusId={focusId} upTarget={upTarget} handlers={handlers}
             onElements={onElements} density={density} hideEdgeLabels={hideEdgeLabels} />
         ))}
@@ -745,12 +736,17 @@ function Inner(props: LayoutCanvasProps) {
           nodesFocusable={false}
           edgesFocusable={false}
           elementsSelectable={false}
+          // Frames must stay below their children. React Flow otherwise adds
+          // 1000 to a selected frame's z-index, covering the child cards.
+          elevateNodesOnSelect={false}
           deleteKeyCode={null}
           selectionKeyCode={null}
           disableKeyboardA11y
           nodeClickDistance={5}
-          panOnScroll
-          zoomOnScroll={false}
+          panOnDrag
+          panOnScroll={false}
+          zoomOnScroll
+          zoomOnPinch
           proOptions={{ hideAttribution: true }}
           onNodeClick={(_, node) => openNode(node)}
           onNodeDoubleClick={(_, node) => enterNode(node)}

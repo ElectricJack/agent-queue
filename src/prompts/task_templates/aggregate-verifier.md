@@ -1,0 +1,1 @@
+Verify the exact collected aggregate and record trusted integration check evidence.
