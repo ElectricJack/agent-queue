@@ -19,6 +19,7 @@ import pytest
 from src.api.scope import (
     AGENT_COMMAND_SET,
     _PLAYBOOK_COMPILER_COMMANDS,
+    _SPEC_INGEST_COMMANDS,
     _TRIAGE_COMMANDS,
 )
 from src.commands.operator_authority import OPERATOR_READS, OPERATOR_WRITES
@@ -54,7 +55,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "playbook-compiler": set(),
     "pr-merger": {"pr_merge"},
     "reviewer": {"reopen_with_feedback"},
-    "spec-ingest": {"get_downstream_tasks", "task_batch_commit", "task_batch_propose"},
+    "spec-ingest": set(),
     "supervisor": set(),
     "triage": {"edit_task"},
     "worker-claude": {"pr_merge"},
@@ -62,7 +63,10 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "worker-opencode": {"pr_merge"},
 }
 
-REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+# These catalogues have an existing empty-argument, capability-gated exception
+# in check_command_scope, before the role-specific command sets.
+REACHABLE = (AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+             | {"doctor_catalog", "playbook_commands"})
 #: An operator template's setup grants are dispatched through ``operator_execute``
 #: under a request-local grant, never by its session token directly.
 OPERATOR_REACHABLE = REACHABLE | OPERATOR_READS | OPERATOR_WRITES
@@ -84,6 +88,7 @@ def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_
     assert parsed.frontmatter.template is True
     policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
     assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("read_file")
     assert policy.allows_plugin_tool("git_create_pr")
     assert parsed.capabilities == _parsed("worker-codex").capabilities
 
@@ -163,6 +168,9 @@ class TestShippedProfile:
         parsed = _parsed(profile_id)
         granted = set(parsed.capabilities["aq_commands"])
         reachable = OPERATOR_REACHABLE if "operator_execute" in granted else REACHABLE
+        if profile_id == "spec-ingest":
+            # These commands require the live server-owned ingestion role.
+            reachable = reachable | _SPEC_INGEST_COMMANDS
         unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
@@ -182,6 +190,11 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
     from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
 
     assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
+
+
+def test_supervisor_can_diagnose_and_repair_repository_checkouts():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
 
 
 # ---------------------------------------------------------------------------
