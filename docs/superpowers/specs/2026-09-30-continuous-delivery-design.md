@@ -151,6 +151,17 @@ sources retain their product holds, review and generation fences. The repair's
 own review, CI, gates and policy generation still bind, and its approved head
 must retain the original's ancestry.
 
+The 2026-10-04 source-admission change (`1aefecd71023c310f0860f58c6d4f0c99818a355`)
+removes source PR CI as an admission gate on the legacy authorized/reviewed
+sealing path. Eligible sources and their repairs enter the candidate with
+missing, pending, green, red, cancelled or conflicting source CI. Candidate CI
+on the assembled batch remains required before publication. A delivered
+ancestor satisfies repair lineage regardless of its source CI; an undelivered
+ancestor still needs exact eligible identity. Product holds, gates, rejected
+reviews, source generations, policy generations and repair ancestry remain
+binding. This supersedes the source-CI prerequisite above; it does not change
+the separate Git-first admission reader's contract.
+
 When a fresh claim-time Git proof establishes delivery of an original, retire
 its unclaimed READY repair as `superseded_by_delivery`, with the source identity,
 default ref/OID, principal and terminal completion recorded for audit. Revalidate

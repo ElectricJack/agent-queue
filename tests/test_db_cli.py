@@ -480,15 +480,88 @@ async def test_tmux_probe_failure_does_not_authorize_restore(monkeypatch, error)
 async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixture_db, tmp_path):
     from alembic.config import Config
     from alembic.script import ScriptDirectory
+    from sqlalchemy import Column, MetaData, Table, Text
+
+    from migrations.versions.a00000000096_human_ask_decisions import ADDITIONS
     from src.database.engine import _ALEMBIC_INI
+    from src.database.tables import metadata
 
     engine, config = fixture_db
     script = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI)))
-    older = script.get_revision(alembic_head_revisions()[0]).down_revision
+    # Pin the revision before the migration exercised below: the current
+    # head's predecessor changes whenever an unrelated migration lands.
+    older = script.get_revision("a00000000085").down_revision
     async with engine.begin() as conn:
         await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
         await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
+        # Real revision-84 archives contain the managed jobs and V2 run tables.
+        # Retain these antecedents so later upgrades can alter jobs after restore.
+        from src.database.tables import jobs, playbook_artifacts, playbook_v2_runs
+
+        for table in (playbook_artifacts, playbook_v2_runs, jobs):
+            await conn.run_sync(lambda bind, table=table: table.create(bind, checkfirst=True))
+        # Migration a00000000085 adds promotion_flow to this restored table.
+        await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
+        # Pre-wait tasks have base priority and the claim frontier columns.
+        # Exercise the real backfill and index migrations after restoring.
+        await conn.execute(text(
+            "ALTER TABLE tasks "
+            "ADD COLUMN priority integer NOT NULL DEFAULT 100, "
+            "ADD COLUMN project_id text, "
+            "ADD COLUMN profile_id text, "
+            "ADD COLUMN status text NOT NULL DEFAULT 'READY', "
+            "ADD COLUMN is_blocked integer NOT NULL DEFAULT 0, "
+            "ADD COLUMN affinity_agent_id text"
+        ))
+        await conn.execute(text("UPDATE tasks SET priority = 23"))
+        # Human ask revisions require the existing review, escalation, input and outbox
+        # ledgers. Recreate those dependencies without their later additions.
+        restored_metadata = MetaData()
+        # Revision 56 already supplied call maxima in a real revision-84 archive.
+        # Copy columns only: revision 121 must add its retention index on upgrade.
+        calls = Table("transcript_usage_calls", restored_metadata, *(
+            column._copy() for column in metadata.tables["transcript_usage_calls"].c
+        ))
+        Table("projects", restored_metadata, Column("id", Text, primary_key=True))
+        Table("messages", restored_metadata, Column("id", Text, primary_key=True))
+        for name in (
+            "task_proposals", "integration_check_evidence",
+            "doc_reviews", "doc_review_revisions", "doc_review_comments",
+            "escalations", "escalation_messages", "escalation_actions",
+            "supervisor_conversations", "conversation_inputs", "outbound_deliveries",
+        ):
+            absent = {column.name for column in ADDITIONS.get(name, ())}
+            if name == "integration_check_evidence":
+                # The check cache predates revision 84; only reconciliation
+                # bookkeeping is new in revision 120.
+                absent.add("check_reconciliation")
+            if name == "conversation_inputs":
+                absent |= {
+                    "ask_id", "project_id", "routing_state", "routing_evidence", "receipt",
+                    "guild_id", "reference_message_id", "external_thread_id", "source_version",
+                    "retention_entry_id",
+                }
+            if name == "outbound_deliveries":
+                absent |= {
+                    "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+                    "mode_generation", "root_generation", "send_kind", "write_started_at",
+                    "attempt_token",
+                }
+            Table(name, restored_metadata, *(
+                column._copy() for column in metadata.tables[name].c if column.name not in absent
+            ))
+        await conn.run_sync(restored_metadata.create_all)
+        await conn.execute(calls.insert().values(
+            usage_key="historical-call", input_tokens=23, output_tokens=4,
+            cache_read_tokens=0, cache_write_tokens=0, updated_at=1.0,
+        ))
+        await conn.execute(restored_metadata.tables["integration_check_evidence"].insert().values(
+            id="historical-check", producer_id="trusted-ci", workflow_id="workflow", run_id="run-1",
+            attempt=1, required_check_version="v1", checks={}, conclusion="success",
+            classification="ordinary", observed_at=1.0, repository_id="repo", sha="a" * 40,
+            check_name="Tests",
+        ))
     dump = tmp_path / "older.dump"
     assert (await invoke("db", "backup", str(dump))).exit_code == 0
     clients = await backup.postgres_clients(config.database.url)
@@ -497,6 +570,11 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("CREATE TABLE later_table (id text REFERENCES tasks(id))"))
         await conn.execute(text("INSERT INTO later_table VALUES ('original')"))
         await conn.execute(text("ALTER TABLE tasks ADD COLUMN later_column text"))
+        await conn.execute(text(
+            "ALTER TABLE integration_check_evidence ADD COLUMN check_reconciliation jsonb"))
+        await conn.execute(text(
+            "UPDATE integration_check_evidence SET check_reconciliation = CAST(:state AS jsonb)"
+        ), {"state": '{"attempt": 1}'})
         await conn.execute(
             text("UPDATE alembic_version SET version_num = :rev"),
             {"rev": alembic_head_revisions()[0]},
@@ -507,6 +585,14 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         assert await conn.scalar(text("SELECT to_regclass('public.later_table')")) is None
         assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == older
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
+        assert await conn.scalar(text("SELECT priority FROM tasks")) == 23
+        assert await conn.scalar(text(
+            "SELECT conclusion FROM integration_check_evidence WHERE id='historical-check'"
+        )) == "success"
+        assert await conn.scalar(text(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name='integration_check_evidence' AND column_name='check_reconciliation'"
+        )) == 0
         assert (
             await conn.scalar(
                 text(
@@ -526,8 +612,55 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
             await conn.scalar(text("SELECT version_num FROM alembic_version"))
             == alembic_head_revisions()[0]
         )
-        assert await conn.scalar(text("SELECT baseline_generation FROM integration_batches")) == 0
+        assert await conn.scalar(text(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name='projects' AND column_name='promotion_flow'"
+        )) == 1
+        assert await conn.scalar(text(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name='projects' AND column_name='default_branch_cutover'"
+        )) == 1
+        assert await conn.scalar(text("SELECT to_regclass('public.agent_cron')")) == "agent_cron"
+        assert await conn.scalar(text("SELECT to_regclass('public.ask_decisions')")) == "ask_decisions"
+        assert await conn.scalar(text("SELECT to_regclass('public.ingest_batches')")) == "ingest_batches"
+        assert await conn.scalar(text(
+            "SELECT to_regclass('public.transcript_usage_fences')"
+        )) == "transcript_usage_fences"
+        assert await conn.scalar(text(
+            "SELECT to_regclass('public.idx_transcript_usage_calls_updated')"
+        )) == "idx_transcript_usage_calls_updated"
+        assert (await conn.execute(text(
+            "SELECT input_tokens, output_tokens FROM transcript_usage_calls "
+            "WHERE usage_key='historical-call'"
+        ))).one() == (23, 4)
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
+        assert (await conn.execute(text(
+            "SELECT priority, effective_priority FROM tasks WHERE id='original'"
+        ))).one() == (23, 23)
+        assert (await conn.execute(text(
+            "SELECT conclusion, check_reconciliation FROM integration_check_evidence "
+            "WHERE id='historical-check'"
+        ))).one() == ("success", None)
+        assert await conn.scalar(text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='integration_check_evidence' AND column_name='check_reconciliation'"
+        )) == "jsonb"
+        from sqlalchemy import inspect
+
+        indexes = await conn.run_sync(lambda bind: {
+            index["name"]: index["column_names"] for index in inspect(bind).get_indexes("tasks")
+        })
+        for suffix, prefix in (
+            ("", ["project_id", "status", "is_blocked"]),
+            ("_by_profile", ["project_id", "profile_id", "status", "is_blocked"]),
+            ("_by_affinity", ["affinity_agent_id", "project_id", "status", "is_blocked"]),
+        ):
+            assert indexes[f"idx_tasks_claim_frontier{suffix}"] == [
+                *prefix, "effective_priority", "created_at",
+            ]
+            assert indexes[f"idx_tasks_base_claim_frontier{suffix}"] == [
+                *prefix, "priority", "created_at",
+            ]
 
 
 @pytest.mark.parametrize("no_server", [False, True])
