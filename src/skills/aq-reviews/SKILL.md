@@ -36,6 +36,18 @@ aq review show --review-id <id> --diff-from 1        # block diff against an ear
 
 ## Author
 
+For a spec, use `docs/templates/spec.md` and the **Spec supersession checklist**
+in `docs/guides/reviews.md`. Find approved specs it supersedes or overlaps,
+including its approved design; cite their approved revisions and approval
+evidence. List every predecessor goal as `kept`, `changed` or `dropped`, with
+replacement/retained-spec sections and reasons. If none apply, record what you
+checked. A removed outcome is a drop even within a changed or deferred goal.
+Flag every drop in the submitted review. Each requires Jack's explicit sign-off
+for that goal and replacement revision; record its decision reference and date,
+or mark it pending. Pending sign-off blocks approval and affected implementation,
+not submission. Delegated approval and silence do not authorize a drop. Ask the
+supervisor for inaccessible predecessor evidence rather than guessing.
+
 1. Write the document in your checkout. Do not commit it.
 2. Submit it (`--kind spec`, `plan`, or `other` for a proposal or report):
 
@@ -139,6 +151,15 @@ revision you review and whether this is a clean-room read.
   any session but the one holding this task (`not_dispatched`).
 - **Verify against the repository.** Treat every claim in the document as
   unproven until the code, a test or a command output supports it.
+- **Check spec supersession.** Follow the checklist in `docs/guides/reviews.md`:
+  independently compare approved predecessor goals with the spec's `kept`,
+  `changed`, `dropped` table and its replacement sections. Missing predecessors
+  or rows, unsupported dispositions and drops without Jack's explicit sign-off
+  are `[blocking]`. Flag every drop in the review and verdict, including signed-off
+  drops, citing the goal, approved revision, reason and decision evidence. A
+  deferral or delegated approval cannot replace sign-off. Recheck on revisions;
+  sign-off must cover the current proposal. If predecessor evidence is unavailable,
+  report the gap rather than claim there are no findings.
 - **Anchor every finding** with `--quote "<exact text>"` or
   `--heading-path '["<section>","<subsection>"]'` (else `anchor_required`).
 - **Lead with a severity**, then give the claim, the evidence (`path:symbol`
@@ -244,12 +265,12 @@ record it so, and never claim coverage you did not observe.
 4. Register one durable task wait and end the turn:
 
    ```bash
-   aq wait register --kind task --ref <task-id> --timeout 7200 --idempotency-key review-round-N
+   aq wait register --kind task --ref <task-id> --idempotency-key review-round-N
    ```
 
-   Resume with `aq wait show <wait-id> --consume --json`. Handle an expired
-   wait explicitly; do not repeatedly read unchanged status or blindly register
-   again. A failed or cancelled reviewer is an incomplete review. Check
+   Resume with `aq wait show <wait-id> --consume --json`. Act on its result or
+   recorded supervisor decision; keep the same wait. A failed or cancelled reviewer
+   is an incomplete review. Check
    attribution, then read the findings and the verdict:
 
    ```bash
@@ -283,14 +304,30 @@ record it so, and never claim coverage you did not observe.
   a different document, never mid-round without recording a new assignment.
 - Three rounds is a cap, not a quota.
 
-## This loop is not a playbook
+## Review commands in playbooks
 
-`review_dispatch`, `review_show` and `review_decide` are not contracted
-commands, so a V2 `command` step cannot call them. An `agent_task` reviewer is
-outside the dispatch ledger, so its comments are refused `not_dispatched`.
-`review.dispatched` has no event schema, so a rule on it fails validation
-(`unknown_event`). A playbook principal cannot decide. Do not write a playbook
-that pretends otherwise; contracting the verbs is a separate feature.
+Catalogue coverage and caller authority are independent. `review_dispatch`,
+`review_show` and `review_decide` are discoverable through generated contracts;
+coverage does not turn a PLAYBOOK principal into a supervisor or human decider.
+Consult `playbook_commands` for schemas/outcomes and the current caller gates.
+Review decisions still require current authorized human/delegated evidence.
+An ordinary `agent_task` reviewer is outside the dispatch ledger and its comments
+are refused `not_dispatched`. Unregistered event types fail `unknown_event`;
+never infer an event schema from a command name. The four universally denied
+commands are `run_command`, `shutdown`, `restart_daemon`, `update_and_restart`.
+
+For a playbook proposal, review the actual paths, predicates, thresholds,
+recipients, intervals, completeness gates and state revisions against source.
+Required capabilities are declarations, never grants. Source supplies state
+version and script manifests/policy; server code resolves digests and execution
+identity. Compiler output contains exactly `rules` and `steps`, with the existing
+source-checked integration-policy compatibility path. A state version change
+selects a new namespace and can re-alert; reset is an explicit operator decision.
+Snapshot absence is valid only after complete producer coverage and all pages.
+Scripts use ordinary processes, timeout/output caps and strict optional JSON;
+there is no sandbox prerequisite or real-host gate. Ambiguous execution cannot
+be automatically replayed. Protected streams require run-authorized job readback.
+See `docs/guides/playbook-building-blocks.md` for rollout and rollback evidence.
 
 ## Refusals you will meet
 

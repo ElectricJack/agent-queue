@@ -40,7 +40,8 @@ vault watcher; no restart, no release.
   "dialogs": [
     {
       "name": "trust-directory",
-      "pattern": "Do you trust the contents of this directory",
+      "pattern": "Do you trust the contents of this directory|Trust this folder\\?",
+      "is_regex": true,
       "keys": ["Enter"]
     },
     {
@@ -80,7 +81,7 @@ vault watcher; no restart, no release.
     },
     {
       "name": "trust-or-permission",
-      "pattern": "Do you trust|Hooks need review|approval required|Allow command",
+      "pattern": "Do you trust|Trust this folder|Hooks need review|approval required|Allow command",
       "is_regex": true
     },
     {
@@ -219,7 +220,13 @@ trust menu renders `› 1. Yes, continue` — the same prefix the readiness poll
 looks for — and it can land *after* the first dismissal pass. Startup
 therefore refuses readiness on any capture where a rule above matches, and
 holds the final pass open for `sessions.dialog_settle_seconds` (default
-1.5 s). Verified live on Codex 0.151 (task smart-orbit.7).
+1.5 s). Verified live on Codex 0.151 (task smart-orbit.7). Codex 0.162
+renamed it "Trust this folder?" with `› 1. Trust and continue`; the rule
+matches both texts. An isolated worktree launch also records the repository
+root (the main checkout, for a linked worktree) as `trust_level = "trusted"`
+in `$CODEX_HOME/config.toml` before starting, so the screen normally never
+appears, and the session builder adds a fallback rule for an older vault copy
+that misses the new text (task nimble-harbor-12).
 
 **Startup noise is harmless:** an update banner, a bubblewrap PATH warning,
 and possible MCP-startup warnings all render above the composer and need no

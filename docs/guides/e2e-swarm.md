@@ -84,10 +84,13 @@ override. Production still refuses overrides of claimed or running tasks.
 S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
 (the `provb` worker, the probation canary and the pinned task) retry
 `no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
-skip a READY fixture while another transaction holds its row. Other claim outcomes and claims of an unexpected
-task fail immediately. S2 and S3 accept only the remaining S1 fixtures, including
-when separate pytest items run them in different subprocesses. A timeout reports
-the last claim and the fixture state.
+skip a READY fixture while another transaction holds its row. Each claim waits
+one second so an unlock without a `task.ready` event cannot consume the retry
+budget in a few long polls. `claim_in_progress` for an expected fixture resumes
+the same preparation on the next call. Other claim outcomes and claims or
+preparations of an unexpected task fail immediately. S2 and S3 accept only the
+remaining S1 fixtures, including when separate pytest items run them in different
+subprocesses. A timeout reports the last claim and the fixture state.
 
 CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
@@ -101,6 +104,11 @@ selecting S2 or S3 alone prepares its missing predecessors. Other item boundarie
 remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.
+
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
 
 Each item has its own 540-second pytest limit. The scenario step has an
 eleven-minute deadline and a cache-miss dependency install has a separate
@@ -386,10 +394,10 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
 `aq prime` a task in project `other`. Before those assertions, the holder
-retries only `no_ready_work` within the convergence budget and must claim the
-exact fixture: even a routed `READY` row can be skipped while another transaction
-locks it. A timeout reports the last claim and fixture state; other claim
-failures stop immediately. *Regression it catches: a token being
+retries `no_ready_work` and observes fixture preparation within the convergence
+budget, then must claim the exact fixture: even a routed `READY` row can be skipped
+while another transaction locks it. A timeout reports the last claim and fixture
+state; other claim failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and
@@ -561,9 +569,13 @@ launch, and a canary nobody works holds that provider's launches for
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
-uvicorn is listening and never touches the database. `GET /ready` runs the
-daemon's own health provider, so its `checks.database` entry is a real query
-through the engine the daemon is using.
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
 
 The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
