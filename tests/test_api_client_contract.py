@@ -36,8 +36,9 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from tests.db_fixtures import lease_dsn
+
 from src.config import DatabaseConfig
+from tests.db_fixtures import lease_dsn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = REPO_ROOT / "packages" / "aq-client"
@@ -191,6 +192,110 @@ async def test_generated_client_models_round_trip_real_typed_route(live_app):
         assert "no-such-task" in str(err.error)
 
 
+async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
+    """``graph_reflow_status`` is operator-only and read-only.
+
+    The guard for that lives in the command handler, not in the typed route,
+    so this test only asserts that the generated request/response models
+    round-trip against a real ASGI route and that the shape of the success
+    payload (``queued`` / ``running`` / ``failed`` counters plus a
+    ``failed_scopes`` list) is typed — the field set is a function of the
+    ``layout_reflow_requests`` table, so the model and the query stay in lock
+    step or this test trips.
+    """
+    _import_repo_client()
+    from agent_queue_api_client.api.graph import graph_reflow_status
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.graph_reflow_status_request import (
+        GraphReflowStatusRequest,
+    )
+    from agent_queue_api_client.models.graph_reflow_status_response import (
+        GraphReflowStatusResponse,
+    )
+
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p-reflow", name="reflow-target"))
+    await db.enqueue_layout_reflows("p-reflow", "active", ["scope-a"])
+
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+
+        parsed = await graph_reflow_status.asyncio(
+            client=client, body=GraphReflowStatusRequest(project_id="p-reflow"),
+        )
+
+    assert isinstance(parsed, GraphReflowStatusResponse), parsed
+    assert parsed.success is True
+    assert parsed.project_id == "p-reflow"
+    status = parsed.status
+    assert status.queued == 1
+    assert status.running == 0
+    assert status.failed == 0
+    assert status.failed_scopes == []
+
+
+async def test_generated_client_round_trips_repository_binding_and_repeat(live_app, monkeypatch):
+    """The typed client preserves the binding audit and unchanged repeat result."""
+    from unittest.mock import AsyncMock
+
+    _import_repo_client()
+    from agent_queue_api_client.api.project import bind_project_repository
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.bind_project_repository_request import (
+        BindProjectRepositoryRequest,
+    )
+    from agent_queue_api_client.models.bind_project_repository_response import (
+        BindProjectRepositoryResponse,
+    )
+
+    from src.api.dependencies import get_command_handler
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p-bind", name="Existing project"))
+    github = AsyncMock()
+    monkeypatch.setattr(get_command_handler(), "_github_client", lambda: github)
+    url = "https://github.com/acme/existing-project.git"
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        first = await bind_project_repository.asyncio(
+            client=client,
+            body=BindProjectRepositoryRequest(
+                project_id="p-bind", repo_url=url, expected_repo_url="", reason="Authorized",
+            ),
+        )
+        repeat = await bind_project_repository.asyncio(
+            client=client,
+            body=BindProjectRepositoryRequest(
+                project_id="p-bind", repo_url=url, expected_repo_url=url, reason="Repeat",
+            ),
+        )
+
+    audit = await db.get_recent_events(event_type="project.repository_bound", project_id="p-bind")
+    assert isinstance(first, BindProjectRepositoryResponse), first
+    assert first.success is True
+    assert first.project_id == "p-bind"
+    assert first.repo_url == url
+    assert first.changed is True
+    assert len(audit) == 1
+    assert first.event_id == audit[0]["id"]
+    assert isinstance(repeat, BindProjectRepositoryResponse), repeat
+    assert repeat.success is True
+    assert repeat.project_id == first.project_id
+    assert repeat.repo_url == first.repo_url
+    assert repeat.changed is False
+    assert repeat.event_id is None
+    github.validate_repository.assert_awaited_once_with(url.removesuffix(".git"))
+
+
 async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     """``max: null`` is a meaningful unbounded-pool request, not omission."""
     from src.models import AgentProfile, Project
@@ -218,7 +323,19 @@ async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     ]
 
 
-def test_codegen_routes_keep_execute_exclusions_off_every_live_router():
+@pytest.fixture
+def offline_contract_snapshot():
+    """Route the offline descriptor snapshot even when an earlier test on this
+    worker left a live handler (with qualified plugin commands) installed."""
+    from src.commands.contracts import builtin
+
+    previous = builtin._handler_provider
+    builtin.set_handler_provider(None)
+    yield
+    builtin.set_handler_provider(previous)
+
+
+def test_codegen_routes_keep_execute_exclusions_off_every_live_router(offline_contract_snapshot):
     """Plan 3: one route per discovered command; excluded commands get none."""
     from src.api.codegen import API_EXCLUDED, build_category_routers
     from src.mcp_registration import _discover_all_commands
@@ -339,6 +456,26 @@ def test_committed_openapi_json_matches_the_live_app_surface():
         f"stale schemas in openapi.json: {sorted(committed_schemas - live_schemas)}\n"
         f"schemas whose definition changed: {changed_schemas}"
     )
+
+
+def test_task_detail_list_defaults_are_fresh_per_row_and_documented_empty():
+    """``TaskDetail``'s list fields default through a factory, not a copied literal.
+
+    ``task_list`` rows omit all five, and a literal ``[]`` default is
+    deep-copied per row -- 50k copies in one event-loop span for a 10k-task
+    list (wise-ember.16).  The published schema still documents ``[]``.
+    """
+    from src.api.models.task import ListTasksResponse, TaskDetail
+
+    fields = ("attachments", "deliverables", "depends_on", "blocks", "subtasks")
+    first, second = ListTasksResponse.model_validate(
+        {"tasks": [{"id": "a", "project_id": "p", "title": "A"},
+                   {"id": "b", "project_id": "p", "title": "B"}]}
+    ).tasks
+    for name in fields:
+        assert getattr(first, name) == [] and getattr(first, name) is not getattr(second, name)
+        assert TaskDetail.model_fields[name].default_factory is list
+        assert TaskDetail.model_json_schema()["properties"][name]["default"] == []
 
 
 def test_generator_version_pin_agrees_between_the_script_and_the_dev_extra():
@@ -617,3 +754,90 @@ def test_generated_client_boilerplate_matches_the_recorded_digests():
         "openapi-python-client (regenerate with the pinned one):\n"
         "  ./scripts/regenerate-api-client.sh --offline"
     )
+
+
+async def test_generated_supervisor_inbox_reads_and_refusals_round_trip(live_app):
+    _import_repo_client()
+    from agent_queue_api_client.api.supervisor_inbox import (
+        supervisor_inbox_history,
+        supervisor_inbox_status,
+    )
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.supervisor_inbox_error_response import (
+        SupervisorInboxErrorResponse,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_history_request import (
+        SupervisorInboxHistoryRequest,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_history_response import (
+        SupervisorInboxHistoryResponse,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_status_request import (
+        SupervisorInboxStatusRequest,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_status_response import (
+        SupervisorInboxStatusResponse,
+    )
+
+    app, db = live_app
+    accepted = await db.accept_conversation_input(
+        transport="discord",
+        guild_id="111111111111111111",
+        channel_id="222222222222222222",
+        external_message_id="900000000000000000",
+        external_root_message_id="900000000000000000",
+        external_thread_id=None,
+        author_id="333333333333333333",
+        verified_actor="human:discord:333333333333333333",
+        text="original operator text",
+        audience=["333333333333333333"],
+        source="test",
+        received_at=1000,
+        conversation_id=None,
+        brief="verified input",
+        now=1000,
+    )
+    await db.expire_conversation_text(older_than=1001, now=1002)
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        status = await supervisor_inbox_status.asyncio(
+            client=client, body=SupervisorInboxStatusRequest()
+        )
+        assert isinstance(status, SupervisorInboxStatusResponse), status
+        assert status.enabled is False
+        assert status.counts.by_state.to_dict()["opening"] == 1
+        history = await supervisor_inbox_history.asyncio(
+            client=client,
+            body=SupervisorInboxHistoryRequest(conversation_id=accepted["conversation"]["id"]),
+        )
+        assert isinstance(history, SupervisorInboxHistoryResponse), history
+        item = history.conversations[0].inputs[0]
+        assert item.text is None and item.text_expired is True
+        assert history.next_before is None and history.next_before_id is None
+        assert history.conversations[0].next_before_id is None
+        assert SupervisorInboxHistoryRequest(before=1.0, before_id="conv-x").to_dict() == {
+            "limit": 50,
+            "before": 1.0,
+            "before_id": "conv-x",
+        }
+        refusal = await supervisor_inbox_history.asyncio(
+            client=client,
+            body=SupervisorInboxHistoryRequest(conversation_id="missing"),
+        )
+        assert isinstance(refusal, SupervisorInboxErrorResponse), refusal
+        assert refusal.error_code == "conversation_not_found"
+        # Generic execution and typed dispatch retain the same refusal facts.
+        response = await http.post(
+            "/api/execute",
+            json={
+                "command": "supervisor_inbox_history",
+                "args": {"conversation_id": "missing"},
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert response.json()["details"]["error_code"] == "conversation_not_found"

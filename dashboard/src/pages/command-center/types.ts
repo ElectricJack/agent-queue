@@ -38,14 +38,23 @@ export interface TaskHierarchy {
   parentTitle: string | null;
   depth: number;
   childCount: number;
-  visibleChildCount: number;
   descendantCount: number;
   completedCount: number;
   runningCount: number;
   blockedCount: number;
-  expanded: boolean;
-  autoExpanded: boolean;
   contextOnly: boolean;
+}
+
+/** What a card's reason line names (spec §3.4), resolved from the loaded tiles. */
+export interface TaskRelations {
+  /** Unsettled tasks this one waits on, and the first one's title when loaded. */
+  blockerCount: number;
+  blockerTitle: string | null;
+  /** The first unsettled task waiting on this one. */
+  dependentTitle: string | null;
+  /** Loaded READY tasks the frontier takes first, or `null` on a priority tie
+   *  (the frontier then orders by age, which the layout does not carry). */
+  readyAhead: number | null;
 }
 
 export interface TaskNodeData extends Record<string, unknown> {
@@ -54,19 +63,37 @@ export interface TaskNodeData extends Record<string, unknown> {
   projectId: string;
   hierarchy: TaskHierarchy;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
-  onToggleChildren?: (taskId: string, finished?: boolean) => void;
+  /** Enter this container: the canvas re-scopes to it (there is no inline
+   *  expansion). Absent on a leaf, and on the container already entered. */
   onFocus?: (taskId: string) => void;
   /** Presentation-only scale selected in the tiled graph. */
   layoutScale?: number;
+  /** This task's own durable subtask checklist counts, when it has any. */
+  subtasks?: { total: number; settled: number };
+  /** Set when this node is a phase container (graph-visibility A1). */
+  phase?: { order: number; label: string } | null;
+  /** An epic's delivery, kept apart from its implementation progress. */
+  delivery?: import("@aq/ts-client").EpicDeliveryStatus | null;
+  /** Reviews this task's gates are tied to, blocking first (`aq task explain`'s
+   *  `blocked_gate`); the card links the first to its review page. */
+  reviewWaits?: import("@aq/ts-client").ReviewWait[];
+  /** Neighbours the reason line names; absent where no graph is loaded. */
+  relations?: TaskRelations;
+  /** A boundary marker: a task outside the loaded tiles, `foreign` when it
+   *  lives in another project. Its stored status is not known here. */
+  stub?: { foreign: boolean };
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {
   node: import("@aq/ts-client").LayoutNode;
   projectId: string;
   onFocus?: (taskId: string) => void;
-  onToggleChildren?: (taskId: string, finished?: boolean) => void;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
   layoutScale?: number;
+  /** Only on the entered container: where its "Up to" button leads, the
+   *  parent epic or the project itself (`id: null`). */
+  upTarget?: { id: string | null; title: string };
+  onUp?: (id: string | null) => void;
 }
 
 export interface StubNodeData extends Record<string, unknown> {
