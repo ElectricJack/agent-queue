@@ -39,14 +39,17 @@ state_schema_version: 1
 required_capabilities: [playbook_state_list, playbook_state_notify, message_send]
 scripts:
   report:
-    runtime: python
-    argv: [bin/python, {type: literal, value: '--version'}]
+    runtime: host
+    argv: [python3, {type: literal, value: '--version'}]
     supporting_files: []
     limits: {wall_seconds: 60, stdout_bytes: 1048576, stderr_bytes: 1048576}
     output: text
 ```
 
 `required_capabilities` is a unique list of command names for review, not a grant.
+The one exception is a declared dependency of a step's own command: a
+`playbook_state_notify` step's artifact grants `message_send` only when the pinned
+declaration names it (`DECLARED_COMMAND_DEPENDENCIES` in `src/playbooks/definition.py`).
 State versions are strict positive integers (default 1 for state users). Script
 manifests are strict `ScriptProgram` objects: exactly one script/argv/shell form,
 literal runtime/interpreter/source identity, declared supporting files, typed data
@@ -92,11 +95,14 @@ See [state](playbook-state.md) for quotas and reset/replay-floor semantics.
 
 Scripts are ordinary host processes, with no cgroup/namespace/network isolation,
 launcher or prerequisite doctor gate. `resources.scripts.enabled` defaults true;
-job admission must also be enabled. Configure runtime manifests, immutable input
-storage, state/output storage and protected-value encryption keys. Configure
-`playbooks.private_value_active_key_id` and `playbooks.private_value_key_env` with
-environment variable references; never put key bytes in source or artifacts. The existing
-pins verify declared bytes, not undeclared host dependencies. Keep dynamic data in
+job admission (`resources.jobs.enabled`) must also be enabled. Input, state and
+runtime roots default under `~/.agent-queue/scripts/`, and an executable is an
+ordinary host binary found under the runtime root or `resources.scripts.search_path`.
+A runtime manifest is an opt-in that pins runtime digests. Configure protected-value
+encryption keys with `playbooks.private_value_active_key_id` and
+`playbooks.private_value_key_env` as environment variable references; never put key
+bytes in source or artifacts. Input pins verify declared source bytes; runtime pins,
+when configured, verify declared runtime bytes, never undeclared host dependencies. Keep dynamic data in
 argv/stdin/explicit environment values, never substituted into program text.
 Timeout/output caps and complete-output JSON parsing remain enforced.
 
@@ -105,9 +111,24 @@ automatic second execution. Dry-run/shadow launches no process and performs no
 state/message/job writes. Public receipts show identities and protected handles.
 Authorized `job_logs` reads bounded stdout/stderr ranges after checking run access;
 knowing a handle grants nothing. Missing keys refuse protected binding/readback,
-never plaintext fallback. See [script configuration](playbook-script-sandbox.md).
+never plaintext fallback. See [script configuration](playbook-script-runner.md).
 
 ## Deliberate rollout and rollback
+
+The reviewed `stuck-task-watch` bundle uses notification namespace version 1,
+`timer.15m`, and `session:supervisor-global`. It reports aged ASSIGNED (>1,800s)
+and IN_PROGRESS (>7,200s) tasks, every BLOCKED task, and the five finding kinds
+from `task_observations_v1`. Complete source partitions can clear missing keys;
+failed or incomplete partitions retain their episodes. The base has no reminders.
+The separate `stuck-task-watch-reminder` bundle repeats after 86,400 seconds and
+owns a separate namespace. Choose the intended policy before importing it;
+activating both creates independent notification episodes.
+
+Both bundles live in `src/prompts/reviewed_playbooks/` with byte-identical test
+recordings in `tests/fixtures/playbooks/v2/`. Neither belongs to first-install
+defaults or startup requirements. Existing operator-installed sources and
+activations are retained; changing the shipped inventory does not migrate them.
+Ordinary recompilation, restart, and disable/re-enable preserve notification state.
 
 1. Validate this checkout's focused compiler, graph, activation and dashboard tests.
    Keep stored legacy golden hashes; empty additive metadata must not change them.
@@ -117,9 +138,11 @@ never plaintext fallback. See [script configuration](playbook-script-sandbox.md)
    migrate the operator database or manage its daemon. Unsupported feature pins
    make only affected activations unready.
 3. Enumerate artifacts affected by intentional command/schema/source changes.
-   Rebuild only those pins, inspect semantic diffs, update bundle manifest digests
-   and copy reviewed fixtures to `src/prompts/reviewed_playbooks/<id>/`. Regenerate
-   schemas and SDKs from source; never hand-edit clients or globally refresh an
+   Run `python scripts/rebuild-reviewed-playbook-artifacts.py <id>` for each
+   affected bundle and inspect its semantic diff. The command updates fixture
+   manifests, recorded inputs and shipped copies; no manual digest or copy step is
+   needed. `scripts/generate-recorded-artifacts.py` projects approved inputs unchanged.
+   Regenerate schemas and SDKs from source; never hand-edit clients or globally refresh an
    installed playbook on startup. A recorded bundle is not acceptance evidence.
 4. Shipped profiles and skills are write-if-absent. Operator drift checks are
    `aq doctor --check profiles.system_drift` and `aq doctor --check skills.installed_drift`.
@@ -133,3 +156,80 @@ never plaintext fallback. See [script configuration](playbook-script-sandbox.md)
    compatible reviewed artifacts deliberately. Keep additive tables/columns,
    encrypted values, snapshots, state and journals. Never reset versions/drop state
    to make old code load. Retain old read keys until referenced data is retired.
+
+### Activating the stuck-task watch
+
+Activation is an operator decision on the live daemon; no worker, test or deploy
+performs it. Before importing, the operator checks four things:
+
+* **Schema and code.** `aq db current` reports head and the daemon runs the code
+  that shipped these bundles.
+* **Playbook switch.** `playbooks.enabled` is true. Import and activation
+  refuse while it is off. The former `v2_api` and `v2_activation_writes` flags
+  are no longer configuration fields.
+* **Private-value key.** The watch calls a generated command, so the
+  `generated_commands_v1` feature needs a ready private-value key:
+  * A base64-encoded 32-byte key lives in the protected daemon `.env` (mode 0600).
+  * `playbooks.private_value_key_env` maps a key id to that variable's name.
+  * `playbooks.private_value_active_key_id` selects the key id.
+  * The daemon has been restarted since the key was provisioned.
+
+  `aq install` provisions a key for unconfigured storage. Two checks report
+  readiness: `/ready` `checks.playbook_private_value_key` and
+  `aq doctor --check playbooks.private_value_key`. A missing key leaves the
+  daemon unready for protected execution; operations refuse rather than falling
+  back to plaintext.
+* **One policy.** Choose `stuck-task-watch` (no reminder) or
+  `stuck-task-watch-reminder` (repeats after 86,400 s). Import only the one you
+  intend to run.
+
+Next, the operator copies the chosen bundle from `src/prompts/reviewed_playbooks/<id>/`
+into the vault's `reviewed-playbooks/<id>/`, imports it, reviews it and activates
+the exact hash:
+
+```bash
+aq playbook import --path reviewed-playbooks/stuck-task-watch      # never activates
+aq playbook artifact-diff --playbook-id stuck-task-watch --target-sha256 sha256:<hash>
+aq playbook activate --playbook-id stuck-task-watch --artifact-sha256 sha256:<hash>
+aq playbook activation-health                                      # expect ready
+```
+
+Pause and resume with `aq playbook set-enabled --playbook-id stuck-task-watch
+--no-enabled` / `--enabled`. Pausing stops new runs but cancels none in flight,
+and notification state carries over to the next enabled tick.
+
+`tests/test_stuck_task_watch_daemon.py` is the acceptance evidence. It runs the
+reviewed bundles through the import and activation commands of a disposable
+daemon (`scripts/e2e-env.sh`). The run covers:
+
+* two active projects and one inactive project;
+* unchanged ticks and duplicate replay;
+* a dry run that writes nothing;
+* a daemon restart;
+* an inactive project reactivated;
+* clear and recurrence;
+* disable and re-enable;
+* the reminder at 86,400 s;
+* failed doctor partitions that retain their episodes.
+
+### Rollback across the building-block revisions
+
+The supported rollback is a feature rollback on the current code (step 6):
+
+1. Pause the watch with `set-enabled --no-enabled`.
+2. Disable script admission and settle jobs.
+3. Keep the schema, state, protected values and journals.
+
+Downgrading the binary below these revisions is refused. Revisions
+`a00000000104`, `a00000000105`, `a00000000106` and `a00000000108` drop or replace
+constraints and indexes and create tables. That is not additive, so
+`SchemaAheadPolicy` refuses to start older code against the upgraded schema (it
+raises `SchemaAheadCode`), and `scripts/rollback_drill.py` reports "rollback
+unsafe". `a00000000103` and `a00000000107` are additive.
+
+`tests/test_migration_playbook_building_blocks.py` (`-m migration`) runs the
+rehearsal. It rebuilds the schema as it stood before `a00000000103` around
+legacy rows, upgrades through head twice, checks that the rows and constraints
+survive, and pins the refusal. Never `alembic downgrade` or `stamp` to force old
+code to load. If old code is truly required, restore the pre-upgrade backup and
+accept that state recorded since then is lost.

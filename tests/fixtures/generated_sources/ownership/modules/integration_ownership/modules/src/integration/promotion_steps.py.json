@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/promotion_steps.py::PromotionVisit._record_publish::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "intent",
+      "integration_signal": false,
+      "line": 1594,
+      "owner": "PromotionVisit._record_publish",
+      "owner_fingerprint": "17c963313bfdd150113a34f976ea675e741aa0c2f6b3db5a473b519c0e879107",
+      "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
+    },
+    "src/integration/promotion_steps.py::settle_promotion::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1769,
+      "owner": "settle_promotion",
+      "owner_fingerprint": "85a65400a4a684c7f6fae5adb44701518265a6ab38f66e2df6d5631427645db2",
+      "reason": "Write-once result of a promotion task (source SHA, tag OID and batch id), separate from the immutable request intent. Git ancestry and annotated-tag read-back are always reobserved; this result never authorizes ref replay or substitutes for delivery truth."
+    }
+  }
+}
