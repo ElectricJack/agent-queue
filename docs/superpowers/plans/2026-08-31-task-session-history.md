@@ -1,5 +1,12 @@
 # Task Session History Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 **Goal:** Make every task execution attempt inspectable from its task, accurately show why work stopped, and prevent reused workspaces from displaying the wrong transcript.
 
 **Architecture:** Preserve task/session associations as immutable attempt records at assignment and release. Expose a scoped read-only task history endpoint, reuse SessionDetail with an optional attempt ID, and resolve transcripts by actual harness conversation identity. Existing session records are backfilled conservatively; absent exit times or transcripts stay unknown.

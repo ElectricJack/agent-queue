@@ -176,7 +176,7 @@ install-profile` acts on.
 
 ## Shipped agent skills
 
-Five skills ship in [`src/skills/`](../../../src/skills/) and are installed
+Six skills ship in [`src/skills/`](../../../src/skills/) and are installed
 into a harness's skill directory at session start. They are the agent-facing
 documentation of this surface — short, task-shaped, and loaded on demand:
 
@@ -187,6 +187,7 @@ documentation of this surface — short, task-shaped, and loaded on demand:
 | `aq-comms` | Messages, the inbox, and reporting a blocker to a human. |
 | `aq-workspaces-and-git` | The assigned worktree, its branch, committing, pushing, opening a PR. |
 | `aq-playbooks-and-gates` | Inspecting a paused run and resolving a human gate. |
+| `aq-reviews` | Document reviews by seat — author, reviser, dispatched reviewer — and the opt-in adversarial review recipe across model families. |
 
 Installation is **write-if-absent** (`ensure_default_aq_skills`): editing a
 skill in this repository does **not** update an already-installed copy. The
@@ -198,13 +199,15 @@ the pages in this directory — a subcommand that no longer exists, a positional
 id passed to a generated command, or an option the command does not take all
 fail that test.
 
-> **Two shipped skills carry stale claims** recorded as entries 8 and 9 in the
-> [known-inaccuracies ledger](../../plans/documentation-overhaul/known-inaccuracies.md):
-> `aq-playbooks-and-gates` describes per-task reviewer and final-reviewer
-> creation as part of the shipped default pipeline, and `aq-comms` describes a
-> `UserPromptSubmit` inbox hook that was removed on 2026-08-27. Fixing shipped
-> prompt text changes agent behaviour, so it is a code change rather than a
-> documentation one.
+> **Two shipped skills carried stale claims** — entries 8 and 9 of the
+> [known-inaccuracies ledger](../../plans/documentation-overhaul/known-inaccuracies.md),
+> both now corrected in tree: `aq-playbooks-and-gates` described per-task
+> reviewer and final-reviewer creation as part of the shipped default pipeline,
+> and `aq-comms` described a `UserPromptSubmit` inbox hook that was removed on
+> 2026-08-27. Because installation is write-if-absent, an install that already
+> has the old copy keeps it until it is re-seeded — `aq doctor --check
+> skills.installed_drift` reports the divergence and `--fix` re-copies the
+> shipped file after backing the installed one up as `SKILL.md.bak`.
 
 ## State ownership
 
