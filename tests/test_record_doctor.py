@@ -3,16 +3,17 @@
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 
 from src.commands.principal import TRUSTED_LOCAL
 from src.config import AppConfig, KnowledgeFeatureConfig
-from src.database.tables import knowledge_search, record_export_state, record_outbox
+from src.database.tables import knowledge_search, record_export_state, record_outbox, sessions
 from src.doctor import default_registry
 from src.doctor.models import DoctorContext, Severity
 from src.doctor.record_checks import record_checks
 from src.doctor.runner import DoctorRegistry, run_doctor
 from src.knowledge.service import KnowledgeService
+from src.models import AgentProfile
 from src.records.export import RecordExporter, managed_parts
 from src.records.outbox import RecordOutbox
 from tests.record_helpers import (
@@ -21,6 +22,7 @@ from tests.record_helpers import (
     seed_project,
     seed_task,
     snapshot,
+    worker_principal,
 )
 
 
@@ -155,3 +157,37 @@ async def test_missing_database_is_info_not_false_health():
     ctx = DoctorContext(config=AppConfig())
     for check in record_checks():
         assert (await check.run(ctx)).severity is Severity.INFO
+
+
+async def test_pool_access_probes_real_scope_and_reports_missing_grants(command_handler_factory):
+    handler = await command_handler_factory()
+    handler.config.knowledge = knowledge_config()
+    worker = await worker_principal(handler.db, grants=["knowledge_list"])
+    await handler.db.create_profile(AgentProfile(
+        id=worker.profile_id, name="Pool probe", harness_tools=[], plugin_tools=[],
+        aq_commands=["knowledge_list", "knowledge_show", "knowledge_create", "knowledge_cite"],
+    ))
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                           .values(claim_phase="active"))
+    ctx = DoctorContext(config=handler.config, db=handler.db, handler=handler)
+    result = await report(ctx, "pool_access")
+    assert result.severity is Severity.OK
+    assert result.data["sampled"] == 1
+    assert worker.session_instance_token not in str(result.to_dict())
+
+    await handler.db.update_profile(worker.profile_id, aq_commands=["knowledge_show"])
+    handler._invalidate_principal_cache()
+    result = await report(ctx, "pool_access")
+    assert result.severity is Severity.WARN
+    failure, = result.data["failures"]
+    assert failure["error_code"] == "record.forbidden"
+    assert "knowledge_list" in failure["missing_grants"]
+    assert worker.session_instance_token not in str(result.to_dict())
+
+
+async def test_pool_access_no_live_claims_is_not_false_health(ctx):
+    ctx.handler = SimpleNamespace(_principal_from_scope=lambda _: None)
+    result = await report(ctx, "pool_access")
+    assert result.severity is Severity.INFO
+    assert result.detail == "no active pool claims to probe"

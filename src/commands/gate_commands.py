@@ -17,6 +17,56 @@ logger = logging.getLogger(__name__)
 class GateCommandsMixin:
     """Gate command methods mixed into ``CommandHandler``."""
 
+    async def _gate_ask_source(self, gate):
+        from src.asks.models import SourceIdentity
+        await_id = str(gate.get("await_id") or "")
+        if await_id.startswith("integration-subject:"):
+            return SourceIdentity(gate["project_id"], "integration", gate["id"], {
+                "subject_id": await_id.removeprefix("integration-subject:"),
+                "gate_id": gate["id"],
+            })
+        if await_id.startswith("prop-"):
+            return SourceIdentity(gate["project_id"], "proposal", await_id, {"id": await_id})
+        return SourceIdentity(gate["project_id"], "gate", gate["id"], {"id": gate["id"]})
+
+    async def _cmd_gate_reopen(self, args):
+        from sqlalchemy import update
+        from src.asks.models import AskError
+        from src.asks.service import check_version
+        from src.asks.sources import locked_gate
+        from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
+        from src.database.tables import gates
+        if (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
+            return {"success": False, "error_code": "ask.not_decider", "error": "Operator only"}
+        gate = await self.db.get_gate(str(args.get("gate_id") or ""))
+        if not gate:
+            return {"success": False, "error_code": "ask.not_found", "error": "Gate not found"}
+        try:
+            source = await self._gate_ask_source(gate)
+            if source.kind != "gate":
+                raise AskError("ask.unsupported_source", "Reopen through the owning source")
+            service = self._ask_service()
+            async with self.db.immediate() as conn:
+                snapshot = await service.adapters.get("gate").snapshot(source, conn=conn)
+                published = await service.publish_snapshot(snapshot, legacy=True, conn=conn)
+                intent = self._ask_intent({"ask_id": published.ask["id"],
+                    "expected": args.get("expected"), "option_key": "approve"})
+                check_version(published.ask, intent.expected)
+                current = await locked_gate(conn, source)
+                if current["status"] != "cancelled":
+                    raise AskError("ask.stale_source", "Only a declined approval may be reopened")
+                request = dict(current["human_request"])
+                request.pop("receipt", None)
+                request["reopen_generation"] = int(request.get("reopen_generation", 0)) + 1
+                await conn.execute(update(gates).where(gates.c.id == source.key).values(
+                    status="open", human_request=request,
+                    resolved_by=None, resolution=None,
+                ))
+                result = await service.publish(source, conn=conn)
+            return {"success": True, "gate_id": source.key, "ask": result.ask}
+        except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc)}
+
     async def _cmd_gate_create(self, args: dict) -> dict:
         """Create a new gate; optionally attach it to waiter tasks.
 
@@ -78,6 +128,7 @@ class GateCommandsMixin:
                 await_id=args.get("await_id"),
                 timeout_at=args.get("timeout_at"),
                 waiter_task_ids=[str(w) for w in waiters],
+                human_request=args.get("human_request"),
                 **({"unrouted_only": True} if str(gate_type) == "routing" and waiters else {}),
             )
         except Exception as exc:  # pragma: no cover — defensive
@@ -160,6 +211,10 @@ class GateCommandsMixin:
         if gate is None:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
         waiters = await self.db.get_gate_waiters(str(gate_id))
+        if gate["gate_type"] == "human" and not str(gate.get("await_id") or "").startswith(
+            "ask-application:"
+        ):
+            gate["ask"] = await self._publish_source_ask(await self._gate_ask_source(gate))
         return {"success": True, "gate": gate, "waiters": sorted(waiters)}
 
     async def _cmd_gate_resolve(self, args: dict) -> dict:
@@ -175,9 +230,6 @@ class GateCommandsMixin:
         if not gate_id:
             return {"success": False, "error": "gate_id is required"}
         resolved_by = args.get("resolved_by")
-        if not resolved_by:
-            return {"success": False, "error": "resolved_by is required"}
-
         gate = await self.db.get_gate(str(gate_id))
         if gate is None:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
@@ -214,34 +266,22 @@ class GateCommandsMixin:
                 ),
             }
 
-        if str(gate.get("await_id") or "").startswith("integration-subject:"):
-            # The human identity is server-owned. A generic resolve or an
-            # agent-supplied resolved_by cannot create an integration approval.
-            from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
-            from src.integration.gates import GatePrimitives
-            from src.integration.runtime_contracts import Subject
+        if gate["gate_type"] == "human":
+            from src.asks.models import AskError
+            try:
+                if args.get("expected") and args.get("resolved_by"):
+                    raise AskError("ask.not_decider", "Human identity is authenticated, not resolved_by")
+                result = await self._legacy_ask_decision(
+                    await self._gate_ask_source(gate), args,
+                    option_key=str(args.get("option_key") or args.get("resolution") or ""),
+                )
+                return {**result, "gate_id": gate["id"],
+                        "unblocked_task_ids": result.get("receipt", {}).get("flipped", [])}
+            except AskError as exc:
+                return {"success": False, "error_code": exc.code, "error": str(exc)}
 
-            principal = current_principal() or TRUSTED_LOCAL
-            if principal.kind is not PrincipalKind.LOCAL:
-                return {"success": False, "error": "a verified human operator is required"}
-            subject_id = gate["await_id"].removeprefix("integration-subject:")
-            row = await self.db.get_integration_subject(subject_id)
-            if row is None:
-                return {"success": False, "error": "integration subject is missing"}
-            result = await GatePrimitives(self.db).answer(
-                Subject.from_row(row),
-                str(gate_id),
-                choice=str(args.get("resolution") or ""),
-                answered_by="human:local-operator",
-                verified_human=True,
-            )
-            return {
-                "success": not result.is_unknown,
-                "gate_id": str(gate_id),
-                "outcome": result.outcome,
-                "reason": result.reason,
-                "unblocked_task_ids": [],
-            }
+        if not resolved_by:
+            return {"success": False, "error": "resolved_by is required for a technical gate"}
 
         # Shared helper on the orchestrator: resolves the gate, emits
         # ``gate.resolved`` + audit row, and — critically — calls

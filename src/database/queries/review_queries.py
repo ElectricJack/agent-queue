@@ -154,13 +154,13 @@ class ReviewQueriesMixin:
         await conn.execute(insert(doc_reviews).values(**review))
         await conn.execute(insert(doc_review_revisions).values(**revision))
 
-    async def get_review(self, review_id: str) -> dict | None:
-        async with self._engine.begin() as conn:
-            row = (
-                (await conn.execute(_review_projection().where(doc_reviews.c.id == review_id)))
-                .mappings()
-                .first()
-            )
+    async def get_review(self, review_id: str, *, conn=None) -> dict | None:
+        stmt = _review_projection().where(doc_reviews.c.id == review_id)
+        if conn is not None:
+            row = (await conn.execute(stmt)).mappings().first()
+        else:
+            async with self._engine.begin() as owned:
+                row = (await owned.execute(stmt)).mappings().first()
         return dict(row) if row else None
 
     async def lock_review_for_dispatch(self, review_id: str, *, conn) -> dict | None:
@@ -314,6 +314,20 @@ class ReviewQueriesMixin:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [dict(r) for r in rows]
 
+    async def has_review_response_submission(
+        self, task_id: str, review_id: str, after_revision: int
+    ) -> bool:
+        """Whether this task published an answer to its assigned review revision."""
+        stmt = select(exists().where(
+            doc_review_revisions.c.review_id == review_id,
+            doc_review_revisions.c.submitted_task_id == task_id,
+            doc_review_revisions.c.revision > after_revision,
+            doc_reviews.c.id == doc_review_revisions.c.review_id,
+            doc_reviews.c.state != "withdrawn",
+        ))
+        async with self._engine.begin() as conn:
+            return bool((await conn.execute(stmt)).scalar_one())
+
     async def transition_review(
         self,
         review_id: str,
@@ -347,6 +361,15 @@ class ReviewQueriesMixin:
             )
             .values(**values)
         )
+        if result.rowcount == 1 and "state" in values:
+            from src.waits.sources import record_source_event
+
+            await record_source_event(
+                conn, source_key=f"review:{review_id}", generation=expected_revision,
+                revision=str(values["state"]), outcome_ref=f"review:{review_id}:{expected_revision}",
+                payload={"review_id": review_id, "revision": expected_revision,
+                         "state": values["state"]},
+            )
         return result.rowcount == 1
 
     # -- revisions ---------------------------------------------------------
