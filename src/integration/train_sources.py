@@ -1055,6 +1055,20 @@ class DatabaseBatches:
         admission_blockers = []
         delivered_ids = set()
         current = await self.current(target)
+        if (current is not None and current.epic_refresh and current.intent == "open"
+                and snapshot.error == "target_ref_missing" and snapshot.target_oid is None):
+            from src.integration.train_controls import TrainControls
+
+            async def observed(db, requested):
+                return snapshot
+
+            await TrainControls(self.db, snapshot=observed, clock=self.clock).abort_batch(
+                current.id, dry_run=False, operator_id="integration-train",
+                reason="Epic refresh target ref is missing: " + current.target_ref)
+            return BatchSelection(detail={
+                "reason": "epic_refresh_target_missing", "batch_id": current.id,
+                "target_missing": True,
+            })
         if current is None:
             from src.integration.fixer_batches import FixerBatches
 
@@ -2178,8 +2192,16 @@ class DatabaseBatches:
             target_ref=root_ref, snapshot=snapshot.for_target(root_ref),
         )
 
-    async def eligible(self, batch: Batch, members: tuple[BatchMember, ...]) -> bool:
+    async def eligible(self, batch: Batch, members: tuple[BatchMember, ...], *,
+                       snapshot: GitTruthSnapshot | None = None) -> bool:
         """Ordinary identity is still current: completed, routed to this target."""
+        if snapshot is None:
+            snapshot = self._refresh_snapshots.get(
+                (batch.project_id, batch.repository_id, batch.target_ref))
+        elif (snapshot.observation.project_id, snapshot.observation.repository_id,
+              snapshot.observation.target_ref) != (
+                  batch.project_id, batch.repository_id, batch.target_ref):
+            return False
         if batch.epic_refresh:
             from src.integration.stacked_branches import EpicRefresh
 
@@ -2199,8 +2221,7 @@ class DatabaseBatches:
                 return False
             if graph.project_holds or any(node.required and node.holds for node in graph.nodes):
                 return False
-            key = (batch.project_id, batch.repository_id, batch.target_ref)
-            observed = self._refresh_snapshots.get(key)
+            observed = snapshot
             if observed is not None:
                 observed = observed.for_target(_branch(row["default_branch"]))
             if observed is None or observed.error or not observed.target_oid:
@@ -2262,8 +2283,6 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
-        snapshot = self._refresh_snapshots.get(
-            (batch.project_id, batch.repository_id, batch.target_ref))
         for member in members:
             if (member.task_id not in recorded_origins
                     and await stacks.completed_source_matches(
@@ -2279,9 +2298,7 @@ class DatabaseBatches:
                                                   .where(tasks.c.id.in_(ids)))).all())
         for member in members:
             if source_types.get(member.task_id) == "backmerge":
-                observed = self._refresh_snapshots.get(
-                    (batch.project_id, batch.repository_id, batch.target_ref))
-                if not await BackmergeAdmission(self.db, None).eligible(batch, member, observed):
+                if not await BackmergeAdmission(self.db, None).eligible(batch, member, snapshot):
                     return False
         for task_id in ids:
             request, target = requests.get(task_id), routed.get(task_id)
@@ -2295,8 +2312,7 @@ class DatabaseBatches:
             sources = {member.task_id: member.source_sha for member in members}
             for task_id in await _epic_branches_on(conn, ids):
                 if not await self._epic_current_on(conn, task_id, requests[task_id].completion_id,
-                        source=sources[task_id], snapshot=self._refresh_snapshots.get(
-                            (batch.project_id, batch.repository_id, batch.target_ref))):
+                        source=sources[task_id], snapshot=snapshot):
                     return False
         return True
 
@@ -2959,11 +2975,25 @@ class DaemonLanes:
                 return False
             return await checks.gate(batch, candidate_sha, tree_sha)
 
+        async def refresh_eligibility():
+            # A retained fixer can publish before this daemon's first train
+            # visit. Keep its fresh observation local to this publication;
+            # another visit must not replace its evidence through the cache.
+            observed = await snapshot()
+            if observed.error or not observed.target_oid:
+                raise GitError("batch publication Git evidence is unavailable")
+
+            async def eligible(batch, members):
+                return await self.batches.eligible(batch, members, snapshot=observed)
+
+            return eligible
+
         service = BatchService(self.store, gitops, publish=self.publish,
                                eligible=self.batches.eligible, gate=current_gate,
                                attest=None if unattested else attest,
                                require_attestation=not unattested,
-                               observe_deferred=observe_deferred)
+                               observe_deferred=observe_deferred,
+                               refresh_eligibility=refresh_eligibility)
 
         complete_epic = None
         sync_default_branch = None

@@ -1,0 +1,22 @@
+load("@rules_python//python:defs.bzl", "py_library")
+load("@pypi//:requirements.bzl", "requirement")
+
+# Bootstrap source dependency for H1; never installs the generated client.
+py_library(
+    name = "generated_client_smoke",
+    srcs = [
+        "packages/aq-client/agent_queue_api_client/__init__.py",
+        "packages/aq-client/agent_queue_api_client/client.py",
+        "packages/aq-client/agent_queue_api_client/types.py",
+    ],
+    imports = ["packages/aq-client"],
+    deps = [requirement("attrs"), requirement("httpx")],
+    visibility = ["//tools/bazel/smoke:__pkg__"],
+)
+
+# Every PG target rebuilds its template when any migration input changes.
+filegroup(
+    name = "postgres_test_migrations",
+    srcs = ["alembic.ini"] + glob(["migrations/**"], exclude = ["**/__pycache__/**"]),
+    visibility = ["//visibility:public"],
+)
