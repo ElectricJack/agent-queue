@@ -1,0 +1,21 @@
+{
+  "exclusions": {
+    "src/database/queries/routing_queries.py::ROUTED_BACKLOG_STATUSES[TaskStatus.ASSIGNED.value]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/database/queries/routing_queries.py::RoutingQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/routing_queries.py::_eligible_backlog_predicate": {
+      "baseline_span": [
+        65,
+        86
+      ],
+      "landing_span": [
+        65,
+        86
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
