@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from attrs import define as _attrs_define
 
@@ -21,6 +21,7 @@ class ImportRequest:
     """
     Attributes:
         project_id (str):
+        builtin (Literal['default'] | None | Unset):
         path (None | str | Unset):
         bundle (Bundle | None | Unset):
         archive (None | str | Unset):
@@ -32,6 +33,7 @@ class ImportRequest:
     """
 
     project_id: str
+    builtin: Literal["default"] | None | Unset = UNSET
     path: None | str | Unset = UNSET
     bundle: Bundle | None | Unset = UNSET
     archive: None | str | Unset = UNSET
@@ -45,6 +47,12 @@ class ImportRequest:
         from ..models.bundle import Bundle
 
         project_id = self.project_id
+
+        builtin: Literal["default"] | None | Unset
+        if isinstance(self.builtin, Unset):
+            builtin = UNSET
+        else:
+            builtin = self.builtin
 
         path: None | str | Unset
         if isinstance(self.path, Unset):
@@ -91,6 +99,8 @@ class ImportRequest:
                 "project_id": project_id,
             }
         )
+        if builtin is not UNSET:
+            field_dict["builtin"] = builtin
         if path is not UNSET:
             field_dict["path"] = path
         if bundle is not UNSET:
@@ -118,6 +128,19 @@ class ImportRequest:
 
         d = dict(src_dict)
         project_id = d.pop("project_id")
+
+        def _parse_builtin(data: object) -> Literal["default"] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            builtin_type_0 = cast(Literal["default"], data)
+            if builtin_type_0 != "default":
+                raise ValueError(f"builtin_type_0 must match const 'default', got '{builtin_type_0}'")
+            return builtin_type_0
+            return cast(Literal["default"] | None | Unset, data)
+
+        builtin = _parse_builtin(d.pop("builtin", UNSET))
 
         def _parse_path(data: object) -> None | str | Unset:
             if data is None:
@@ -176,6 +199,7 @@ class ImportRequest:
 
         import_request = cls(
             project_id=project_id,
+            builtin=builtin,
             path=path,
             bundle=bundle,
             archive=archive,
