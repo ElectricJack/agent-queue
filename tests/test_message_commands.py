@@ -7,16 +7,19 @@ same way every other emitter's do).
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.api.auth import RequestScope, SessionTokenStore
+from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_dict
 from src.config import MessagesConfig
-from src.database import Database
 from src.event_schemas import validate_payload
-from src.models import Agent, AgentState, Message, Project, SessionRecord, Task, TaskStatus
+from src.messages.delivery import MessageDeliveryEngine
+from src.models import Agent, AgentProfile, AgentState, Message, Project, SessionRecord, Task, TaskStatus
 
 
 class _RecordingBus:
@@ -35,10 +38,15 @@ class _RecordingBus:
 
 
 @pytest.fixture
-async def setup(tmp_path):
-    db = Database(str(tmp_path / "messages.db"))
-    await db.initialize()
-    await db.create_project(Project(id="p1", name="test"))
+async def setup(reuse_database):
+    db = await reuse_database("messages.db")
+    await db.create_project(Project(id="p1", name="test", supervisor_enabled=True))
+    await db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor",
+        aq_commands=["message_send", "message_reply", "message_inbox", "message_list",
+                     "message_status", "cron_register", "agent_message"],
+        harness_tools=[], plugin_tools=[],
+    ))
 
     bus = _RecordingBus()
     orch = MagicMock()
@@ -52,7 +60,6 @@ async def setup(tmp_path):
     handler = CommandHandler(orch, config)
     handler._active_project_id = None
     yield handler, db, bus
-    await db.close()
 
 
 def _send_args(**overrides) -> dict:
@@ -105,6 +112,7 @@ async def _create_live_worker(db, *, project_id: str, suffix: str) -> SessionRec
             assigned_agent_id=agent_id,
         )
     )
+    await db.update_agent(agent_id, current_task_id=task_id)
     await db.create_session(session)
     return session
 
@@ -128,7 +136,22 @@ class TestDisabledGate:
         handler, _db, _bus = setup
         handler.config.messages = MessagesConfig(enabled=False)
         result = await getattr(handler, command)(args)
-        assert result == {"error": MESSAGES_DISABLED_ERROR}
+        assert result == {"success": False, "error": MESSAGES_DISABLED_ERROR}
+
+
+async def test_supervisor_inbox_expires_deleted_task_notice_without_acknowledgment(setup):
+    handler, db, _bus = setup
+    notice = await db.create_message(**_send_args(
+        from_kind="system", from_id="task-recovery", body_kind="task_recovery",
+        subject="Task recovery: deleted-task",
+    ))
+    await db.mark_delivered(notice.id, via="prime")
+    result = await handler._cmd_message_inbox({
+        "to_kind": "session", "to_id": "supervisor-p1", "inject": True,
+    })
+    assert result["count"] == 0
+    stored = await db.get_message(notice.id)
+    assert stored.archived_at is not None and stored.read_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -146,11 +169,12 @@ class TestSend:
         assert stored.subject == "status?"
         assert stored.delivered_at is None
 
-    async def test_no_success_key_injected(self, setup):
-        """House convention: `_cmd_*` returns domain data, not {"success": ...}."""
+    async def test_producer_returns_explicit_success_with_domain_data(self, setup):
+        """The shared producer supplies the protocol flag for delegated callers."""
         handler, _db, _bus = setup
         result = await handler._cmd_message_send(_send_args())
-        assert "success" not in result
+        assert result["success"] is True
+        assert result["message_id"] == result["message"]["id"]
 
     async def test_emits_message_sent(self, setup):
         handler, _db, bus = setup
@@ -189,6 +213,148 @@ class TestSend:
         handler, _db, _bus = setup
         result = await handler._cmd_message_send(_send_args(reply_to_id="msg-nope"))
         assert "not found" in result["error"]
+
+
+_GLOBAL_SUPERVISOR_SCOPE = {
+    "kind": "session", "session_id": "global-admin", "project_id": None, "elevated": True,
+    "session_instance_token": "global-token",
+}
+
+
+async def _seed_global_supervisor(db):
+    await db.create_session(SessionRecord(
+        id="global-admin", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="test", instance_token="global-token", started_at=1, state="running",
+    ))
+
+
+class TestSendRecipientProject:
+    """A task, or a session addressed by id, supplies an omitted project.
+
+    Its readers — a durable message wait and ``message_status`` — only see
+    rows of the recipient's project (the 2026-09-28 smart-ember miss).
+    """
+
+    @pytest.mark.parametrize("to_kind", ["task", "session"])
+    async def test_global_supervisor_without_project_uses_the_recipients(self, setup, to_kind):
+        handler, db, _bus = setup
+        await _seed_global_supervisor(db)
+        worker = await _create_live_worker(db, project_id="p1", suffix="a")
+        to_id = worker.task_id if to_kind == "task" else worker.id
+        args = _send_args(to_kind=to_kind, to_id=to_id, body="APPROVED",
+                          from_kind="session", from_id="global-admin")
+        args.pop("project_id")
+        result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
+        assert result["message"]["project_id"] == "p1", result
+
+    async def test_recipient_project_beats_the_ambient_active_project(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        worker = await _create_live_worker(db, project_id="p2", suffix="b")
+        handler._active_project_id = "p1"
+        args = _send_args(to_kind="task", to_id=worker.task_id)
+        args.pop("project_id")
+        result = await handler._cmd_message_send(args)
+        assert result["message"]["project_id"] == "p2"
+
+    async def test_explicit_project_is_kept(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        worker = await _create_live_worker(db, project_id="p2", suffix="c")
+        result = await handler._cmd_message_send(
+            _send_args(project_id="p1", to_kind="task", to_id=worker.task_id)
+        )
+        assert result["message"]["project_id"] == "p1"
+
+    @pytest.mark.parametrize(
+        ("to_kind", "to_id"), [("task", "task-ghost"), ("session", "supervisor-p1")]
+    )
+    async def test_unresolved_recipient_keeps_the_projectless_system_default(
+        self, setup, to_kind, to_id
+    ):
+        handler, db, _bus = setup
+        await _seed_global_supervisor(db)
+        args = _send_args(to_kind=to_kind, to_id=to_id,
+                          from_kind="session", from_id="global-admin")
+        args.pop("project_id")
+        result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
+        assert result["message"]["project_id"] is None, result
+
+
+class TestSendSupervisorAddress:
+    """A ``supervisor-<suffix>`` naming no project is stored as a real mailbox.
+
+    2026-10-01 amber-bridge-26: five rows to ``session:supervisor-aq`` (project
+    ``agent-queue``) were stored verbatim, so the agent-queue supervisor's own
+    ``message_inbox`` — which expands only its name and
+    ``supervisor-<own project>`` — never listed them.
+    """
+
+    @pytest.mark.parametrize("alias", ["supervisor-aq", "supervisor-"])
+    async def test_alias_is_stored_as_the_supervisor_of_the_message_project(
+        self, setup, alias
+    ):
+        handler, db, bus = setup
+        result = await handler._cmd_message_send(_send_args(to_id=alias))
+        assert result["message"]["to_id"] == "supervisor-p1", result
+        assert (await db.get_message(result["message_id"])).to_id == "supervisor-p1"
+        assert bus.of_type("message.sent")[0]["to_id"] == "supervisor-p1"
+
+    async def test_alias_resolves_through_the_active_project(self, setup):
+        handler, _db, _bus = setup
+        handler._active_project_id = "p1"
+        args = _send_args(to_id="supervisor-aq")
+        args.pop("project_id")
+        result = await handler._cmd_message_send(args)
+        assert result["message"]["to_id"] == "supervisor-p1", result
+
+    async def test_supervisor_inbox_lists_a_row_sent_to_an_alias(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-sup", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="tmux", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="e", instance_token="token", started_at=1, state="running",
+        ))
+        sent = await handler._cmd_message_send(_send_args(to_id="supervisor-aq"))
+        inbox = await handler._cmd_message_inbox({"to_kind": "session", "to_id": "sess-sup"})
+        assert [m["id"] for m in inbox["messages"]] == [sent["message_id"]]
+
+    @pytest.mark.parametrize(
+        ("to_id", "project_id"),
+        [
+            ("supervisor-p1", "p1"),
+            # CHAT-1: a suffix naming a project wins over the message's project.
+            ("supervisor-p2", "p1"),
+        ],
+    )
+    async def test_suffix_naming_a_project_is_kept(self, setup, to_id, project_id):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        result = await handler._cmd_message_send(
+            _send_args(to_id=to_id, project_id=project_id)
+        )
+        assert result["message"]["to_id"] == to_id, result
+        assert result["message"]["project_id"] == project_id
+
+    async def test_global_supervisor_address_is_kept(self, setup):
+        handler, _db, _bus = setup
+        args = _send_args(to_id="supervisor-global")
+        args.pop("project_id")
+        result = await handler._cmd_message_send(args)
+        assert result["message"]["to_id"] == "supervisor-global", result
+        assert result["message"]["project_id"] is None
+
+    async def test_alias_without_a_project_is_refused_and_not_stored(self, setup):
+        handler, db, _bus = setup
+        await _seed_global_supervisor(db)
+        args = _send_args(to_id="supervisor-aq", from_kind="session", from_id="global-admin")
+        args.pop("project_id")
+        result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
+        assert "session:supervisor-aq names no project" in result["error"], result
+        assert "supervisor-<project-id>" in result["error"]
+        assert "supervisor-global" in result["error"]
+        assert await db.list_messages() == []
 
 
 class TestSupervisorAgentMessage:
@@ -249,26 +415,26 @@ class TestSupervisorAgentMessage:
 
         result = await handler._cmd_agent_message({"target": "task-1", "body": "hello"})
 
-        assert result == {"error": "Task 'task-1' has no live worker session"}
+        assert result == {"success": False, "error": "Task 'task-1' has no live worker session"}
 
     @pytest.mark.parametrize("target", ["task-p2", "session-p2", "worker-p2"])
     async def test_project_scope_rejects_foreign_targets(self, setup, target):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         await _create_live_worker(db, project_id="p2", suffix="p2")
 
         result = await handler._cmd_agent_message(
             {"target": target, "body": "cross-project", "project_id": "p1"}
         )
 
-        assert result == {"error": f"No live worker target '{target}' in project 'p1'"}
+        assert result == {"success": False, "error": f"No live worker target '{target}' in project 'p1'"}
         assert await db.list_messages(project_id="p2") == []
         assert (await db.list_task_comments("task-p2", project_id="p2"))["comments"] == []
 
     async def test_project_scoped_broadcast_only_targets_its_project(self, setup):
         handler, db, _bus = setup
         own_session = await _create_live_worker(db, project_id="p1", suffix="p1")
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         await _create_live_worker(db, project_id="p2", suffix="p2")
 
         result = await handler._cmd_agent_message(
@@ -279,6 +445,104 @@ class TestSupervisorAgentMessage:
         assert [row["session_id"] for row in result["recipients"]] == [own_session.id]
         assert len(await db.list_messages(project_id="p1")) == 1
         assert await db.list_messages(project_id="p2") == []
+
+    async def test_reply_to_threads_guidance_onto_the_workers_message(self, setup):
+        """2026-09-27 noble-crest: guidance answering a threaded worker message
+        lacked the thread, so the worker's message-thread wait expired."""
+        handler, db, _bus = setup
+        session = await _create_live_worker(db, project_id="p1", suffix="w")
+        asked = await handler._cmd_message_send(
+            _send_args(
+                from_kind="session",
+                from_id=session.id,
+                to_kind="session",
+                to_id="supervisor-p1",
+                thread_id="task-w:graph-filing",
+            )
+        )
+
+        result = await handler._cmd_agent_message(
+            {"target": "task-w", "body": "filed", "reply_to": asked["message_id"]}
+        )
+
+        message = await db.get_message(result["message_id"])
+        assert (message.to_kind, message.to_id) == ("session", session.id)
+        assert message.thread_id == "task-w:graph-filing"
+        assert message.reply_to_id == asked["message_id"]
+        assert (await db.get_message(asked["message_id"])).read_at is not None
+
+    async def test_reply_to_must_name_a_message_in_the_workers_project(self, setup):
+        handler, db, _bus = setup
+        await _create_live_worker(db, project_id="p1", suffix="w")
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        foreign = await handler._cmd_message_send(
+            _send_args(project_id="p2", to_id="supervisor-p2", thread_id="t")
+        )
+
+        # A project-pinned caller is told "not found" for anything outside its
+        # view, so the refusal never confirms a foreign id exists.
+        for reply_to in ("msg-missing", foreign["message_id"]):
+            result = await handler._cmd_agent_message(
+                {"target": "task-w", "body": "filed", "reply_to": reply_to, "project_id": "p1"}
+            )
+            assert result == {"success": False, "error": f"Message '{reply_to}' not found"}
+        assert (
+            await handler._cmd_agent_message(
+                {"target": "task-w", "body": "filed", "reply_to": "msg-missing"}
+            )
+        ) == {"success": False, "error": "Message 'msg-missing' not found"}
+        # An unscoped caller can read the row, so it is refused for what it is.
+        unscoped = await handler._cmd_agent_message(
+            {"target": "task-w", "body": "filed", "reply_to": foreign["message_id"]}
+        )
+        assert "not a message of the target's project 'p1'" in unscoped["error"]
+        assert await db.list_messages(to_kind="session", to_id="session-w") == []
+
+    async def test_reply_to_another_projects_report_names_the_supported_answer(self, setup):
+        """2026-10-09 clear-zenith-84: supervisor-agent-queue read another
+        project's report from its inbox, then ``aq agent message <task>
+        --reply-to <that id>`` answered "not found" for the body it held."""
+        handler, db, _bus = setup
+        await _create_live_worker(db, project_id="p1", suffix="w")
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        report = await handler._cmd_message_send(
+            _send_args(
+                project_id="p2",
+                from_kind="session",
+                from_id="supervisor-p2",
+                to_id="supervisor-p1",
+            )
+        )
+        assert report["message"]["project_id"] == "p2", report
+
+        result = await handler._cmd_agent_message(
+            {
+                "target": "task-w",
+                "body": "filed",
+                "reply_to": report["message_id"],
+                "project_id": "p1",
+            }
+        )
+
+        assert result == {
+            "success": False,
+            "error": (
+                f"Message '{report['message_id']}' is not a message of the target's project "
+                f"'p1': reply_to threads guidance onto that worker's own message. Send "
+                f"without reply_to, and answer '{report['message_id']}' with "
+                f"`aq message reply {report['message_id']}`."
+            )
+        }
+        assert await db.list_messages(to_kind="session", to_id="session-w") == []
+
+    async def test_reply_to_cannot_broadcast(self, setup):
+        handler, db, _bus = setup
+        await _create_live_worker(db, project_id="p1", suffix="w")
+        result = await handler._cmd_agent_message(
+            {"all_running": True, "body": "filed", "reply_to": "msg-1"}
+        )
+        assert "error" in result and "all_running" in result["error"]
+        assert await db.list_messages(to_kind="session", to_id="session-w") == []
 
     async def test_status_reports_queued_delivered_and_acknowledged(self, setup):
         handler, db, _bus = setup
@@ -292,16 +556,26 @@ class TestSupervisorAgentMessage:
         await db.mark_read(sent["message_id"])
         assert (await handler._cmd_message_status({"message_id": sent["message_id"]}))["state"] == "acknowledged"
 
-    async def test_status_hides_messages_from_other_projects(self, setup):
+    @pytest.mark.parametrize("to_kind", ["supervisor", "session", "task"])
+    async def test_status_hides_messages_from_other_projects(self, setup, to_kind):
+        """Another project's traffic to its own mailboxes stays out of view."""
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
-        sent = await handler._cmd_message_send(_send_args(project_id="p2"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        worker = await _create_live_worker(db, project_id="p2", suffix="p2")
+        to_id = {"supervisor": "supervisor-p2", "session": worker.id, "task": worker.task_id}
+        sent = await handler._cmd_message_send(
+            _send_args(
+                project_id="p2",
+                to_kind="session" if to_kind == "supervisor" else to_kind,
+                to_id=to_id[to_kind],
+            )
+        )
 
         result = await handler._cmd_message_status(
             {"message_id": sent["message_id"], "project_id": "p1"}
         )
 
-        assert result == {"error": f"Message '{sent['message_id']}' not found"}
+        assert result == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +730,183 @@ class TestInbox:
         assert "Invalid to_kind" in result["error"]
 
 
+class TestInboxIncludeConsumed:
+    """The crashed-inject backstop (fair-impact-65).
+
+    ``inject`` marks rows delivered before the caller can render them, so an
+    agent whose own output dies has an empty pending queue and no way back to
+    the bodies it already burned. ``include_consumed`` is that way back, and it
+    must never move delivery state in either direction.
+    """
+
+    async def test_absent_unless_requested(self, setup):
+        """An unflagged call's envelope is unchanged — no new keys."""
+        handler, _db, _bus = setup
+        await handler._cmd_message_send(_send_args())
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1"}
+        )
+        assert "consumed" not in result
+        assert "consumed_messages" not in result
+
+    async def test_recovers_the_body_a_crashed_inject_burned(self, setup):
+        handler, _db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+        # Delivery consumed, bodies discarded — the worker's parser crashed.
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        assert (
+            await handler._cmd_message_inbox(
+                {"to_kind": "session", "to_id": "supervisor-p1"}
+            )
+        )["count"] == 0
+
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert result["count"] == 0
+        assert result["consumed"] == 1
+        assert result["consumed_messages"][0]["id"] == sent["message_id"]
+        assert result["consumed_messages"][0]["body"] == _send_args()["body"]
+
+    async def test_recovers_an_archived_body(self, setup):
+        """``archive_after_inject`` sweeps rows in the same pass that delivers
+        them, so those bodies are invisible to every other read."""
+        handler, db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args(archive_after_inject=True))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        assert (await db.get_message(sent["message_id"])).archived_at is not None
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert [m["id"] for m in result["consumed_messages"]] == [sent["message_id"]]
+
+    async def test_reported_on_the_inject_path_too(self, setup):
+        """A worker recovering mid-turn runs the same command with both flags."""
+        handler, _db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True,
+             "include_consumed": True}
+        )
+        assert result["injected"] == 0
+        assert [m["id"] for m in result["consumed_messages"]] == [sent["message_id"]]
+
+    async def test_does_not_re_claim_or_re_emit(self, setup):
+        handler, _db, bus = setup
+        await handler._cmd_message_send(_send_args())
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        before = bus.of_type("message.delivered")
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True,
+             "include_consumed": True}
+        )
+        assert result["injected"] == 0
+        assert result["archived"] == 0
+        assert bus.of_type("message.delivered") == before
+
+    async def test_pending_and_consumed_are_disjoint(self, setup):
+        handler, _db, _bus = setup
+        old = await handler._cmd_message_send(_send_args(body="old"))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        new = await handler._cmd_message_send(_send_args(body="new"))
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert [m["id"] for m in result["messages"]] == [new["message_id"]]
+        assert [m["id"] for m in result["consumed_messages"]] == [old["message_id"]]
+
+    async def test_read_only_never_mutates(self, setup):
+        """A plain consumed re-read leaves both stamps exactly as they were."""
+        handler, db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        before = await db.get_message(sent["message_id"])
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        after = await db.get_message(sent["message_id"])
+        assert (after.delivered_at, after.read_at, after.archived_at, after.via) == (
+            before.delivered_at, before.read_at, before.archived_at, before.via,
+        )
+
+    async def test_scoped_to_the_recipient(self, setup):
+        handler, _db, _bus = setup
+        mine = await handler._cmd_message_send(_send_args(body="mine"))
+        other = await handler._cmd_message_send(
+            _send_args(to_kind="task", to_id="task-9", body="theirs")
+        )
+        for args in ({"inject": True},):
+            await handler._cmd_message_inbox({"to_kind": "session", "to_id": "supervisor-p1", **args})
+            await handler._cmd_message_inbox({"to_kind": "task", "to_id": "task-9", **args})
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert [m["id"] for m in result["consumed_messages"]] == [mine["message_id"]]
+        assert other["message_id"] not in {m["id"] for m in result["consumed_messages"]}
+
+    async def test_limit_applies_to_each_half(self, setup):
+        handler, _db, _bus = setup
+        for index in range(4):
+            await handler._cmd_message_send(_send_args(body=f"old{index}"))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True, "limit": 4}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1",
+             "include_consumed": True, "limit": 2}
+        )
+        assert result["consumed"] == 2
+
+    async def test_foreign_mailbox_still_refused(self, setup):
+        """The re-read is not a way around the fence."""
+        handler, db, _bus = setup
+        worker = await _create_live_worker(db, project_id="p1", suffix="w1")
+        handler._current_scope = {
+            "kind": "session", "session_id": worker.id, "project_id": "p1",
+            "task_id": worker.task_id, "elevated": False,
+        }
+        await handler._cmd_message_send(_send_args(body="not yours"))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        handler._current_scope = None
+        assert "out of scope" in result["error"]
+
+    async def test_system_records_stay_admin_only(self, setup):
+        handler, _db, _bus = setup
+        handler._current_scope = {
+            "kind": "session", "session_id": "sess-x", "project_id": "p1",
+            "task_id": None, "elevated": False,
+        }
+        await handler._cmd_message_send(
+            _send_args(project_id=None, to_id="supervisor-global", body="system row")
+        )
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-global", "inject": True}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-global", "include_consumed": True}
+        )
+        handler._current_scope = None
+        assert "global admin" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # message_inbox mailbox fence — a non-elevated session token may only read
 # (and, with inject, consume) the mailboxes it owns.
@@ -501,6 +952,26 @@ async def _seed_session_row(db, *, task_id: str | None = "task-claimed") -> None
 
 
 class TestInboxMailboxFence:
+    async def test_supervisor_uuid_inbox_includes_named_mailboxes_in_priority_order(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="tmux", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="e", instance_token="token", started_at=1, state="running",
+        ))
+        for recipient, priority in (("sess-1", 3), ("supervisor-p1", 1), ("n-supervisor--p1", 2)):
+            await handler._cmd_message_send(_send_args(to_id=recipient, priority=priority))
+        args = {"to_kind": "session", "to_id": "sess-1", "limit": 2,
+                "_scope": _session_scope(elevated=True)}
+        plain = await handler.execute("message_inbox", {**args, "_scope": _session_scope()})
+        assert [m["to_id"] for m in plain["messages"]] == ["sess-1"]
+        result = await handler.execute("message_inbox", args)
+        assert [m["to_id"] for m in result["messages"]] == ["supervisor-p1", "n-supervisor--p1"]
+        result = await handler.execute("message_inbox", {**args, "inject": True})
+        assert result["injected"] == 2
+        remaining = await handler.execute("message_inbox", args)
+        assert [m["to_id"] for m in remaining["messages"]] == ["sess-1"]
+
     async def test_own_session_mailbox_is_readable(self, setup):
         handler, _db, _bus = setup
         await handler._cmd_message_send(_send_args(to_id="sess-1"))
@@ -598,14 +1069,15 @@ class TestInboxMailboxFence:
         )
         assert "out of scope" in result["error"]
 
-    async def test_elevated_supervisor_reads_any_mailbox(self, setup):
-        handler, _db, _bus = setup
-        await handler._cmd_message_send(_send_args(to_id="somebody-else"))
+    async def test_elevated_project_supervisor_reads_another_session_in_its_project(self, setup):
+        handler, db, _bus = setup
+        await _seed_session_row(db)
+        await handler._cmd_message_send(_send_args(to_id="sess-1"))
         result = await handler.execute(
             "message_inbox",
             {
                 "to_kind": "session",
-                "to_id": "somebody-else",
+                "to_id": "sess-1",
                 "_scope": _session_scope(elevated=True),
             },
         )
@@ -621,6 +1093,874 @@ class TestInboxMailboxFence:
         )
         assert "error" not in result
         assert result["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# message_status mailbox fence — the idle-session nudge names
+# ``aq message status <id>``, so a plain session may read the messages
+# addressed to its own mailboxes and nothing else.
+# ---------------------------------------------------------------------------
+
+
+class TestStatusMailboxFence:
+    @pytest.mark.parametrize("lifecycle", ["named", "pool", "task"])
+    @pytest.mark.parametrize("own_name", [True, False])
+    async def test_session_name_mailbox_requires_own_named_session(
+        self, setup, lifecycle, own_name,
+    ):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-1", project_id="p1", profile_id="worker", harness="codex",
+            provider="fake", name="n-reader", lifecycle=lifecycle, work_dir="/tmp",
+            epoch="test", instance_token="reader-token", started_at=1, state="running",
+        ))
+        await db.create_session(SessionRecord(
+            id="sess-other", project_id="p1", profile_id="worker", harness="codex",
+            provider="fake", name="n-other", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="other-token", started_at=1, state="running",
+        ))
+        target = "n-reader" if own_name else "n-other"
+        sent = await handler._cmd_message_send(_send_args(to_id=target))
+        scope = _session_scope(task_id=None)
+        result = await _execute_as(
+            handler, "message_status", {"message_id": sent["message_id"]}, scope,
+        )
+        inbox = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": target, "inject": True,
+        }, scope)
+        if lifecycle == "named" and own_name:
+            assert result["state"] == "acknowledged"
+            assert "error" not in inbox, inbox
+        else:
+            assert "not found" in result["error"]
+            assert "out of scope" in inbox["error"]
+            stored = await db.get_message(sent["message_id"])
+            assert stored.delivered_at is None and stored.read_at is None
+
+    async def test_pool_worker_reads_a_nudged_message_to_its_claimed_task(self, setup):
+        """The nudge marks the row delivered, so ``inbox`` no longer lists it.
+
+        ``message_status`` is the only way the worker can reach the body.
+        """
+        handler, db, _bus = setup
+        await _seed_session_row(db, task_id="task-claimed")
+        sent = await handler._cmd_message_send(
+            _send_args(to_kind="task", to_id="task-claimed", body="rebase onto main first")
+        )
+        await db.mark_delivered(sent["message_id"], via="nudge")
+
+        inbox = await handler.execute(
+            "message_inbox",
+            {"to_kind": "task", "to_id": "task-claimed", "_scope": _session_scope(task_id=None)},
+        )
+        assert inbox["count"] == 0
+
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope(task_id=None)},
+        )
+        assert "error" not in result, result
+        assert result["state"] == "acknowledged"
+        assert result["message"]["body"] == "rebase onto main first"
+
+    async def test_own_session_and_pinned_task_messages_are_readable(self, setup):
+        handler, _db, _bus = setup
+        for to_kind, to_id in (("session", "sess-1"), ("task", "task-1")):
+            sent = await handler._cmd_message_send(_send_args(to_kind=to_kind, to_id=to_id))
+            result = await handler.execute(
+                "message_status",
+                {"message_id": sent["message_id"], "_scope": _session_scope()},
+            )
+            assert result["state"] == "acknowledged", (to_kind, result)
+
+    @pytest.mark.parametrize(
+        ("to_kind", "to_id"),
+        [
+            ("session", "sess-other"),
+            ("session", "supervisor-p1"),
+            ("task", "task-2"),
+            ("profile", "reviewer"),
+            ("user", "dashboard"),
+        ],
+    )
+    async def test_another_recipients_message_is_not_found(self, setup, to_kind, to_id):
+        """A refusal must not confirm the id exists, let alone return its body."""
+        handler, db, _bus = setup
+        await _seed_session_row(db)
+        sent = await handler._cmd_message_send(
+            _send_args(to_kind=to_kind, to_id=to_id, body="not yours")
+        )
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope()},
+        )
+        assert result == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
+        assert (await db.get_message(sent["message_id"])).delivered_at is None
+
+    async def test_pool_token_with_no_claim_reads_no_task_message(self, setup):
+        handler, db, _bus = setup
+        await _seed_session_row(db, task_id=None)
+        sent = await handler._cmd_message_send(_send_args(to_kind="task", to_id="task-x"))
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope(task_id=None)},
+        )
+        assert "not found" in result["error"]
+
+    async def test_elevated_supervisor_reads_any_project_message(self, setup):
+        handler, _db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args(to_id="sess-other"))
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope(elevated=True)},
+        )
+        assert result["state"] == "queued"
+
+
+def _supervisor_scope(project_id: str) -> dict:
+    return _session_scope(
+        session_id=f"sess-sup-{project_id}", task_id=None, project_id=project_id, elevated=True
+    )
+
+
+async def _execute_as(handler, command: str, args: dict, scope: dict) -> dict:
+    """Run *command* through the API's scope gate, then the handler — the live path."""
+    args = dict(args)
+    assert check_command_scope(command, args, RequestScope(**scope)) is None
+    return await handler.execute(command, {**args, "_scope": scope})
+
+
+class TestStatusRecipientProject:
+    """A project-pinned reader sees what other projects addressed to its mailboxes.
+
+    2026-10-09 clear-zenith-84: other projects' supervisors escalated to
+    ``session:supervisor-agent-queue``.  Each row kept its sender's project
+    (CHAT-1; the sender's elevated token pins its own), the delivery engine
+    nudged ``Handle `aq message status <id> --json`.`` and marked it delivered,
+    and the addressed supervisor — whose token injects its own ``project_id`` —
+    was told "not found" for the body it had just been handed.
+    """
+
+    async def test_nudged_cross_project_report_is_readable_by_its_recipient(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        await db.create_project(Project(id="p3", name="third"))
+        sender_scope = await _seed_project_supervisor(db, project_id="p2")
+        sent = await _execute_as(
+            handler,
+            "message_send",
+            {
+                "to_kind": "session",
+                "to_id": "supervisor-p1",
+                "from_kind": "session",
+                "from_id": "supervisor-p2",
+                "body": "registry investigation needed",
+            },
+            sender_scope,
+        )
+        assert sent["message"]["project_id"] == "p2", sent
+        assert sent["message"]["to_id"] == "supervisor-p1"
+
+        await db.create_session(SessionRecord(
+            id="sess-sup-p1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="sup-token", started_at=1, state="running",
+        ))
+        sessions = _NudgeRecorder()
+        engine = MessageDeliveryEngine(
+            db=db, sessions=sessions, config=MessagesConfig(enabled=True), bus=None
+        )
+        assert (await engine.run_delivery_pass())["delivered"] == 0
+        [(kind, target_id, text)] = sessions.nudges
+        assert (kind, target_id) == ("session", "supervisor-p1")
+        pointer = re.fullmatch(
+            r"Handle `aq message status (\S+) --json` \(running it marks the message read\)\.",
+            text,
+        )
+        assert pointer and pointer.group(1) == sent["message_id"], text
+
+        result = await _execute_as(
+            handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p1")
+        )
+        assert "error" not in result, result
+        assert (result["state"], result["via"]) == ("acknowledged", "read")
+        assert result["message"]["body"] == "registry investigation needed"
+
+        # The supported answer reaches the sender's mailbox in its project.
+        reply = await _execute_as(
+            handler,
+            "message_reply",
+            {"message_id": pointer.group(1), "body": "filed"},
+            _supervisor_scope("p1"),
+        )
+        assert "error" not in reply, reply
+        assert (reply["reply"]["to_id"], reply["reply"]["project_id"]) == ("supervisor-p2", "p2")
+
+        # The boundary holds for every project the row was not addressed to.
+        outsider = await _execute_as(
+            handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p3")
+        )
+        assert outsider == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
+
+    @pytest.mark.parametrize("mailbox", ["supervisor", "named_supervisor", "session", "task"])
+    async def test_another_projects_row_to_an_own_mailbox_is_readable(self, setup, mailbox):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        worker = await _create_live_worker(db, project_id="p1", suffix="own")
+        to_kind, to_id = {
+            "supervisor": ("session", "supervisor-p1"),
+            "named_supervisor": ("session", "n-supervisor--p1"),
+            "session": ("session", worker.id),
+            "task": ("task", worker.task_id),
+        }[mailbox]
+        sent = await handler._cmd_message_send(
+            _send_args(project_id="p2", to_kind=to_kind, to_id=to_id)
+        )
+        assert sent["message"]["project_id"] == "p2", sent
+
+        result = await handler._cmd_message_status(
+            {"message_id": sent["message_id"], "project_id": "p1"}
+        )
+
+        assert "error" not in result, result
+        assert result["message"]["to_id"] == to_id
+
+    @pytest.mark.parametrize("to_id", ["supervisor-global", "n-supervisor--global"])
+    async def test_global_supervisor_mailbox_is_no_projects_mailbox(self, setup, to_id):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="global", name="named global"))
+        sent = await handler._cmd_message_send(_send_args(project_id="p1", to_id=to_id))
+        await db.mark_delivered(sent["message_id"], via="nudge")
+        result = await handler._cmd_message_status(
+            {"message_id": sent["message_id"], "project_id": "global"}
+        )
+        assert result == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
+
+
+class TestProjectSupervisorInboxIdentity:
+    """Use disposable tokens to distinguish recipient identity from grants."""
+
+    async def test_project_uuid_inject_reads_aliases_cron_and_status(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-sup-p1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="sup-token", started_at=1, state="running",
+        ))
+        token_store = SessionTokenStore(db)
+        token = await token_store.mint(
+            session_id="sess-sup-p1", session_instance_token="sup-token", task_id=None,
+            project_id="p1", elevated=True,
+        )
+        authenticated = await token_store.validate(token)
+        assert authenticated is not None
+        scope = {
+            "kind": authenticated.kind,
+            "session_id": authenticated.session_id,
+            "project_id": authenticated.project_id,
+            "task_id": authenticated.task_id,
+            "elevated": authenticated.elevated,
+            "session_instance_token": authenticated.session_instance_token,
+        }
+        sent = await _execute_as(
+            handler, "message_send", _send_args(body="own logical mailbox",
+                                                from_kind="session", from_id=scope["session_id"]),
+            scope,
+        )
+        named = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="session", to_id="n-supervisor--p1", body="own named mailbox",
+        )
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        report = await db.create_message(
+            project_id="p2", from_kind="session", from_id="supervisor-p2",
+            to_kind="session", to_id="supervisor-p1", body="report addressed to p1",
+        )
+        schedule = await _execute_as(handler, "cron_register", {
+            "every": 60, "prompt": "own scheduled prompt", "idempotency_key": "inbox",
+        }, scope)
+        assert schedule["success"], schedule
+        from src.agent_cron import AgentCronService
+
+        tick = await AgentCronService(handler).tick(now=schedule["schedule"]["next_fire_at"])
+        assert tick["queued"] == 1, tick
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": authenticated.session_id, "inject": True,
+        }, scope)
+        assert "error" not in result, result
+        assert {row["body"] for row in result["messages"]} == {
+            "own logical mailbox", "own named mailbox", "own scheduled prompt",
+            "report addressed to p1",
+        }
+        assert result["injected"] == 4
+        assert result["archived"] == 1
+        for row in result["messages"]:
+            status = await _execute_as(
+                handler, "message_status", {"message_id": row["id"]}, scope
+            )
+            assert status["message"]["body"] == row["body"]
+        assert sent["message_id"] in {row["id"] for row in result["messages"]}
+        assert named.id in {row["id"] for row in result["messages"]}
+        assert report.id in {row["id"] for row in result["messages"]}
+
+    async def test_global_uuid_under_project_token_reproduces_denial_without_consumption(
+        self, setup
+    ):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-global", project_id=None, profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="global-token", started_at=1, state="running",
+        ))
+        sent = await db.create_message(
+            project_id=None, from_kind="system", from_id="fixture",
+            to_kind="session", to_id="sess-global", body="global fixture body",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "sess-global", "inject": True,
+        }, _supervisor_scope("p1"))
+        assert result == {
+            "success": False, "result": "out_of_scope", "error_code": "resource_scope_denied",
+            "error": "out of scope: message_inbox",
+        }
+        assert (await db.get_message(sent.id)).delivered_at is None
+
+    async def test_projectless_row_in_own_uuid_reproduces_the_same_denial(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-sup-p1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="sup-token", started_at=1, state="running",
+        ))
+        sent = await db.create_message(
+            project_id=None, from_kind="system", from_id="fixture",
+            to_kind="session", to_id="sess-sup-p1", body="projectless owned fixture",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "sess-sup-p1", "inject": True,
+        }, _supervisor_scope("p1"))
+        assert result == {
+            "success": False, "error": "out of scope: system messages require global admin",
+        }
+        assert (await db.get_message(sent.id)).delivered_at is None
+        # Status's existing recipient-project view can read this same owned row.
+        status = await _execute_as(handler, "message_status", {
+            "message_id": sent.id,
+        }, _supervisor_scope("p1"))
+        assert status["message"]["body"] == "projectless owned fixture"
+
+    @pytest.mark.parametrize("recipient", [
+        "supervisor-p2", "n-supervisor--p2", "sess-sup-p2", "supervisor-global",
+        "n-supervisor--global",
+    ])
+    async def test_foreign_mailbox_refused_even_for_a_row_from_own_project(self, setup, recipient):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        await db.create_session(SessionRecord(
+            id="sess-sup-p2", project_id="p2", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p2", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="other-token", started_at=1, state="running",
+        ))
+        sent = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="session", to_id=recipient, body="foreign recipient fixture",
+        )
+        args = {
+            "to_kind": "session", "to_id": recipient, "inject": True,
+        }
+        scope = _supervisor_scope("p1")
+        # The canonical global alias is refused by the API before handler dispatch.
+        error = check_command_scope("message_inbox", args, RequestScope(**scope))
+        result = {"error": error} if error else await handler.execute(
+            "message_inbox", {**args, "_scope": scope}
+        )
+        assert "out of scope" in result.get("error", ""), result
+        assert "foreign recipient fixture" not in str(result)
+        assert (await db.get_message(sent.id)).delivered_at is None
+
+    async def test_shared_profile_inbox_filters_pending_and_consumed_before_limit(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        rows = {}
+        for project, state, priority in (
+            ("p2", "pending", 1), ("p1", "pending", 2),
+            ("p2", "consumed", 1), ("p1", "consumed", 2),
+            (None, "pending", 0),
+        ):
+            row = await db.create_message(
+                project_id=project, from_kind="system", from_id="fixture",
+                to_kind="profile", to_id="supervisor", body=f"{project} {state}",
+                priority=priority,
+            )
+            rows[project, state] = row
+            if state == "consumed":
+                await db.mark_delivered(row.id)
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "profile", "to_id": "supervisor", "inject": True,
+            "include_consumed": True, "limit": 1,
+        }, _supervisor_scope("p1"))
+        assert "error" not in result, result
+        assert [row["body"] for row in result["messages"]] == ["p1 pending"]
+        assert [row["body"] for row in result["consumed_messages"]] == ["p1 consumed"]
+        assert (await db.get_message(rows["p2", "pending"].id)).delivered_at is None
+        assert (await db.get_message(rows[None, "pending"].id)).delivered_at is None
+
+    async def test_foreign_task_inbox_refused_without_consumption(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        await db.create_task(Task(
+            id="foreign-task", project_id="p2", title="foreign fixture", description="",
+        ))
+        sent = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="task", to_id="foreign-task", body="foreign task fixture",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "task", "to_id": "foreign-task", "inject": True,
+        }, _supervisor_scope("p1"))
+        assert "out of scope" in result.get("error", ""), result
+        assert "foreign task fixture" not in str(result)
+        assert (await db.get_message(sent.id)).delivered_at is None
+
+    @pytest.mark.parametrize("recipient", ["supervisor-p1", "n-supervisor--p1"])
+    async def test_explicit_own_alias_still_reads_its_messages(self, setup, recipient):
+        handler, db, _bus = setup
+        sent = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="session", to_id=recipient, body="own explicit inbox",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": recipient,
+        }, _supervisor_scope("p1"))
+        assert [row["id"] for row in result["messages"]] == [sent.id]
+        assert (await db.get_message(sent.id)).delivered_at is None
+async def _seed_project_supervisor(db, project_id="p1", **overrides):
+    values = dict(
+        id=f"sess-sup-{project_id}", project_id=project_id, profile_id="supervisor",
+        harness="codex", provider="fake", name=f"n-supervisor--{project_id}",
+        lifecycle="named", work_dir="/tmp", epoch="test", instance_token="current-launch",
+        started_at=1, state="running",
+    )
+    values.update(overrides)
+    await db.create_session(SessionRecord(**values))
+    return {**_supervisor_scope(project_id), "session_instance_token": "current-launch"}
+
+
+class TestProjectlessSupervisorInbound:
+    @pytest.mark.parametrize("recipient", ["sess-sup-p1", "supervisor-p1", "n-supervisor--p1"])
+    async def test_history_pending_inject_and_status_share_exact_own_mailbox(self, setup, recipient):
+        handler, db, bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        directive = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id=recipient, body="own directive", thread_id="directive",
+        )
+        foreign = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id="supervisor-p2", body="foreign directive",
+        )
+        unrelated = await db.create_message(
+            project_id=None, from_kind="user", from_id="dashboard",
+            to_kind="session", to_id="supervisor-global", body="private global chat",
+        )
+        sessions = _NudgeRecorder()
+        engine = MessageDeliveryEngine(
+            db=db, sessions=sessions, config=MessagesConfig(enabled=True), bus=None,
+        )
+        assert (await engine.run_delivery_pass())["delivered"] == 0
+        assert any(
+            target == recipient and directive.id in pointer
+            for kind, target, pointer in sessions.nudges if kind == "session"
+        )
+        # Newer unrelated rows must not crowd out inbound mail before LIMIT.
+        for address in ("supervisor-p1", "n-supervisor--p1", "sess-sup-p1"):
+            history = await _execute_as(handler, "message_list", {
+                "to_kind": "session", "to_id": address, "since": directive.created_at - 1,
+                "limit": 1,
+            }, scope)
+            assert [m["id"] for m in history["messages"]] == [directive.id], history
+            pending = await _execute_as(handler, "message_inbox", {
+                "to_kind": "session", "to_id": address,
+            }, scope)
+            assert [m["id"] for m in pending["messages"]] == [directive.id], pending
+        assert (await db.get_message(directive.id)).delivered_at is None
+        injected = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "sess-sup-p1", "inject": True,
+        }, scope)
+        assert injected["injected"] == 1, injected
+        status = await _execute_as(handler, "message_status", {"message_id": directive.id}, scope)
+        assert status["state"] == "acknowledged", status
+        consumed = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True,
+        }, scope)
+        assert consumed["count"] == 0 and consumed["consumed"] == 1, consumed
+        for other in (foreign, unrelated):
+            denied = await _execute_as(handler, "message_status", {"message_id": other.id}, scope)
+            assert "not found" in denied["error"]
+            assert (await db.get_message(other.id)).delivered_at is None
+        assert [e["message_id"] for e in bus.of_type("message.delivered")] == [directive.id]
+
+    @pytest.mark.parametrize("mailbox", ["supervisor-p2", "n-supervisor--global", "foreign-uuid"])
+    async def test_foreign_projectless_inbox_cannot_be_consumed(self, setup, mailbox):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        message = await db.create_message(
+            project_id=None, from_kind="system", from_id="notice", to_kind="session",
+            to_id=mailbox, body="not yours",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": mailbox, "inject": True,
+        }, scope)
+        assert "out of scope" in result["error"], result
+        assert (await db.get_message(message.id)).delivered_at is None
+
+    @pytest.mark.parametrize("changes", [
+        {"profile_id": "worker"}, {"lifecycle": "pool"}, {"name": "untrusted-alias"},
+        {"state": "stopped"}, {"instance_token": "replacement-launch"},
+    ])
+    async def test_unbound_supervisor_never_expands_projectless_history(self, setup, changes):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db, **changes)
+        message = await db.create_message(
+            project_id=None, from_kind="system", from_id="notice", to_kind="session",
+            to_id="supervisor-p1", body="directive",
+        )
+        history = await _execute_as(handler, "message_list", {}, scope)
+        assert history["messages"] == []
+        report = await _execute_as(handler, "message_send", {
+            "to_kind": "session", "to_id": "supervisor-global", "from_id": "cli", "body": "ack",
+        }, scope)
+        assert "out of scope" in report["error"]
+        assert (await db.get_message(message.id)).delivered_at is None
+
+    async def test_omitted_project_cannot_fall_back_to_unfenced_history(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_message(
+            project_id=None, from_kind="user", from_id="dashboard", to_kind="session",
+            to_id="supervisor-global", body="private",
+        )
+        history = await handler.execute("message_list", {"_scope": scope})
+        assert history["messages"] == []
+
+
+class TestScopedGlobalReports:
+    async def test_report_and_reply_derive_sender_and_retain_project_and_audit(self, setup):
+        handler, db, bus = setup
+        scope = await _seed_project_supervisor(db)
+        directive = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id="supervisor-p1", body="directive", thread_id="shared",
+        )
+        report = await _execute_as(handler, "message_send", {
+            "to_kind": "session", "to_id": "supervisor-global", "from_kind": "system",
+            "from_id": "forged", "body": "scoped report", "thread_id": "report-thread",
+        }, scope)
+        assert "error" not in report, report
+        row = report["message"]
+        assert (row["project_id"], row["from_kind"], row["from_id"], row["to_id"]) == (
+            "p1", "session", scope["session_id"], "supervisor-global",
+        )
+        reply = await _execute_as(handler, "message_reply", {
+            "message_id": directive.id, "body": "ack", "from_kind": "user", "from_id": "forged",
+        }, scope)
+        assert "error" not in reply, reply
+        row = reply["reply"]
+        assert (row["project_id"], row["from_kind"], row["from_id"], row["to_id"]) == (
+            "p1", "session", scope["session_id"], "supervisor-global",
+        )
+        assert row["thread_id"] == "shared" and row["reply_to_id"] == directive.id
+        assert (await db.get_message(directive.id)).read_at is not None
+        assert (await db.get_message(directive.id)).delivered_at is not None
+        assert bus.of_type("message.sent")[-1]["project_id"] == "p1"
+        assert bus.of_type("message.replied")[-1]["project_id"] == "p1"
+        # Sending a report does not own the global recipient or allow an
+        # answer attributed to that recipient on the report's project row.
+        denied = await _execute_as(handler, "message_reply", {
+            "message_id": report["message_id"], "body": "pretend global answer",
+        }, scope)
+        assert "global admin" in denied["error"], denied
+        assert (await db.get_message(report["message_id"])).read_at is None
+        assert (await db.get_message(report["message_id"])).delivered_at is None
+        read = await _execute_as(handler, "message_status", {
+            "message_id": report["message_id"],
+        }, scope)
+        assert read["state"] == "queued", read
+
+    async def test_untrusted_named_alias_never_consumes_global_report(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db, name="supervisor-global")
+        report = await db.create_message(
+            project_id="p1", from_kind="session", from_id="other-supervisor",
+            to_kind="session", to_id="supervisor-global", body="report",
+        )
+        result = await _execute_as(handler, "message_status", {"message_id": report.id}, scope)
+        assert result["state"] == "queued", result
+        assert (await db.get_message(report.id)).read_at is None
+
+    @pytest.mark.parametrize("sender", ["global-uuid", "n-supervisor--global"])
+    async def test_reply_binds_global_sender_uuid_and_alias_to_persisted_row(self, setup, sender):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_session(SessionRecord(
+            id="global-uuid", project_id=None, profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="global-launch", started_at=1, state="running",
+        ))
+        message = await db.create_message(
+            project_id=None, from_kind="session", from_id=sender,
+            to_kind="session", to_id=scope["session_id"], body="directive",
+        )
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": message.id, "body": "ack",
+        }, scope)
+        assert result["reply"]["to_id"] == "supervisor-global", result
+
+    @pytest.mark.parametrize(("from_kind", "from_id", "to_id"), [
+        ("session", "supervisor-global", "somebody-else"),
+        ("session", "foreign-uuid", "supervisor-p1"),
+        ("system", "notice", "supervisor-p1"),
+        ("user", "dashboard", "supervisor-p1"),
+    ])
+    async def test_unrelated_reply_refused_before_read_or_write(self, setup, from_kind, from_id, to_id):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        message = await db.create_message(
+            project_id=None, from_kind=from_kind, from_id=from_id,
+            to_kind="session", to_id=to_id, body="private",
+        )
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": message.id, "body": "ack",
+        }, scope)
+        assert "out of scope" in result["error"], result
+        assert (await db.get_message(message.id)).read_at is None
+        assert len(await db.list_messages()) == 1
+
+    async def test_global_mailbox_ownership_and_explicit_system_scope_stay_denied(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        for command, args in [
+            ("message_inbox", {"to_kind": "session", "to_id": "supervisor-global", "inject": True}),
+            ("message_list", {"system_only": True}),
+            ("message_send", {"system_only": True, "to_kind": "session", "to_id": "supervisor-global"}),
+        ]:
+            assert "global admin" in check_command_scope(command, args, RequestScope(**scope))
+        for address in ("n-supervisor--global", "global-uuid"):
+            if address == "global-uuid":
+                await db.create_session(SessionRecord(
+                    id=address, project_id=None, profile_id="supervisor", harness="codex",
+                    provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+                    epoch="test", instance_token="global-launch", started_at=1, state="running",
+                ))
+            denied = await handler.execute("message_send", {
+                "to_kind": "session", "to_id": address, "from_id": "cli", "body": "report",
+                "system_only": True, "_scope": scope,
+            })
+            assert "out of scope" in denied["error"], denied
+        assert await db.list_messages() == []
+
+
+class TestNativeGuidanceReplyRoute:
+    """noble-bridge-92: guidance signs as the caller's authenticated return route.
+
+    Only a current named launch of the target's own project supervisor gets a
+    replyable ``session:supervisor-<project>`` sender; every other caller keeps
+    the non-replyable ``system:supervisor`` announcement.
+    """
+
+    @staticmethod
+    def _worker_scope(worker: SessionRecord) -> dict:
+        return _session_scope(
+            session_id=worker.id, task_id=worker.task_id,
+            session_instance_token=worker.instance_token,
+        )
+
+    async def _guide(self, handler, db, scope, **args):
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker",
+            aq_commands=["message_send", "message_reply", "message_status", "message_inbox"],
+            harness_tools=[], plugin_tools=[],
+        ))
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        asked = await _execute_as(handler, "message_send", {
+            "to_kind": "session", "to_id": "supervisor-p1", "from_kind": "session",
+            "from_id": worker.id, "thread_id": "task-w:ask", "body": "may I?",
+        }, self._worker_scope(worker))
+        args = {"target": worker.task_id, "body": "yes", "reply_to": asked["message_id"], **args}
+        if scope is None:
+            guided = await handler.execute("agent_message", args)
+        else:
+            guided = await handler.execute("agent_message", {**args, "_scope": scope})
+        assert "error" not in guided, guided
+        return worker, await db.get_message(guided["message_id"])
+
+    async def test_project_supervisor_guidance_is_answerable_on_its_thread(self, setup):
+        handler, db, bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker, guidance = await self._guide(handler, db, scope)
+        assert (guidance.from_kind, guidance.from_id) == ("session", "supervisor-p1")
+        assert guidance.thread_id == "task-w:ask"
+
+        worker_scope = self._worker_scope(worker)
+        for _ in range(2):  # the acknowledgement is idempotent
+            read = await _execute_as(
+                handler, "message_status", {"message_id": guidance.id}, worker_scope
+            )
+            assert read["state"] == "acknowledged", read
+        assert len([e for e in bus.of_type("message.delivered") if e["message_id"] == guidance.id]) == 1
+        reply = await _execute_as(handler, "message_reply", {
+            "message_id": guidance.id, "body": "done",
+        }, worker_scope)
+        row = await db.get_message(reply["reply_id"])
+        assert (row.from_kind, row.from_id, row.to_kind, row.to_id, row.project_id) == (
+            "session", worker.id, "session", "supervisor-p1", "p1",
+        )
+        assert (row.thread_id, row.reply_to_id) == ("task-w:ask", guidance.id)
+        assert len(bus.of_type("message.replied")) == 1
+
+    async def test_guidance_on_a_forwarded_user_thread_answers_the_supervisor(self, setup):
+        """A reply never jumps to whoever opened the thread — only to the sender."""
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        user = await handler._cmd_message_send(_send_args(thread_id="discord:9"))
+        guided = await handler.execute("agent_message", {
+            "target": worker.task_id, "body": "the user asks", "reply_to": user["message_id"],
+            "_scope": scope,
+        })
+        reply = await _execute_as(handler, "message_reply", {
+            "message_id": guided["message_id"], "body": "answer",
+        }, self._worker_scope(worker))
+        row = await db.get_message(reply["reply_id"])
+        assert (row.to_kind, row.to_id, row.thread_id) == ("session", "supervisor-p1", "discord:9")
+
+    @pytest.mark.parametrize("caller", [
+        "operator", "global supervisor", "stale launch", "stopped launch", "foreign project",
+    ])
+    async def test_callers_without_a_return_route_stay_system_and_unanswerable(
+        self, setup, caller
+    ):
+        handler, db, bus = setup
+        scope = None
+        if caller == "global supervisor":
+            await db.create_session(SessionRecord(
+                id="global-uuid", project_id=None, profile_id="supervisor", harness="codex",
+                provider="fake", name="n-supervisor--global", lifecycle="named",
+                work_dir="/tmp", epoch="test", instance_token="global-launch", started_at=1,
+                state="running",
+            ))
+            scope = _session_scope(
+                session_id="global-uuid", task_id=None, project_id=None, elevated=True,
+                session_instance_token="global-launch",
+            )
+        elif caller == "stale launch":
+            scope = {**await _seed_project_supervisor(db), "session_instance_token": "old"}
+        elif caller == "stopped launch":
+            scope = await _seed_project_supervisor(db, state="stopped")
+        elif caller == "foreign project":
+            # A p2 supervisor launch presented under p1's scope is not p1's supervisor.
+            await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+            await _seed_project_supervisor(db, project_id="p2")
+            scope = {
+                **_supervisor_scope("p1"), "session_id": "sess-sup-p2",
+                "session_instance_token": "current-launch",
+            }
+        worker, guidance = await self._guide(handler, db, scope)
+        assert (guidance.from_kind, guidance.from_id) == ("system", "supervisor")
+        comments = (await db.list_task_comments(worker.task_id, project_id="p1"))["comments"]
+        assert [(c["author_kind"], c["author_id"]) for c in comments] == [
+            ("supervisor", "supervisor")
+        ]
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": guidance.id, "body": "ok",
+        }, self._worker_scope(worker))
+        assert "cannot reply to a 'system' message" in result["error"], result
+        assert bus.of_type("message.replied") == []
+
+    async def test_other_sessions_cannot_answer_or_consume_guidance(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        _worker, guidance = await self._guide(handler, db, scope)
+        other = await _create_live_worker(db, project_id="p1", suffix="x")
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        foreign = await _create_live_worker(db, project_id="p2", suffix="y")
+        for intruder in (other, foreign):
+            denied = await _execute_as(handler, "message_reply", {
+                "message_id": guidance.id, "body": "hijack",
+            }, {**self._worker_scope(intruder), "project_id": intruder.project_id})
+            assert denied == {"success": False, "error": f"Message '{guidance.id}' not found"}, denied
+        assert (await db.get_message(guidance.id)).read_at is None
+        thread = await db.list_messages(thread_id="task-w:ask", include_archived=True)
+        assert {m.id for m in thread} == {guidance.reply_to_id, guidance.id}
+
+    @pytest.mark.parametrize(("from_kind", "from_id"), [
+        ("session", "supervisor-p1"), ("user", "dashboard"), ("session", "session-x"),
+    ])
+    async def test_worker_reply_identity_is_server_derived(self, setup, from_kind, from_id):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker, guidance = await self._guide(handler, db, scope)
+        before = len(await db.list_messages())
+        denied = await _execute_as(handler, "message_reply", {
+            "message_id": guidance.id, "body": "forged", "from_kind": from_kind,
+            "from_id": from_id,
+        }, self._worker_scope(worker))
+        assert denied == {"success": False, "error": "reply identity is server-derived"}, denied
+        assert len(await db.list_messages()) == before
+
+    async def test_ordinary_system_notices_stay_unanswerable(self, setup):
+        handler, db, _bus = setup
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        notice = await db.create_message(
+            project_id="p1", from_kind="system", from_id="integration-train",
+            to_kind="session", to_id=worker.id, body="batch settled",
+        )
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": notice.id, "body": "ok",
+        }, self._worker_scope(worker))
+        assert "cannot reply to a 'system' message" in result["error"], result
+
+    async def test_guidance_follows_the_current_claimant(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        await db.update_session(worker.id, state="stopped")
+        stopped = await handler.execute("agent_message", {
+            "target": worker.task_id, "body": "still there?", "_scope": scope,
+        })
+        assert stopped == {
+            "success": False, "error": f"Task '{worker.task_id}' has no live worker session",
+        }
+        await db.create_session(SessionRecord(
+            id="session-w2", task_id=worker.task_id, agent_id=worker.agent_id,
+            project_id="p1", profile_id="worker", harness="codex", provider="fake",
+            name="s-task-w-2", lifecycle="task", work_dir="/tmp", epoch="test",
+            instance_token="token-w2", started_at=2, state="running",
+        ))
+        guided = await handler.execute("agent_message", {
+            "target": worker.task_id, "body": "carry on", "_scope": scope,
+        })
+        assert guided["target"] == {"task_id": worker.task_id, "session_id": "session-w2"}
+        assert (await db.get_message(guided["message_id"])).to_id == "session-w2"
+
+
+class _NudgeRecorder:
+    """Every live target is idle; each nudge is recorded and confirmed."""
+
+    def __init__(self) -> None:
+        self.nudges: list[tuple[str, str, str]] = []
+
+    async def activity(self, *, kind, target_id, project_id):
+        return "idle"
+
+    async def ensure_started(self, *, kind, target_id, project_id):
+        return True
+
+    async def nudge(self, *, kind, target_id, project_id, text):
+        self.nudges.append((kind, target_id, text))
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -732,3 +2072,66 @@ class TestEventRegistration:
 
         assert "notify." in _FORWARDED_PREFIXES
         assert "message." in _FORWARDED_PREFIXES
+
+
+@pytest.mark.parametrize("mailbox", ["session", "task", "profile"])
+async def test_only_recipient_body_read_acknowledges_notification(setup, mailbox):
+    handler, db, bus = setup
+    recipient = await _create_live_worker(db, project_id="p1", suffix="reader")
+    target = {"session": recipient.id, "task": recipient.task_id,
+              "profile": recipient.profile_id}[mailbox]
+    sent = await handler._cmd_message_send(_send_args(to_kind=mailbox, to_id=target))
+    msg_id = sent["message_id"]
+    assert await db.claim_message_notification(msg_id, now=1, retry_delay=0)
+    # Operator observation returns the body without consuming another mailbox.
+    assert (await handler._cmd_message_status({"message_id": msg_id}))["state"] == "queued"
+    assert (await db.get_message(msg_id)).read_at is None
+    scope = _session_scope(session_id=recipient.id, task_id=recipient.task_id, project_id="p1")
+    result = await _execute_as(handler, "message_status", {"message_id": msg_id}, scope)
+    assert result["state"] == "acknowledged"
+    assert result["message"]["body"] == "what is the status?"
+    assert result["delivered_at"] is not None and result["acknowledged_at"] is not None
+    assert await db.get_pending_messages(mailbox, target) == []
+    events = bus.of_type("message.delivered")
+    assert len(events) == 1 and events[0]["method"] == "read"
+    await _execute_as(handler, "message_status", {"message_id": msg_id}, scope)
+    assert bus.of_type("message.delivered") == events
+
+
+@pytest.mark.parametrize("recipient", ["supervisor-global", "n-supervisor--global", "global-uuid"])
+@pytest.mark.parametrize("project_id", [None, "p1"])
+async def test_global_supervisor_status_read_stops_nudges(setup, monkeypatch, recipient, project_id):
+    handler, db, bus = setup
+    await db.create_session(SessionRecord(
+        id="global-uuid", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="test", instance_token="global-launch", started_at=1, state="running",
+    ))
+    message = await db.create_message(
+        project_id=project_id, from_kind="system", from_id="test", to_kind="session",
+        to_id=recipient, body="global supervisor report",
+    )
+    clock = message.created_at
+    monkeypatch.setattr("src.messages.delivery.time", MagicMock(time=lambda: clock))
+    sessions = _NudgeRecorder()
+    engine = MessageDeliveryEngine(db=db, sessions=sessions, config=MessagesConfig(), bus=bus)
+    await engine.run_delivery_pass()
+    assert len(sessions.nudges) == 1
+    scope = _session_scope(
+        session_id="global-uuid", task_id=None, project_id=None, elevated=True,
+        session_instance_token="global-launch",
+    )
+    result = await _execute_as(handler, "message_status", {"message_id": message.id}, scope)
+    assert result["state"] == "acknowledged", result
+    assert result["message"]["body"] == message.body
+    stored = await db.get_message(message.id)
+    assert stored.read_at is not None and stored.delivered_at is not None
+    assert stored.via == "read"
+    for _ in range(4):
+        clock += 600
+        await engine.run_delivery_pass()
+    assert len(sessions.nudges) == 1
+    assert (await db.get_message(message.id)).notification_attempts == 1
+    assert bus.of_type("message.delivered") == [{
+        "message_id": message.id, "project_id": project_id, "method": "read",
+    }]

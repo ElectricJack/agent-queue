@@ -14,10 +14,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 PROJECT_ID = "proj"
@@ -42,7 +43,7 @@ def _task(
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
@@ -54,7 +55,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -180,8 +181,8 @@ async def test_threshold_overrides_respected(handler, db):
 
 
 @pytest.mark.asyncio
-async def test_non_active_statuses_ignored(handler, db):
-    """READY/DEFINED/COMPLETED tasks never appear, regardless of age."""
+async def test_non_active_statuses_ignored_except_ready_without_route(handler, db):
+    """Only READY can join active statuses, when its route is not claimable."""
     await db.create_task(_task("t-def", status=TaskStatus.DEFINED))
     await db.create_task(_task("t-ready", status=TaskStatus.READY))
     await db.create_task(_task("t-done", status=TaskStatus.COMPLETED))
@@ -190,7 +191,9 @@ async def test_non_active_statuses_ignored(handler, db):
     # Even hours in the future.
     future_now = time.time() + 24 * 3600
     result = await handler.execute("get_stuck_tasks", {"now": future_now})
-    assert result["stuck"] == []
+    assert [row["id"] for row in result["stuck"]] == ["t-ready"]
+    assert result["stuck"][0]["kind"] == "STUCK READY"
+    assert "frontier_route_not_claimable" in result["stuck"][0]["reason"]
 
 
 @pytest.mark.asyncio

@@ -5,19 +5,20 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import insert, text, update
 
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import task_dependencies, tasks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.models import DoctorContext, Severity
 from src.models import Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
@@ -29,7 +30,7 @@ def ctx(db, tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path),
     )
     return DoctorContext(config=cfg, db=db)

@@ -71,12 +71,17 @@ def project_to_dict(project: Any) -> dict[str, Any]:
         "budget_limit": project.budget_limit,
         "repo_url": project.repo_url,
         "repo_default_branch": project.repo_default_branch,
-        "default_profile_id": project.default_profile_id,
+        "assignment_playbook_id": project.assignment_playbook_id,
     }
 
 
-def agent_to_dict(agent: Any) -> dict[str, Any]:
-    """Serialize an Agent dataclass to a JSON-serializable dict."""
+def agent_to_dict(agent: Any, last_activity: float | None = None) -> dict[str, Any]:
+    """Serialize an Agent dataclass to a JSON-serializable dict.
+
+    *last_activity* is the agent's live-session activity stamp and is the
+    liveness signal; ``last_heartbeat`` below is task-scoped and stale by
+    design on an idle pool worker.  See :mod:`src.agents.liveness`.
+    """
     return {
         "id": agent.id,
         "name": agent.name,
@@ -84,6 +89,8 @@ def agent_to_dict(agent: Any) -> dict[str, Any]:
         "state": agent.state.value if hasattr(agent.state, "value") else str(agent.state),
         "current_task_id": agent.current_task_id,
         "pid": agent.pid,
+        "last_activity": last_activity,
+        "last_task_heartbeat": agent.last_heartbeat,
         "last_heartbeat": agent.last_heartbeat,
         "total_tokens_used": agent.total_tokens_used,
         "session_tokens_used": agent.session_tokens_used,

@@ -3,6 +3,12 @@ import { CELL, cellDistance, parseCell, type CellKey } from "./units";
 
 export interface LayoutStore {
   version: number | null;
+  /**
+   * The variant the daemon actually served the last response from, which is
+   * not always the one asked for: entering a container the active layout
+   * stubbed or dropped is served from `all`. Null until a response lands.
+   */
+  variantApplied: string | null;
   nodes: Map<string, LayoutNode>;
   edges: Map<string, LayoutEdge>;
   stubs: Map<string, LayoutStub>;
@@ -14,10 +20,10 @@ export interface LayoutStore {
   cells: Map<CellKey, Set<string>>;
   loaded: Set<CellKey>;
   /**
-   * Nodes carried over from the previous expanded set, still drawn at their
-   * old positions until this generation re-delivers them. They are what the
-   * reflow animates FROM: emptying the store on a toggle would unmount every
-   * card and the move would be a jump-cut instead.
+   * Nodes carried over from the previous generation (another scope, another
+   * filter), still drawn at their old positions until this generation
+   * re-delivers them. They are what the reflow animates FROM: emptying the
+   * store would unmount every card and the move would be a jump-cut instead.
    */
   carried: Set<string>;
   /**
@@ -28,13 +34,13 @@ export interface LayoutStore {
 }
 
 export const emptyStore = (): LayoutStore => ({
-  version: null, nodes: new Map(), edges: new Map(), stubs: new Map(), edgeCells: new Map(),
+  version: null, variantApplied: null, nodes: new Map(), edges: new Map(), stubs: new Map(), edgeCells: new Map(),
   workers: [], gates: [], stubOverflow: new Map(), cells: new Map(), loaded: new Set(),
   carried: new Set(), whole: false,
 });
 
 /**
- * Start a fresh generation (a new expanded set, filter or variant) while
+ * Start a fresh generation (a new scope, filter or variant) while
  * keeping the drawn nodes on screen. Cell bookkeeping is cleared, so every
  * visible cell is refetched; the retained nodes are marked `carried` and are
  * dropped by `dropCarried` once the new generation has fully landed.
@@ -42,6 +48,7 @@ export const emptyStore = (): LayoutStore => ({
 export function retainForReflow(store: LayoutStore): LayoutStore {
   return {
     ...emptyStore(),
+    variantApplied: store.variantApplied,
     nodes: new Map(store.nodes),
     edges: new Map(store.edges),
     stubs: new Map(store.stubs),
@@ -71,11 +78,17 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
   const base = store.version !== null && store.version !== res.layout_version ? emptyStore() : store;
   const next: LayoutStore = {
     version: res.layout_version,
+    variantApplied: res.variant_applied ?? base.variantApplied,
     nodes: new Map(base.nodes), edges: new Map(base.edges), stubs: new Map(base.stubs),
     edgeCells: new Map([...base.edgeCells].map(([k, v]) => [k, new Set(v)])),
     // Each response only describes the cells it was asked for, so replacing
     // these wholesale would drop the avatars and gate badges of every other
     // loaded cell. Merge by identity and prune against the node set below.
+    // A tiles response is authoritative for the workers docked in the nodes
+    // it covers: before merging `res.workers`, any stored worker docked at a
+    // node this response returned is dropped first (see pruneAnnotations) —
+    // absence there means the worker left. A worker docked outside the
+    // response's nodes is untouched.
     workers: base.workers, gates: base.gates,
     stubOverflow: new Map(base.stubOverflow),
     cells: new Map([...base.cells].map(([k, v]) => [k, new Set(v)])),
@@ -98,7 +111,8 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
     for (const c of cells) owners.add(c);
     next.edgeCells.set(k, owners);
   }
-  return pruneAnnotations(next, res.workers ?? [], res.gates ?? []);
+  const responseNodeIds = new Set((res.nodes ?? []).map((n) => n.id));
+  return pruneAnnotations(next, res.workers ?? [], res.gates ?? [], responseNodeIds);
 }
 
 const gateKey = (g: GraphGate) => g.id;
@@ -107,9 +121,22 @@ const gateKey = (g: GraphGate) => g.id;
  * Folds `workers`/`gates` from one response into the store by identity and
  * drops every annotation whose anchor is no longer a known node — a docked
  * agent or a gate badge must not outlive the card it points at.
+ *
+ * `responseNodeIds` is the id set of the `nodes` a tiles response returned
+ * (empty for calls with no response, e.g. `evictFar`/`dropCarried`). The
+ * response is authoritative for the workers docked in those nodes, so any
+ * stored worker docked at one of them is dropped before `workers` (the
+ * response's own list) is merged in — absence there means the worker left.
  */
-function pruneAnnotations(store: LayoutStore, workers: LayoutWorker[], gates: GraphGate[]): LayoutStore {
-  const byAgent = new Map(store.workers.map((w) => [w.agent_id, w]));
+function pruneAnnotations(
+  store: LayoutStore,
+  workers: LayoutWorker[],
+  gates: GraphGate[],
+  responseNodeIds: Set<string> = new Set(),
+): LayoutStore {
+  const byAgent = new Map(
+    store.workers.filter((w) => !responseNodeIds.has(w.docked_at)).map((w) => [w.agent_id, w]),
+  );
   for (const w of workers) byAgent.set(w.agent_id, w);
   const byGate = new Map(store.gates.map((g) => [gateKey(g), g]));
   for (const g of gates) byGate.set(gateKey(g), g);
@@ -125,14 +152,6 @@ export function missingCells(store: LayoutStore, wanted: CellKey[]): CellKey[] {
   if (store.whole) return [];
   return wanted.filter((c) => !store.loaded.has(c));
 }
-
-/**
- * How many nodes THIS generation has drawn. Nodes carried over from the
- * previous expanded set do not count: they are leftovers on their way out,
- * and counting them could trip the client's node budget mid-toggle and step
- * the level of detail down for a population that never existed.
- */
-export const nodeCount = (store: LayoutStore) => store.nodes.size - store.carried.size;
 
 export function evictFar(store: LayoutStore, keep: CellKey[], maxDistance = 3): LayoutStore {
   const near = (c: CellKey) => keep.some((k) => cellDistance(c, k) <= maxDistance);

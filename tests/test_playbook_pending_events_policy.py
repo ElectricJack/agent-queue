@@ -38,12 +38,12 @@ from src.commands.playbook_v2_commands import (
 )
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.config import PlaybooksConfig
-from src.database import Database
 from src.database.queries.playbook_run_queries import (
     PENDING_EVENT_EXPIRY_ACTOR,
     PENDING_EVENT_OVERFLOW_ACTOR,
 )
 from src.playbooks.run_state import PendingEventQuotaExceeded
+from src.playbooks.runtime import V2PlaybookRuntime
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -55,23 +55,25 @@ DAY = 86_400.0
 # -- fixtures ---------------------------------------------------------------
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
-async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_live_arrival_overwrites_publisher_timestamp(monkeypatch, supplied_time):
+    runtime = object.__new__(V2PlaybookRuntime)
+    runtime._tasks = set()
+    runtime._dispatch = AsyncMock()
+    monkeypatch.setattr("src.playbooks.runtime.time.time", lambda: NOW)
+    event = {"event_type": "task.completed", "_received_at": supplied_time}
 
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
-    try:
-        yield database
-    finally:
-        await database.close()
+    runtime._on_event(event)
+    await asyncio.gather(*runtime._tasks)
+
+    assert runtime._dispatch.await_args.args[0]["_received_at"] == NOW
+    assert event["_received_at"] == supplied_time
+
+
+@pytest.fixture
+async def db(reuse_database):
+    database = await reuse_database("test.db")
+    yield database
 
 
 async def retain(db, **overrides) -> str | None:
@@ -109,9 +111,7 @@ async def retain_n(db, count: int, *, start: int = 0) -> list[str]:
 def _command_handler(row, *, resolve=True):
     """The command mixin over doubles — the boundary, not the storage."""
     handler = PlaybookV2CommandsMixin()
-    handler.config = SimpleNamespace(
-        playbooks=PlaybooksConfig(enabled=True)
-    )
+    handler.config = SimpleNamespace(playbooks=PlaybooksConfig(enabled=True))
     handler.db = SimpleNamespace(
         get_pending_events=AsyncMock(return_value=[row]),
         resolve_pending_event=AsyncMock(return_value=resolve),
@@ -150,9 +150,7 @@ async def test_overflow_drop_oldest_is_audited(db):
     assert len(unresolved) == 3
     assert first not in {row["pending_event_id"] for row in unresolved}
 
-    everything = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    everything = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     [dropped] = [row for row in everything if row["pending_event_id"] == first]
     assert dropped["resolution"] == "discarded"
     assert dropped["resolved_by"] == PENDING_EVENT_OVERFLOW_ACTOR
@@ -241,9 +239,7 @@ async def test_duplicate_at_a_full_queue_evicts_nothing(db):
     )
 
     assert duplicate is None
-    rows = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    rows = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     assert {row["pending_event_id"] for row in rows} == {oldest, newest}
     assert all(row["resolution"] is None for row in rows)
     assert all(row["resolved_at"] is None for row in rows)
@@ -291,9 +287,7 @@ async def test_duplicate_of_a_claimed_event_at_a_full_queue_evicts_nothing(db):
     )
 
     assert duplicate is None
-    [row] = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    [row] = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     assert row["pending_event_id"] == held
     assert row["resolution"] is None
 
@@ -362,9 +356,7 @@ async def test_concurrent_duplicates_at_a_full_queue_lose_nothing(db):
     )
 
     assert results == [None, None, None, None]
-    rows = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    rows = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     assert {row["pending_event_id"] for row in rows} == {oldest, newest}
     assert all(row["resolution"] is None for row in rows)
 
@@ -399,9 +391,7 @@ async def test_concurrent_arrivals_at_a_full_queue_lose_nothing(db):
     assert all(isinstance(error, PendingEventQuotaExceeded) for error in refused)
     assert None not in results  # distinct dedup keys are never duplicates
 
-    everything = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    everything = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     # Every row that was ever written is accounted for, and only those.
     assert {row["pending_event_id"] for row in everything} == held | accepted
     for row in everything:
@@ -464,19 +454,19 @@ async def test_replay_re_evaluates_guards():
 
     # The activation is rebuilt while the event is held; the guard now fails.
     rebuilt, rebuilt_runs = engine_for(guarded("fail"))
-    replayed = await rebuilt.dispatch_event(
-        held, TRUSTED_LOCAL, playbook_ids=["default-pipeline"]
-    )
+    replayed = await rebuilt.dispatch_event(held, TRUSTED_LOCAL, playbook_ids=["default-pipeline"])
     assert replayed.rules_selected == ()
     assert replayed.run_ids == ()
     assert rebuilt_runs.create_calls == 0
 
 
-async def test_replay_strips_principal_fields():
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_replay_strips_principal_fields(supplied_time):
     """A held payload cannot carry principal fields into its replay (§4.3)."""
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {
             "event_type": "task.completed",
             "task_id": "t1",
@@ -485,6 +475,7 @@ async def test_replay_strips_principal_fields():
             "_scope": "system",
             "_policy": "allow-all",
             "_profile_id": "root",
+            "_received_at": supplied_time,
         },
     }
     handler, engine = _command_handler(row)
@@ -495,7 +486,10 @@ async def test_replay_strips_principal_fields():
 
     assert result["success"] is True
     replayed = engine.dispatch_event.await_args.args[0]
-    assert set(replayed) == {"event_type", "task_id"}
+    # The stripped payload plus the row's own arrival time, which the replay
+    # stamps so the run observes when the event was received, not replayed.
+    assert set(replayed) == {"event_type", "task_id", "_received_at"}
+    assert replayed["_received_at"] == 1000.0
     for key in SERVER_OWNED_ARG_KEYS:
         assert key not in replayed
     # The stored row is left as received — stripping is a replay-time decision.
@@ -585,6 +579,7 @@ async def test_dispatch_does_not_require_a_reason():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"event_type": "task.completed"},
     }
     handler, engine = _command_handler(row)
@@ -651,9 +646,7 @@ def test_an_unknown_overflow_policy_does_not_break_the_daemon(caplog):
         pass
 
     repository = _Repository()
-    bind_pending_event_policy(
-        repository, PlaybooksConfig(v2_pending_event_on_overflow="whatever")
-    )
+    bind_pending_event_policy(repository, PlaybooksConfig(v2_pending_event_on_overflow="whatever"))
 
     assert repository.playbook_pending_event_overflow() == DEFAULT_PENDING_EVENT_OVERFLOW
 
@@ -691,8 +684,7 @@ def _activation_handler(
     ``health_read_sees_row=False`` is the post-write health read coming back
     without the row that was just activated.
     """
-    from tests.test_api_playbook_v2_commands import _backend_fixture
-    from tests.test_playbook_activation_commands import _Handler
+    from tests.test_playbook_activation_commands import _backend_fixture, _Handler
 
     definition, ref, _activation = _backend_fixture()
     refreshed = _activation_record(ref, health=health, enabled=enabled)
@@ -731,6 +723,7 @@ def _held(event_id, **overrides):
     row = {
         "pending_event_id": event_id,
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"event_type": "task.completed", "event_id": event_id},
     }
     row.update(overrides)
@@ -739,9 +732,7 @@ def _held(event_id, **overrides):
 
 async def test_manual_policy_leaves_the_backlog_for_the_operator():
     """The default policy does not touch held events, and says so."""
-    handler, engine, definition, ref = _activation_handler(
-        policy="manual", held=[_held("event-1")]
-    )
+    handler, engine, definition, ref = _activation_handler(policy="manual", held=[_held("event-1")])
 
     result = await _activate(handler, definition, ref)
 
@@ -782,7 +773,8 @@ async def test_automatic_policy_consumes_the_backlog_on_activation():
     assert engine.dispatch_event.await_count == 2
 
 
-async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload(supplied_time):
     """The activation replay re-enters the same guarded path as the manual one."""
     handler, engine, definition, ref = _activation_handler(
         policy="automatic",
@@ -794,6 +786,7 @@ async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
                     "task_id": "t1",
                     "_principal": {"kind": "trusted_local"},
                     "_capabilities": {"aq_commands": ["*"]},
+                    "_received_at": supplied_time,
                 },
             )
         ],
@@ -802,7 +795,10 @@ async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
     await _activate(handler, definition, ref)
 
     replayed = engine.dispatch_event.await_args.args[0]
-    assert set(replayed) == {"event_type", "task_id"}
+    # The stripped payload plus the row's own arrival time, which the replay
+    # stamps so the run observes when the event was received, not replayed.
+    assert set(replayed) == {"event_type", "task_id", "_received_at"}
+    assert replayed["_received_at"] == 1000.0
     for key in SERVER_OWNED_ARG_KEYS:
         assert key not in replayed
     # Matching is re-run against the playbook that was just activated.
@@ -930,8 +926,6 @@ async def test_automatic_replay_skips_a_row_another_operator_holds():
     assert replay["skipped"] == ["event-1"]
     assert replay["dispatched_run_ids"] == []
     engine.dispatch_event.assert_not_awaited()
-
-
 
 
 # -- 9c: the production caller for activation-aware config validation ---------

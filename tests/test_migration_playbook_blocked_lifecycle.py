@@ -1,25 +1,12 @@
-"""Migration coverage for the Playbook V2 ``blocked`` run lifecycle."""
-
-from __future__ import annotations
-
-import os
-import subprocess
-import sys
-from pathlib import Path
+"""The current schema admits blocked Playbook V2 runs."""
 
 import pytest
 import sqlalchemy as sa
-from alembic import command
-from alembic.config import Config
 
-from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from src.database import Database
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.migration
-
-ROOT = Path(__file__).resolve().parents[1]
-PRIOR_REVISION = "8b4d2f7c1a90"
-BLOCKED_REVISION = "c7d8e9f0a1b2"
-POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 _ARTIFACT = "sha256:" + "d" * 64
 _INSERT_ARTIFACT = sa.text(
@@ -36,93 +23,17 @@ _INSERT_BLOCKED_RUN = sa.text(
 )
 
 
-def _config(url: str) -> Config:
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", url)
-    return config
-
-
-def _alembic_pg(dsn: str, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=ROOT,
-        env=dict(os.environ, AGENT_QUEUE_DB_URL=dsn),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def test_blocked_lifecycle_sqlite_upgrade_and_guarded_downgrade(tmp_path):
-    db_path = tmp_path / "blocked-lifecycle.db"
-    config = _config(f"sqlite+aiosqlite:///{db_path}")
-    command.upgrade(config, "head")
-
-    engine = sa.create_engine(f"sqlite:///{db_path}")
+async def test_baseline_admits_blocked_lifecycle():
+    database = Database(lease_dsn("blocked-lifecycle"))
+    await database.initialize()
     try:
-        with engine.begin() as conn:
-            conn.execute(_INSERT_ARTIFACT, {"sha": _ARTIFACT})
-            conn.execute(_INSERT_BLOCKED_RUN, {"sha": _ARTIFACT})
-        with pytest.raises(RuntimeError, match="blocked playbook runs exist"):
-            command.downgrade(config, PRIOR_REVISION)
-
-        with engine.begin() as conn:
-            conn.execute(sa.text("DELETE FROM playbook_v2_runs WHERE lifecycle = 'blocked'"))
-        command.downgrade(config, PRIOR_REVISION)
-        with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
-            conn.execute(_INSERT_BLOCKED_RUN, {"sha": _ARTIFACT})
-        command.upgrade(config, BLOCKED_REVISION)
+        async with database._engine.begin() as conn:
+            await conn.execute(_INSERT_ARTIFACT, {"sha": _ARTIFACT})
+            await conn.execute(_INSERT_BLOCKED_RUN, {"sha": _ARTIFACT})
+            assert (
+                await conn.execute(
+                    sa.text("SELECT lifecycle FROM playbook_v2_runs WHERE run_id='blocked-run'")
+                )
+            ).scalar_one() == "blocked"
     finally:
-        engine.dispose()
-
-
-@pytest.mark.integration
-async def test_blocked_lifecycle_postgres_upgrade_and_guarded_downgrade():
-    if not POSTGRES_DSN:
-        pytest.skip("POSTGRES_TEST_DSN not set")
-    import asyncpg
-
-    dsn = await create_scratch_database("pbv2blocked")
-    result = _alembic_pg(dsn, "upgrade", "head")
-    assert result.returncode == 0, result.stderr
-
-    conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
-    try:
-        await conn.execute(
-            "INSERT INTO playbook_artifacts (artifact_sha256, playbook_id, scope, "
-            "scope_identifier, schema_generation, version, source_digest, contract_fingerprint, "
-            "profile_fingerprint, compiler_build, path, size_bytes, validation, created_at) "
-            "VALUES ($1, 'p', 'system', '', 2, 1, $1, $1, '', 'test', '/tmp/test.json', "
-            "2, '{}', 1.0)",
-            _ARTIFACT,
-        )
-        await conn.execute(
-            "INSERT INTO playbook_v2_runs (run_id, playbook_id, artifact_sha256, rule_id, "
-            "lifecycle, mode, snapshot_version, snapshot, snapshot_bytes, event_type, summary, "
-            "started_at, updated_at, completed_at) VALUES ('blocked-run', 'p', $1, 'rule', "
-            "'blocked', 'live', 0, '{}', 2, '', '', 1.0, 1.0, 1.0)",
-            _ARTIFACT,
-        )
-    finally:
-        await conn.close()
-
-    refused = _alembic_pg(dsn, "downgrade", PRIOR_REVISION)
-    assert refused.returncode != 0
-    assert "blocked playbook runs exist" in refused.stderr
-
-    conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
-    try:
-        # The refused step is on the integration chain; the graph's other
-        # branch (main's ``4e7d1c9b2a55`` mergepoint side, joined at
-        # ``9b3e5a7c1d20``) is not a descendant of PRIOR_REVISION, so its
-        # head row stays in alembic_version and we assert membership.
-        versions = {
-            row["version_num"]
-            for row in await conn.fetch("SELECT version_num FROM alembic_version")
-        }
-        assert BLOCKED_REVISION in versions, versions
-        await conn.execute("DELETE FROM playbook_v2_runs WHERE lifecycle = 'blocked'")
-    finally:
-        await conn.close()
-    downgraded = _alembic_pg(dsn, "downgrade", PRIOR_REVISION)
-    assert downgraded.returncode == 0, downgraded.stderr
+        await database.close()

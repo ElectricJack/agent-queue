@@ -13,6 +13,7 @@ from src.database.tables import task_dependencies as task_dependencies_t, tasks 
 from src.models import Project, Task, TaskStatus
 from src.task_graph import parse_graph
 from src.task_graph.creator import build_plan, write_plan
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.perf
 
@@ -21,7 +22,7 @@ PROJECT_ID = "proj"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "perf.db"))
+    database = Database(lease_dsn("perf.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
@@ -30,10 +31,11 @@ async def db(tmp_path):
 
 @asynccontextmanager
 async def count_statements(db):
-    counter = {"n": 0}
+    counter = {"n": 0, "statements": []}
 
     def _hook(conn, cursor, statement, parameters, context, executemany):
         counter["n"] += 1
+        counter["statements"].append(statement)
 
     event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
     try:
@@ -114,7 +116,8 @@ async def seed_scale(
 ) -> None:
     """Bulk-insert a §15.2-scale queue (raw inserts — this is fixture cost).
 
-    ``profile_id``, when given, is stamped on every READY task so claim-path
+    ``profile_id``, when given, is stamped on every READY task (as a
+    ``router`` route) so claim-path
     perf tests can exercise ``select_ready_for_profile`` at scale (the caller
     is responsible for the referenced ``agent_profiles`` row existing — this
     is a raw insert, so the FK is enforced but not satisfied for you).
@@ -158,8 +161,12 @@ async def seed_scale(
             "title": f"t{i}",
             "description": "d",
             "status": _status(i),
-            # Stamped on every READY task, as the docstring says.
+            # Stamped on every READY task, as the docstring says, as a router
+            # route (``ck_tasks_route_source_profile``).
             "profile_id": profile_id if _status(i) == TaskStatus.READY.value else None,
+            "route_source": (
+                "router" if profile_id and _status(i) == TaskStatus.READY.value else "unrouted"
+            ),
             "intelligence_class": (
                 intelligence_class if _status(i) == TaskStatus.READY.value else None
             ),
