@@ -1,31 +1,11 @@
-"""Carry a completed child of a managed parent into the parent's assembly.
+"""Diagnose completed child delivery and support the shadow collector.
 
-A managed parent (``PAUSED``, checkpoint ``awaiting_children``) assembles a
-COMPLETED child only once an *approved* ``integration_review_evidence`` row
-pins the child's exact checkpoint head (``CollectionService.queue_next``);
-``delivery_promote`` re-checks that row before it pushes.  Until 2026-09-09 the
-default pipeline filed a reviewer for every completed task, and the reviewer's
-close wrote that row.  Commit cf0002b9c retired automatic reviews, and nothing
-took their place for children: GitHub review ingestion covers roots only.  A
-child's close still advanced its checkpoint (its ``working`` state is the
-normal finished-leaf shape), but no collector ever assembled it, no receipt
-reached the parent, and every sibling whose ``needs`` named it stayed out of
-the claim frontier (vivid-ridge: sharp-impact stalled on .1 and .3).
-
-:class:`ChildDelivery` proves a completed child from Git -- the remote branch
-tip is the recorded checkpoint head, and it descends from the child's origin
-base -- and records approved ``leaf`` evidence of exactly that head and tree:
-
-* ``ensure_evidence`` is the collector's durable path.  It runs for every
-  completed child still lacking a verdict, backs off a child whose proof fails,
-  and never overrides a reviewer: a head a reviewer rejected, or a child with an
-  open reviewer task, is left alone.  Human review stays on the root's pull
-  request, and the parent's aggregate verification still runs its checks.
-* ``run`` is the dry-run-first supervisor control for one stuck child
-  (``aq integration redrive-child``).
-
-:func:`stuck_children_statement` backs ``aq doctor --check
-integration.stuck_children``.
+Active Git-first redrive observes current parent containment and leaves delivery
+with the train. Shadow collection proves the child's published checkpoint head
+and origin ancestry, then records approved leaf evidence. Rejected heads and
+open reviewers retain authority; failed proof backs off without overriding them.
+``ensure_evidence`` serves the collector and ``run`` serves the supervisor's
+``redrive-child``.
 """
 
 from __future__ import annotations
@@ -37,15 +17,18 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import and_, exists, insert, select
+from sqlalchemy import exists, insert, select
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
 from src.database.tables import (
+    integration_branch_owners,
     integration_promotion_intents,
     integration_repair_operations,
     integration_review_evidence,
     projects,
+    repos,
+    sessions,
     task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
@@ -53,8 +36,9 @@ from src.database.tables import (
     task_integration_checkpoints,
     task_metadata,
     tasks,
+    workspaces,
 )
-from src.git.manager import RemoteRefState
+from src.git.manager import GitError, RemoteRefState, safe_git_detail
 from src.integration.promotion_contracts import PromotionError
 from src.models import TaskStatus
 
@@ -105,96 +89,61 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
     ).mappings().one_or_none()
     if task is None:
         return None
-    project = (
-        await conn.execute(
-            select(
-                projects.c.hierarchical_integration_mode,
-                projects.c.integration_repository_id,
-            ).where(projects.c.id == task["project_id"])
+    _delivery_query = select(
+        projects.c.hierarchical_integration_mode, projects.c.integration_repository_id
+    ).where(projects.c.id == task["project_id"])
+    project = (await conn.execute(_delivery_query)).mappings().one_or_none()
+    _delivery_query = select(task_integration_checkpoints).where(
+        task_integration_checkpoints.c.task_id == task_id
+    )
+    checkpoint = (await conn.execute(_delivery_query)).mappings().one_or_none()
+    _delivery_query = select(task_branch_origins).where(
+        task_branch_origins.c.task_id == task_id,
+        task_branch_origins.c.repository_id == task["repo_id"],
+        task_branch_origins.c.retired_at.is_(None),
+    )
+    origin = (await conn.execute(_delivery_query)).mappings().one_or_none()
+    has_children = await conn.scalar(select(exists().where(tasks.c.parent_task_id == task_id)))
+    _delivery_query = (
+        select(task_completion_records.c.id, task_completion_records.c.completed_at)
+        .where(task_completion_records.c.task_id == task_id)
+        .order_by(
+            task_completion_records.c.completed_at.desc(), task_completion_records.c.id.desc()
         )
-    ).mappings().one_or_none()
-    checkpoint = (
-        await conn.execute(
-            select(task_integration_checkpoints).where(
-                task_integration_checkpoints.c.task_id == task_id
-            )
-        )
-    ).mappings().one_or_none()
-    origin = (
-        await conn.execute(
-            select(task_branch_origins).where(
-                task_branch_origins.c.task_id == task_id,
-                task_branch_origins.c.repository_id == task["repo_id"],
-                task_branch_origins.c.retired_at.is_(None),
-            )
-        )
-    ).mappings().one_or_none()
-    has_children = (
-        await conn.execute(select(exists().where(tasks.c.parent_task_id == task_id)))
-    ).scalar_one()
-    completion = (
-        await conn.execute(
-            select(task_completion_records.c.id, task_completion_records.c.completed_at)
-            .where(task_completion_records.c.task_id == task_id)
-            .order_by(
-                task_completion_records.c.completed_at.desc(),
-                task_completion_records.c.id.desc(),
-            )
-            .limit(1)
-        )
-    ).mappings().one_or_none()
-    rework_value = (
-        await conn.execute(
-            select(task_metadata.c.value).where(
-                task_metadata.c.task_id == task_id,
-                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
-            )
-        )
-    ).scalar_one_or_none()
-    object_experiment = (
-        await conn.execute(select(task_metadata.c.task_id).where(
-            task_metadata.c.task_id == task_id,
-            task_metadata.c.key == "object_experiment",
-        ))
-    ).scalar_one_or_none()
+        .limit(1)
+    )
+    completion = (await conn.execute(_delivery_query)).mappings().one_or_none()
+    _delivery_query = select(task_metadata.c.value).where(
+        task_metadata.c.task_id == task_id, task_metadata.c.key == INTEGRATION_REWORK_AT_KEY
+    )
+    rework_value = (await conn.execute(_delivery_query)).scalar_one_or_none()
+    _delivery_query = select(task_metadata.c.task_id).where(
+        task_metadata.c.task_id == task_id, task_metadata.c.key == "object_experiment"
+    )
+    object_experiment = (await conn.execute(_delivery_query)).scalar_one_or_none()
     parent = parent_checkpoint = operation = None
     if task["parent_task_id"] is not None:
-        parent = (
-            await conn.execute(
-                select(tasks.c.id, tasks.c.status, tasks.c.branch_name, tasks.c.repo_id).where(
-                    tasks.c.id == task["parent_task_id"]
-                )
-            )
-        ).mappings().one_or_none()
-        parent_checkpoint = (
-            await conn.execute(
-                select(
-                    task_integration_checkpoints.c.state,
-                    task_integration_checkpoints.c.episode_id,
-                ).where(task_integration_checkpoints.c.task_id == task["parent_task_id"])
-            )
-        ).mappings().one_or_none()
+        _delivery_query = select(
+            tasks.c.id, tasks.c.status, tasks.c.branch_name, tasks.c.repo_id
+        ).where(tasks.c.id == task["parent_task_id"])
+        parent = (await conn.execute(_delivery_query)).mappings().one_or_none()
+        _delivery_query = select(
+            task_integration_checkpoints.c.state, task_integration_checkpoints.c.episode_id
+        ).where(task_integration_checkpoints.c.task_id == task["parent_task_id"])
+        parent_checkpoint = (await conn.execute(_delivery_query)).mappings().one_or_none()
         if parent_checkpoint is not None and parent_checkpoint["episode_id"] is not None:
-            operation = (
-                await conn.execute(
-                    select(
-                        integration_repair_operations.c.id,
-                        integration_repair_operations.c.state,
-                    ).where(
-                        integration_repair_operations.c.parent_task_id == task["parent_task_id"],
-                        integration_repair_operations.c.episode_id
-                        == parent_checkpoint["episode_id"],
-                        integration_repair_operations.c.state.in_(_COLLECTING_OPERATION_STATES),
-                    )
-                )
-            ).mappings().first()
+            _delivery_query = select(
+                integration_repair_operations.c.id, integration_repair_operations.c.state
+            ).where(
+                integration_repair_operations.c.parent_task_id == task["parent_task_id"],
+                integration_repair_operations.c.episode_id == parent_checkpoint["episode_id"],
+                integration_repair_operations.c.state.in_(_COLLECTING_OPERATION_STATES),
+            )
+            operation = (await conn.execute(_delivery_query)).mappings().first()
     return {
-        "task_id": task_id,
-        "project_id": task["project_id"],
-        "status": task["status"],
-        "parent_task_id": task["parent_task_id"],
-        "pr_url": task["pr_url"],
-        "repository_id": task["repo_id"],
+        "task_id": task_id, "project_id": task["project_id"],
+        "status": task["status"], "parent_task_id": task["parent_task_id"],
+        "pr_url": task["pr_url"], "repository_id": task["repo_id"],
         "branch": task["branch_name"],
         "mode": project["hierarchical_integration_mode"] if project else None,
         "integration_repository_id": project["integration_repository_id"] if project else None,
@@ -278,93 +227,6 @@ def _parent_refusal(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def stuck_children_statement(*, updated_before: float, limit: int = 200):
-    """Completed code children a collecting parent has not assembled.
-
-    The child is COMPLETED with its leaf checkpoint still ``working``, its
-    parent is ``PAUSED`` with an ``awaiting_children`` checkpoint and a live
-    collection operation, no receipt carries its checkpoint head into the
-    parent's branch, no promotion of that head is still being written or
-    repaired, and neither the task nor its checkpoint changed since
-    *updated_before*.
-    """
-    child = tasks
-    parent = tasks.alias("stuck_child_parent")
-    checkpoint = task_integration_checkpoints.alias("stuck_child_checkpoint")
-    parent_checkpoint = task_integration_checkpoints.alias("stuck_child_parent_checkpoint")
-    operation = integration_repair_operations
-    origin = task_branch_origins
-    delivered = exists(
-        select(task_delivery_receipts.c.id).where(
-            task_delivery_receipts.c.source_task_id == child.c.id,
-            task_delivery_receipts.c.repository_id == checkpoint.c.repository_id,
-            task_delivery_receipts.c.target_branch == parent.c.branch_name,
-            task_delivery_receipts.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-        )
-    )
-    promoting = exists(
-        select(integration_promotion_intents.c.id).where(
-            integration_promotion_intents.c.source_task_id == child.c.id,
-            integration_promotion_intents.c.source_head == checkpoint.c.checkpoint_sha,
-            integration_promotion_intents.c.state.not_in(_SETTLED_INTENT_STATES),
-        )
-    )
-    grandchild = tasks.alias("stuck_child_grandchild")
-    nested = exists(select(grandchild.c.id).where(grandchild.c.parent_task_id == child.c.id))
-    return (
-        select(
-            child.c.id.label("task_id"),
-            child.c.project_id,
-            child.c.parent_task_id,
-            child.c.branch_name.label("branch"),
-            child.c.updated_at,
-            checkpoint.c.checkpoint_sha.label("head_sha"),
-            checkpoint.c.generation,
-            checkpoint.c.repository_id,
-            checkpoint.c.updated_at.label("checkpoint_updated_at"),
-            origin.c.base_sha,
-        )
-        .select_from(
-            child.join(parent, parent.c.id == child.c.parent_task_id)
-            .join(projects, projects.c.id == child.c.project_id)
-            .join(checkpoint, checkpoint.c.task_id == child.c.id)
-            .join(parent_checkpoint, parent_checkpoint.c.task_id == parent.c.id)
-            .join(
-                operation,
-                and_(
-                    operation.c.parent_task_id == parent.c.id,
-                    operation.c.episode_id == parent_checkpoint.c.episode_id,
-                ),
-            )
-            .join(
-                origin,
-                and_(
-                    origin.c.task_id == child.c.id,
-                    origin.c.repository_id == checkpoint.c.repository_id,
-                    origin.c.retired_at.is_(None),
-                ),
-            )
-        )
-        .where(
-            projects.c.hierarchical_integration_mode.in_(MANAGED_MODES),
-            child.c.status == TaskStatus.COMPLETED.value,
-            checkpoint.c.state == "working",
-            checkpoint.c.episode_id.is_(None),
-            checkpoint.c.checkpoint_sha != origin.c.base_sha,
-            parent.c.status == TaskStatus.PAUSED.value,
-            parent_checkpoint.c.state == "awaiting_children",
-            operation.c.state.in_(_COLLECTING_OPERATION_STATES),
-            child.c.updated_at < updated_before,
-            checkpoint.c.updated_at < updated_before,
-            ~nested,
-            ~delivered,
-            ~promoting,
-        )
-        .order_by(child.c.id)
-        .limit(limit)
-    )
-
-
 async def latest_evidence_on(
     conn,
     *,
@@ -376,39 +238,49 @@ async def latest_evidence_on(
 ) -> dict[str, Any] | None:
     """The newest review verdict on exactly this child snapshot, if any."""
     evidence = integration_review_evidence
-    row = (
-        await conn.execute(
-            select(evidence)
-            .where(
-                evidence.c.source_task_id == task_id,
-                evidence.c.repository_id == repository_id,
-                evidence.c.source_base == base_sha,
-                evidence.c.reviewed_head_sha == head_sha,
-                evidence.c.generation == generation,
-            )
-            .order_by(evidence.c.created_at.desc(), evidence.c.id.desc())
-            .limit(1)
+    _delivery_query = (
+        select(evidence)
+        .where(
+            evidence.c.source_task_id == task_id,
+            evidence.c.repository_id == repository_id,
+            evidence.c.source_base == base_sha,
+            evidence.c.reviewed_head_sha == head_sha,
+            evidence.c.generation == generation,
         )
-    ).mappings().one_or_none()
+        .order_by(evidence.c.created_at.desc(), evidence.c.id.desc())
+        .limit(1)
+    )
+    row = (await conn.execute(_delivery_query)).mappings().one_or_none()
     return dict(row) if row is not None else None
 
 
 async def _open_reviewer_on(conn, task_id: str) -> str | None:
     """An unfinished reviewer task filed about *task_id* (``discovered-from``)."""
-    return (
-        await conn.execute(
-            select(tasks.c.id)
-            .join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
-            .where(
-                task_dependencies.c.depends_on_task_id == task_id,
-                task_dependencies.c.dep_type == "discovered-from",
-                tasks.c.profile_id.in_(_REVIEW_PROFILES),
-                tasks.c.status.not_in(_FINISHED_STATUSES),
-            )
-            .order_by(tasks.c.id)
-            .limit(1)
+    return await conn.scalar(
+        select(tasks.c.id)
+        .join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
+        .where(
+            task_dependencies.c.depends_on_task_id == task_id,
+            task_dependencies.c.dep_type == "discovered-from",
+            tasks.c.profile_id.in_(_REVIEW_PROFILES),
+            tasks.c.status.not_in(_FINISHED_STATUSES),
         )
-    ).scalar_one_or_none()
+        .order_by(tasks.c.id)
+        .limit(1)
+    )
+
+
+async def _matching_receipt_on(conn, snapshot: dict[str, Any]):
+    """Newest code receipt for the child's exact head and current parent branch."""
+    query = select(task_delivery_receipts).where(
+        task_delivery_receipts.c.source_task_id == snapshot["task_id"],
+        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
+        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
+        task_delivery_receipts.c.target_branch == snapshot["parent"]["branch_name"],
+        task_delivery_receipts.c.reviewed_head_sha == snapshot["head_sha"],
+        task_delivery_receipts.c.disposition == "code",
+    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
+    return (await conn.execute(query)).mappings().one_or_none()
 
 
 class ChildDelivery:
@@ -420,6 +292,7 @@ class ChildDelivery:
         promotion_service: Any,
         *,
         collect: Collect | None = None,
+        train_blockers: Callable[[str], Awaitable[dict | None]] | None = None,
         clock: Callable[[], float] = time.time,
         retry_seconds: float = 60.0,
         max_backoff_seconds: float = 3600.0,
@@ -429,6 +302,7 @@ class ChildDelivery:
         self.db = db
         self.promotion = promotion_service
         self.collect = collect
+        self.train_blockers = train_blockers
         self.clock = clock
         self.retry_seconds = retry_seconds
         self.max_backoff_seconds = max_backoff_seconds
@@ -447,23 +321,16 @@ class ChildDelivery:
         proof is retried with exponential backoff.
         """
         async with self.db._engine.connect() as conn:
-            head = (
-                await conn.execute(
-                    select(task_integration_checkpoints.c.checkpoint_sha).where(
-                        task_integration_checkpoints.c.task_id == task_id
-                    )
-                )
-            ).scalar_one_or_none()
+            _delivery_query = select(task_integration_checkpoints.c.checkpoint_sha).where(
+                task_integration_checkpoints.c.task_id == task_id
+            )
+            head = (await conn.execute(_delivery_query)).scalar_one_or_none()
         key = (task_id, head or "")
         deferred = self._deferred.get(key)
         if deferred is not None and deferred[1] > now:
             return None
         diagnosis, snapshot, tree = await self._diagnose(task_id)
-        if (
-            diagnosis["outcome"] != "would_advance"
-            or diagnosis.get("evidence_id") is not None
-            or diagnosis.get("redrive_kind") == "receipt_reissue"
-        ):
+        if diagnosis["outcome"] != "would_advance" or diagnosis.get("evidence_id") is not None:
             if diagnosis["outcome"] == "blocked":
                 logger.info(
                     "Child %s cannot be assembled yet: %s", task_id, diagnosis["reason"]
@@ -508,7 +375,13 @@ class ChildDelivery:
         expected_head_sha: str | None = None,
         reason: str | None = None,
         operator_id: str | None = None,
+        adopt_source: bool = False,
     ) -> dict[str, Any]:
+        if adopt_source:
+            return await self._adopt_source(
+                task_id, dry_run=dry_run, expected_head_sha=expected_head_sha,
+                reason=reason, operator_id=operator_id,
+            )
         diagnosis, snapshot, tree = await self._diagnose(task_id)
         if dry_run or diagnosis["outcome"] != "would_advance":
             return diagnosis
@@ -520,20 +393,13 @@ class ChildDelivery:
                 "run the dry run again",
             }
         try:
-            if diagnosis.get("redrive_kind") == "receipt_reissue":
-                receipt, created = await self._reissue_receipt(
-                    snapshot, diagnosis["stale_receipt_id"],
-                )
-                evidence = None
-            else:
-                evidence, created = await self._record(
-                    snapshot,
-                    tree,
-                    reviewer_identity=operator_id or "human:local-operator",
-                    decision_path="operator_redrive",
-                    reason=reason,
-                )
-                receipt = None
+            evidence, created = await self._record(
+                snapshot,
+                tree,
+                reviewer_identity=operator_id or "human:local-operator",
+                decision_path="operator_redrive",
+                reason=reason,
+            )
         except HierarchyError as exc:
             return {
                 **diagnosis,
@@ -554,15 +420,10 @@ class ChildDelivery:
         result = {
             **diagnosis,
             "outcome": "advanced",
-            "evidence_id": evidence["id"] if evidence is not None else None,
-            "receipt_id": receipt["id"] if receipt is not None else None,
+            "evidence_id": evidence["id"],
             "collection": collection,
             "reason": (
-                "reissued a receipt for the current completion"
-                if receipt is not None and created
-                else "current completion already has a receipt"
-                if receipt is not None
-                else "recorded approved completion evidence for the head"
+                "recorded approved completion evidence for the head"
                 if created
                 else "approved evidence already pinned the head"
             ),
@@ -578,10 +439,8 @@ class ChildDelivery:
                     "parent_task_id": snapshot["parent_task_id"],
                     "head_sha": snapshot["head_sha"],
                     "tree_sha": tree,
-                    "evidence_id": evidence["id"] if evidence is not None else None,
-                    "receipt_id": receipt["id"] if receipt is not None else None,
-                    "evidence_created": created if evidence is not None else False,
-                    "receipt_created": created if receipt is not None else False,
+                    "evidence_id": evidence["id"],
+                    "evidence_created": created,
                     "collection": collection,
                     "at": self.clock(),
                 }
@@ -594,6 +453,142 @@ class ChildDelivery:
         diagnosis, _snapshot, _tree = await self._diagnose(task_id)
         return diagnosis
 
+    async def _adoption_snapshot(self, conn, task_id: str) -> tuple[dict, dict, int]:
+        """Read the complete source binding and exclude attached or live writers."""
+        snapshot = await _snapshot_on(conn, task_id)
+        if snapshot is None:
+            raise _ProofFailed("the child does not exist")
+        refusal = _child_refusal(snapshot)
+        if refusal is not None:
+            raise _ProofFailed(refusal[1])
+        parent = snapshot["parent"]
+        if (parent is None or parent["repo_id"] != snapshot["repository_id"]
+                or not parent["branch_name"]):
+            raise _ProofFailed("the current parent has no matching repository and target branch")
+        origin = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == snapshot["repository_id"],
+            task_branch_origins.c.retired_at.is_(None),
+        ))).mappings().one_or_none()
+        if (origin is None or origin["branch_name"] != snapshot["branch"]
+                or origin["parent_repository_id"] != snapshot["repository_id"]
+                or not origin["parent_ref"]
+                or origin["parent_ref"].removeprefix("refs/heads/") !=
+                parent["branch_name"].removeprefix("refs/heads/")):
+            raise _ProofFailed("the recorded origin does not match the child and parent branches")
+        repository = (await conn.execute(select(repos).where(
+            repos.c.id == snapshot["repository_id"],
+        ))).mappings().one_or_none()
+        if repository is None or repository["project_id"] != snapshot["project_id"]:
+            raise _ProofFailed("the repository no longer belongs to the child's project")
+        completion = (await conn.execute(select(task_completion_records).where(
+            task_completion_records.c.id == snapshot["completion_id"],
+        ))).mappings().one_or_none()
+        if completion is None or completion["outcome"] != "pass":
+            raise _ProofFailed("source adoption requires an existing passing completion generation")
+        if completion["branch"] not in (None, snapshot["branch"]):
+            raise _ProofFailed("the completion names a different branch")
+        try:
+            commits = json.loads(completion["commits"])
+        except (TypeError, ValueError) as exc:
+            raise _ProofFailed("the completion has invalid recorded commits") from exc
+        if not isinstance(commits, list) or commits and commits[-1] != snapshot["head_sha"]:
+            raise _ProofFailed("the recorded final completion commit differs from the checkpoint")
+        task = (await conn.execute(select(tasks.c.claim_epoch, tasks.c.assigned_agent_id).where(
+            tasks.c.id == task_id,
+        ))).one_or_none()
+        if task is None:
+            raise _ProofFailed("the child disappeared during source observation")
+        writer_queries = (
+            select(sessions.c.id).where(sessions.c.task_id == task_id,
+                                      sessions.c.state != "stopped"),
+            select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id),
+            select(integration_branch_owners.c.owner_id).where(
+                integration_branch_owners.c.repository_id == snapshot["repository_id"],
+                integration_branch_owners.c.ref.in_((snapshot["branch"],
+                                                   "refs/heads/" + snapshot["branch"])),
+                integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+            ),
+        )
+        writer_present = bool(task.assigned_agent_id)
+        for query in writer_queries:
+            writer_present |= bool(await conn.scalar(query.exists().select()))
+        if writer_present:
+            raise _ProofFailed("source adoption requires the child session and workspace released")
+        identity = {
+            "task": _snapshot_identity(snapshot), "parent": dict(parent),
+            "completion": dict(completion), "origin": dict(origin), "repository": dict(repository),
+            "claim_epoch": task.claim_epoch, "mode": snapshot["mode"],
+            "integration_repository_id": snapshot["integration_repository_id"],
+        }
+        return snapshot, identity, task.claim_epoch
+
+    async def _adopt_source(self, task_id, *, dry_run, expected_head_sha, reason, operator_id):
+        from src.integration.delivery_observer import prerequisite_observer
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+        result = {"task_id": task_id, "outcome": "blocked"}
+        if prerequisite_observer(self.db) is None:
+            return {**result, "reason": "source adoption requires active Git-first delivery"}
+        if not dry_run and (not operator_id or not reason or not reason.strip()):
+            return {**result, "reason": "adoption requires an operator and a nonblank reason"}
+        try:
+            async with self.db._engine.connect() as conn:
+                snapshot, identity, claim_epoch = await self._adoption_snapshot(conn, task_id)
+            result.update(
+                project_id=snapshot["project_id"], parent_task_id=snapshot["parent_task_id"],
+                branch=snapshot["branch"], head_sha=snapshot["head_sha"],
+                base_sha=snapshot["base_sha"], completion_id=snapshot["completion_id"],
+            )
+            await self._prove(snapshot)
+            if expected_head_sha is not None and expected_head_sha != snapshot["head_sha"]:
+                return {**result, "outcome": "changed", "reason": "the previewed head changed"}
+            if not dry_run and expected_head_sha is None:
+                raise _ProofFailed("applying source adoption requires the previewed exact head")
+            resolved = await self.promotion._resolve_repository(snapshot["repository_id"])
+            store = GitProvenance(self.promotion.git, str(resolved.retained_git_dir),
+                                  repository_url=resolved.origin_url)
+            completed = CompletedSource(CompletionIdentity(
+                snapshot["project_id"], snapshot["repository_id"], task_id,
+                snapshot["completion_id"],
+            ), snapshot["head_sha"])
+            # The hierarchy lock fences reopen/claim, then the repository lock
+            # fences publication. Recheck after the network proof, before any write.
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, snapshot["project_id"])
+                _current, current_identity, _epoch = await self._adoption_snapshot(conn, task_id)
+                if current_identity != identity:
+                    return {**result, "outcome": "changed", "reason": "completion binding changed"}
+                async with self.promotion.git.arepository_transaction(store.checkout):
+                    retained = await store.read_completion(completed.identity)
+                    if retained is not None:
+                        if retained["source_oid"] != completed.source_oid:
+                            raise _ProofFailed("retained generation already binds another source")
+                        return {**result, "outcome": "nothing_to_redrive",
+                                "reason": "the exact completion source is already retained"}
+                    if dry_run:
+                        return {**result, "outcome": "would_advance",
+                                "reason": "would retain the verified existing completion source"}
+                    remote = await self.promotion.git.als_remote_ref(
+                        str(resolved.retained_git_dir), snapshot["branch"],
+                    )
+                    if (remote.state is not RemoteRefState.PRESENT
+                            or remote.oid != completed.source_oid):
+                        raise _ProofFailed("the published source changed after preview")
+                    await store.write_completion(completed, claim_epoch=claim_epoch)
+            await self.db.log_event(
+                REDRIVE_EVENT, project_id=snapshot["project_id"], task_id=task_id,
+                payload=json.dumps({
+                    "operator_id": operator_id, "reason": reason, "action": "adopt_source",
+                    "completion_id": snapshot["completion_id"], "head_sha": completed.source_oid,
+                    "parent_task_id": snapshot["parent_task_id"],
+                }),
+            )
+            return {**result, "outcome": "advanced",
+                    "reason": "retained the completion source; the train owns delivery"}
+        except (_ProofFailed, GitError, ValueError, PromotionError) as exc:
+            return {**result, "reason": safe_git_detail(str(exc))}
+
     # ------------------------------------------------------------------
     # Shared
     # ------------------------------------------------------------------
@@ -601,6 +596,11 @@ class ChildDelivery:
     async def _diagnose(
         self, task_id: str
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+        from src.integration.delivery_observer import prerequisite_observer
+
+        observer = prerequisite_observer(self.db)
+        if observer is not None:
+            return await self._diagnose_git(task_id, observer)
         async with self.db._engine.connect() as conn:
             snapshot = await _snapshot_on(conn, task_id)
             if snapshot is None:
@@ -630,18 +630,7 @@ class ChildDelivery:
             if parent_refusal is not None:
                 return {**base, "outcome": "blocked", "reason": parent_refusal}, snapshot, None
             head = snapshot["head_sha"]
-            receipt = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.source_task_id == task_id,
-                        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
-                        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
-                        task_delivery_receipts.c.target_branch == base["parent_branch"],
-                        task_delivery_receipts.c.reviewed_head_sha == head,
-                        task_delivery_receipts.c.disposition == "code",
-                    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
-                )
-            ).mappings().one_or_none()
+            receipt = await _matching_receipt_on(conn, snapshot)
             if receipt is not None:
                 if (
                     snapshot["rework_at"] is None
@@ -652,41 +641,33 @@ class ChildDelivery:
                         "outcome": "nothing_to_redrive",
                         "reason": f"already delivered into the parent (receipt {receipt['id']})",
                     }, snapshot, None
-                stale_receipt = dict(receipt)
-            else:
-                stale_receipt = None
-            if stale_receipt is not None and (
-                stale_receipt["parent_operation_id"] != snapshot["operation"]["id"]
-                or stale_receipt["parent_episode_id"]
-                != snapshot["parent_checkpoint"]["episode_id"]
-            ):
+                # Receipts are historical audit; nothing reissues one for a newer
+                # completion. Git-first delivery proves containment instead.
                 return {
                     **base,
                     "outcome": "blocked",
-                    "reason": "the old receipt belongs to a previous parent collection episode",
+                    "reason": "the matching receipt predates the child's current completion; "
+                    "only Git-first delivery can prove it again",
                 }, snapshot, None
-            if stale_receipt is None:
-                intent = (
-                    await conn.execute(
-                        select(
-                            integration_promotion_intents.c.id,
-                            integration_promotion_intents.c.state,
-                        ).where(
-                            integration_promotion_intents.c.source_task_id == task_id,
-                            integration_promotion_intents.c.source_head == head,
-                            integration_promotion_intents.c.state.not_in(_SETTLED_INTENT_STATES),
-                        ).limit(1)
-                    )
-                ).mappings().one_or_none()
-                if intent is not None:
-                    return {
-                        **base,
-                        "outcome": "nothing_to_redrive",
-                        "reason": (
-                            f"promotion {intent['id']} of this head is already {intent['state']}; "
-                            "the collection operation owns it"
-                        ),
-                    }, snapshot, None
+            _delivery_query = (
+                select(integration_promotion_intents.c.id, integration_promotion_intents.c.state)
+                .where(
+                    integration_promotion_intents.c.source_task_id == task_id,
+                    integration_promotion_intents.c.source_head == head,
+                    integration_promotion_intents.c.state.not_in(_SETTLED_INTENT_STATES),
+                )
+                .limit(1)
+            )
+            intent = (await conn.execute(_delivery_query)).mappings().one_or_none()
+            if intent is not None:
+                return {
+                    **base,
+                    "outcome": "nothing_to_redrive",
+                    "reason": (
+                        f"promotion {intent['id']} of this head is already {intent['state']}; "
+                        "the collection operation owns it"
+                    ),
+                }, snapshot, None
             latest = await latest_evidence_on(
                 conn,
                 task_id=task_id,
@@ -711,8 +692,6 @@ class ChildDelivery:
                 }, snapshot, None
         try:
             remote_head, tree = await self._prove(snapshot)
-            if stale_receipt is not None:
-                await self._prove_receipt_ancestry(snapshot, stale_receipt)
         except _ProofFailed as exc:
             return {
                 **base,
@@ -726,13 +705,6 @@ class ChildDelivery:
             "remote_head_sha": remote_head,
             "tree_sha": tree,
         }
-        if stale_receipt is not None:
-            diagnosis.update(
-                redrive_kind="receipt_reissue",
-                stale_receipt_id=stale_receipt["id"],
-                reason="the matching receipt predates the child's current completion",
-            )
-            return diagnosis, snapshot, tree
         if latest is not None:
             diagnosis.update(
                 evidence_id=latest["id"],
@@ -743,6 +715,81 @@ class ChildDelivery:
                 "the child is complete with its published head and no approved evidence"
             )
         return diagnosis, snapshot, tree
+
+    async def _diagnose_git(self, task_id, observer):
+        """The Git-first train owns collection; receipts and parent episodes do not."""
+        async with self.db._engine.connect() as conn:
+            snapshot = await _snapshot_on(conn, task_id)
+        if snapshot is None:
+            return {"outcome": "not_found", "task_id": task_id}, None, None
+        parent = snapshot["parent"] or {}
+        base = {
+            "task_id": task_id, "project_id": snapshot["project_id"],
+            "parent_task_id": snapshot["parent_task_id"], "branch": snapshot["branch"],
+            "parent_branch": parent.get("branch_name"), "head_sha": snapshot["head_sha"],
+            "base_sha": snapshot["base_sha"],
+        }
+        if (snapshot["mode"] not in MANAGED_MODES or snapshot["parent_task_id"] is None
+                or snapshot["status"] != TaskStatus.COMPLETED.value):
+            return {**base, "outcome": "not_eligible",
+                    "reason": "not a completed child in hierarchy or train mode"}, snapshot, None
+        if not parent.get("branch_name"):
+            return {**base, "outcome": "blocked",
+                    "reason": "the parent's target branch is missing"}, snapshot, None
+        view = await observer.observe([task_id])
+        fresh = await view.fresh()
+        async with self.db._engine.connect() as conn:
+            current = await _snapshot_on(conn, task_id)
+            verified = await view.verified_on(conn, [task_id]) if fresh else {}
+        proof = verified.get(task_id)
+        if (current is None or _snapshot_identity(current) != _snapshot_identity(snapshot)
+                or proof is None or proof.request.target_ref !=
+                "refs/heads/" + parent["branch_name"].removeprefix("refs/heads/")):
+            return {**base, "outcome": "blocked",
+                    "reason": "current parent containment could not be verified in Git"}, snapshot, None
+        from src.integration.delivery_truth import DeliveryState
+
+        if proof.state is DeliveryState.UNKNOWN:
+            reason = proof.reason
+            if reason == "missing_git_provenance":
+                reason += (f"; preview source recovery with `aq integration redrive-child "
+                           f"{task_id} --adopt-source`")
+            return {**base, "outcome": "blocked", "reason": reason}, snapshot, None
+        if not proof.satisfied:
+            from src.integration.obsolete_children import obsolete_child_blocker
+            from src.integration.status import IntegrationStatusService
+
+            for observed in view.snapshots:
+                if (observed.project_id, observed.repository_id, observed.target_ref) != (
+                    proof.request.project_id, proof.request.repository_id, proof.request.target_ref,
+                ):
+                    continue
+                obsolete = await obsolete_child_blocker(
+                    observed, task_id=task_id, source_base=snapshot["base_sha"],
+                    source_oid=proof.source_oid,
+                )
+                if obsolete:
+                    return {**base, "outcome": "blocked",
+                            "reason": "obsolete_child: " + obsolete["detail"]}, snapshot, None
+            read_blockers = self.train_blockers or IntegrationStatusService(
+                self.db, git_first="active", delivery=observer,
+            ).train_task_blockers
+            status = await read_blockers(task_id) or {}
+            blockers = status.get("blockers", [])
+            if blockers:
+                return {**base, "outcome": "blocked", "reason": "; ".join(
+                    f"{item['code']}: {item['detail']}" for item in blockers
+                )}, snapshot, None
+            if not status.get("batches"):
+                return {**base, "outcome": "blocked", "reason": (
+                    f"no batch contains this child; {proof.reason}; "
+                    "the train has not reported a source admission decision"
+                )}, snapshot, None
+        return {
+            **base, "outcome": "nothing_to_redrive",
+            "reason": ("already delivered into the parent (Git containment)" if proof.satisfied
+                       else "the Git-first train owns delivery of this pending child"),
+        }, snapshot, None
 
     async def _prove(self, snapshot: dict[str, Any]) -> tuple[str, str]:
         """Return the remote tip and tree of the child's head, or say why not."""
@@ -778,80 +825,6 @@ class ChildDelivery:
         except PromotionError as exc:
             raise _ProofFailed(f"could not prove the head from the repository: {exc}") from exc
         return remote.oid, tree
-
-    async def _prove_receipt_ancestry(
-        self, snapshot: dict[str, Any], receipt: dict[str, Any]
-    ) -> None:
-        """A reissued receipt must still name code on the live parent branch."""
-        after_sha = receipt["after_sha"]
-        if not after_sha:
-            raise _ProofFailed("the old receipt has no incorporated parent head to prove")
-        try:
-            resolved = await self.promotion._resolve_repository(snapshot["repository_id"])
-            await self.promotion._ensure_retained_repository(resolved)
-            store = resolved.retained_git_dir
-            async with self.promotion.git.arepository_transaction(str(store)):
-                await self.promotion._fetch_all_heads(store, resolved.origin_url)
-                remote = await self.promotion.git.als_remote_ref(
-                    str(store), snapshot["parent"]["branch_name"]
-                )
-                if remote.state is not RemoteRefState.PRESENT:
-                    raise _ProofFailed("the parent's published branch cannot be proven")
-                if not await self.promotion._is_ancestor(store, after_sha, remote.oid):
-                    raise _ProofFailed(
-                        "the old receipt's incorporated head is no longer on the parent branch"
-                    )
-        except PromotionError as exc:
-            raise _ProofFailed(f"could not prove the parent branch: {exc}") from exc
-
-    async def _reissue_receipt(
-        self,
-        snapshot: dict[str, Any],
-        stale_receipt_id: str,
-    ) -> tuple[dict[str, Any], bool]:
-        """Acknowledge the same incorporated head for a newer task completion."""
-        async with self.db.immediate() as conn:
-            await self.db.lock_hierarchy_project(conn, snapshot["project_id"])
-            current = await _snapshot_on(conn, snapshot["task_id"])
-            if (
-                current is None
-                or _snapshot_identity(current) != _snapshot_identity(snapshot)
-                or _child_refusal(current) is not None
-                or _parent_refusal(current) is not None
-            ):
-                raise HierarchyError("stale_head", "the child or parent changed before redrive")
-            matching = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.source_task_id == snapshot["task_id"],
-                        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
-                        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
-                        task_delivery_receipts.c.target_branch == current["parent"]["branch_name"],
-                        task_delivery_receipts.c.reviewed_head_sha == snapshot["head_sha"],
-                        task_delivery_receipts.c.disposition == "code",
-                    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
-                )
-            ).mappings().one_or_none()
-            if matching is None or current["rework_at"] is None:
-                raise HierarchyError("stale_head", "the receipt or rework marker changed before redrive")
-            if matching["created_at"] >= current["rework_at"]:
-                return dict(matching), False
-            if matching["id"] != stale_receipt_id:
-                raise HierarchyError("stale_head", "the receipt changed before redrive")
-            if (
-                matching["parent_operation_id"] != current["operation"]["id"]
-                or matching["parent_episode_id"] != current["parent_checkpoint"]["episode_id"]
-            ):
-                raise HierarchyError("stale_head", "the parent collection episode changed")
-            domain_key = f"redrive:{current['completion_id']}:{matching['id']}"
-            receipt = dict(matching)
-            receipt.update(
-                id=f"receipt-{uuid.uuid5(_EVIDENCE_NAMESPACE, domain_key)}",
-                domain_key=domain_key,
-                created_at=max(self.clock(), current["rework_at"]),
-            )
-            await conn.execute(insert(task_delivery_receipts).values(**receipt))
-        return receipt, True
 
     async def _record(
         self,
