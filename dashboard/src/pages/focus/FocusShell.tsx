@@ -28,7 +28,7 @@ const HEADER_BUTTON = "inline-flex shrink-0 items-center justify-center gap-1 ro
  * The focus routes' shell (mobile dashboard §4.1): edge-to-edge at every width,
  * outside the three-column grid, inside the app's query/router/event/state
  * providers. It never reads or writes the roaming right surface (§4.2), and its
- * terminal links open the phone terminal, which never attaches.
+ * terminal links open the phone terminal.
  */
 export default function FocusShell() {
   const location = useLocation();
