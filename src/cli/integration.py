@@ -12,23 +12,209 @@ from typing import Any
 import click
 
 from .app import _get_client, _handle_errors, _run, cli
-from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
 
 
-def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
+def _request(ctx: click.Context, command: str, args: dict[str, Any]) -> Any:
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    async def _request():
+    async def run():
         async with _get_client(api_url) as client:
             return await client.execute(command, args)
 
-    emit(ctx, _run(_request()), entity="integration")
+    return _run(run())
+
+
+def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
+    emit(ctx, _request(ctx, command, args), entity="integration")
 
 
 @cli.group("integration")
 def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
+
+
+@integration.command("continue-close")
+@click.option("--operation-id", required=True)
+@click.pass_context
+@_handle_errors
+def integration_continue_close(ctx, operation_id):
+    """Resume your retained parent merge, exact checks and task completion."""
+    _execute(ctx, "integration_continue_close", {"operation_id": operation_id})
+
+
+@integration.command("batch-fix")
+@click.option("--action", type=click.Choice(["status", "push", "rebind"]), default="status")
+@click.pass_context
+@_handle_errors
+def integration_batch_fix(ctx, action):
+    """Inspect or publish the batch bound to this fixer session."""
+    _execute(ctx, "integration_batch_fix", {"action": action})
+
+
+@integration.command("supersede-completion")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--subject", "subject_id", required=True)
+@click.option("--expected-version", required=True, type=click.IntRange(min=0))
+@click.option("--expected-claim-epoch", required=True, type=click.IntRange(min=0))
+@click.option("--completion", "completion_id", required=True)
+@click.option("--head", "expected_head_sha", required=True, help="Exact retained source OID.")
+@click.option("--human-reply", "human_reply_id", required=True,
+              help="Original verified escalation reply, bound to this task.")
+@click.option("--reason", required=True, help="Interpretation of the human supersession directive.")
+@click.option("--proof", "expected_proof_sha256", help="SHA256 returned by preview.")
+@click.option("--apply/--dry-run", default=False, help="Settle this Subject and close obsolete.")
+@click.pass_context
+@_handle_errors
+def integration_supersede_completion(ctx, task_id, project_id, subject_id, expected_version,
+                                    expected_claim_epoch, completion_id, expected_head_sha,
+                                    human_reply_id, reason, expected_proof_sha256, apply):
+    """Retire one superseded passing root without invoking its stale close pipeline.
+
+    Local operator or live owning supervisor only. Preview preserves all rows;
+    apply rechecks the exact source, episode, owner and stopped writer proofs.
+    """
+    if apply and not expected_proof_sha256:
+        raise click.UsageError("--apply requires --proof SHA256 returned by preview")
+    _execute(ctx, "integration_supersede_completion", {
+        "task_id": task_id, "project_id": project_id, "subject_id": subject_id,
+        "expected_version": expected_version, "expected_claim_epoch": expected_claim_epoch,
+        "completion_id": completion_id, "expected_head_sha": expected_head_sha,
+        "human_reply_id": human_reply_id, "reason": reason,
+        "expected_proof_sha256": expected_proof_sha256, "dry_run": not apply,
+    })
+
+
+@integration.command("off")
+@click.argument("project_id")
+@click.option("--reason", required=True)
+@click.option("--apply/--dry-run", default=False)
+@click.option("--expected-plan-digest")
+@click.pass_context
+@_handle_errors
+def integration_off(ctx, project_id, reason, apply, expected_plan_digest):
+    """Preview manual mode while preserving frozen work and sources."""
+    if apply and not expected_plan_digest:
+        raise click.UsageError("--apply requires --expected-plan-digest from preview")
+    _execute(ctx, "integration_off", {"project_id": project_id, "reason": reason,
+             "dry_run": not apply, "expected_plan_digest": expected_plan_digest})
+
+
+@integration.command("migrate-provenance-refs")
+@click.argument("project_id")
+@click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")
+@click.option("--limit", default=50, type=click.IntRange(1, 1000), help="Refs per page; repeat apply.")
+@click.option("--checkout", type=click.Path(exists=True, file_okay=False),
+              help="Also migrate local legacy heads in this checkout.")
+@click.pass_context
+@_handle_errors
+def integration_migrate_provenance_refs(ctx, project_id, apply, limit, checkout):
+    """Move existing provenance into refs/aq/provenance (local operator only)."""
+    _execute(ctx, "integration_migrate_provenance_refs", {
+        "project_id": project_id, "dry_run": not apply, "limit": limit, "checkout": checkout,
+    })
+
+
+def _cutover(ctx, command, project_id, flow_file, reverse, allow_epics,
+             apply=False, expected_generation=None, plan_file=None):
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    if not reverse and flow_file is None:
+        raise click.UsageError("forward cutover requires --flow FILE")
+    if reverse and flow_file is not None:
+        raise click.UsageError("--reverse restores the prior flow; omit --flow")
+    if apply and expected_generation is None:
+        raise click.UsageError("--apply requires --expected-generation from cutover-plan")
+    if apply and plan_file is None:
+        raise click.UsageError("--apply requires --plan FILE saved before manual GitHub changes")
+    args = {"project_id": project_id, "reverse": reverse, "allow_epics": allow_epics,
+            "dry_run": not apply, "expected_generation": expected_generation}
+    if flow_file is not None:
+        try:
+            args["flow"] = yaml.safe_load(Path(flow_file).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise click.UsageError(f"cannot read flow: {exc}") from exc
+    if plan_file is not None:
+        try:
+            document = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+            document = document.get("data", document)
+            document = document.get("value", document)
+            args["baseline"] = document.get("plan", document)
+        except (OSError, UnicodeError, ValueError, AttributeError) as exc:
+            raise click.UsageError(f"cannot read saved plan: {exc}") from exc
+
+    async def run():
+        async with _get_client(ctx.obj.get("api_url") if ctx.obj else None) as client:
+            return await client.execute(command, args)
+
+    emit(ctx, _run(run()), render=lambda value: click.echo(json.dumps(value, indent=2)))
+
+
+@integration.command("cutover-plan")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--flow", "flow_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--reverse", is_flag=True, help="Plan restoration of the last cutover.")
+@click.option("--allow-epics", is_flag=True, help="Permit live aq/epic targets at the barrier.")
+@click.pass_context
+@_handle_errors
+def integration_cutover_plan(ctx, project_id, flow_file, reverse, allow_epics):
+    """Print ordered changes, live authority and PRs without writing state."""
+    _cutover(ctx, "integration_cutover_plan", project_id, flow_file, reverse, allow_epics)
+
+
+@integration.command("cutover-containment")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--choices", type=click.Path(exists=True, dir_okay=False),
+              help="JSON per-completion choices; re-preview to bind choices into the digest.")
+@click.option("--plan", type=click.Path(exists=True, dir_okay=False), help="Saved preview JSON.")
+@click.option("--digest", "expected_digest", help="Exact SHA256 digest of the saved preview.")
+@click.option("--apply/--dry-run", default=False, help="Prepare history; default is read-only preview.")
+@click.pass_context
+@_handle_errors
+def integration_cutover_containment(ctx, project_id, choices, plan, expected_digest, apply):
+    """Inventory strict containment and prepare approved legacy exclusions (local only)."""
+    import json
+    from pathlib import Path
+
+    if apply and (not plan or not expected_digest):
+        raise click.UsageError("--apply requires --plan FILE and --digest SHA256")
+    args = {"project_id": project_id, "dry_run": not apply, "expected_digest": expected_digest}
+    for key, path in (("choices", choices), ("plan", plan)):
+        if path:
+            try:
+                value = json.loads(Path(path).read_text(encoding="utf-8"))
+                if key == "plan":
+                    value = value.get("data", value)
+                    value = value.get("value", value)
+                    value = value.get("plan", value)
+                if not isinstance(value, dict):
+                    raise ValueError("expected a JSON object")
+                args[key] = value
+            except (OSError, UnicodeError, ValueError, AttributeError) as exc:
+                raise click.UsageError(f"cannot read {key}: {exc}") from exc
+    _execute(ctx, "integration_cutover_containment", args)
+
+
+@integration.command("cutover")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--flow", "flow_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--reverse", is_flag=True, help="Restore the prior binding, flow and data fixes.")
+@click.option("--allow-epics", is_flag=True, help="Keep live aq/epic targets intact.")
+@click.option("--apply/--dry-run", default=False, help="Apply the plan; default is preview.")
+@click.option("--expected-generation", type=click.IntRange(min=0))
+@click.option("--plan", "plan_file", type=click.Path(exists=True, dir_okay=False),
+              help="Saved cutover-plan JSON from before manual GitHub changes.")
+@click.pass_context
+@_handle_errors
+def integration_cutover(ctx, project_id, flow_file, reverse, allow_epics, apply,
+                        expected_generation, plan_file):
+    """Preview or atomically rebind the train after its quiescence barrier."""
+    _cutover(ctx, "integration_cutover", project_id, flow_file, reverse, allow_epics,
+             apply, expected_generation, plan_file)
 
 
 @integration.command("pause-batch")
@@ -115,6 +301,84 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("repair-target")
+@click.argument("batch_id")
+@click.option("--candidate-sha", "expected_candidate_sha", help="Exact candidate SHA from preview.")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA from preview.")
+@click.option("--reason", default="", help="Required explanation when filing target repair.")
+@click.option("--apply", is_flag=True, help="File or reuse the ordinary repair; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_repair_target(ctx, batch_id, expected_candidate_sha, expected_target_sha,
+                              reason, apply):
+    """Repair proven failures inherited from BATCH_ID's sealed epic target."""
+    if apply and (not expected_candidate_sha or not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --candidate-sha, --target-sha and --reason")
+    _execute(ctx, "integration_repair_target", {
+        "batch_id": batch_id, "expected_candidate_sha": expected_candidate_sha,
+        "expected_target_sha": expected_target_sha, "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("rerequest-check")
+@click.argument("batch_id")
+@click.option("--check", "check_name", required=True, help="Exact required check name.")
+@click.option("--candidate-sha", "expected_candidate_sha", help="Candidate SHA from preview.")
+@click.option("--reason", default="", help="Required explanation when applying.")
+@click.option("--apply", is_flag=True, help="Request one bounded job rerun; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_rerequest_check(ctx, batch_id, check_name, expected_candidate_sha, reason, apply):
+    """Recover a required check stuck in progress after its workflow or steps finished."""
+    if apply and (not expected_candidate_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --candidate-sha and --reason")
+    _execute(ctx, "integration_rerequest_check", {
+        "batch_id": batch_id, "check_name": check_name,
+        "expected_candidate_sha": expected_candidate_sha, "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("settle-batch")
+@click.argument("batch_id")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when settling.")
+@click.option("--apply", is_flag=True, help="Settle proven delivery; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
+    """Preview or settle BATCH_ID whose frozen inputs already reached its target."""
+    if apply and (not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --target-sha and --reason")
+    _execute(ctx, "integration_settle_batch", {
+        "batch_id": batch_id, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("release-withheld-source")
+@click.argument("batch_id")
+@click.option("--task", "task_id", required=True, help="Frozen member the aborted batch withholds.")
+@click.option("--source-sha", "expected_source_sha", help="Exact source SHA returned by preview.")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when releasing.")
+@click.option("--apply", is_flag=True, help="Release the exact source; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_release_withheld_source(ctx, batch_id, task_id, expected_source_sha,
+                                        expected_target_sha, reason, apply):
+    """Preview or release a TASK source that aborted BATCH_ID withholds from the train.
+
+    The aborted batch stays history and the next batch carries its repair count.
+    """
+    if apply and (not expected_source_sha or not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --source-sha, --target-sha and --reason")
+    _execute(ctx, "integration_release_withheld_source", {
+        "batch_id": batch_id, "task_id": task_id,
+        "expected_source_sha": expected_source_sha, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")
@@ -123,6 +387,23 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
 def integration_refresh_epic(ctx, task_id, apply):
     """Preview or refresh an epic; pending checks/repairs continue through the train."""
     _execute(ctx, "integration_refresh_epic", {"task_id": task_id, "dry_run": not apply})
+
+
+@integration.command("reverify-epic")
+@click.argument("task_id")
+@click.option("--head", "expected_head_sha", default=None, help="Exact head returned by preview.")
+@click.option("--reason", default="", help="Reason for requesting aggregate verification.")
+@click.option("--apply", is_flag=True, help="Request a bounded train visit; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_reverify_epic(ctx, task_id, expected_head_sha, reason, apply):
+    """Preview or re-trigger a completed epic's guarded aggregate verification."""
+    if apply and (not expected_head_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --head and --reason")
+    _execute(ctx, "integration_reverify_epic", {
+        "task_id": task_id, "expected_head_sha": expected_head_sha,
+        "reason": reason, "dry_run": not apply,
+    })
 
 
 @integration.command("retire-origin")
@@ -208,37 +489,6 @@ def integration_engine_transfer(
     })
 
 
-@integration.command("development-engine-transfer")
-@click.argument("project_id")
-@click.option("--engine", type=click.Choice(["reconciler"]), required=True)
-@click.option("--expected-subject", "expected_subjects", multiple=True,
-              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every Development subject.")
-@click.option("--reason", default="", help="Required explanation when applying the transfer.")
-@click.option("--evidence", multiple=True,
-              help="Shadow, scenario and operator approval references.")
-@click.option("--apply", is_flag=True,
-              help="Apply the exact previewed versions; default is preview.")
-@click.pass_context
-@_handle_errors
-def integration_development_engine_transfer(
-    ctx, project_id, engine, expected_subjects, reason, evidence, apply,
-):
-    """Preview or transfer Development ownership for every subject of PROJECT_ID.
-
-    The apply activates reconciler ownership of the whole project: it runs inside
-    the repository engine fence a publisher shares, needs the exact versions
-    the preview printed, and refuses while a publish write is unconfirmed in
-    either direction.
-    """
-    versions = _expected_versions(expected_subjects)
-    if apply:
-        _require_transfer_apply_fences(engine, versions, reason, evidence)
-    _execute(ctx, "integration_development_engine_transfer", {
-        "project_id": project_id, "engine": engine, "expected_versions": versions,
-        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
-    })
-
-
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")
@@ -266,45 +516,6 @@ def integration_record_noop(
         "integration_record_noop",
         {"child_task_id": child_task_id, "expected_head_sha": expected_head_sha},
     )
-
-
-@integration.command("resolve-candidate-member")
-@click.option("--resolved-head-sha", required=True)
-@click.option("--resolved-tree-sha", required=True)
-@click.option(
-    "--repair-commit-sha",
-    "repair_commit_shas",
-    multiple=True,
-    required=True,
-    help="Exact repair commit in oldest-to-newest order; repeat for every commit.",
-)
-@claim_epoch_option
-@click.pass_context
-@_handle_errors
-def integration_resolve_candidate_member(
-    ctx: click.Context,
-    resolved_head_sha: str,
-    resolved_tree_sha: str,
-    repair_commit_shas: tuple[str, ...],
-    claim_epoch: int | None,
-) -> None:
-    """Resolve the candidate member assigned to this repair session.
-
-    The daemon derives the active batch, revision, member, operation, partial
-    head, and branch fence from the authenticated session.  This command never
-    accepts those authority-bearing values from the caller.
-    """
-    args: dict[str, Any] = {
-        "resolved_head_sha": resolved_head_sha,
-        "resolved_tree_sha": resolved_tree_sha,
-        "repair_commit_shas": list(repair_commit_shas),
-    }
-    resolved_epoch = resolve_claim_epoch(claim_epoch)
-    if resolved_epoch is not None:
-        args["claim_epoch"] = resolved_epoch
-    _execute(ctx, "integration_resolve_candidate_member", args)
-
-
 
 
 @integration.command("reevaluate-repair")
@@ -335,26 +546,63 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
     _execute(ctx, "integration_reevaluate_repair", args)
 
 
-
-
 @integration.command("release-owner")
 @click.option("--task-id")
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
+@click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
+@click.option(
+    "--no-push", is_flag=True,
+    help="Release without publishing; unpublished work stays in its retained checkout.",
+)
+@click.option("--self-owned", is_flag=True,
+              help="Resume the live session's own failed, unactivated preparation handoff.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool,
+    apply: bool, no_push: bool, self_owned: bool,
 ) -> None:
-    """Release a stranded branch owner after proving its writer and branch safe."""
+    """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
         raise click.UsageError("provide exactly one of --task-id or --owner-row-id")
-    args: dict[str, Any] = {"dry_run": dry_run}
+    if dry_run and apply:
+        raise click.UsageError("--dry-run and --apply are mutually exclusive")
+    args: dict[str, Any] = {"dry_run": not apply}
+    if no_push:
+        args["no_push"] = True
+    if self_owned:
+        args["self_owned"] = True
     if task_id is not None:
         args["task_id"] = task_id
     else:
         args["owner_row_id"] = owner_row_id
     _execute(ctx, "integration_release_owner", args)
+
+
+@integration.command("restore-task-origin")
+@click.option("--task-id", required=True)
+@click.option("--origin-id")
+@click.option("--expected-remote-oid")
+@click.option("--expected-fence-token", type=int)
+@click.option("--reason", default="")
+@click.option("--apply", is_flag=True)
+@click.pass_context
+@_handle_errors
+def integration_restore_task_origin(
+    ctx, task_id, origin_id, expected_remote_oid, expected_fence_token, reason, apply,
+):
+    """Preview restoration to the recorded origin; apply with the preview's fences."""
+    if apply and (not origin_id or not expected_remote_oid
+                  or expected_fence_token is None or not reason.strip()):
+        raise click.UsageError("--apply requires --origin-id, --expected-remote-oid, "
+                               "--expected-fence-token and --reason")
+    args = {"task_id": task_id, "dry_run": not apply, "reason": reason}
+    for key, value in (("origin_id", origin_id), ("expected_remote_oid", expected_remote_oid),
+                       ("expected_fence_token", expected_fence_token)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_restore_task_origin", args)
 
 
 @integration.command("reserve-owner")
@@ -364,6 +612,56 @@ def integration_release_owner(
 def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
     """Restore a stopped train task's missing canonical branch reservation."""
     _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
+
+
+@integration.command("delegate-publication")
+@click.option("--id", required=True, help="Unique, retry-stable delegation identity.")
+@click.option("--project-id", required=True)
+@click.option("--repository-id", required=True)
+@click.option("--task-id", required=True)
+@click.option("--session-id", required=True, help="Session holding the delegated task.")
+@click.option("--claim-epoch", required=True, type=click.IntRange(min=0))
+@click.option("--target-branch", required=True)
+@click.option("--expected-target-oid", required=True)
+@click.option("--expected-owner-fence", required=True, type=click.IntRange(min=0),
+              help="Observed current managed fence; 0 only when no owner exists.")
+@click.option("--ttl-seconds", default=480, type=click.IntRange(1, 480))
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_delegate_publication(ctx: click.Context, **args) -> None:
+    """Delegate one fast-forward push to an idle named integration branch.
+
+    Local operator or live owning supervisor only; does not grant this caller
+    publication authority. The worker must explicitly select the returned grant.
+    """
+    _execute(ctx, "integration_delegate_publication", args)
+
+
+@integration.command("revoke-publication")
+@click.option("--id", required=True, help="Delegation identity to revoke.")
+@click.option("--project-id", required=True)
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_revoke_publication(ctx: click.Context, **args) -> None:
+    """Revoke a delegation and release only its still-current target fence."""
+    _execute(ctx, "integration_revoke_publication", args)
+
+
+@integration.command("clear-retained-recovery")
+@click.option("--project-id", required=True)
+@click.option("--incident-id", default=None, help="Clear only this incident.")
+@click.pass_context
+@_handle_errors
+def integration_clear_retained_recovery(
+    ctx: click.Context, project_id: str, incident_id: str | None
+) -> None:
+    """Lift a retained Git cache admission hold once a full fsck is clean."""
+    args = {"project_id": project_id}
+    if incident_id is not None:
+        args["incident_id"] = incident_id
+    _execute(ctx, "integration_clear_retained_recovery", args)
 
 
 @integration.command("release-stale-owners")
@@ -427,6 +725,33 @@ def integration_close_delivered_pr(
     _execute(ctx, "integration_close_delivered_pr", args)
 
 
+@integration.command("fast-forward-pr")
+@click.option("--task-id", required=True, help="Completed repair task whose head to adopt.")
+@click.option("--pr", "pr_number", required=True, type=click.IntRange(min=1), help="Root PR.")
+@click.option("--apply", is_flag=True, help="Push the repair head; default is a dry run.")
+@click.option("--head", "expected_head_sha", help="Exact PR head reported by the dry run.")
+@click.option("--reason", help="Audit reason required when applying.")
+@click.pass_context
+@_handle_errors
+def integration_fast_forward_pr(
+    ctx: click.Context, task_id: str, pr_number: int, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Fast-forward a root PR's branch to a separately filed repair's published head.
+
+    The dry run reports `would_publish` or `already_published` with the PR head
+    (`previous_oid`) and the repair's passing head (`published_oid`). `--apply`
+    needs that PR head and a reason; it pushes under a server-acquired branch
+    lease. Protected targets, live writers, moved heads and non-descendants refuse.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "pr_number": pr_number, "dry_run": not apply}
+    args.update({k: v for k, v in (("expected_head_sha", expected_head_sha),
+                                   ("reason", reason)) if v is not None})
+    _execute(ctx, "integration_fast_forward_pr", args)
+
+
 @integration.command("redrive-root")
 @click.argument("task_id")
 @click.option("--apply", is_flag=True, help="Open the missing PR; default is a dry run.")
@@ -464,8 +789,6 @@ def integration_redrive_root(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_root", args)
-
-
 
 
 @integration.command("authorize-root")
@@ -506,6 +829,8 @@ def integration_authorize_root(
 
 @integration.command("redrive-child")
 @click.argument("task_id")
+@click.option("--adopt-source", is_flag=True,
+              help="Retain a missing completion source after verifying its published head.")
 @click.option(
     "--apply", is_flag=True, help="Advance the child into assembly; default is a dry run."
 )
@@ -520,6 +845,7 @@ def integration_authorize_root(
 def integration_redrive_child(
     ctx: click.Context,
     task_id: str,
+    adopt_source: bool,
     apply: bool,
     expected_head_sha: str | None,
     reason: str | None,
@@ -532,16 +858,56 @@ def integration_redrive_child(
     child's origin base) and answers `would_advance`, `nothing_to_redrive`,
     `blocked` or `not_eligible` with the reason and the head.  `--apply` needs
     that head and a reason: it records approved evidence for exactly that head
-    and queues the parent's collection.
+    and queues the parent's collection. In Git-first mode delivery belongs to
+    the train. Use --adopt-source to preview retaining an older leaf's missing
+    completion source; --apply --head and --reason retain that exact generation
+    without granting review or declaring delivery.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")
     args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if adopt_source:
+        args["adopt_source"] = True
     if expected_head_sha is not None:
         args["expected_head_sha"] = expected_head_sha
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_child", args)
+
+
+@integration.command("recover-completed-container")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--repository", "repository_id", required=True)
+@click.option("--branch", required=True, help="Exact task branch.")
+@click.option("--apply", is_flag=True, help="Apply the previewed checkpoint repair.")
+@click.option("--head", "expected_head_sha")
+@click.option("--completion", "expected_completion_id")
+@click.option("--generation", "expected_generation", type=click.IntRange(min=0))
+@click.option("--version", "expected_version", type=click.IntRange(min=0))
+@click.option("--origin-sha256", "expected_origin_sha256")
+@click.option("--snapshot-sha256", "expected_snapshot_sha256")
+@click.option("--reason")
+@click.pass_context
+@_handle_errors
+def integration_recover_completed_container(ctx: click.Context, task_id: str, **options) -> None:
+    """Preview a completed container's stale checkpoint repair from exact pass provenance.
+
+    Apply requires every identity printed by the preview and an audit reason.
+    Recovery changes only checkpoint provenance. Exact-source review, hosted CI
+    and normal train admission still control delivery.
+    """
+    apply = options.pop("apply")
+    if apply and any(options.get(key) is None for key in (
+        "expected_head_sha", "expected_completion_id", "expected_generation", "expected_version",
+        "expected_origin_sha256", "expected_snapshot_sha256", "reason",
+    )):
+        raise click.UsageError("--apply requires --head, --completion, --generation, --version, "
+                               "--origin-sha256, --snapshot-sha256 and --reason from preview")
+    _execute(ctx, "integration_recover_completed_container", {
+        "task_id": task_id, "dry_run": not apply,
+        **{key: value for key, value in options.items() if value is not None},
+    })
 
 
 @integration.command("reopen-collection")
@@ -594,146 +960,14 @@ def integration_reopen_collection(
     _execute(ctx, "integration_reopen_collection", args)
 
 
-@integration.command("rebind-repair")
-@click.option("--task-id", required=True)
-@click.option("--dry-run/--apply", default=True, help="Prove only, or reserve the proven candidate.")
-@click.option("--head", "expected_head_sha", help="Exact candidate head reported by dry-run; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_rebind_repair(
-    ctx: click.Context, task_id: str, dry_run: bool, expected_head_sha: str | None
-) -> None:
-    """Prove a live delegate's candidate against its current conflict intent.
-
-    Apply refreshes a stale stage and reserves the exact candidate under the
-    current intent. The attached repair session then performs the fenced push.
-    """
-    if not dry_run and not expected_head_sha:
-        raise click.UsageError("--apply requires --head from dry-run")
-    args: dict[str, Any] = {"task_id": task_id, "dry_run": dry_run}
-    if expected_head_sha is not None:
-        args["expected_head_sha"] = expected_head_sha
-    _execute(ctx, "integration_rebind_repair", args)
-
-
-@integration.command("recover-parent-head")
-@click.argument("operation_id")
-@click.option("--head", "head_sha", required=True, help="Exact published aggregate commit SHA.")
-@click.option("--dry-run/--apply", default=True)
-@click.option("--episode", "expected_episode_id", help="Episode from preview.")
-@click.option("--generation", "expected_generation", type=int, help="Generation from preview.")
-@click.option("--stage", "expected_stage", type=int, help="Repair stage from preview.")
-@click.option("--fence", "expected_fence_token", type=int, help="Current owner fence from preview.")
-@click.option("--reason", help="Operator reason; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_recover_parent_head(
-    ctx, operation_id, head_sha, dry_run, expected_episode_id, expected_generation,
-    expected_stage, expected_fence_token, reason,
-):
-    """Prove a completed parent repair and any subsequent child collection.
-
-    Apply advances the aggregate checkpoint and requires fresh verification.
-    """
-    if not dry_run and (
-        not expected_episode_id or expected_generation is None or expected_stage is None
-        or expected_fence_token is None or not (reason or "").strip()
-    ):
-        raise click.UsageError("--apply requires --episode, --generation, --stage, --fence and --reason")
-    args = {"operation_id": operation_id, "head_sha": head_sha, "dry_run": dry_run}
-    for key, value in (("expected_episode_id", expected_episode_id),
-                       ("expected_generation", expected_generation), ("expected_stage", expected_stage),
-                       ("expected_fence_token", expected_fence_token), ("reason", reason)):
-        if value is not None:
-            args[key] = value
-    _execute(ctx, "integration_recover_parent_head", args)
-
-
-@integration.command("recover-preserved-repair")
-@click.argument("operation_id")
-@click.option("--intent", "intent_id", required=True, help="Exact current conflict intent.")
-@click.option("--candidate", "candidate_sha", required=True, help="Exact preserved commit SHA.")
-@click.option("--dry-run/--apply", default=True, help="Prove only, or publish the proven resolution.")
-@click.option("--stage", "expected_stage", type=int, help="Stage from preview.")
-@click.option("--released-fence", "expected_released_fence", type=int, help="Released fence from preview.")
-@click.option("--reason", help="Operator reason; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_recover_preserved_repair(
-    ctx, operation_id, intent_id, candidate_sha, dry_run,
-    expected_stage, expected_released_fence, reason,
-):
-    """Recover a completed parent resolution preserved by owner recovery.
-
-    Keeps exhausted deadlines and consumed attempts. Parent verification and
-    human gates still apply. No new repair stage or writer is started.
-    """
-    if not dry_run and (expected_stage is None or expected_released_fence is None or not reason):
-        raise click.UsageError("--apply requires --stage, --released-fence and --reason")
-    args = {"operation_id": operation_id, "intent_id": intent_id,
-            "candidate_sha": candidate_sha, "dry_run": dry_run}
-    for key, value in (("expected_stage", expected_stage),
-                       ("expected_released_fence", expected_released_fence), ("reason", reason)):
-        if value is not None:
-            args[key] = value
-    _execute(ctx, "integration_recover_preserved_repair", args)
-
-
-@integration.command("rebind-detached-repair")
-@click.argument("operation_id")
-@click.option("--dry-run/--apply", default=True, help="Prove only, or rebind the proven stage.")
-@click.option("--stage", "expected_stage", type=int, help="Stage ordinal reported by dry-run.")
-@click.option(
-    "--remote-head", "expected_remote_head_sha",
-    help="Published parent head reported by dry-run; required with --apply.",
-)
-@click.option("--reason", help="Why the stage is rebound; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_rebind_detached_repair(
-    ctx: click.Context,
-    operation_id: str,
-    dry_run: bool,
-    expected_stage: int | None,
-    expected_remote_head_sha: str | None,
-    reason: str | None,
-) -> None:
-    """Rebind OPERATION_ID's detached debug stage to its conflict at the published head.
-
-    For a parent repair whose stage is frozen on a commit the parent branch never
-    received, so no delegate can be admitted. Apply moves only the stage's
-    starting commit and trigger, keeps its deadline, attempts and fence, and
-    readies the same delegate. Nothing is pushed or recorded as delivered.
-    """
-    if not dry_run and not (expected_stage is not None and expected_remote_head_sha and reason):
-        raise click.UsageError("--apply requires --stage, --remote-head and --reason")
-    args: dict[str, Any] = {"operation_id": operation_id, "dry_run": dry_run}
-    if expected_stage is not None:
-        args["expected_stage"] = expected_stage
-    if expected_remote_head_sha is not None:
-        args["expected_remote_head_sha"] = expected_remote_head_sha
-    if reason is not None:
-        args["reason"] = reason
-    _execute(ctx, "integration_rebind_detached_repair", args)
-
-
-@integration.command("recover-candidate-member")
-@click.argument("reservation_id")
-@click.pass_context
-@_handle_errors
-def integration_recover_candidate_member(ctx: click.Context, reservation_id: str) -> None:
-    """Resolve one pushed frozen candidate-member repair reservation."""
-    _execute(ctx, "integration_recover_candidate_member", {"reservation_id": reservation_id})
-
-
 # ---------------------------------------------------------------------------
 # App-mode diagnostics and trust manifests
 # ---------------------------------------------------------------------------
 
 
-
 def _trust_manifest_write_command(
-    project_id: str, policy_path: str | None, repository_id: str | None
+    project_id: str, policy_path: str | None, repository_id: str | None,
+    hosted_check_policy_path: str | None = None,
 ) -> str:
     import shlex
 
@@ -742,6 +976,8 @@ def _trust_manifest_write_command(
     parts = ["aq", "integration", "trust-manifest", project_id]
     if policy_path:
         parts += ["--policy", policy_path]
+    if hosted_check_policy_path:
+        parts += ["--hosted-check-policy", hosted_check_policy_path]
     if repository_id:
         parts += ["--repository-id", repository_id]
     parts += ["--write", TRUST_MANIFEST_PATH]
@@ -752,6 +988,9 @@ def _trust_manifest_write_command(
 @click.argument("project_id")
 @click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
               help="Build from this policy JSON instead of the project's bound policy.")
+@click.option("--hosted-check-policy", "hosted_check_policy_path",
+              type=click.Path(exists=True, dir_okay=False),
+              help="Build from CI-only JSON (version, names, producer_id, optional check_sets).")
 @click.option("--repository-id",
               help="Integration repository id (default: the project's designated one).")
 @click.option("--write", "write_path", type=click.Path(dir_okay=False),
@@ -766,6 +1005,7 @@ def integration_trust_manifest(
     ctx: click.Context,
     project_id: str,
     policy_path: str | None,
+    hosted_check_policy_path: str | None,
     repository_id: str | None,
     write_path: str | None,
     check: bool,
@@ -773,7 +1013,8 @@ def integration_trust_manifest(
 ) -> None:
     """Render PROJECT_ID's App-mode trust manifest (.github/agent-queue-integration.json).
 
-    The daemon builds it from the policy (--policy FILE, else the bound one),
+    The daemon builds it from --policy FILE, --hosted-check-policy FILE
+    (CI inputs without hierarchical routes), or the bound policy,
     the authenticated GitHub binding and its own App, and compares the copy
     committed on the default branch.  --write writes the canonical text,
     --print prints it, and --check exits 1 when the committed copy is missing
@@ -781,7 +1022,6 @@ def integration_trust_manifest(
     warning, because the frozen policy snapshot owns the check set.  Read-only;
     refused under existing-login credentials (not_app_mode).
     """
-    import json
     from pathlib import Path
 
     modes = [name for name, chosen in (
@@ -790,58 +1030,57 @@ def integration_trust_manifest(
     if len(modes) != 1:
         raise click.UsageError("pass exactly one of --write PATH, --check and --print")
     mode = modes[0]
-    args: dict[str, Any] = {"project_id": project_id}
-    if policy_path:
-        try:
-            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
-    if repository_id:
-        args["repository_id"] = repository_id
-
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _request():
-        async with _get_client(api_url) as client:
-            return await client.execute("integration_trust_manifest", args)
-
-    data = dict(_run(_request()))
+    args = _app_mode_args(project_id, policy_path, repository_id, hosted_check_policy_path)
+    args.pop("policy_path", None)
+    data = dict(_request(ctx, "integration_trust_manifest", args))
     if mode == "write":
         Path(write_path).write_text(data["text"], encoding="utf-8")
         data["written"] = write_path
-    fix = _trust_manifest_write_command(project_id, policy_path, repository_id)
+    fix = _trust_manifest_write_command(
+        project_id, policy_path, repository_id, hosted_check_policy_path,
+    )
     data["write_command"] = fix
     emit(ctx, data, render=lambda value: _render_trust_manifest(value, mode=mode, fix=fix))
     if mode == "check" and not _check_verdict(data.get("committed") or {})[0]:
         raise SystemExit(1)
 
 
+integration_trust_manifest._aq_backend_command = "integration_trust_manifest"
+
+
+def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in document:
+            raise ValueError(f"duplicate field {name!r}")
+        document[name] = value
+    return document
+
+
 def _app_mode_args(
-    project_id: str, policy_path: str | None, repository_id: str | None
+    project_id: str, policy_path: str | None, repository_id: str | None,
+    hosted_check_policy_path: str | None = None,
 ) -> dict[str, Any]:
     import json
     from pathlib import Path
 
+    if policy_path and hosted_check_policy_path:
+        raise click.UsageError("--policy and --hosted-check-policy are mutually exclusive")
     args: dict[str, Any] = {"project_id": project_id}
-    if policy_path:
+    input_path = hosted_check_policy_path or policy_path
+    if input_path:
         try:
-            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+            document = json.loads(
+                Path(input_path).read_text(encoding="utf-8"), object_pairs_hook=_unique_fields,
+            )
         except (OSError, ValueError) as exc:
-            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+            raise click.UsageError(f"cannot read the policy {input_path}: {exc}") from exc
+        args["hosted_check_policy" if hosted_check_policy_path else "policy"] = document
+    if policy_path:
         args["policy_path"] = policy_path
     if repository_id:
         args["repository_id"] = repository_id
     return args
-
-
-def _app_verify(ctx: click.Context, args: dict[str, Any]) -> dict[str, Any]:
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _request():
-        async with _get_client(api_url) as client:
-            return await client.execute("integration_app_verify", args)
-
-    return dict(_run(_request()))
 
 
 def _app_item(data: dict[str, Any], item_id: str) -> dict[str, Any]:
@@ -909,10 +1148,13 @@ def _render_app_verify(data: dict[str, Any]) -> None:
               help="Verify against this policy JSON instead of the project's bound policy.")
 @click.option("--repository-id",
               help="Integration repository id (default: the project's designated one).")
+@click.option("--repository-access-only", is_flag=True,
+              help="Verify repository access before integration is configured.")
 @click.pass_context
 @_handle_errors
 def integration_app_verify(
-    ctx: click.Context, project_id: str, policy_path: str | None, repository_id: str | None
+    ctx: click.Context, project_id: str, policy_path: str | None, repository_id: str | None,
+    repository_access_only: bool = False,
 ) -> None:
     """Check everything PROJECT_ID's App credential mode depends on.
 
@@ -923,7 +1165,10 @@ def integration_app_verify(
     name and every warn a status warning.  Read-only; exits 1 when an item
     fails.  --json carries expected.ruleset, the target ruleset JSON.
     """
-    data = _app_verify(ctx, _app_mode_args(project_id, policy_path, repository_id))
+    args = _app_mode_args(project_id, policy_path, repository_id)
+    if repository_access_only:
+        args["repository_access_only"] = True
+    data = dict(_request(ctx, "integration_app_verify", args))
     emit(ctx, data, render=_render_app_verify)
     if not data.get("ready"):
         raise SystemExit(1)
@@ -1067,7 +1312,7 @@ def integration_app_setup(
     writes repository files and never applies a ruleset.
     """
     args = _app_mode_args(project_id, policy_path, repository_id)
-    verify = _app_verify(ctx, args)
+    verify = dict(_request(ctx, "integration_app_verify", args))
     full_name = verify.get("full_name")
     expected = verify.get("expected") or {}
 
@@ -1082,7 +1327,7 @@ def integration_app_setup(
         applied = [
             {"name": argv[3], "command": _shlex_join(argv), **_run_gh(argv)} for argv in commands
         ]
-        reverified = _app_item(_app_verify(ctx, args), "variables")
+        reverified = _app_item(_request(ctx, "integration_app_verify", args), "variables")
 
     manifest_item = _app_item(verify, "manifest")
     protection_item = _app_item(verify, "protection")
@@ -1124,7 +1369,6 @@ def _shlex_join(argv: list[str]) -> str:
     import shlex
 
     return shlex.join(argv)
-
 
 
 def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:

@@ -28,6 +28,14 @@ describe("EpicDeliveryBadge", () => {
     expect(within(badge as HTMLElement).getByText(headline)).toBeInTheDocument();
   });
 
+  it.each(Object.entries(EPIC_DELIVERY))("%s keeps the detail views' dark tone, not the graph's theme tokens", (_name, delivery) => {
+    // The graph tokens switch with the graph's light theme while the detail
+    // views stay dark, which took this badge to about 3:1 there.
+    const { container } = render(<EpicDeliveryBadge delivery={delivery} now={NOW} />);
+    const badge = container.querySelector(`[data-delivery-state="${delivery.state}"]`)!;
+    expect(badge.className).not.toMatch(/(^|\s)(bg|text)-g-/);
+  });
+
   it("gives every delivery state its own icon", () => {
     const icons = new Map<string, string>();
     for (const delivery of Object.values(EPIC_DELIVERY)) {

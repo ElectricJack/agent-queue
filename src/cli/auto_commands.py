@@ -26,19 +26,29 @@ from src.tools.command_catalogue import load_command_catalogue
 
 _CATALOGUE = load_command_catalogue()
 _ALL_TOOL_DEFINITIONS = _CATALOGUE["explicit"]
-_CATEGORY_DESCRIPTIONS = _CATALOGUE["categories"]
+_CATEGORY_DESCRIPTIONS = {
+    **_CATALOGUE["categories"],
+    "ask": "Human requests, discussion and prepared decisions.",
+}
 _CLI_CATEGORY_OVERRIDES = _CATALOGUE["cli_category_overrides"]
 _TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    "policy_export",
+    "policy_diff",
+    "policy_apply",
+    "create_project",
     "remove_task",
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "promote_request",
+    "promote_hotfix",
     "promote_approve",
     "promote_cancel",
+    "promote_repair",
     "promote_status",
     "promote_list",
     # pool_provider.py mounts schema-generated status/apply in a nested group
@@ -107,10 +117,19 @@ HANDCRAFTED_COVERAGE = {
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
     "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "message_wait",
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+    "wait_decide", "wait_lift", "wait_legacy_bridge",
     # collaboration.py — positional THREAD ids and --claim-epoch resolution.
     "collaboration_create",
     "collaboration_accept",
@@ -124,30 +143,32 @@ HANDCRAFTED_COVERAGE = {
     "review_submit",
     "review_dispatch",
     # projects.py — composite/UX-heavy commands only
-    "edit_project",
     "set_default_branch",
     "onboard_project",
+    "bind_project_repository",
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_release_held_gate",
     "integration_status",
+    "integration_continue_close",
     "integration_trust_manifest",
     "integration_app_verify",
     "integration_reevaluate_repair",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_redrive_root",
     "integration_authorize_root",
     "integration_redrive_child",
+    "integration_recover_completed_container",
     "integration_reopen_collection",
-    "integration_rebind_repair",
-    "integration_rebind_detached_repair",
-    "integration_recover_preserved_repair",
-    "integration_recover_parent_head",
     "integration_close_delivered_pr",
-    "integration_resolve_candidate_member",
-    "integration_recover_candidate_member",
+    "integration_fast_forward_pr",
     "integration_record_root_noop",
+    "integration_supersede_completion",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",
@@ -179,7 +200,10 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
     "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 
@@ -425,6 +449,8 @@ def _strip_category_prefix(cmd_name: str, category: str) -> str:
 
     Falls back to the full name if stripping would leave nothing useful.
     """
+    if cmd_name == "ask_prepare_decision" and category == "ask":
+        return "prepare"
     singular = category.rstrip("s")
     plural = singular + "s"
 
@@ -701,10 +727,10 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     for cmd_name, defn in tool_map.items():
         if cmd_name in HANDCRAFTED_COVERAGE or cmd_name in EXCLUDED:
             continue
-        # Determine category: check _TOOL_CATEGORIES, then overrides, then plugins
+        # CLI overrides intentionally take precedence over the shared API/MCP category.
         cat = (
-            _TOOL_CATEGORIES.get(cmd_name)
-            or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            or _TOOL_CATEGORIES.get(cmd_name)
             or plugin_categories.get(cmd_name)
         )
         if cat:

@@ -29,11 +29,13 @@ that ran `aq inbox --inject` was removed on 2026-08-27. Pending messages
 reach you when `aq prime` runs (start, resume, post-compact) and through
 the cascade's nudge, which types a one-line pointer into the session once it
 goes idle: ``Handle `aq message status <id> --json`.`` Run that command to
-read the body. The nudge has already marked the message delivered, so
-`aq message inbox` no longer lists it. A plain session may read the status
+read the body. The nudge records a notification attempt; the message stays
+in `aq message inbox` until its recipient reads it or inbox/prime injects
+the body. Unread notifications retry with bounded backoff, then alert the
+global supervisor once. Operator status inspections do not consume mail.
+A plain session may read the status
 only of messages addressed to its own session, held task or profile;
-anything else answers "not found". (A task comment is the exception: its
-body is typed in directly.) `aq inbox --inject` is still a supported command,
+anything else answers "not found". `aq inbox --inject` is still a supported command,
 so run it yourself when you want the queue rendered inline mid-task;
 `aq message inbox` is the same queue as data.
 
@@ -53,12 +55,21 @@ aq message status <message-id>
 
 When the guidance answers a worker's message, pass that message's id with
 `--reply-to <message-id>`. The guidance then joins the message's thread, which
-is what a worker's durable message wait (`aq wait register --kind message
---ref <thread>`) waits for; guidance sent without it never satisfies that wait:
+is what a worker's verified message condition waits for; guidance sent without it
+never satisfies that wait:
 
 ```bash
 aq agent message <task-id> "Filed: fresh-ember and .1-.9." --reply-to <message-id>
 ```
+
+Guidance from a project supervisor's own session is signed
+`session:supervisor-<project>`, so the worker answers it with
+`aq message reply <guidance-id>` and the reply lands back in that mailbox on
+the same thread. Guidance from the operator CLI, automation or the global
+supervisor is signed `system:supervisor` and cannot be replied to; a worker
+answers those with `aq message send --to session:supervisor-<project>`.
+A worker can reply only to messages addressed to its own mailboxes, and the
+reply's sender is always that mailbox.
 
 Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
@@ -81,6 +92,33 @@ aq message send --to task:<task_id> \
 
 Recipients use `KIND:ID` syntax. `dashboard` is the canonical ID for the
 human operator; other recipient IDs identify the specific session or task.
+
+Omit sender flags for ordinary authenticated session sends. The server derives
+`session:<your session UUID>` from the current authenticated launch and live
+claim, so a supervisor's `aq message reply` returns to your mailbox. Pool sends
+carry the claim epoch automatically from `.aq/claim.json`. Local human/operator
+or script calls without an authenticated session default to `user:cli` and may
+provide explicit senders. A session may explicitly name only its own UUID; a
+live named supervisor may also use its own canonical supervisor addresses.
+Sessions cannot impersonate users or other sessions. Collaboration and scoped
+global reports keep their dedicated server-derived attribution.
+
+If the running daemon/CLI predates this fix, use the supported explicit sender
+workaround until delivery. Read the held session UUID from `.aq/claim.json` or
+prime; it supplies an address, never extra authority:
+
+```bash
+aq message send --to session:supervisor-<pid> --project <pid> \
+  --from-kind session --from-id <held-session-UUID> \
+  --thread-id <unique-thread> --body "Blocked: <task and decision needed>" --json
+aq wait register --kind message --ref <unique-thread> \
+  --after-seq <sent-message-created_seq> --idempotency-key <stable-key>
+```
+
+Register once and end the turn; consume the returned wait ID when notified.
+An old `user:cli` report does not confer ownership of its thread. Do not retry
+an unauthorized wait or change its authorization; send an owned report instead.
+Source validation does not mean this fix is loaded in the operator daemon.
 
 ## Reply
 
@@ -136,6 +174,35 @@ See `docs/guides/escalations.md` for the full model.
 
 ## Message delivery model (why messages are reliable)
 
+### Recurring prompts on every harness
+
+Use AQ's supported `aq cron` commands for recurring prompt wake-ups on Codex,
+Claude and other harnesses. No native scheduling tool or shell loop is needed.
+Register with a stable key; identical startup retries recover the same ID:
+
+```bash
+aq cron register --every 900 --offset 120 --idempotency-key patrol-v1 \
+  --prompt 'Run the authorized patrol and handle its findings.'
+aq cron register --cron '15 9 * * *' --timezone America/Los_Angeles \
+  --idempotency-key daily-v1 --prompt 'Run the authorized morning check.'
+aq cron list --json
+aq cron show SCHEDULE_ID --consume --json
+aq cron cancel SCHEDULE_ID
+```
+
+Registration never executes immediately. Intervals align to epoch multiples plus
+offset; 900/120 fires at :02/:17/:32/:47 UTC. Simple cron accepts minute 0–59,
+`*` or `*/N`, hour 0–23 or `*`, and requires `* * *` for the remaining fields.
+The IANA timezone defaults to UTC. Show/list expose next-fire and delivery diagnostics.
+Missed ticks coalesce into one pending message; busy owners defer delivery, which
+has five attempts with backoff and a one-hour expiry. A daemon restart retains
+the same session instance; ending/replacing that instance expires its schedules.
+A worker's claim ending also expires its schedules; cron grants no lease exemption.
+Global supervisors leave project unset and can register/list their own patrol.
+`--consume` consumes only the schedule's notification. Scheduling grants no extra
+authority to execute its prompt. See `docs/guides/agent-cron.md` for the lifecycle
+and installed grant/skill drift workflow.
+
 - Every message row is persisted before dispatch — daemon restarts don't
   lose them.
 - Delivery is per-`to_kind` (session / task / user). The daemon retries
@@ -181,20 +248,23 @@ daemon de-duplicates it and does not double-count against the thread's budget.
 The `--client-key` is the only send-side flag collaboration-specific; everything
 else is the ordinary message send you already know.
 
-To wait on a reply from a peer, use the ordinary durable message wait with the
-thread id as the referral:
+When prime reports waits enabled for the project, wait on a peer reply using the
+ordinary durable message wait with the thread id as the referral. If waits are
+disabled or registration returns `wait.disabled`, preserve the claim and end the
+turn awaiting inbox delivery; do not retry registration or poll:
 
 ```bash
 aq wait register --kind message --ref <thread-id> --after-seq <cursor> \
-  --idempotency-key turn-1-retry --timeout 3600
+  --idempotency-key turn-1-retry
 ```
 
-The wait resolves on the first collaboration message after your cursor. It
-also resolves in terminal in four ways that never require a re-register:
-`peer_failed` (a peer went FAILED or BLOCKED), `peer_gone` (all peers are
-terminal, archived, or missing), `thread_closed` (the thread reached a
-terminal state, or the deadline passed), and `partner_not_running` (no peer is
-running after a 120-second grace). See [agent-waits.md](/docs/guides/agent-waits.md)
-for the full wait contract and doctor checks.
+The verified wait resolves on a source outcome after your cursor. Register once
+and end the turn. AQ chooses sleep and delivers the outcome; inspect its result
+reference before continuing. An unavailable peer or source is an explicit outcome,
+not proof the requested work succeeded. Operational deadlines escalate to the
+supervisor without resetting wait age or waking the worker. Human waits have no
+automatic deadline; the supervisor decides or lifts with explicit evidence.
+See [agent-waits.md](/docs/guides/agent-waits.md) for the checkpoint and
+acknowledgement protocol.
 
 Full worker guide: [agent-collaboration.md](/docs/guides/agent-collaboration.md).
