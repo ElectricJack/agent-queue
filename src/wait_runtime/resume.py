@@ -21,8 +21,9 @@ from src.waits.conditions import WaitError
 from src.waits.admission import AdmissionReader
 
 from src.waits.graph import background_graph_work, lock_graph
-from src.wait_runtime.hibernate import locked_suspension
+from src.wait_runtime.hibernate import locked_suspension, suspension_writer
 from src.waits.mail import held_messages
+from src.waits.resume_ack import bind_live_claim
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
 
@@ -32,6 +33,10 @@ WORKSPACE_CAPACITY_REASONS = frozenset({'slots_full', 'slot_warming', 'slot_lost
 WORKSPACE_CAPACITY_BACKOFF_MAX = 60
 # Outlast one listener batch's 30-second lease budget, including its handoff.
 RESUME_GRAPH_LOCK_TIMEOUT = 35.0
+# (base, ceiling) seconds between reservation attempts after a refusal. A
+# capacity wait looks again soon; a policy, provider or budget hold rarely clears.
+RESERVE_CAPACITY_BACKOFF = (5, 30)
+RESERVE_HOLD_BACKOFF = (10, 300)
 
 
 def retryable_workspace_error(exc):
@@ -150,7 +155,7 @@ class ResumeTransaction:
                     if idle:
                         await conn.execute(update(sessions).where(sessions.c.id == idle).values(
                             desired_state='stopped'))
-                return None
+                return await self._back_off(conn, intent, blocked, now)
             agent = Agent(id=str(uuid.uuid4()), name=f"resume-{continuation_id}",
                           profile_id=task['profile_id'], state=AgentState.BUSY,
                           current_task_id=task['id'], last_heartbeat=now,
@@ -164,13 +169,28 @@ class ResumeTransaction:
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved', version=intent['version'] + 1,
                 launch_attempts=intent['launch_attempts'] + 1,
-                facts={**intent['facts'], 'resume_attempt_started_at': now},
+                facts={**intent['facts'], 'resume_attempt_started_at': now, 'reserve_retry': None},
             ))
             await conn.execute(update(tasks).where(tasks.c.id == task['id']).values(
                 assigned_agent_id=agent.id, updated_at=now,
             ))
             return AssignAction(agent.id, task['id'], task['project_id'],
                                 continuation_id=intent['id'], generation=generation)
+
+    async def _back_off(self, conn, intent, blocked, now):
+        """Record when to look at a refused reservation again, and why it waits.
+
+        Retrying each tick would retake the graph lock only to observe the same
+        blocker. ``blocked`` lets occupancy drop a policy, provider or budget
+        hold from queued pool demand: only a capacity refusal wants a seat.
+        """
+        refusals = (intent['facts'].get('reserve_retry') or {}).get('refusals', 0) + 1
+        base, ceiling = (RESERVE_CAPACITY_BACKOFF if blocked <= {'slot', 'workspace'}
+                         else RESERVE_HOLD_BACKOFF)
+        await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+            facts={**intent['facts'], 'reserve_retry': {
+                'refusals': refusals, 'due_at': now + min(ceiling, base * 2 ** (refusals - 1)),
+                'blocked': sorted(blocked)}}))
 
     async def fresh_workspace(self, action, task, agent, intent):
         """A newly provisioned directory, even when reusing a numbered slot.
@@ -396,6 +416,28 @@ class ResumeTransaction:
             if (intent['id'], intent['suspension_generation']) != (
                     args['continuation_id'], args['expected_generation']):
                 raise WaitError('continuation.stale_generation', 'held resume generation changed')
+            if (intent['resume_state'] == 'held' and intent['hold_reason'] == 'push_failed'
+                    and intent['stopped_at'] is None and task['status'] in {'WAITING', 'IN_PROGRESS'}
+                    and wait['cleared_at'] is None):
+                # The stored session can still say running after its process died.
+                # Requeue only schedules suspension; advance repeats provider death
+                # proof before any publication or checkout release.
+                await suspension_writer(conn, task, wait, intent)
+                audit = {'wait_id': wait['id'], 'continuation_id': intent['id'],
+                         'generation': intent['suspension_generation'], 'at': self.clock(),
+                         'note': args['note'], 'principal_kind': principal.kind,
+                         'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == intent['id'],
+                ).values(version=intent['version'] + 1, facts={
+                    **intent['facts'], 'resume_requeue': audit,
+                    'hibernation': {**intent['facts'].get('hibernation', {}), 'push_retry_at': 0},
+                }))
+                await conn.execute(insert(events).values(
+                    event_type='wait.resume_requeued', project_id=task['project_id'],
+                    task_id=task['id'], timestamp=audit['at'], payload=json.dumps(audit)))
+                return {'success': True, 'wait_id': wait['id'], 'decision': 'requeue',
+                        'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
             if (intent['resume_state'] != 'held' or task['status'] != 'RESUME_PENDING'
                     or intent['hold_reason'] not in {'resume_workspace_failed', 'resume_launch_failed'}
                     or wait['outcome'] == 'pending' or wait['cleared_at'] is not None):
@@ -471,6 +513,8 @@ class ResumeTransaction:
                 'session_id': record.id, 'instance_token': record.instance_token,
                 'claim_epoch': record.last_claim_epoch,
             }, conn=conn)
+            await bind_live_claim(conn, task_id=task['id'], agent_id=action.agent_id,
+                                  session_id=record.id, now=self.clock())
             held = await held_messages(conn, wait)
             ids = [m['id'] for m in held]
             envelope = wait_outcome_envelope(wait, intent, held_messages=ids)

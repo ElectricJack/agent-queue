@@ -241,6 +241,12 @@ class WaitLifecycle:
                 wait_records.c.session_id.is_not(None),
                 or_(continuations.c.resume_state.in_(("sleeping", "queued")), and_(
                     continuations.c.resume_state == "held",
+                    continuations.c.hold_reason == "push_failed",
+                    continuations.c.stopped_at.is_(None),
+                    func.coalesce(cast(continuations.c.facts["hibernation"][
+                        "push_retry_at"].astext, Float), 0) <= self.clock(),
+                ), and_(
+                    continuations.c.resume_state == "held",
                     continuations.c.hold_reason == "stop_uncertain",
                     continuations.c.stopped_at.is_(None),
                     func.coalesce(cast(continuations.c.facts["hibernation"][
@@ -298,8 +304,13 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
-            if max(intent['facts'].get(key, {}).get('due_at', 0)
-                   for key in ('workspace_retry', 'workspace_capacity')) > self.clock():
+            # A refused reservation or a full worktree pool backs off durably:
+            # retrying it each tick would retake the graph lock only to observe
+            # the same blocker.
+            facts = intent['facts']
+            if max((facts.get(key) or {}).get('due_at', 0)
+                   for key in ('workspace_retry', 'workspace_capacity', 'reserve_retry')
+                   ) > self.clock():
                 continue
             key = (intent["id"], intent["suspension_generation"])
             pending = self._resume_tasks.get(key)

@@ -25,10 +25,17 @@ import ast
 import pathlib
 import re
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.tables import metadata
+
+
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """These source and metadata scans never connect to a database."""
+
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REVISIONS = sorted((ROOT / "migrations" / "versions").glob("*.py"))

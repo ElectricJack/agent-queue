@@ -476,3 +476,68 @@ def test_eviction_does_not_turn_busy_work_or_free_idle_supply_into_a_victim():
         idle_session_ids=('idle',),
     )]})
     assert not starts
+
+
+def test_resume_demand_is_never_a_pool_start():
+    # stark-ember-97: a continuation needs a fresh process that resume
+    # admission launches itself, so its seat is withheld from the pool.
+    actions, _ = run(supply={K: PoolSupply()}, demand={K: 1}, bounds={K: (0, 5)},
+                     resume_demand={K: 1})
+    assert actions == []
+    actions, _ = run(supply={K: PoolSupply()}, demand={K: 3}, bounds={K: (0, 5)},
+                     resume_demand={K: 1})
+    assert [(a.kind, a.count) for a in actions] == [("start", 2)]
+
+
+def test_idle_claim_looping_session_does_not_cover_resume_demand():
+    sup = {K: PoolSupply(running_idle=1, idle_session_ids=["idle"])}
+    actions, since = run(supply=sup, demand={K: 1}, bounds={K: (0, 5)},
+                         resume_demand={K: 1})
+    assert actions == [] and since == {K: 1000.0}
+    actions, _ = run(supply=sup, demand={K: 1}, bounds={K: (0, 5)}, resume_demand={K: 1},
+                     surplus_since=since, now=1000.0 + 121)
+    assert [(a.kind, a.count, a.session_ids) for a in actions] == [("drain", 1, ("idle",))]
+
+
+def test_resume_seat_still_counts_toward_the_ceiling_and_eviction():
+    from src.scheduler import PlacementCandidate, place_pool_actions
+
+    # Two claimable tasks and one resume under max_active 2: one pool start.
+    actions, _ = run(supply={K: PoolSupply()}, demand={K: 3}, bounds={K: (0, 2)},
+                     resume_demand={K: 1})
+    assert [(a.kind, a.count) for a in actions] == [("start", 1)]
+    # A capacity-blocked resume may still recover a waiting writer's seat.
+    actions, _ = run(supply={K: PoolSupply(running_busy=1, evictable=1)}, demand={K: 1},
+                     bounds={K: (0, 1)}, global_cap=1, resume_demand={K: 1})
+    starts, drains, _ = place_pool_actions(actions=actions, candidates={K: [PlacementCandidate(
+        project_id='p', ready=1, live=1, project_live_total=1, project_cap=1,
+        workspace_capacity=0, quarantined=False, warm_floor=0, evictable=1, resume_ready=1,
+    )]})
+    assert [(s.reason, s.count) for s in starts] == [('evict', 1)] and not drains
+
+
+def test_placement_never_sends_a_pool_start_to_resume_only_demand():
+    from src.scheduler import PlacementCandidate, place_pool_actions
+
+    def cand(project_id, ready, resume_ready=0, idle=()):
+        return PlacementCandidate(
+            project_id=project_id, ready=ready, live=len(idle), project_live_total=len(idle),
+            project_cap=None, workspace_capacity=3, quarantined=False, warm_floor=0,
+            idle_session_ids=tuple(idle), resume_ready=resume_ready,
+        )
+
+    actions, _ = run(supply={K: PoolSupply()}, demand={K: 3}, bounds={K: (0, 5)},
+                     resume_demand={K: 2})
+    starts, _, _ = place_pool_actions(actions=actions, candidates={K: [
+        cand('a-resumes', 2, resume_ready=2), cand('b-claims', 1),
+    ]})
+    assert [(s.project_id, s.reason, s.count) for s in starts] == [('b-claims', 'deficit', 1)]
+    # An idle worker beside a resume is the drain's first choice, not protected.
+    drain = [a for a in run(
+        supply={K: PoolSupply(running_idle=2, idle_session_ids=["r", "c"])}, demand={K: 2},
+        bounds={K: (0, 5)}, resume_demand={K: 1}, surplus_since={K: 0.0}, now=500.0,
+    )[0] if a.kind == 'drain']
+    _, drains, _ = place_pool_actions(actions=drain, candidates={K: [
+        cand('z-resumes', 1, resume_ready=1, idle=['r']), cand('b-claims', 1, idle=['c']),
+    ]})
+    assert [(d.project_id, d.session_ids) for d in drains] == [('z-resumes', ('r',))]
