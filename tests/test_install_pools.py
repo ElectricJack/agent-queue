@@ -16,6 +16,7 @@ from src.install.pools import (
 )
 from src.profiles.catalog import CatalogProfile, ProfileActivation, render_rung_stub
 from src.profiles.parser import parse_profile
+from src.profiles.retired_defaults import retire_default
 
 TUNED = {"swarm": {"enabled": True}, "resources": {"max_concurrent_agents": 4}}
 
@@ -77,6 +78,20 @@ def test_a_cli_that_is_not_signed_in_gets_no_pool(tmp_path):
 
     assert result.created == ("standard-high-claude",)
     assert _config(tmp_path, "standard-high-codex")["lifecycle"] == "task"
+
+
+def test_retired_rungs_are_not_recreated_or_reported_from_retained_files(tmp_path):
+    claude = _rung(tmp_path, "claude", "standard-high")
+    codex = _rung(tmp_path, "codex", "standard-high")
+    ensure_default_pools(tmp_path, [_active(claude)], TUNED)
+    retire_default(str(tmp_path), claude.id)
+    retire_default(str(tmp_path), codex.id)
+
+    result = ensure_default_pools(tmp_path, [_active(claude), _active(codex)], TUNED)
+
+    assert result.pools == ()
+    assert configured_pools(tmp_path) == ()
+    assert _config(tmp_path, codex.id)["lifecycle"] == "task"
 
 
 def test_an_install_with_one_pool_gets_the_rest(tmp_path):
