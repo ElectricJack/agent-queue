@@ -1,5 +1,11 @@
 # Provider usage — implementation spec
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-07
 **Status:** ready to build
 **Design:** `docs/superpowers/specs/2026-09-07-provider-usage-design.md`

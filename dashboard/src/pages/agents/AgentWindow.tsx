@@ -1,71 +1,87 @@
 import { useEffect, useId, useState } from "react";
-import { XMarkIcon, CommandLineIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
-import type { FlockAgent } from "../../api/agents";
-import { AgentSubagents, AgentState, AgentEligibility } from "./AgentMetadata";
+import { CommandLineIcon, Cog6ToothIcon, ArrowPathIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+import { useRestartSupervisor, type FlockAgent } from "../../api/agents";
+import { AgentSubagents, AgentState, AgentEligibility, SupervisorHealth, supervisorScope } from "./AgentMetadata";
 import AgentSettings from "./AgentSettings";
 import AgentTerminal from "./AgentTerminal";
+import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
+import ChatConversation from "../chat/ChatConversation";
+import AgentShowTaskButton from "./AgentShowTaskButton";
 
-export default function AgentWindow({ agent, onClose, resetToken }: {
+export default function AgentWindow({ agent, onClose, resetToken, focusRequest }: {
   agent: FlockAgent;
   onClose: () => void;
   resetToken: string | null;
+  focusRequest: string | null;
 }) {
-  const [tab, setTab] = useState<"terminal" | "settings">("terminal");
+  const [tab, setTab] = useState<"terminal" | "settings" | "messages">("terminal");
+  const [resume, setResume] = useState(false);
+  const restart = useRestartSupervisor();
+  const supervisor = agent.role === "supervisor" || agent.id === "supervisor-global";
   const id = useId();
   useEffect(() => {
-    if (resetToken) setTab("terminal");
-  }, [resetToken]);
+    if (resetToken || focusRequest) setTab("terminal");
+  }, [resetToken, focusRequest]);
 
-  const tabs = [
+  const tabs: { id: "terminal" | "settings" | "messages"; label: string; Icon: typeof CommandLineIcon }[] = [
     { id: "terminal" as const, label: "Terminal", Icon: CommandLineIcon },
-    { id: "settings" as const, label: "Settings", Icon: Cog6ToothIcon },
+    ...(supervisor ? [{ id: "messages" as const, label: "Messages", Icon: ChatBubbleLeftRightIcon }] : []),
+    ...(!agent.session_backed ? [{ id: "settings" as const, label: "Settings", Icon: Cog6ToothIcon }] : []),
   ];
 
   return (
     <section aria-label={agent.name + " agent window"}
-      className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
-      <header className="shrink-0 border-b border-gray-800 bg-gray-900 px-3 py-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="truncate text-sm font-semibold text-gray-100">{agent.name}</h2>
-              <span className="text-[10px] capitalize text-gray-500"><AgentState agent={agent} /></span>
-              {agent.role === "supervisor" && <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-300">Supervisor</span>}
-            </div>
-            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-gray-500">
-              <span className="min-w-0 truncate text-xs text-gray-400" title={(agent.provider || "Provider unknown") + " · " + (agent.model || "Model unknown")}>
-                {agent.provider || "Provider unknown"} · {agent.model || "Model unknown"}
-              </span>
-              <span>Intelligence: {agent.intelligence_class || "Unknown"}</span>
-              <AgentSubagents agent={agent} />
-              <AgentEligibility agent={agent} />
-            </p>
-            <p className="mt-0.5 truncate text-xs text-gray-400" title={agent.current_task_title || agent.current_task_id || ""}>
-              {agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <div role="tablist" aria-label={agent.name + " view"} className="flex gap-3">
-              {tabs.map(({ id: key, label, Icon }) => (
-                <button key={key} type="button" role="tab" id={id + "-" + key}
-                  aria-controls={id + "-panel"} aria-selected={tab === key}
-                  onClick={() => setTab(key)}
-                  className={"flex items-center gap-1.5 rounded border px-2 py-1 text-xs "
-                    + (tab === key ? "border-indigo-400/60 bg-indigo-500/10 text-indigo-200" : "border-transparent text-gray-500 hover:text-gray-200")}>
-                  <Icon className="h-3.5 w-3.5" />{label}
-                </button>
-              ))}
-            </div>
-            <button type="button" aria-label={"Close " + agent.name + " view"} title="Close view (agent keeps running)" onClick={onClose}
-              className="shrink-0 rounded p-1 text-gray-500 hover:bg-gray-800 hover:text-gray-100">
-              <XMarkIcon className="h-4 w-4" />
+      className="flex min-h-96 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
+      <TerminalPane title={agent.name} status={<AgentState agent={agent} />} onClose={onClose} titleId={id + "-title"}
+        primary={<AgentShowTaskButton agent={agent} />}
+        tabs={<TerminalTabs label={agent.name + " view"} idPrefix={id} tabs={tabs} value={tab} onChange={setTab} />} details={<>
+        <div className="space-y-1">
+          <div>Role: {agent.role || "worker"}</div>
+          <div>Profile: {agent.profile_id}</div>
+          <div>{agent.provider || "Provider unknown"} · {agent.model || "Model unknown"}</div>
+          <div>Harness: {agent.harness || "unknown"}</div>
+          <div>Intelligence: {agent.intelligence_class || "Unknown"}</div>
+          <div><AgentSubagents agent={agent} /></div>
+          <div><AgentEligibility agent={agent} /></div>
+          <div>Task: {agent.current_task_title || agent.current_task_id || (supervisor ? supervisorScope(agent) : "Idle — no assigned task")}</div>
+          <SupervisorHealth agent={agent} />
+          {agent.current_task_id && <div>Task ID: {agent.current_task_id}</div>}
+          <div>Session: {agent.session_id || "No active session"} · {agent.session_state || "unknown"}</div>
+          {!supervisor && agent.project_id && <div>Attached project: {agent.project_id}</div>}
+        </div>
+        {agent.role === "supervisor" && !agent.session_backed && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <select data-primary-control aria-label="Restart conversation" value={resume ? "resume" : "fresh"}
+              disabled={restart.isPending}
+              onChange={(event) => { setResume(event.target.value === "resume"); restart.reset(); }}
+              className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300">
+              <option value="fresh">Fresh conversation</option>
+              <option value="resume">Resume conversation</option>
+            </select>
+            <button type="button" data-primary-control disabled={restart.isPending || !agent.session_id}
+              onClick={() => restart.mutate({
+                name: "supervisor-global", resume, session_id: agent.session_id!,
+              })}
+              className="flex items-center gap-1.5 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50">
+              <ArrowPathIcon className={"h-3.5 w-3.5" + (restart.isPending ? " animate-spin" : "")} />
+              {restart.isPending ? "Restarting…" : "Restart"}
             </button>
           </div>
-        </div>
-      </header>
-      <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-" + tab} className="min-h-0 flex-1 overflow-hidden">
-        {tab === "terminal" ? <AgentTerminal agent={agent} /> : <AgentSettings agent={agent} onDeleted={onClose} />}
+        )}
+        {restart.isError && <p role="alert" className="mt-2 text-xs text-red-400">{restart.error.message}</p>}
+        {restart.isSuccess && <p role="status" className="mt-2 text-xs text-gray-300">
+          Supervisor restarted {restart.data.mode === "resume" ? "with the prior conversation" : "with a fresh conversation"}.
+        </p>}
+      </>}>
+      <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-title"} className="min-h-0 flex-1 overflow-hidden">
+        {tab === "terminal" ? <AgentTerminal agent={agent} focusRequest={focusRequest} />
+          : tab === "messages" ? <div className="flex h-full min-h-0 flex-col p-3">
+            <ChatConversation key={agent.session_address || agent.id} projectId={agent.project_id ?? ""}
+              sessionAddress={agent.session_address || (agent.project_id ? "supervisor-" + agent.project_id : "supervisor-global")}
+              allThreads headerText={"Messages with " + agent.name} />
+          </div> : <AgentSettings agent={agent} onDeleted={onClose} />}
       </div>
+      </TerminalPane>
     </section>
   );
 }
