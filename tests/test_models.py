@@ -1,13 +1,24 @@
 from src.models import (
-    TaskStatus,
-    TaskEvent,
-    AgentState,
-    ProjectStatus,
-    VerificationType,
-    Project,
-    Task,
+    BLOCKING_DEP_TYPES,
+    DEP_TYPE_VALUES,
     Agent,
+    AgentState,
+    DepType,
+    Project,
+    ProjectStatus,
+    Task,
+    TaskEvent,
+    TaskStatus,
+    VerificationType,
 )
+
+
+def test_delivery_of_is_a_valid_blocking_dependency():
+    from src.database.tables import TASK_DEP_TYPES
+
+    assert DepType.DELIVERY_OF.value == "delivery-of"
+    assert "delivery-of" in BLOCKING_DEP_TYPES
+    assert DEP_TYPE_VALUES == frozenset(TASK_DEP_TYPES)
 
 
 class TestTaskStatus:
@@ -17,6 +28,9 @@ class TestTaskStatus:
             "READY",
             "ASSIGNED",
             "IN_PROGRESS",
+            "WAITING",
+            "HIBERNATED",
+            "RESUME_PENDING",
             "WAITING_INPUT",
             "PAUSED",
             "COMPLETED",
@@ -41,6 +55,15 @@ class TestTaskEvent:
             "HUMAN_REPLIED",
             "INPUT_TIMEOUT",
             "RESUME_TIMER",
+            "WAIT_REGISTERED",
+            "WAIT_ACKNOWLEDGED",
+            "HIBERNATION_COMMITTED",
+            "WAIT_RESOLVED",
+            "RESUME_HELD",
+            "MANUAL_PAUSE",
+            "UNPAUSE_RESUME",
+            "UNPAUSE_HIBERNATE",
+            "WAIT_REROUTED",
             "RETRY",
             "MAX_RETRIES",
             "MERGE_FAILED",
@@ -123,9 +146,9 @@ class TestWorkspacesV2:
 
     def test_workspace_attachment_set_helpers(self):
         from src.models import (
+            SYSTEM_KIND_SCOPE,
             RepoSourceType,
             ResolvedRequirement,
-            SYSTEM_KIND_SCOPE,
             Workspace,
             WorkspaceAttachment,
             WorkspaceAttachmentSet,
@@ -154,9 +177,9 @@ class TestWorkspacesV2:
 
     def test_primary_path_none_when_no_project_repo(self):
         from src.models import (
+            SYSTEM_KIND_SCOPE,
             RepoSourceType,
             ResolvedRequirement,
-            SYSTEM_KIND_SCOPE,
             Workspace,
             WorkspaceAttachment,
             WorkspaceAttachmentSet,

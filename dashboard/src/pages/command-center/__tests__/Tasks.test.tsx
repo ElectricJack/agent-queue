@@ -430,3 +430,37 @@ describe("below 768 px", () => {
     } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
   });
 });
+
+it("counts delivery-held work separately and filters it by the visible wait", () => {
+  const original = mocks.tasks;
+  mocks.tasks = [Object.assign({ ...original[0]!, status: "READY" }, {
+    claim_readiness: { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" },
+  })];
+  try {
+    mocks.filters.status = "WAITING_ON_DELIVERY";
+    render(<Tasks />);
+    expect(screen.getByRole("button", { name: "Ready: 0 tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting on delivery: 1 task" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Land source.6 on dev; refresh aq/epic").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally {
+    mocks.tasks = original;
+  }
+});
+
+it.each(["DEFINED", "IN_PROGRESS", "PAUSED", "READY"].flatMap((status) => ["", "24h"].map((window) => [status, window] as const)))
+  ("labels a held %s table row from canonical batch membership (window %s)", (status, window) => {
+  const original = mocks.tasks;
+  mocks.filters.window = window;
+  mocks.activityData = windowResponse([activityItem({ status })]);
+  mocks.tasks = [Object.assign({ ...original[0]!, status }, { held_batch: {
+    batch_id: "batch", state: "reviewing", structure_revision: 2,
+    source: "spec:approved", lineage: { lineage_kind: "none" },
+  } })];
+  try {
+    render(<Tasks />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally { mocks.tasks = original; }
+});
