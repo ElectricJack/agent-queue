@@ -229,7 +229,7 @@ async def test_delivery_wakes_idle_and_consumes_only_its_notification(setup):
         setup.env.db, lens, setup.config, cron_service=AgentCronService(setup.handler)
     )
     result = await engine.run_delivery_pass()
-    assert result["delivered"] == 1
+    assert result["delivered"] == 0
     assert lens.nudges == [
         ("session", "s", "p", f"Handle `aq cron show {row['id']} --consume --json`.")
     ]
@@ -238,15 +238,15 @@ async def test_delivery_wakes_idle_and_consumes_only_its_notification(setup):
     shown = await call(setup, "cron_get", {"schedule_id": row["id"]})
     assert shown["schedule"]["prompt"] == "Run the authorized patrol."
     assert shown["schedule"]["delivery_receipt"]["via"] == "nudge"
-    # The daemon clears its pending pointer before the agent may consume it.
+    # Notification alone keeps the pointer pending until the agent consumes it.
     await advance(setup, setup.clock[0] + 1)
-    assert (await setup.env.db.get_agent_cron(row["id"]))["pending_message_id"] is None
+    assert (await setup.env.db.get_agent_cron(row["id"]))["pending_message_id"] is not None
     consumed = await call(
         setup, "cron_get", dict(schedule_id=row["id"], consume=True, claim_epoch=1)
     )
     assert consumed["success"], consumed
     assert consumed["schedule"]["delivery_receipt"]["read_at"] == setup.clock[0]
-    assert consumed["schedule"]["delivery_receipt"]["via"] == "nudge"
+    assert consumed["schedule"]["delivery_receipt"]["via"] == "cron_consume"
     assert consumed["schedule"]["last_delivery_status"] == "consumed"
     assert (await setup.env.db.get_message(other.id)).delivered_at is None
 
@@ -293,15 +293,15 @@ async def test_task_claim_turnover_expires_schedule(setup):
     assert await pending_count(setup.env) == []
 
 
-async def global_owner(setup):
+async def global_owner(setup, project=None):
     await setup.env.db.create_session(
         SessionRecord(
             id="global-owner",
-            project_id=None,
+            project_id=project,
             profile_id="supervisor",
             harness="codex",
             provider="fake",
-            name="n-supervisor--global",
+            name=f"n-supervisor--{project or 'global'}",
             lifecycle="named",
             work_dir="/tmp/global-cron",
             epoch="boot",
@@ -310,7 +310,49 @@ async def global_owner(setup):
             state="running",
         )
     )
-    return scope("global-owner", "global-token", None, elevated=True)
+    return scope("global-owner", "global-token", project, elevated=True)
+
+
+@pytest.mark.parametrize("owner_kind", ["worker", "project_supervisor", "global_supervisor"])
+async def test_sleep_cancels_owner_schedules_and_pending_wakes_immediately(
+    setup, owner_kind
+):
+    supervisor = await global_owner(setup, project="p" if owner_kind == "project_supervisor" else None)
+    identity, other = (scope(), supervisor) if owner_kind == "worker" else (supervisor, scope())
+    first = (await register(setup, identity=identity))["schedule"]
+    second = (await register(setup, key="later", identity=identity))["schedule"]
+    foreign = (await register(setup, identity=other))["schedule"]
+    await advance(setup, first["next_fire_at"])
+
+    result = await setup.handler.execute("session_sleep", {"session_id": identity["session_id"]})
+
+    assert result["success"], result
+    for schedule in (first, second):
+        current = await setup.env.db.get_agent_cron(schedule["id"])
+        assert current["state"] == "cancelled"
+        assert current["stopped_at"] is not None
+    assert (await setup.env.db.get_agent_cron(foreign["id"]))["state"] == "active"
+    assert await pending_count(setup.env) == [f"cron:{foreign['id']}:1"]
+
+    # Repeating sleep is harmless; waking the same instance cannot revive its patrols.
+    await setup.handler.execute("session_sleep", {"session_id": identity["session_id"]})
+    await setup.env.db.update_session(identity["session_id"], desired_state="running")
+    assert (await register(setup, identity=identity))["schedule"]["state"] == "cancelled"
+    await advance(setup, first["next_fire_at"] + 3600)
+    assert (await setup.env.db.get_agent_cron(first["id"]))["state"] == "cancelled"
+
+
+async def test_sleep_and_schedule_cancellation_roll_back_together(setup, monkeypatch):
+    first = (await register(setup))["schedule"]
+    await advance(setup, first["next_fire_at"])
+    monkeypatch.setattr(setup.env.db, "_cron_stop", AsyncMock(side_effect=RuntimeError("db error")))
+
+    result = await setup.handler.execute("session_sleep", {"session_id": "s"})
+
+    assert "db error" in result["error"], result
+    assert (await setup.env.db.get_session("s")).desired_state == "running"
+    assert (await setup.env.db.get_agent_cron(first["id"]))["state"] == "active"
+    assert await pending_count(setup.env) == [f"cron:{first['id']}:1"]
 
 
 @pytest.mark.parametrize("project", [None, "p"])
@@ -375,7 +417,7 @@ async def test_global_unset_project_registration_reconnect_wake_and_no_extra_aut
     engine = MessageDeliveryEngine(
         setup.env.db, lens, setup.config, cron_service=AgentCronService(setup.handler)
     )
-    assert (await engine.run_delivery_pass())["delivered"] == 1
+    assert (await engine.run_delivery_pass())["delivered"] == 0
     assert lens.nudges[0][:3] == ("session", "global-owner", None)
     shown = await call(setup, "cron_get", dict(schedule_id=row["id"], consume=True), identity)
     assert shown["success"] and shown["schedule"]["prompt"] == row["prompt"]

@@ -19,14 +19,13 @@ import pytest
 
 from src.messages import Activity, SessionLens, SessionManagerProto
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Project, SessionRecord, Task
+from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle
 from src.sessions.spec import SessionSpecBuilder
-from tests.db_fixtures import lease_dsn
 
 
 def _supervisor_address(project_id: str) -> str:
@@ -58,14 +57,10 @@ def _supervisor_runtime_name(project_id: str) -> str:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
-    await database.create_project(Project(id="proj1", name="Proj1"))
+async def db(reuse_database):
+    database = await reuse_database("test.db")
+    await database.create_project(Project(id="proj1", name="Proj1", supervisor_enabled=True))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -357,6 +352,116 @@ class TestActivity:
 
 
 class TestEnsureStarted:
+    @pytest.mark.parametrize("resume", [False, True])
+    async def test_disabled_project_supervisor_refuses_explicit_restart(
+        self, db, lens, providers, resume,
+    ):
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        await db.update_project("proj1", supervisor_enabled=False)
+        with pytest.raises(ValueError, match="No named supervisor session to restart"):
+            await lens.restart_supervisor(
+                target_id="supervisor-proj1", project_id="proj1", resume=resume,
+                expected_session_id=row.id,
+            )
+        fake = providers.create("fake")
+        assert await fake.is_running(handle)  # the current turn may still finish
+        assert len(fake.starts) == 1
+        assert (await db.get_session(row.id)).desired_state == "stopped"
+
+    async def test_disabled_project_refuses_cold_start_and_existing_wake(self, db, lens, providers):
+        await db.update_project("proj1", supervisor_enabled=False)
+        # Every spelling a message or button can carry, including an alias
+        # that names no project and so resolves to the message's project.
+        for target, project_id in (
+            ("supervisor-proj1", "proj1"), ("supervisor-proj1", None),
+            ("n-supervisor--proj1", "proj1"), ("supervisor-aq", "proj1"),
+        ):
+            assert not await lens.ensure_started(
+                kind="session", target_id=target, project_id=project_id,
+            )
+        assert providers.create("fake").starts == []
+        assert await lens.activity(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        ) == "absent"
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        assert not await lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        )
+        for target in ("supervisor-proj1", row.name, row.id):
+            assert not await lens.nudge(
+                kind="session", target_id=target, project_id="proj1", text="wake",
+            )
+        assert providers.create("fake").sent_nudges == []
+        assert await providers.create("fake").is_running(handle)
+
+    async def test_paused_project_refuses_supervisor_start_and_wake(self, db, lens, providers):
+        """A paused project's supervisor must not be cold-started or woken.
+
+        ``ensure_started`` is the cold-start / wake path an inbound message or
+        button drives; pausing refuses it so nothing boots a second terminal.
+        (Nudging an already-running supervisor is gated separately on the
+        supervisor-enabled opt-out, and stopping the running one is the
+        reconciler's drain, covered in test_session_reconciler.)
+        """
+        await db.update_project("proj1", supervisor_enabled=True)
+        await db.update_project("proj1", status=ProjectStatus.PAUSED)
+        for target, project_id in (
+            ("supervisor-proj1", "proj1"), ("supervisor-proj1", None),
+            ("n-supervisor--proj1", "proj1"),
+        ):
+            assert not await lens.ensure_started(
+                kind="session", target_id=target, project_id=project_id,
+            )
+        assert providers.create("fake").starts == []
+        # An in-flight turn that is draining must not be re-woken either.
+        _row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        assert not await lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        )
+        assert await providers.create("fake").is_running(handle)
+        # The pause never changes the supervisor-enabled intent — it is
+        # recoverable on resume without operator action.
+        assert (await db.get_project("proj1")).supervisor_enabled is True
+
+    async def test_default_message_starts_only_global_and_opt_in_starts_project(
+        self, db, lens, providers, config,
+    ):
+        from src.config import MessagesConfig
+        from src.messages.delivery import MessageDeliveryEngine
+
+        await db.update_project("proj1", supervisor_enabled=False)
+        engine = MessageDeliveryEngine(db, lens, MessagesConfig())
+        await db.create_message(
+            project_id="proj1", from_kind="user", from_id="dashboard", to_kind="session",
+            to_id="supervisor-proj1", body="help",
+        )
+        await engine.run_delivery_pass()
+        fake = providers.create("fake")
+        assert [spec.session_name for spec in fake.starts] == ["n-supervisor--global"]
+        assert (await db.get_session_by_name("n-supervisor--global")).project_id is None
+        await db.update_project("proj1", supervisor_enabled=True)
+        assert len(fake.starts) == 1
+        await db.create_message(
+            project_id="proj1", from_kind="user", from_id="dashboard", to_kind="session",
+            to_id="supervisor-proj1", body="help locally",
+        )
+        await engine.run_delivery_pass()
+        assert [spec.session_name for spec in fake.starts] == [
+            "n-supervisor--global", "n-supervisor--proj1",
+        ]
+
+    async def test_reenable_message_reuses_a_supervisor_whose_turn_is_still_draining(
+        self, db, providers, lens,
+    ):
+        row, _ = await _seed_running_supervisor(db, providers, project_id="proj1")
+        await db.update_project("proj1", supervisor_enabled=False)
+        await db.update_project("proj1", supervisor_enabled=True)
+        assert await lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        )
+        assert (await db.get_session(row.id)).desired_state == "running"
+        assert len(providers.create("fake").starts) == 1
+
     async def test_refuses_task_kind(self, lens):
         assert await lens.ensure_started(kind="task", target_id="t1", project_id="proj1") is False
 
@@ -563,7 +668,7 @@ class TestEnsureStarted:
         project and the argument from another; see the delivery engine,
         which derives both from the same message row.
         """
-        await db.create_project(Project(id="proj2", name="Proj2"))
+        await db.create_project(Project(id="proj2", name="Proj2", supervisor_enabled=True))
         ok = await lens.ensure_started(
             kind="session", target_id=_supervisor_address("proj1"), project_id="proj2"
         )
@@ -1291,7 +1396,7 @@ class TestSupervisorAddressValidation:
         assert await db.list_sessions(name=_supervisor_runtime_name("aq")) == []
 
     async def test_existing_suffix_is_never_treated_as_an_alias(self, db, providers, scoped_lens):
-        await db.create_project(Project(id="proj2", name="Proj2"))
+        await db.create_project(Project(id="proj2", name="Proj2", supervisor_enabled=True))
         await _seed_running_supervisor(db, providers, project_id="proj1")
         # proj2's supervisor is asleep; proj1's live one must not answer for it.
         assert await scoped_lens.activity(
@@ -1337,10 +1442,21 @@ class TestSupervisorAddressValidation:
         """End to end through the delivery engine across repeated passes."""
         _row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
         providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        from sqlalchemy import update
+
+        from src.database.tables import messages
+
+        # Inserts now canonicalise a project-less supervisor alias to the
+        # message's own supervisor, so a historical row stored under the alias
+        # (written before that) is recreated by rewriting the stored address.
         legacy = await db.create_message(
             project_id="proj1", from_kind="user", from_id="cli", to_kind="session",
-            to_id="supervisor-aq", subject="historical", body="original body, preserved",
+            to_id="supervisor-proj1", subject="historical", body="original body, preserved",
         )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(messages).where(messages.c.id == legacy.id).values(to_id="supervisor-aq")
+            )
         orphan = await db.create_message(
             project_id=None, from_kind="user", from_id="cli", to_kind="session",
             to_id="supervisor-nowhere", subject="orphan", body="orphan body",
@@ -1350,14 +1466,17 @@ class TestSupervisorAddressValidation:
 
         results = [await engine.run_delivery_pass() for _ in range(3)]
 
-        assert [r["delivered"] for r in results] == [1, 0, 0]
+        assert [r["delivered"] for r in results] == [0, 0, 0]
         assert fake.sent_nudges == [
-            (handle.name, f"Handle `aq message status {legacy.id} --json`.")
+            (handle.name,
+             f"Handle `aq message status {legacy.id} --json` (running it marks the message read).")
         ]
-        delivered = await db.get_message(legacy.id)
-        assert delivered.delivered_at is not None and delivered.via == "nudge"
-        assert delivered.to_id == "supervisor-aq"  # the row itself is untouched
-        assert delivered.body == "original body, preserved"
+        notified = await db.get_message(legacy.id)
+        assert notified.delivered_at is None and notified.read_at is None
+        assert notified.via == "nudge" and notified.notification_attempts == 1
+        assert notified.last_notified_at is not None
+        assert notified.to_id == "supervisor-aq"  # the row itself is untouched
+        assert notified.body == "original body, preserved"
         # The undeliverable row never launched anything and stays pending.
         assert len(fake.starts) == 1  # only the seed
         pending = await db.get_message(orphan.id)

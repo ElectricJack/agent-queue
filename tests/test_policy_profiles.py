@@ -18,8 +18,12 @@ from src.event_bus import EventBus
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.database.tables import projects
 from src.policy_profiles.archive import files, pack, read_bundle, write_bundle
-from src.policy_profiles.models import Bundle, PromotionPolicy, TemplatePolicy
+from src.policy_profiles.models import (
+    Bundle, IntegrationSettings, PlaybookPolicy, PromotionPolicy, TemplatePolicy,
+)
 from src.policy_profiles.service import item
+from src.profiles.sync import sync_profile_text_to_db
+from tests.test_review_commands import decide
 
 MORNING = Path("tests/fixtures/playbooks/v2/morning-report")
 FLOW = [{"id": "release", "source": "main", "target": "stable", "type": "request"}]
@@ -97,7 +101,7 @@ async def test_builtin_default_uses_preview_placement_review_and_no_activation(e
         revision = await handler.db.get_review_revision(review["review_id"], 1)
         assert revision["playbook"]["playbook_id"].startswith("target.")
         assert not revision["playbook"]["activate_on_approval"]
-        approved = await handler.execute("review_decide", {
+        approved = await decide(handler, {
             "review_id": review["review_id"], "revision": 1, "decision": "approve",
         })
         assert approved["success"], approved
@@ -156,8 +160,8 @@ async def reviewed(handler, vault, identifier="morning-report"):
         },
     )
     assert submitted["success"], submitted
-    approved = await handler.execute(
-        "review_decide", {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"}
+    approved = await decide(
+        handler, {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"}
     )
     assert approved["success"] and approved["playbook"]["activated"], approved
 
@@ -302,6 +306,303 @@ def simple_bundle(*entries, placeholders=()):
     )
 
 
+@pytest.mark.parametrize("mode", ["disabled", "observe", "hierarchy", "train", "development"])
+def test_integration_settings_modes_validate_and_roundtrip(mode):
+    payload = IntegrationSettings(
+        engine="active", hierarchical_integration_mode=mode, default_branch="main",
+    )
+    bundle = simple_bundle(item("integration", "project", payload))
+    assert Bundle.model_validate_json(bundle.model_dump_json()) == bundle
+    assert read_bundle(pack(bundle)) == bundle
+    assert read_bundle(pack(bundle)).items[0].payload.hierarchical_integration_mode == mode
+
+
+def test_integration_settings_rejects_unknown_mode():
+    with pytest.raises(ValidationError, match="hierarchical_integration_mode"):
+        IntegrationSettings(
+            engine="active", hierarchical_integration_mode="unknown", default_branch="main",
+        )
+
+
+async def test_apply_development_mode_matches_project_configuration(env):
+    from types import SimpleNamespace
+
+    handler, _, _ = env
+    handler.config.integration.git_first = "active"
+    handler.orchestrator.integration_service = SimpleNamespace(
+        delivery_modes=lambda: {"development"},
+    )
+    for pid in ("source", "target"):
+        await handler.db.create_repo(RepoConfig(
+            id=pid + "-repo", project_id=pid, source_type=RepoSourceType.CLONE,
+            url=f"https://github.com/acme/{pid}.git", default_branch="main",
+        ))
+        await handler.db.update_project(pid, integration_repository_id=pid + "-repo")
+    payload = IntegrationSettings(
+        engine="active", hierarchical_integration_mode="development", default_branch="main",
+        integration_repository_id="{{integration_repository}}",
+    )
+    from src.policy_profiles.models import Placeholder
+
+    bundle = simple_bundle(
+        item("integration", "project", payload),
+        placeholders=[Placeholder(name="integration_repository", description="Target repository")],
+    )
+    args, data = await preview(handler, read_bundle(pack(bundle)).model_dump(mode="json"))
+    acknowledge(args, data, overwrite=True)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    assert result["configured_integration"] == ["integration_settings:project:integration"]
+    direct = await handler.execute("edit_project", {
+        "project_id": "source", "hierarchical_integration_mode": "development",
+        "integration_mode": "pull_request", "integration_repository_id": "source-repo",
+        "promotion_flow": None, "expected_integration_generation": 0,
+    })
+    assert direct["outcome"] == "configured", direct
+    source, target = await handler.db.get_project("source"), await handler.db.get_project("target")
+    assert target.hierarchical_integration_mode == "development"
+    assert target.integration_repository_id == "target-repo"
+    for field in (
+        "hierarchical_integration_mode", "hierarchical_integration_desired_mode",
+        "hierarchical_integration_draining", "hierarchical_integration_generation",
+        "hierarchical_integration_policy", "integration_mode",
+    ):
+        assert getattr(target, field) == getattr(source, field), field
+
+
+async def train_pair(handler):
+    """Two independent repository bindings with the recorded AQ train policy."""
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from types import SimpleNamespace
+
+    handler.config.integration.git_first = "active"
+    handler.orchestrator.integration_service = SimpleNamespace(delivery_modes=lambda: {"train"})
+    policies = {}
+    for pid in ("source", "target"):
+        policy = json.loads(Path("docs/config/agent-queue-train-policy.json").read_text())
+        policy["train"] = {"cadence_seconds": 120 if pid == "source" else 600,
+                           "settling_cap_seconds": 900}
+        for name in ("parent", "root"):
+            boundary = policy[name]
+            boundary["route"]["scope_identifier"] = pid
+            boundary["required_checks"] = {
+                "version": pid + "-v1", "producer_id": "123" if pid == "source" else "456",
+                "names": [pid + "-lint", pid + "-test"] if pid == "source" else ["cpp-test"],
+            }
+        policies[pid] = HierarchicalIntegrationPolicy.model_validate(policy).model_dump(mode="json")
+        await handler.db.create_repo(RepoConfig(
+            id=pid + "-repo", project_id=pid, source_type=RepoSourceType.CLONE,
+            url=f"https://github.com/acme/{pid}.git", default_branch="main",
+        ))
+        await handler.db.update_project(
+            pid, integration_mode="pull_request", integration_repository_id=pid + "-repo",
+            hierarchical_integration_mode="train" if pid == "source" else "observe",
+            hierarchical_integration_policy=policies[pid],
+        )
+    return policies
+
+
+async def integration_preview(handler, **extra):
+    exported = await handler.execute("policy_export", {"project_id": "source"})
+    assert exported["success"], exported
+    bundle = read_bundle(pack(Bundle.model_validate(exported["bundle"])))
+    args, data = await preview(handler, bundle.model_dump(mode="json"),
+                               only=["integration_settings:project:integration"], **extra)
+    acknowledge(args, data, overwrite=True)
+    return args, data
+
+
+async def test_export_apply_train_settings_preserves_target_bindings_and_is_idempotent(env):
+    handler, _, _ = env
+    policies = await train_pair(handler)
+    before_activations = await handler.db.list_playbook_activations()
+    args, data = await integration_preview(handler)
+    entry = next(e for e in args["bundle"]["items"] if e["type"] == "integration_settings")
+    assert entry["payload"]["version"] == 1
+    text = json.dumps(entry)
+    assert "source-repo" not in text and "source-lint" not in text
+    assert "artifact_sha256" not in text and "steady-delta" not in text
+    assert "{{integration_repository}}" in text
+    assert "{{integration_root_checks_names}}" in text
+    row = next(r for r in data["items"] if r["type"] == "integration_settings")
+    assert row["state"] == "configure integration" and not row["selected"]
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    assert result["configured_integration"] == [entry["id"]]
+    target = await handler.db.get_project("target")
+    assert target.integration_repository_id == "target-repo"
+    assert target.hierarchical_integration_mode == "train"
+    assert target.hierarchical_integration_generation == 1
+    expected = copy.deepcopy(policies["source"])
+    for name in ("parent", "root"):
+        for field in ("route", "required_checks", "authorized_task_ids"):
+            expected[name][field] = policies["target"][name][field]
+    assert target.hierarchical_integration_policy == expected
+    assert await handler.db.list_playbook_activations() == before_activations
+    again = await handler.execute("policy_diff", args)
+    assert again["success"], again
+    assert next(r for r in again["items"] if r["id"] == entry["id"])["status"] == "identical"
+    acknowledge(args, again)
+    repeated = await handler.execute("policy_apply", args)
+    assert repeated["success"] and not repeated["configured_integration"], repeated
+    assert (await handler.db.get_project("target")).hierarchical_integration_generation == 1
+
+
+async def test_integration_import_refuses_stale_live_generation_before_other_writes(env):
+    handler, vault, _ = env
+    await train_pair(handler)
+    args, _ = await integration_preview(handler)
+    changed = await handler.execute("edit_project", {
+        "project_id": "target", "hierarchical_integration_mode": "observe",
+        "expected_integration_generation": 0,
+    })
+    assert changed["outcome"] == "configured", changed
+    result = await handler.execute("policy_apply", args)
+    assert not result["success"] and "preview changed" in result["error"], result
+    assert not (vault / "projects/target/policy").exists()
+    assert (await handler.db.get_project("target")).hierarchical_integration_mode == "observe"
+
+
+@pytest.mark.parametrize("problem", ["route", "engine", "repository", "policy"])
+async def test_integration_import_uses_supported_validation_without_fabricating_routes(env, problem):
+    handler, vault, _ = env
+    await train_pair(handler)
+    if problem == "route":
+        await handler.db.update_project("target", hierarchical_integration_policy=None)
+    extra = {}
+    if problem == "route":
+        extra["values"] = {f"integration_{name}_checks_{field}": value
+                           for name in ("parent", "root")
+                           for field, value in (("names", '["cpp-test"]'), ("version", "v1"),
+                                                ("producer_id", "456"))}
+    args, _ = await integration_preview(handler, **extra)
+    entry = next(e for e in args["bundle"]["items"] if e["type"] == "integration_settings")
+    if problem == "engine":
+        entry["payload"]["engine"] = "shadow"
+    elif problem == "repository":
+        args["values"] = {"integration_repository": "source-repo"}
+    elif problem == "policy":
+        entry["payload"]["policy"]["train"]["cadence_seconds"] = -1
+    from src.policy_profiles.models import checksum
+
+    entry["checksum"] = checksum(entry["payload"])
+    result = await handler.execute("policy_apply", args)
+    assert not result["success"], result
+    assert not (vault / "projects/target/policy").exists()
+    assert (await handler.db.get_project("target")).hierarchical_integration_generation == 0
+    if problem == "route":
+        assert "cannot fabricate" in result["error"]
+
+
+async def test_integration_global_template_and_skip_do_not_configure_or_need_unused_values(env):
+    handler, vault, _ = env
+    await train_pair(handler)
+    args, data = await integration_preview(handler)
+    args["selections"]["integration_settings:project:integration"]["scope"] = "skip"
+    await handler.db.update_project("target", hierarchical_integration_policy=None)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"] and not result["configured_integration"], result
+    assert (await handler.db.get_project("target")).hierarchical_integration_generation == 0
+    # A reusable global template requires filled check placeholders, but changes no project row.
+    args["values"] = data["values"]
+    args["selections"] = {"integration_settings:project:integration": {"scope": "global"}}
+    result = await handler.execute("policy_apply", args)
+    assert result["success"] and not result["configured_integration"], result
+    assert (vault / "system/policy/integration_settings/integration.json").is_file()
+
+
+async def test_integration_flow_validates_target_trust_and_preserves_local_operators(env):
+    from unittest.mock import AsyncMock
+    from src.integration.promotion_steps import read_stored_promotion_flow
+    from tests.test_promotion_flow import DEV, FakeGit, TRUST
+
+    handler, _, _ = env
+    await train_pair(handler)
+    for pid in ("source", "target"):
+        flow = [{**FLOW[0], "gate": {"operator_logins": [pid + "-operator"]}}]
+        async with handler.db._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == pid).values(
+                promotion_flow=flow))
+    args, _ = await integration_preview(handler)
+    assert "source-operator" not in json.dumps(args["bundle"])
+    args["values"] = {placeholder["name"]: "stable"
+                      for placeholder in args["bundle"]["placeholders"]
+                      if placeholder["name"].startswith("branch_")}
+    handler.orchestrator.git = FakeGit({"main": DEV, "stable": DEV})
+    handler._promotion_manifest = AsyncMock(side_effect=RuntimeError("trust unavailable"))
+    refused = await handler.execute("policy_apply", args)
+    assert not refused["success"] and refused["error"] == "trust_manifest_unavailable", refused
+    assert (await handler.db.get_project("target")).hierarchical_integration_generation == 0
+    handler._promotion_manifest.side_effect = None
+    handler._promotion_manifest.return_value = TRUST
+    applied = await handler.execute("policy_apply", args)
+    assert applied["success"] and applied["configured_integration"], applied
+    flow = await read_stored_promotion_flow(handler.db, "target")
+    assert flow[0]["target"] == "stable"
+    assert flow[0]["gate"]["operator_logins"] == ["target-operator"]
+
+
+async def test_integration_receipt_records_configuration_if_later_file_write_fails(env, monkeypatch):
+    handler, _, _ = env
+    await train_pair(handler)
+    args, _ = await integration_preview(handler)
+
+    def fail_write(_planned):
+        raise OSError("destination read-only")
+
+    monkeypatch.setattr("src.commands.policy_commands.apply_files", fail_write)
+    result = await handler.execute("policy_apply", args)
+    assert not result["success"] and result["error"] == "destination read-only"
+    assert result["configured_integration"] == ["integration_settings:project:integration"]
+    assert (await handler.db.get_project("target")).hierarchical_integration_generation == 1
+
+
+async def test_disabled_integration_without_policy_retains_target_policy_and_is_idempotent(env):
+    handler, _, _ = env
+    policies = await train_pair(handler)
+    await handler.db.update_project("source", hierarchical_integration_mode="disabled",
+                                    hierarchical_integration_policy=None)
+    args, _ = await integration_preview(handler)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    target = await handler.db.get_project("target")
+    assert target.hierarchical_integration_mode == "disabled"
+    assert target.hierarchical_integration_policy == policies["target"]
+    again = await handler.execute("policy_diff", args)
+    assert again["success"], again
+    assert next(row for row in again["items"] if row["type"] == "integration_settings")[
+        "status"] == "identical"
+
+
+def test_playbook_machine_paths_are_portable_in_sources_and_artifacts(tmp_path):
+    from src.playbooks.definition import source_digest
+    from src.policy_profiles.service import PolicyFiles
+
+    source_root, target_root = tmp_path / "source", tmp_path / "target"
+    source = PolicyFiles(source_root / "vault", Project(id="source", name="Source"),
+                         str(source_root / "workspace"))
+    target = PolicyFiles(target_root / "vault", Project(id="target", name="Target"),
+                         str(target_root / "workspace"))
+    raw = (MORNING / "source.md").read_text()
+    raw += f"\nUse {source.vault}/system/playbooks and {source.workspace}/scripts/graft.py.\n"
+    raw += "Run `/opt/private-tools/graft.py` afterwards.\n"
+    artifact = json.loads((MORNING / "artifact.json").read_text())
+    artifact["source_hash"] = source_digest(raw)
+    bundle = source.portable([item("morning-report", "system", PlaybookPolicy(
+        source=raw, artifact=artifact))], None)
+    serialized = bundle.model_dump_json()
+    assert str(source_root) not in serialized and "/opt/private-tools" not in serialized
+    assert "{{vault_root}}" in serialized and "{{workspace}}" in serialized
+    unknown = next(p.name for p in bundle.placeholders if p.name.startswith("path_"))
+    with pytest.raises(ValueError, match="fill placeholders"):
+        target.materialize(bundle, {})
+    imported = target.materialize(bundle, {unknown: "/usr/local/bin/graft.py"})[0]
+    assert str(target.vault) + "/system/playbooks" in imported.payload.source
+    assert str(target.workspace) + "/scripts/graft.py" in imported.payload.source
+    assert "/usr/local/bin/graft.py" in imported.payload.source
+    assert imported.payload.artifact["source_hash"] == source_digest(imported.payload.source)
+
+
 async def test_allowlist_roundtrip_all_six_types_excludes_personal_state_and_activation(env):
     handler, vault, tmp_path = env
     await reviewed(handler, vault)
@@ -388,6 +689,7 @@ nodes:
         "ci_test",
         "routing",
         "template",
+        "project_settings",
     }
     text = json.dumps(bundle)
     assert "SECRET" not in text and "PERSONAL" not in text and "github_app_id" not in text
@@ -434,8 +736,8 @@ nodes:
     review = await handler.db.get_review_revision(applied["reviews"][0]["review_id"], 1)
     assert review["playbook"]["playbook_id"] == "target.morning-report"
     assert not review["playbook"]["activate_on_approval"]
-    approved = await handler.execute(
-        "review_decide",
+    approved = await decide(
+        handler,
         {"review_id": applied["reviews"][0]["review_id"], "revision": 1, "decision": "approve"},
     )
     assert (
@@ -766,8 +1068,8 @@ async def test_system_assignment_router_default_pipeline_and_routing_preferences
             },
         )
         assert submitted["success"], submitted
-        approved = await handler.execute(
-            "review_decide",
+        approved = await decide(
+            handler,
             {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"},
         )
         assert approved["success"] and approved["playbook"]["activated"], approved
@@ -905,6 +1207,91 @@ Local personal reflection
         },
     )
     assert not result["success"] and not (vault / "agent-types/invalid/profile.md").exists()
+
+
+async def test_policy_roundtrip_includes_classes_and_live_derived_pool_settings(env):
+    from src.profiles.catalog import CatalogProfile, render_rung_stub
+    from src.profiles.parser import update_config_keys
+
+    handler, vault, _ = env
+    class_text = '''---
+id: portable
+name: Portable
+customized: true
+---
+```json
+{"codex":{"model":"operator-model","reasoning_effort":"high"}}
+```
+'''
+    class_path = put(vault, "intelligence-classes/portable.md", class_text)
+    template = put(vault, "agent-types/worker-codex/profile.md", '''---
+id: worker-codex
+name: Worker
+template: true
+---
+## Config
+```json
+{"harness":"codex","lifecycle":"pool","min_active":2,"max_active":4}
+```
+''')
+    rung = render_rung_stub(CatalogProfile(
+        id="portable-codex", provider_id="codex", harness="codex", intelligence_class="portable",
+        name="Portable worker", source_profile_id="worker-codex",
+    ))
+    rung = update_config_keys(rung, {"lifecycle": "pool", "min_active": 2, "max_active": 4})
+    path = put(vault, "agent-types/portable-codex/profile.md", rung)
+    assert (await sync_profile_text_to_db(rung, handler.db, source_path=str(path))).success
+    await handler.db.update_profile(
+        "portable-codex", enabled=False, min_active=1, max_active=None,
+        min_per_project=1, max_claims_per_session=5,
+    )
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert result["success"], result
+    bundle = result["bundle"]
+    by_id = {entry["id"]: entry for entry in bundle["items"]}
+    assert "agent_settings:system:portable-codex" not in by_id
+    settings = by_id["pool:system:portable-codex"]["payload"]["settings"]
+    assert settings["enabled"] is False and settings["max_active"] is None
+    assert settings["extends"] == "worker-codex" and settings["default_class"] == "portable"
+    assert "intelligence_class:system:portable" in by_id
+    assert "project_settings:project:settings" in by_id
+    await handler.db.delete_profile("portable-codex")
+    for source in (path, template, class_path):
+        source.unlink()
+    selections = {
+        entry["id"]: {"scope": "global" if entry["original_scope"] == "system" else "project"}
+        for entry in bundle["items"]
+    }
+    args, data = await preview(handler, bundle, selections=selections)
+    acknowledge(args, data, scope="global", overwrite=True)
+    # Project metadata and routing remain destination-project drafts.
+    for entry in bundle["items"]:
+        if entry["original_scope"] == "project":
+            args["selections"][entry["id"]]["scope"] = "project"
+    applied = await handler.execute("policy_apply", args)
+    assert applied["success"], applied
+    restored = await handler.db.get_profile("portable-codex")
+    assert (restored.enabled, restored.min_active, restored.max_active,
+            restored.min_per_project, restored.max_claims_per_session) == (False, 1, None, 1, 5)
+    assert restored.default_class == "portable" and restored.harness == "codex"
+    assert "operator-model" in class_path.read_text()
+    assert "project_settings:project:settings" in applied["pending_configuration"]
+
+
+def test_older_policy_agent_payload_checksums_still_roundtrip():
+    from src.policy_profiles.models import AgentConfig, PolicyAgentSettings, checksum
+
+    bundle = simple_bundle(item("worker", "system", PolicyAgentSettings(
+        name="Worker", config=AgentConfig(harness="codex"),
+    ))).model_dump(mode="json")
+    payload = bundle["items"][0]["payload"]
+    payload.pop("pool")
+    for key in ("enabled", "min_active", "max_active", "min_per_project", "max_claims_per_session",
+                "mode", "wake_mode", "idle_timeout", "max_session_age", "allow_base_checkout"):
+        payload["config"].pop(key)
+    bundle["items"][0]["checksum"] = checksum(payload)
+    verified = Bundle.model_validate(bundle)
+    assert read_bundle(pack(verified)) == verified
 
 
 async def test_global_profile_sync_failure_retains_draft_and_identical_retry_syncs(
