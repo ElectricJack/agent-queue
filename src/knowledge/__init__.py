@@ -1,1 +1,1 @@
-"""Core durable knowledge. Importing this package initializes no optional providers."""
+"""Core durable knowledge; importing this package initializes no services or providers."""

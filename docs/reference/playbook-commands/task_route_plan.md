@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:2097f7e8ce2856856c4ff08965ae8aa571a525774a3d01da4ab774187e970b3a` |
+| Contract fingerprint | `sha256:06364f953b0b5dcbf257fc54fc94bb1688f8443561a691ab2354227a9b9739c7` |
 
 ## Parameters
 
@@ -29,6 +29,8 @@
 | Field | Type | Description |
 |---|---|---|
 | `task_id` | `string \| null` | — |
+| `live_context` | `object \| null` | — |
+| `live_summary` | `string \| null` | — |
 | `intelligence_class` | `string \| null` | Intelligence class |
 | `profile_id` | `string \| null` | Agent profile |
 | `provider` | `string \| null` | Provider |
@@ -47,6 +49,8 @@
 | `reason` | `string \| null` | Reason |
 | `policy_sha256` | `string \| null` | Policy digest |
 | `class_clamped_from` | `string \| null` | Hint clamped from |
+| `class_raised_for_risk` | `object \| null` | Class raised for risk |
+| `escalated_after_failure` | `object \| null` | — |
 | `classification` | `object \| null` | Classification |
 | `balance` | `object \| null` | Load-score weights |
 | `title` | `string \| null` | — |
@@ -134,14 +138,25 @@ literal `{"failed": true}` when classification failed.
    - **Kind and class.** `task_type`, else the classification's kind, else
      `default_kind`; an origin rule (`created_by_kind`) merges over it. The
      class hint beats the classification, which beats the kind's class, and
-     `max_class` clamps (`class_clamped_from`).
+     `max_class` clamps (`class_clamped_from`). A `risk` rule's `min_class`
+     then raises the class (`class_raised_for_risk`). In a policy that reads
+     risks, a classification that answered no risk, or failed, is treated as
+     `medium` (`class_raised_for_risk.assumed`); before the classifier runs
+     the risk stays unknown.
    - **Candidates.** Worker candidates (`catalog.worker_route` plus a slot)
      for the lane or the class, minus reserved cells, `exclude_providers`
      (`tasks.route.constraints`), providers other than the project's
-     `preferred_provider`, and pool profiles when the task needs a workspace
-     kind other than `project-repo`/`vault`. A narrow kind's OpenCode lanes
-     form the preferred tier when the classification satisfies their
-     `requires`; a harness a narrow lane names is never a general candidate.
+     `preferred_provider`, pool profiles when the task needs a workspace
+     kind other than `project-repo`/`vault`, and self-hosted models (a harness
+     whose `provider` is `ollama`, or one `local_models.harnesses` names) for
+     a task the policy's `local_models` gate refuses: a `train_kinds` kind
+     (default `bugfix`) in a project whose integration mode is `hierarchy`,
+     `train` or `development`, or a task an unfinished task waits on through
+     a blocking edge other than `parent-child` (unless `allow_blocking`). A
+     narrow kind's OpenCode lanes form the preferred tier when the
+     classification satisfies their `requires` and `max_risk`; a harness a
+     narrow lane names is never a general candidate. A task's priority is not
+     an input to any step: it orders the claim frontier, never the route.
    - **Availability.** Unlaunchable providers leave the choice but stay in
      `candidates`; nothing launchable is `held`, before any classification.
    - **Classification.** `needs_classification` when the task has neither a
@@ -163,7 +178,7 @@ scored can move before the apply, which is why
 |---|---|
 | `rejected`, `code: routing.invalid_policy` | The policy text is not YAML or fails the schema; `error` names the first problem and where. |
 | `rejected` | Missing `task_id` or no such task. |
-| `no_candidates` | `reason` is `no_worker_candidates`, `reserved`, `excluded_providers`, `preferred_provider_unavailable` or `workspace_requirement`; `detail` names the rule and class. `aq agent list-profiles` and `aq pool status` show what exists. |
+| `no_candidates` | `reason` is `no_worker_candidates`, `reserved`, `excluded_providers`, `preferred_provider_unavailable`, `workspace_requirement` or `local_model_gate`; `detail` names the rule and class. `aq agent list-profiles` and `aq pool status` show what exists. |
 | `held` | `providers` lists the unlaunchable ones; `aq provider status` says when they are expected back. |
 
 ## Example step

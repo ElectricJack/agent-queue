@@ -97,6 +97,25 @@ async def test_edit_does_not_mutate_shared_profile(handler):
     assert (await handler.db.get_profile("coder")).default_class == "standard-medium"
 
 
+async def test_rename_role_agent_preserves_id_roster_and_disabled_old_definition(handler):
+    await handler.db.create_profile(AgentProfile(id="spec-ingest", name="Spec ingest"))
+    await handler.db.create_agent(Agent(
+        id="old-role", name="spec-ingest-111", profile_id="spec-ingest", enabled=False,
+    ))
+    await handler.db.create_agent(Agent(
+        id="role-agent", name="Spec ingest", profile_id="spec-ingest", total_tokens_used=42,
+    ))
+    before = await handler.db.get_agent("role-agent")
+    result = await handler._cmd_edit_agent({
+        "agent_id": "role-agent", "name": "Review Spec Ingest",
+    })
+    assert result["id"] == before.id and result["name"] == "Review Spec Ingest"
+    after = await handler.db.get_agent("role-agent")
+    assert after.created_at == before.created_at and after.total_tokens_used == 42
+    assert after.enabled and not (await handler.db.get_agent("old-role")).enabled
+    assert {agent.id for agent in await handler.db.list_agents()} == {"old-role", "role-agent"}
+
+
 @pytest.mark.parametrize("command", ["create_agent", "edit_agent", "delete_agent", "start_agent_terminal"])
 def test_project_supervisor_cannot_change_global_worker_settings(command):
     scope = RequestScope(kind="session", session_id="s", project_id="p", elevated=True)
@@ -233,7 +252,10 @@ async def test_active_legacy_session_wins_over_linked_history(handler):
     assert row["current_task_id"] == "task"
 
 
-async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, monkeypatch):
+@pytest.mark.parametrize("active_status", ["ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING"])
+async def test_roster_reads_only_active_tasks_and_keeps_current_work(
+    handler, monkeypatch, active_status
+):
     """A large backlog of idle tasks is not hydrated for the roster (wise-ember.16)."""
     from src.models import AgentState, SessionRecord, Task, TaskStatus
     await handler.db.create_project(Project(id="p", name="Project"))
@@ -241,13 +263,18 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     await handler.db.create_agent(Agent(id="b", name="Bea", profile_id="coder"))
     await handler.db.create_task(Task(
         id="task", project_id="p", title="Current work", description="Work",
-        status=TaskStatus.IN_PROGRESS, assigned_agent_id="a",
+        status=TaskStatus(active_status), assigned_agent_id="a",
     ))
     # Bea's pointer names a finished task: a non-active row reads as no task.
     await handler.db.create_task(Task(
         id="done", project_id="p", title="Finished", description="Work",
         status=TaskStatus.COMPLETED, assigned_agent_id="b",
     ))
+    for status in (TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+        await handler.db.create_task(Task(
+            id=status.value, project_id="p", title="Continuation", description="Work",
+            status=status,
+        ))
     for index in range(5):
         await handler.db.create_task(Task(
             id=f"backlog-{index}", project_id="p", title="Backlog", description="Work",
@@ -275,10 +302,114 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     assert everyone["a"]["current_task_title"] == "Current work"
     assert everyone["b"]["current_task_id"] is None
     assert reads and all(
-        statuses == {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+        statuses == {
+            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+        }
         and ids == ["task"]
         for statuses, ids in reads
     )
+
+
+async def test_session_roster_preserves_unlinked_and_multiple_executions(handler):
+    from src.models import SessionRecord
+
+    await handler.db.create_project(Project(id="p", name="Project"))
+    await handler.db.create_agent(Agent(id="a", name="Agent", profile_id="coder"))
+    common = dict(harness="codex", provider="tmux", work_dir="/tmp", epoch="e",
+                  started_at=1, last_activity=2, llm_provider="openai", model="launch-model",
+                  intelligence_class="standard-high")
+    samples = [
+        ("global", "supervisor", None, None, "running", "named"),
+        ("project", "supervisor", "p", None, "starting", "named"),
+        ("worker", "coder", "p", "a", "running", "pool"),
+        ("draining", "reviewer", "p", "a", "draining", "task"),
+        ("sleeping", "supervisor", "p", None, "sleeping", "named"),
+        ("stopped", "supervisor", "p", None, "stopped", "named"),
+    ]
+    for sid, profile, project, agent_id, state, lifecycle in samples:
+        await handler.db.create_session(SessionRecord(
+            id=sid, name=sid, profile_id=profile, project_id=project, agent_id=agent_id,
+            state=state, lifecycle=lifecycle, instance_token=sid, **common,
+        ))
+    result = await handler._cmd_list_agents({})
+    sessions = {row["session_id"]: row for row in result["sessions"]}
+    assert set(sessions) == {"global", "project", "worker", "draining", "sleeping"}
+    assert result["session_count"] == 5
+    assert sessions["global"]["role"] == sessions["project"]["role"] == "supervisor"
+    assert sessions["global"]["scope"] == "global" and sessions["project"]["scope"] == "p"
+    assert sessions["draining"]["role"] == "reviewer"
+    assert sessions["worker"]["model"] == "launch-model"
+    assert sessions["worker"]["last_activity"] == 2 and sessions["worker"]["uptime_seconds"] > 0
+    project = await handler._cmd_list_agents({"project_id": "p", "include_stopped": True})
+    assert {row["session_id"] for row in project["sessions"]} == set(sessions) - {"global"} | {"stopped"}
+
+
+async def test_all_running_project_supervisors_are_selectable_without_agent_rows(handler):
+    import time
+
+    from src.api.auth import SessionTokenStore
+    from src.api.models.agent import AgentSummary
+    from src.models import SessionRecord
+
+    store = handler.orchestrator.token_store = SessionTokenStore(handler.db)
+    now = time.time()
+    for number in range(13):
+        project_id = f"project-{number}"
+        await handler.db.create_project(Project(id=project_id, name=project_id))
+        await handler.db.create_session(SessionRecord(
+            id=f"sup-{number}", name=f"n-supervisor--{project_id}", project_id=project_id,
+            profile_id="supervisor", lifecycle="named", harness="codex", provider="tmux",
+            llm_provider="openai", model="launch-model", intelligence_class="standard-high",
+            state="running", work_dir="/tmp", epoch="e", instance_token=f"i-{number}",
+            started_at=now - 300, last_activity=now - 60,
+        ))
+    store.record_auth_result("sup-3", 401)
+    store.record_auth_result("sup-4", 200)
+    result = await handler._cmd_list_agents({})
+    assert len(result["agents"]) == 13
+    rows = {row["project_id"]: AgentSummary.model_validate(row) for row in result["agents"]}
+    assert rows["project-3"].auth_health.state == "failed"
+    assert rows["project-4"].auth_health.state == "healthy"
+    assert rows["project-5"].auth_health.state == "unknown"
+    for project_id, row in rows.items():
+        assert row.session_backed and row.role == "supervisor"
+        assert row.id == f"session:{row.session_id}"
+        assert row.session_address == f"supervisor-{project_id}"
+        assert project_id in row.name
+        assert row.harness == "codex" and row.model == "launch-model"
+        assert row.idle_seconds >= 60 and row.last_activity == now - 60
+    filtered = await handler._cmd_list_agents({"project_id": "project-3"})
+    assert [row["session_id"] for row in filtered["agents"]] == ["sup-3"]
+    assert await handler.db.list_agents() == []
+    # A linked execution is represented once, and stopped supervisors disappear.
+    await handler.db.create_agent(Agent(id="linked", name="Linked supervisor", profile_id="supervisor", role="supervisor"))
+    await handler.db.update_session("sup-3", agent_id="linked")
+    await handler.db.update_session("sup-5", state="stopped")
+    linked = await handler._cmd_list_agents({})
+    assert sum(row["session_id"] == "sup-3" for row in linked["agents"]) == 1
+    assert not any(row["session_id"] == "sup-5" for row in linked["agents"])
+
+
+@pytest.mark.parametrize(("title", "role"), [
+    ("Repair development integration: task", "repair"),
+    ("Verifier for integration subject task", "verifier"),
+    ("Adversarial review: design", "reviewer"),
+])
+async def test_session_roles_include_finished_delegates_without_hydrating_backlog(handler, title, role):
+    from src.models import SessionRecord, Task, TaskStatus
+
+    await handler.db.create_project(Project(id="p", name="Project"))
+    await handler.db.create_task(Task(id="finished", project_id="p", title=title, description="",
+                                     status=TaskStatus.COMPLETED))
+    await handler.db.create_task(Task(id="backlog", project_id="p", title="Work", description=""))
+    await handler.db.create_session(SessionRecord(
+        id="delegate", project_id="p", profile_id="coder", harness="codex", provider="fake",
+        name="delegate", lifecycle="task", work_dir="/tmp", epoch="e", instance_token="token",
+        started_at=1, task_id="finished", state="stopped", ended_at=2,
+    ))
+    result = await handler._cmd_list_agents({"include_stopped": True})
+    assert result["sessions"][0]["role"] == role
+    assert result["sessions"][0]["uptime_seconds"] == 1
 
 
 def _flock_api(handler, scope=None):
@@ -379,7 +510,7 @@ async def test_delete_removes_idle_agent_from_flock_but_retains_identity(handler
     delete = getattr(handler, "_cmd_delete_agent", None)
     assert delete is not None, "the flock needs an explicit delete command"
     result = await delete({"agent_id": "a"})
-    assert result == {"deleted": "a", "name": "Ada"}
+    assert result == {"success": True, "deleted": "a", "name": "Ada"}
     assert (await handler.db.get_agent("a")).deleted_at is not None
     assert (await handler._cmd_list_agents({}))["agents"] == []
     assert "error" in await handler._cmd_get_agent({"agent_id": "a"})
@@ -410,3 +541,103 @@ async def test_typed_delete_requires_global_scope_and_returns_agent_identity(han
         deleted = await client.post("/api/agent/delete", json={"agent_id": "a"})
         assert deleted.status_code == 200
         assert deleted.json() == {"deleted": "a", "name": "Ada"}
+
+
+async def test_roster_does_not_resolve_retired_classes_or_live_launch_settings(handler, monkeypatch):
+    from src.models import SessionRecord
+
+    await handler.db.create_agent(Agent(id="retired", name="Old", profile_id="coder"))
+    await handler.db.create_agent(Agent(id="live", name="Live", profile_id="coder"))
+    await handler.db.create_session(SessionRecord(
+        id="live-session", project_id=None, profile_id="coder", harness="claude",
+        provider="tmux", name="live", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, agent_id="live", state="running",
+        llm_provider="anthropic", model="retained-model", intelligence_class="retired-class",
+    ))
+    builder = handler.orchestrator.session_spec_builder
+    builder._intelligence_classes.clear()
+
+    def no_launch_resolution(*args, **kwargs):
+        raise AssertionError("a roster read tried to resolve an obsolete launch class")
+
+    monkeypatch.setattr(builder, "_resolve_model", no_launch_resolution)
+    rows = {row["id"]: row for row in (await handler._cmd_list_agents({}))["agents"]}
+    assert rows["live"]["model"] == "retained-model"
+    assert rows["live"]["intelligence_class"] == "retired-class"
+    assert rows["retired"]["model"] is None
+    assert rows["retired"]["intelligence_class"] == "standard-medium"
+
+
+async def test_default_flock_prunes_irrelevant_history_without_changing_output(handler, monkeypatch):
+    """Historical parents and native starts survive; ordinary stopped history does not."""
+    import time
+    from dataclasses import asdict
+    from sqlalchemy import insert
+    from src.database.tables import sessions as session_table
+    from src.models import AgentState, SessionRecord, Task, TaskStatus
+
+    await handler.db.create_project(Project(id="p", name="Project"))
+    for aid in ("parent", "child", "idle"):
+        await handler.db.create_agent(Agent(id=aid, name=aid, profile_id="coder"))
+    await handler.db.create_task(Task(
+        id="delegated", project_id="p", title="Active child", description="work",
+        status=TaskStatus.IN_PROGRESS, assigned_agent_id="child",
+        created_by_kind="session", created_by_id="history-3",
+    ))
+    await handler.db.create_task(Task(
+        id="done", project_id="p", title="Old task", description="done",
+        status=TaskStatus.COMPLETED,
+    ))
+    await handler.db.update_agent("child", state=AgentState.BUSY, current_task_id="delegated")
+    await handler.db.update_agent("idle", current_task_id="done")
+    common = dict(project_id="p", profile_id="coder", harness="codex", provider="tmux",
+                  lifecycle="task", work_dir="/tmp", epoch="e", instance_token="t")
+    history = [SessionRecord(
+        id=f"history-{i}", name=f"history-{i}", agent_id="parent", state="stopped",
+        started_at=i + 1, **common,
+    ) for i in range(2000)]
+    extra = [
+        SessionRecord(id="child-live", name="child-live", agent_id="child", task_id="delegated",
+                      state="running", started_at=3000, **common),
+        SessionRecord(id="parent-sleep", name="parent-sleep", agent_id="parent",
+                      state="sleeping", started_at=3001, **common),
+        SessionRecord(id="idle-old", name="idle-old", agent_id="idle", task_id="done",
+                      state="quarantined", started_at=1, **common),
+        SessionRecord(id="idle-new", name="idle-new", agent_id="idle",
+                      state="stopped", started_at=3002, **common),
+        SessionRecord(id="unlinked", name="unlinked", task_id="done",
+                      state="stopped", started_at=3003, **common),
+    ]
+    async with handler.db._engine.begin() as conn:
+        await conn.execute(insert(session_table), [asdict(s) for s in [*history, *extra]])
+    await handler.db.record_subagent_event(
+        session_id="history-1", harness="codex", event="start", subagent_id="native",
+    )
+    started = time.perf_counter()
+    full = await handler.db.list_sessions()
+    before = time.perf_counter() - started
+    started = time.perf_counter()
+    selected = await handler.db.list_flock_sessions()
+    after = time.perf_counter() - started
+    assert {s.id for s in selected} == {
+        "history-1", "history-3", "child-live", "parent-sleep", "idle-old", "unlinked",
+    }
+    assert await handler.db.list_flock_sessions(include_stopped=True) == full
+    print(f"flock hydration: {len(full)} -> {len(selected)} rows; "
+          f"{before * 1000:.2f} -> {after * 1000:.2f} ms")
+
+    # Freeze the presentation clock; both reads must produce the same full response.
+    monkeypatch.setattr(time, "time", lambda: 10000.0)
+    optimized = await handler._cmd_list_agents({})
+
+    async def original(**kwargs):
+        return full
+
+    monkeypatch.setattr(handler.db, "list_flock_sessions", original)
+    baseline = await handler._cmd_list_agents({})
+    assert optimized == baseline
+    parent = next(row for row in optimized["agents"] if row["id"] == "parent")
+    assert parent["aq_subagent_count"] == 1
+    assert parent["subagents_spawned_total"] == 1
+    idle = next(row for row in optimized["agents"] if row["id"] == "idle")
+    assert idle["session_state"] == "stopped"  # legacy unlinked current-task candidate wins
