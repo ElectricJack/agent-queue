@@ -19,9 +19,16 @@ def agent() -> None:
 @click.option("--all-running", is_flag=True, help="Broadcast to every running worker.")
 @click.option("--profile", default=None, help="Only broadcast to this profile.")
 @click.option("--wait", type=click.IntRange(0, 60), default=None, help="Wait for delivery.")
+@click.option(
+    "--reply-to",
+    "reply_to",
+    default=None,
+    metavar="MESSAGE_ID",
+    help="Answer this message on its thread; a worker waiting on that thread resumes.",
+)
 @click.pass_context
 @_handle_errors
-def agent_message(ctx, target, body, all_running, profile, wait) -> None:
+def agent_message(ctx, target, body, all_running, profile, wait, reply_to) -> None:
     """Send BODY to a live task, agent, or session."""
     if all_running:
         body, target = body or target, None
@@ -37,6 +44,8 @@ def agent_message(ctx, target, body, all_running, profile, wait) -> None:
         params["profile"] = profile
     if wait is not None:
         params["wait"] = wait
+    if reply_to:
+        params["reply_to"] = reply_to
 
     async def _send():
         async with _get_client(api_url) as client:
