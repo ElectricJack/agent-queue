@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/commands/provider_commands.py::ProviderCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/provider_commands.py::parse_duration": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

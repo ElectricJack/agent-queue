@@ -189,23 +189,37 @@ class ProjectQueryMixin:
             return self._row_to_project(row) if row else None
         async with self._engine.begin() as owned:
             row = (await owned.execute(stmt)).mappings().fetchone()
-            return self._row_to_project(row) if row else None
+        return self._row_to_project(row) if row else None
 
     async def list_projects(
         self,
         status: ProjectStatus | None = None,
+        *,
+        include_admission: bool = False,
     ) -> list[Project]:
         """List all projects, optionally filtered by status."""
         stmt = select(projects)
+        if include_admission:
+            from src.integration.admission import project_admission_required
+
+            stmt = stmt.add_columns(project_admission_required(projects).label("source_admission"))
         if status:
             stmt = stmt.where(projects.c.status == status.value)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_project(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        found = []
+        for row in rows:
+            project = self._row_to_project(row)
+            if include_admission:
+                project._source_admission_required = row["source_admission"]
+            found.append(project)
+        return found
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""
         control_fields = {
+            "storage_binding",
             "hierarchical_integration_desired_mode",
             "hierarchical_integration_draining",
             "hierarchical_integration_generation",
@@ -439,6 +453,7 @@ class ProjectQueryMixin:
             repo_default_branch=row.get("repo_default_branch") or "main",
             preferred_provider=row.get("preferred_provider"),
             supervisor_enabled=bool(row.get("supervisor_enabled", False)),
+            storage_binding=row.get("storage_binding"),
             # NOT NULL; an empty binding is read as stored, so doctor
             # (``routing.bypassed``) sees the project as unbound.
             assignment_playbook_id=row.get("assignment_playbook_id") or "",
