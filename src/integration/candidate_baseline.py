@@ -2,9 +2,10 @@
 
 A red candidate is not automatically the batch's fault.  A required check that
 also fails on the target commit the candidate was built on is a pre-existing
-failure: no change in this batch can turn it green, so a repair filed for it spends
-an attempt and a worker on work the target already owed.  Only a failing check the
-target does not fail is repairable.
+failure. Normally only a failing check the target does not fail is repairable.
+An open batch sealing its own epic subtree is the exception: its retained
+candidate can repair proven inherited failures because the seal prevents ordinary
+target repair. The ordinary repair budget and publication gates still apply.
 
 The target's verdict for its exact sha comes from the same per-commit check cache
 as the candidate's, so the comparison is over rows written by one trusted producer
@@ -13,38 +14,53 @@ cannot decide anything: the baseline is requested and observed once before it is
 classified, and checks it has still not decided are unproven rather than assumed
 to be the batch's.
 
-An unproven or pre-existing failure is never repaired.  The candidate's failing
-check suites are re-requested under bounded exponential backoff, exactly as
+A required check marked MISSING on the target is not an observed failure. The
+target may never have run the required workflow, as with a hand-pushed main whose
+only push workflow is attestation. Such a target has no comparable baseline, so
+the candidate's failing checks remain repairable. Missing candidate checks still
+fail the required set, and publication still requires trusted exact-candidate
+success.
+
+An unproven failure is never repaired. An epic with only proven pre-existing
+failures may receive one ordinary default-branch sync repair when the current
+default head is train-produced or attested and its own trusted exact-head checks
+pass those failing names. Otherwise the candidate's failing check suites are
+re-requested under bounded exponential backoff, exactly as
 source-CI infrastructure handling is, and the bound names the
 ``candidate_pre_existing_failure`` blocker for a human instead of filing repairs
 forever.  The counters are durable per exact candidate, so a repaired or moved
 candidate starts from zero, like its repair lineage.
 
-Comparison is a property of the checks provider, not of the batch: hosted checks
-have a target baseline to read (every push to the target ran its workflows), while
-local validation jobs only ever exist for candidates, so a lane whose provider
+Comparison is a property of the checks provider and the exact target's evidence,
+not of the batch: hosted checks can compare targets that ran the required checks,
+while local validation jobs only ever exist for candidates. A lane whose provider
 cannot compare a target keeps filing repairs exactly as before.
+
+Epic refreshes use their frozen default-branch input as the baseline. The epic
+head can already contain regressions and cannot prove a failure pre-existed on
+the default branch.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
-from src.database.tables import integration_batches
+from src.waits.sources import execute_batch_mutation
+from src.task_templates import render_task_template
+from src.database.tables import integration_batch_members, integration_batches, repos, tasks
 from src.integration.batches import candidate_ref
 from src.integration.checks import ChecksResult, ChecksState, Conclusion, ExactChecks
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 
 logger = logging.getLogger(__name__)
 
-#: The conclusions that make a required check red. ``MISSING`` is a required check
-#: the provider finished without producing, which fails the required set rather
-#: than deferring it.
+#: The conclusions that make a candidate's required check red. ``MISSING`` fails
+#: the candidate's required set, but cannot establish a pre-existing target failure.
 RED_CONCLUSIONS = frozenset({Conclusion.FAILURE, Conclusion.MISSING})
 
 #: Bounded re-requests of one exact candidate's checks, then a named blocker.
@@ -59,6 +75,44 @@ BASELINE_BACKOFF_MAX_SECONDS = 3600.0
 BASELINE_BLOCKER = "candidate_pre_existing_failure"
 
 
+async def sealed_epic_target(db, batch) -> str | None:
+    """The epic whose subtree this exact open batch prevents from reopening."""
+    from src.database.queries.hierarchy_queries import never_leaseable_container
+
+    async with db._engine.connect() as conn:
+        repo = (await conn.execute(select(repos).where(
+            repos.c.id == batch.repository_id, repos.c.project_id == batch.project_id,
+        ))).mappings().one_or_none()
+        if (repo is None or batch.target_ref.removeprefix("refs/heads/")
+                == repo["default_branch"].removeprefix("refs/heads/")):
+            return None
+        epics = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.project_id == batch.project_id,
+            or_(tasks.c.repo_id == batch.repository_id, tasks.c.repo_id.is_(None)),
+            tasks.c.branch_name.in_((batch.target_ref, batch.target_ref.removeprefix("refs/heads/"))),
+            never_leaseable_container(),
+        ))).scalars().all()
+        if len(epics) != 1:
+            return None
+        (epic,) = epics
+        subtree = await db.subtree_ids(epic, conn=conn)
+        sealed = await conn.scalar(select(integration_batch_members.c.task_id).join(
+            integration_batches, integration_batches.c.id == integration_batch_members.c.batch_id,
+        ).where(
+            integration_batches.c.id == batch.id,
+            integration_batches.c.project_id == batch.project_id,
+            integration_batches.c.repository_id == batch.repository_id,
+            integration_batches.c.target_ref == batch.target_ref,
+            integration_batches.c.intent == "open",
+            integration_batches.c.lifecycle.in_((
+                "sealing", "sealed", "building", "testing", "repairing", "human_blocked",
+                "promoting", "cleanup_pending",
+            )),
+            integration_batch_members.c.task_id.in_(subtree),
+        ).limit(1))
+        return epic if sealed else None
+
+
 def failing(result: ChecksResult) -> tuple[str, ...]:
     """The required checks that failed outright on this exact head."""
     return tuple(check.name for check in result.checks if check.conclusion in RED_CONCLUSIONS)
@@ -68,8 +122,9 @@ def failing(result: ChecksResult) -> tuple[str, ...]:
 class Baseline:
     """How the target's own verdict classifies a red candidate's failures.
 
-    ``unavailable`` means the target's checks could not be read at all, so no
-    claim is made about the candidate: every failure stays repairable.  Otherwise
+    ``unavailable`` means the provider cannot compare the target, or a required
+    target check is missing, so no claim is made about the candidate: every
+    failure stays repairable. Otherwise
     each failing check is ``repairable`` (the target succeeded it),
     ``pre_existing`` (the target failed it too) or ``unproven`` (the target has
     not decided it).
@@ -81,6 +136,8 @@ class Baseline:
     pre_existing: tuple[str, ...]
     unproven: tuple[str, ...]
     unavailable: bool = False
+    missing_target_checks: tuple[str, ...] = ()
+    target_ref: str | None = None
 
     @property
     def state(self) -> str:
@@ -106,9 +163,14 @@ class Baseline:
                 "state": self.state,
                 "target_sha": self.target_sha,
                 "target_checks": self.target_state,
+                **({"target_ref": self.target_ref} if self.target_ref else {}),
                 "repairable_checks": list(self.repairable),
                 "pre_existing_checks": list(self.pre_existing),
                 "unproven_checks": list(self.unproven),
+                **({
+                    "reason": "target_required_checks_missing",
+                    "missing_target_checks": list(self.missing_target_checks),
+                } if self.missing_target_checks else {}),
             },
         }
 
@@ -119,13 +181,29 @@ def compare(candidate: ChecksResult, target: ChecksResult) -> Baseline:
     Pure, and comparable only because both results were produced by one trusted
     producer under one required-check version.
     """
+    missing = tuple(sorted(
+        check.name for check in target.checks
+        if check.name in target.required.names and check.conclusion is Conclusion.MISSING
+    ))
+    if missing:
+        # A completed push suite can establish absence without having run the
+        # required workflow. Do not infer that the target failed those checks.
+        return Baseline(
+            target_sha=target.sha,
+            target_state=str(target.state),
+            repairable=tuple(sorted(failing(candidate))),
+            pre_existing=(),
+            unproven=(),
+            unavailable=True,
+            missing_target_checks=missing,
+        )
     rows = {check.name: check for check in target.checks}
     repairable, pre_existing, unproven = [], [], []
     for name in failing(candidate):
         row = rows.get(name)
         if row is None:
             unproven.append(name)
-        elif row.conclusion in RED_CONCLUSIONS:
+        elif row.conclusion is Conclusion.FAILURE:
             pre_existing.append(name)
         elif row.conclusion is Conclusion.SUCCESS:
             repairable.append(name)
@@ -152,32 +230,37 @@ def candidate_head(batch, candidate_sha: str) -> HeadIdentity:
     )
 
 
-def target_head(batch, target_sha: str) -> HeadIdentity:
-    """The exact target commit a candidate was built on, in the candidate's lane."""
+def target_head(batch, target_sha: str, *, target_ref: str | None = None) -> HeadIdentity:
+    """The exact baseline commit, with a default-ref override for epic refreshes."""
     return HeadIdentity(
         repository_id=batch.repository_id,
-        ref=batch.target_ref,
+        ref=target_ref or batch.target_ref,
         sha=target_sha,
         generation=batch.repair_attempt_count,
     )
 
 
 async def target_baseline(
-    batch, *, candidate: ChecksResult, target_sha: str | None, checks: ExactChecks | None
+    batch, *, candidate: ChecksResult, target_sha: str | None, checks: ExactChecks | None,
+    target_ref: str | None = None,
 ) -> Baseline:
     """The target's own verdict for its exact sha, obtained once when undecided."""
     red = failing(candidate)
     if not target_sha or checks is None or not checks.compares_targets:
         return Baseline(None, "unavailable", red, (), (), unavailable=True)
-    head = target_head(batch, target_sha)
-    result = await checks.read(head)
-    if result.state not in (ChecksState.GREEN, ChecksState.RED):
+    head = target_head(batch, target_sha, target_ref=target_ref)
+    cached = await checks.read(head)
+    if cached.state not in (ChecksState.GREEN, ChecksState.RED):
         # The target has no verdict for this sha yet: ask for one run and observe
         # it, exactly as a candidate's own checks are obtained. Provider I/O stays
         # outside every lock.
         await checks.request(head)
-        result = await checks.refresh(head)
-    return compare(candidate, result)
+    # Final evidence can be superseded by a rerun on the same SHA. In
+    # particular, an old red must not suppress repair of a candidate after
+    # the target's own checks have turned green. Observe before classifying,
+    # just as we do for the candidate and the publication proof.
+    result = await checks.refresh(head)
+    return replace(compare(candidate, result), target_ref=target_ref)
 
 
 class UnrecordedBaseline:
@@ -189,9 +272,12 @@ class UnrecordedBaseline:
 
     async def verdict(
         self, batch, *, candidate: ChecksResult, target_sha: str | None,
-        checks: ExactChecks | None,
+        checks: ExactChecks | None, target_ref: str | None = None,
     ) -> Baseline:
         return Baseline(None, "unavailable", failing(candidate), (), (), unavailable=True)
+
+    async def sealed_target(self, batch) -> str | None:
+        return None
 
     async def re_request(
         self, batch, *, candidate: ChecksResult, baseline: Baseline, checks: ExactChecks
@@ -221,11 +307,14 @@ class CandidateBaselineService:
 
     async def verdict(
         self, batch, *, candidate: ChecksResult, target_sha: str | None,
-        checks: ExactChecks | None,
+        checks: ExactChecks | None, target_ref: str | None = None,
     ) -> Baseline:
         return await target_baseline(
-            batch, candidate=candidate, target_sha=target_sha, checks=checks
+            batch, candidate=candidate, target_sha=target_sha, checks=checks, target_ref=target_ref,
         )
+
+    async def sealed_target(self, batch) -> str | None:
+        return await sealed_epic_target(self.db, batch)
 
     async def re_request(
         self, batch, *, candidate: ChecksResult, baseline: Baseline, checks: ExactChecks,
@@ -278,7 +367,7 @@ class CandidateBaselineService:
                     self.backoff_seconds * (2 ** reruns), self.backoff_max_seconds
                 )
                 outcome = {"outcome": "requested", "due_at": values["baseline_rerun_at"]}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
                 integration_batches.c.target_ref.is_not(None),
             ).values(**values))
@@ -286,33 +375,64 @@ class CandidateBaselineService:
                     "due_at": values.get("baseline_rerun_at", due_at)}
 
 
-def red_brief(baseline: Baseline, candidate_sha: str) -> str:
-    """Plain-English scope for a repair that owns only this batch's own failures.
+def red_brief(
+    baseline: Baseline, candidate_sha: str, *, candidate: ChecksResult | None = None,
+    sealed_target: str | None = None,
+) -> str:
+    """Plain-English scope for the candidate's admitted repairs.
 
-    Empty when no comparison was possible: a repair filed without a baseline
-    knows nothing about the target, so it must not claim it owns one check and
-    not another.
+    Even without a target baseline, the candidate's own failures are known.
+    Include the cached job URLs and failing test IDs when the producer has them.
+    An empty failing set cannot produce a repair brief.
     """
-    if baseline.unavailable:
+    rows = {check.name: check for check in candidate.checks} if candidate else {}
+    names = set(failing(candidate)) if candidate else {
+        *baseline.repairable, *baseline.pre_existing, *baseline.unproven,
+    }
+    if not names:
         return ""
-    lines = [
-        (f"Required checks are red on candidate {candidate_sha}, built on target "
-         f"{baseline.target_sha}."),
-        "Repair these failing required checks, which the target does not also fail:",
-        *(f"  - {name}" for name in baseline.repairable),
+
+    def describe(selected: tuple[str, ...]) -> list[str]:
+        lines = []
+        for name in selected:
+            if name not in names:
+                continue
+            lines.append(f"  - {name}")
+            row = rows.get(name)
+            if row:
+                if row.run_url:
+                    lines.append(f"    Job: {row.run_url}")
+                tests = row.detail.get("failing_test_ids")
+                if isinstance(tests, (list, tuple)):
+                    lines.extend(
+                        f"    Failing test: {test}" for test in tests if isinstance(test, str)
+                    )
+        return lines
+
+    lines = [f"Required checks are red on candidate {candidate_sha}."]
+    if baseline.unavailable:
+        lines += [
+            render_task_template("candidate-baseline-unavailable"),
+            *describe(tuple(sorted(names))),
+        ]
+        return "\n".join(lines)
+    lines += [
+        f"The candidate was built on target {baseline.target_sha}.",
+        render_task_template("candidate-baseline-owned"),
+        *describe(baseline.repairable),
     ]
     if baseline.pre_existing:
         lines += [
-            ("These failing required checks also fail on the target commit above. They are "
-             "pre-existing failures this repair does not own: no change in this batch can turn "
-             "them green, so do not spend the repair on them."),
-            *(f"  - {name}" for name in baseline.pre_existing),
+            (f"This batch seals epic {sealed_target}, preventing ordinary target repair. "
+             "Repair these proven pre-existing target failures on the candidate as well. "
+             "Preserve every frozen source; publish only the repair branch."
+             if sealed_target else render_task_template("candidate-baseline-pre-existing")),
+            *describe(baseline.pre_existing),
         ]
     if baseline.unproven:
         lines += [
-            ("These failing required checks have no final verdict on the target commit above, "
-             "so nothing is attributed to this batch for them either:"),
-            *(f"  - {name}" for name in baseline.unproven),
+            (render_task_template("candidate-baseline-unproven")),
+            *describe(baseline.unproven),
         ]
     return "\n".join(lines)
 
