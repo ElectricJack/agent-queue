@@ -39,7 +39,7 @@ from src.integration.candidate_baseline import (
     red_brief,
 )
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks, HybridChecks
-from src.integration.git_truth import GitTruthSnapshot
+from src.integration.git_truth import GitTruthSnapshot, snapshot_scope
 from src.integration.models import RepairPolicy
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.runtime_contracts import HeadIdentity
@@ -521,6 +521,10 @@ class IntegrationTrain:
         self, now: float | None = None, *, target: TrainTarget | None = None,
     ) -> dict[str, list[str]]:
         """Bound each repository's visits; give new and longest-waiting targets a turn."""
+        with snapshot_scope():
+            return await self._tick(now, target=target)
+
+    async def _tick(self, now, *, target):
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
             return {'started': [], 'running': [], 'skipped': ['tick_in_progress'], 'deferred': []}
@@ -841,7 +845,8 @@ class IntegrationTrain:
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":
-                snapshot = await lane.snapshot()
+                with snapshot_scope():
+                    snapshot = await lane.snapshot()
             completion = await lane.complete_epic(snapshot)
             events = [item for item in completion if item.get("blocking") is False]
             blockers += tuple(item for item in completion if item.get("blocking") is not False)
@@ -860,7 +865,8 @@ class IntegrationTrain:
             if visit.state == "delivered" and depart_next:
                 # Re-fetch after settlement: the successor must be built and
                 # checked on the newly observed delivery tip, in this turn.
-                successor = await self._visit_target(target, depart_next=False)
+                with snapshot_scope():
+                    successor = await self._visit_target(target, depart_next=False)
                 if successor.batch_id and successor.batch_id != visit.batch_id:
                     return replace(successor, detail={
                         **(successor.detail or {}), "settled_batch_id": visit.batch_id,

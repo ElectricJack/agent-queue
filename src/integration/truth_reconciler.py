@@ -21,7 +21,7 @@ from src.database.queries.integration_state_queries import session_attached_clau
 from src.integration.delegate_release import live_integration_owner
 from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState
-from src.integration.git_truth import GitTruth
+from src.integration.git_truth import GitTruth, snapshot_scope
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.truth_retention import retain_delivery, retain_objects
@@ -37,7 +37,8 @@ class GitTruthReconciler:
             raise ValueError("page size must be positive")
         self.db, self.git = db, git
         self.observer = DeliveryObserver(
-            db, git=git, data_dir=Path(data_dir) / "truth-reconciliation", truth=GitTruth(git),
+            db, git=git, data_dir=Path(data_dir) / "truth-reconciliation",
+            truth=GitTruth(git, share_fetches=True, skip_unchanged=True),
         )
         self.owner_recovery = owner_recovery
         self.obsolete_close = obsolete_close
@@ -52,6 +53,10 @@ class GitTruthReconciler:
         self._lock = asyncio.Lock()
 
     async def tick(self, now):
+        with snapshot_scope():
+            return await self._tick(now)
+
+    async def _tick(self, now):
         if self._lock.locked():
             return {"outcome": "running"}
         async with self._lock:

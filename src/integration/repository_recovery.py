@@ -16,6 +16,7 @@ from pathlib import Path
 
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, RemoteRefState, safe_git_detail
+from src.integration.selection_metrics import selection_count, selection_stage
 
 logger = logging.getLogger(__name__)
 _HEX = re.compile(r"[0-9a-f]+\Z")
@@ -267,7 +268,7 @@ class RetainedRecoveryExhausted(GitError):
 
 
 async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
-                                repository_id=None, lock_held=False):
+                                repository_id=None, lock_held=False, skip_unchanged=False):
     """Recover inside the existing acquisition budget, keeping all local refs.
 
     The journal is durable even without a daemon (disposable Git fixtures). In
@@ -294,12 +295,34 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                 _write(journal, state)
 
     async def fsck():
-        return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
-                                        env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
+        with selection_stage("retained_fsck"):
+            return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
+                                            env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
 
     async def fetch(**options):
-        await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
-                                lock_held=True, **options)
+        selection_count("retained_fetch_starts")
+        with selection_stage("retained_fetch"):
+            await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
+                                    lock_held=True, **options)
+
+    async def unchanged():
+        # This runs under the same repository exclusion as acquisition. A fresh
+        # advertisement alone says nothing about local integrity or missing refs.
+        with selection_stage("snapshot_ref_probe"):
+            selection_count("snapshot_ref_probes")
+            remote = await git.als_remote_snapshot_refs(str(store), repository_url=repository_url)
+            local = await git.arun_git_result(
+                ["for-each-ref", "--format=%(refname) %(objectname)",
+                 "refs/remotes/origin/", "refs/tags/", "refs/aq/provenance/"],
+                cwd=str(store), lock_held=True,
+            )
+            if local.returncode or local.stderr.strip():
+                return False
+            refs = dict(line.split(" ", 1) for line in local.stdout.splitlines())
+            refs.pop("refs/remotes/origin/HEAD", None)
+            refs = {ref.replace("refs/remotes/origin/", "refs/heads/", 1): oid
+                    for ref, oid in refs.items()}
+            return refs == remote
 
     async def acquire():
         nonlocal state
@@ -320,6 +343,10 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             # Check the baseline before fetch adds verified objects. Comparing
             # only afterwards makes every incremental pack require a full fsck.
             reusable = await git.aretained_store_verified(str(directory))
+            if (skip_unchanged and reusable and not journal.exists() and not pending.exists()
+                    and await unchanged()):
+                selection_count("snapshot_unchanged")
+                return True
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
@@ -413,7 +440,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
     async with _transaction(git, store, lock_held):
         try:
             async with asyncio.timeout_at(deadline):
-                await acquire()
+                no_change = await acquire()
         except BaseException as exc:
             if state is not None and state["status"] != "recovered":
                 state["status"] = "exhausted" if state["attempts"] >= MAX_ATTEMPTS else "failed"
@@ -432,7 +459,9 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             if isinstance(exc, TimeoutError):
                 raise GitError("retained Git acquisition timed out") from exc
             raise
-        await _maintain(git, store, directory)
+        if not no_change:
+            with selection_stage("retained_maintenance"):
+                await _maintain(git, store, directory)
 
 
 async def clear_retained_recovery(git, state, *, by, record):
