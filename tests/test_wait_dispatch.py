@@ -885,7 +885,7 @@ async def test_deadline_waits_for_graph_without_blocking_lease_renewal(runtime_e
     waiting = asyncio.Event()
 
     def before_execute(conn, cursor, statement, parameters, context, executemany):
-        if "pg_advisory_xact_lock" in statement:
+        if "advisory_xact_lock" in statement:
             waiting.set()
 
     try:

@@ -949,6 +949,72 @@ async def test_installed_wait_explain_reads_by_wait_and_by_task(env, principal):
     assert not missing["success"]
 
 
+async def _named_supervisor(env, project):
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id=project, profile_id="supervisor", harness="codex",
+        provider="fake", name=f"n-supervisor--{project or 'global'}", lifecycle="named",
+        state="running", desired_state="running", instance_token="sup-token", epoch="boot",
+        work_dir="/tmp/supervisor", started_at=NOW))
+    return replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                   task_id=None, project_id=project, profile_id="supervisor", elevated=True)
+
+
+async def test_project_supervisor_explains_task_waits_in_its_own_project_only(env):
+    """The delivery watchdog and stall checks hand supervisors `aq wait explain --task`."""
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["error_code"] == "wait.out_of_scope"
+    assert "Private title" not in str(foreign)
+    nominated = await execute(
+        handler, "wait_explain", {"task_id": "foreign", "project_id": "q"}, principal
+    )
+    assert nominated["error_code"] == "wait.out_of_scope"
+
+
+async def test_global_supervisor_explains_task_waits_in_any_project(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, None)
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["success"] and foreign["waits"] == [], foreign
+
+
+async def test_supervisor_read_scope_never_registers_or_mutates_for_a_task(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    registered = await execute(handler, "wait_register", {
+        "schema_version": 2, "condition": {"kind": "task", "task_id": "source"},
+        "idempotency_key": "sup-k", "task_id": "owner"}, principal)
+    assert registered["error_code"] in {"wait.out_of_scope", "out_of_scope"}
+    assert "owner task cannot be nominated" in registered["error"]
+    legacy = await execute(handler, "wait_register", {
+        "kind": "task", "ref": "source", "idempotency_key": "sup-legacy", "task_id": "owner"},
+        principal)
+    assert legacy["success"] is False
+    for name, args in (
+        ("wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1, "task_id": "owner"}),
+        ("wait_checkpoint", {"wait_id": receipt["wait_id"], "claim_epoch": 1,
+                             "summary": "Resume the source task.", "task_id": "owner"}),
+    ):
+        refused = await execute(handler, name, args, principal)
+        assert refused["success"] is False, (name, refused)
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(wait_records)) == 1
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+    # A pool worker still cannot read another task's waits.
+    worker = await execute(handler, "wait_explain", {"task_id": "source"})
+    assert worker["error_code"] == "wait.out_of_scope"
+
+
 async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
     receipt = await register(env)
     async with env.db._engine.begin() as conn:
@@ -1262,3 +1328,21 @@ async def test_concrete_cancel_refuses_a_stale_claim_and_foreign_supervisor(env)
                           principal))["error_code"] == "wait.out_of_scope"
     async with env.db._engine.connect() as conn:
         assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+
+
+@pytest.mark.parametrize('missing', ['continuation_id', 'expected_generation'])
+def test_requeue_requires_explicit_continuation_generation(missing):
+    args = dict(wait_id='w', decision='requeue', continuation_id='c',
+                expected_generation=1, note='Infrastructure repaired')
+    args.pop(missing)
+    with pytest.raises(ValidationError, match='requeue requires'):
+        WaitDecideArgs.model_validate(args)
+
+
+def test_cli_requeue_sends_continuation_and_generation(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ['decide', '--wait-id', 'w', '--decision', 'requeue',
+        '--continuation-id', 'c', '--expected-generation', '2', '--note', 'Infrastructure repaired'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ('wait_decide', dict(wait_id='w', decision='requeue', continuation_id='c',
+        expected_generation=2, note='Infrastructure repaired'))

@@ -57,6 +57,17 @@ async def mark_delivered(conn, *, continuation_id, session_id, instance_token, c
         return
     if intent["resume_state"] != "launching" or not intent["envelope_id"]:
         raise WaitError("continuation.stale_generation", "outcome has no launch binding")
+    if incident_id := intent['facts'].get('hold_escalation_id'):
+        from src.waits.decisions import WaitDecisions
+
+        result = await WaitDecisions.resolve_escalation(
+            conn, {'escalation_id': incident_id, 'wait_id': wait['id'],
+                   'continuation_id': intent['id']},
+            {'decision': 'resumed', 'note': 'Fresh process received continuation prime'},
+            outcome='satisfied', now=now,
+        )
+        if not result['success']:
+            raise WaitError('wait.unavailable', 'resume hold incident changed')
     await conn.execute(update(messages).where(
         messages.c.id == intent["envelope_id"], messages.c.to_id == session_id,
     ).values(delivered_at=now, via="prime"))

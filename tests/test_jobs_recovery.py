@@ -411,3 +411,49 @@ async def test_missing_observed_output_cannot_be_adopted_as_pass(db, tmp_path):
     result = (await db.get_job(job["id"]))["result"]
     assert result["outcome"] == "infrastructure"
     assert not await db.workspace_has_job_pin("w")
+
+
+async def test_startup_recovery_releases_pin_of_a_launch_that_never_ran(db, tmp_path):
+    """A restart proves a receipt-less, intent-less launch dead (smart-lantern-91).
+
+    The pin it left would otherwise block workspace recovery on every start.
+    """
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    # Fresh: the 30s exec grace is a runtime bound, not a startup one.
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    await svc.recover_on_startup()
+    lost = await db.get_job(job["id"])
+    assert lost["state"] == "lost"
+    assert not lost["cleanup_blocked"]
+    assert not await db.workspace_has_job_pin("w")
+
+
+async def test_startup_recovery_releases_an_earlier_runtime_lost_pin(db, tmp_path):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
+    await svc.reconcile(job)
+    assert (await db.get_job(job["id"]))["cleanup_blocked"]
+    await svc.recover_on_startup()
+    assert not (await db.get_job(job["id"]))["cleanup_blocked"]
+    assert not await db.workspace_has_job_pin("w")
+
+
+async def test_startup_recovery_keeps_queued_live_and_intent_pins(db, tmp_path, monkeypatch):
+    svc = service(db, tmp_path)
+    queued = await db.submit_job(values())
+    await svc.recover_on_startup()
+    assert (await db.get_job(queued["id"]))["state"] == "queued"
+    assert await db.workspace_has_job_pin("w")
+
+    job = await db.transition_job(queued["id"], 0, "starting", launch_at=time.time())
+    alive = {job["runner_nonce"]}
+
+    async def live(nonce):
+        return [1] if nonce in alive else []
+
+    monkeypatch.setattr("src.jobs.service.processes", live)
+    await svc.recover_on_startup()
+    assert (await db.get_job(job["id"]))["state"] == "starting"
+    assert await db.workspace_has_job_pin("w")
