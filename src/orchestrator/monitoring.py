@@ -256,10 +256,22 @@ class MonitoringMixin:
         blocked = [task for task in blocked if task.id not in terminal]
 
         decisions = await self._projected_promotion_decisions(defined, blocked)
+        observed = {task.id: task for task in [*defined, *blocked]}
 
         for task_id in sorted(decisions):
+            # A change set can commit new blockers after this pass's read.
+            # Recheck the projection in the status write, under PostgreSQL's
+            # task-table/row locks, rather than promoting a stale snapshot.
+            from sqlalchemy import and_
+            from src.database.tables import tasks
+
             flipped = await self.db.transition_task(
-                task_id, TaskStatus.READY, context=decisions[task_id]
+                task_id, TaskStatus.READY, context=decisions[task_id],
+                extra_where=and_(
+                    tasks.c.status == observed[task_id].status.value,
+                    tasks.c.updated_at == observed[task_id].updated_at,
+                    tasks.c.is_blocked == 0,
+                ),
             )
             # WG-4: bus emit for the flipped set so ``task.blocked`` /
             # ``task.unblocked`` triggers actually fire.  ``log_blocked_flips``
@@ -874,6 +886,10 @@ class MonitoringMixin:
         if now - self._last_operational_event_retention_sweep < 3600:
             return
         self._last_operational_event_retention_sweep = now
+        try:
+            await self.db.purge_wait_source_events(now=now)
+        except Exception:
+            logger.exception("Wait source event retention sweep failed")
         try:
             days = int(self.config.events.onboarding_request_retention_days)
             removed = await self.db.purge_finished_onboarding_requests(
