@@ -231,12 +231,16 @@ async def test_cutover_stages_cas_and_rollback_do_not_restore_legacy(command_han
 
     await handler.db.create_project(Project(id="p-cutover", name="Cutover"))
     for generation, mode in enumerate(("shadow", "dashboard", "transferring")):
+        status = await handler.execute("ask_cutover_status", {"project_id": "p-cutover"})
+        current = status["result"]["destinations"][0]
+        assert current["generation"] == generation
+        assert current["first_switch_utc"] is None
         result = await handler.execute(
             "ask_cutover",
             {
                 "project_id": "p-cutover",
                 "mode": mode,
-                "expected_generation": generation,
+                "expected_generation": current["generation"],
             },
         )
         assert result["success"] and result["result"]["generation"] == generation + 1, result
@@ -257,6 +261,18 @@ async def test_cutover_stages_cas_and_rollback_do_not_restore_legacy(command_han
     }
     one = await handler.execute("ask_cutover", arguments)
     assert one["success"] and one["result"]["compatibility_deadline"], one
+    status = await handler.execute("ask_cutover_status", {"project_id": "p-cutover"})
+    switched = status["result"]["destinations"][0]
+    assert switched["mode"] == "channel" and switched["migrated"]
+    assert switched["generation"] == 4
+    assert switched["compatibility_deadline"] == one["result"]["compatibility_deadline"]
+    from datetime import datetime
+
+    first_switch = datetime.fromisoformat(switched["first_switch_utc"])
+    deadline = datetime.fromisoformat(switched["compatibility_deadline_utc"])
+    assert first_switch.utcoffset().total_seconds() == 0
+    assert deadline.utcoffset().total_seconds() == 0
+    assert (deadline - first_switch).total_seconds() == 30 * 86400
     replay = await handler.execute("ask_cutover", arguments)
     assert not replay["success"]
     rollback = await handler.execute(
@@ -269,6 +285,10 @@ async def test_cutover_stages_cas_and_rollback_do_not_restore_legacy(command_han
     )
     assert rollback["success"], rollback
     assert rollback["result"]["compatibility_deadline"] == one["result"]["compatibility_deadline"]
+    status = await handler.execute("ask_cutover_status", {"project_id": "p-cutover"})
+    assert status["result"]["destinations"] == [
+        {**switched, "mode": "delivery_disabled", "generation": 5}
+    ]
     refused = await handler.execute(
         "ask_cutover",
         {
@@ -278,6 +298,91 @@ async def test_cutover_stages_cas_and_rollback_do_not_restore_legacy(command_han
         },
     )
     assert refused["error_code"] == "ask.legacy_retired"
+    transfer = await handler.execute(
+        "ask_cutover",
+        {
+            "project_id": "p-cutover",
+            "mode": "transferring",
+            "expected_generation": 5,
+        },
+    )
+    assert transfer["success"], transfer
+    async with handler.db._engine.connect() as conn:
+        inventory = await diagnostics(
+            conn, project_id="p-cutover", destination_id=destination(handler.config)
+        )
+    enabled = await handler.execute(
+        "ask_cutover",
+        {
+            **arguments,
+            "expected_generation": 6,
+            "inventory_sha256": digest(inventory),
+        },
+    )
+    assert enabled["success"], enabled
+    status = await handler.execute("ask_cutover_status", {"project_id": "p-cutover"})
+    assert status["result"]["destinations"] == [{**switched, "generation": 7}]
+
+
+async def test_cutover_status_lists_only_project_destinations_without_writing(
+    command_handler_factory,
+):
+    from src.asks.delivery import destination
+    from src.database.tables import human_communication_modes
+    from src.models import Project
+
+    handler = await command_handler_factory()
+    await handler.db.create_project(Project(id="p-status", name="Status"))
+    await handler.db.create_project(Project(id="p-other", name="Other"))
+    configured = destination(handler.config)
+    async with handler.db.immediate() as conn:
+        for project, dest in (("p-status", "discord:old:channel"), ("p-other", configured)):
+            await handler.db.advance_ask_mode(
+                {
+                    "project_id": project,
+                    "destination": dest,
+                    "mode": "shadow",
+                    "config_fingerprint": "old",
+                    "updated_at": 1,
+                },
+                expected_generation=0,
+                conn=conn,
+            )
+        before = (await conn.execute(select(human_communication_modes))).mappings().all()
+
+    for _ in range(2):
+        status = await handler.execute("ask_cutover_status", {"project_id": "p-status"})
+        assert status["success"], status
+        assert status["result"] == {
+            "project_id": "p-status",
+            "configured_destination": configured,
+            "destinations": sorted(
+                [
+                    {
+                        "destination": configured,
+                        "mode": "legacy",
+                        "generation": 0,
+                        "migrated": False,
+                        "first_switch_utc": None,
+                        "compatibility_deadline": None,
+                        "compatibility_deadline_utc": None,
+                    },
+                    {
+                        "destination": "discord:old:channel",
+                        "mode": "shadow",
+                        "generation": 1,
+                        "migrated": True,
+                        "first_switch_utc": None,
+                        "compatibility_deadline": None,
+                        "compatibility_deadline_utc": None,
+                    },
+                ],
+                key=lambda row: row["destination"],
+            ),
+        }
+    async with handler.db._engine.connect() as conn:
+        after = (await conn.execute(select(human_communication_modes))).mappings().all()
+    assert before == after
 
 
 async def test_reconcile_quarantines_bad_gate_and_continues(command_handler_factory):

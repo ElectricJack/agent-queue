@@ -1,4 +1,4 @@
-"""Create quiescent disposable Git seeds for per-test filesystem copies."""
+"""Initialize fresh disposable Git repositories without background writers."""
 
 import subprocess
 from pathlib import Path

@@ -12,6 +12,12 @@ tags: [implementation, supervisor, messages, sessions, task-graph, alembic]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Current implementation:** [Supervisors and policy](../systems/supervisors-and-policy.md)
+> and [Supervisor turn health](../supervisor-turn-health.md). The rollout
+> switches, module layout and phase status below are historical. Project
+> supervisors now use `projects.supervisor_enabled`; lifecycle comes from the
+> installed profile, not `supervisor_agent.enabled` or its idle timeout.
+
 **Status:** Draft — approved direction (2026-08-19)
 **Related:** [design/supervisor-agent](../design/supervisor-agent.md) (design), [design/session-runtime](../design/session-runtime.md) (named sessions, activity signal, nudge), [design/work-graph](../design/work-graph.md) (ids, gates, dep types), [design/aq-surface](../design/aq-surface.md) (`aq prime`), `docs/analysis/framework-overhaul-todo.md` §4/§3b
 
@@ -291,7 +297,11 @@ maintenance. This inbox fence does not change `message_status`'s project view:
 project supervisors can still inspect their project's rows and reports addressed
 to their mailboxes by other projects (clear-zenith-84).
 `message_status` applies the same fence to the one row it reads, answering
-"not found" for a message outside the caller's mailboxes. It is on the agent
+"not found" for a message outside the caller's mailboxes. A non-elevated named
+session may read its UUID mailbox and its persisted session-name mailbox;
+batch-fixer repair notices use the latter. The name is resolved from the caller's
+session row, never accepted as an arbitrary alias supplied by the caller.
+Reading the notice acknowledges it and stops further nudges. It is on the agent
 surface because the idle-session nudge names `aq message status <id>`, and
 by then the row is delivered, so `message_inbox` no longer lists it.
 A project-pinned caller also sees only its project's view
@@ -323,6 +333,12 @@ project session with a matching live named `supervisor` row, canonical name and
 launch instance. The sender is always the authenticated session UUID; caller
 sender labels cannot impersonate a user, system or another supervisor. The row
 and message event retain the originating project, thread and reply linkage.
+The logical global address, runtime name `n-supervisor--global`, and persisted
+global supervisor UUID use this same route and store `supervisor-global` as the
+recipient. The named-session POST relay also retains the project supervisor's
+scope instead of inferring a request for projectless system scope. Ordinary
+messages to the supervisor's own workers continue to use its authenticated
+session identity and project.
 Replies require an exact-own original and a global-supervisor sender address
 bound to its persisted named global row (or canonical logical global address).
 An unaddressable system sender cannot be replied to; send a scoped report instead.
@@ -330,6 +346,18 @@ Existing command capability checks and invocation auditing still apply. Explicit
 `system_only`, global inbox/history, unrelated projectless replies, ordinary
 workers and user/local behavior retain their existing authority requirements.
 Source validation of this contract does not establish loaded daemon acceptance.
+
+A pool worker whose claim is still `preparing` may report to its own project
+supervisor before `.aq/claim.json` exists. The authenticated live session instance,
+project/profile, persisted preparation epoch, IN_PROGRESS task and BUSY agent must
+still agree; a supplied epoch must match too. Only the canonical own-supervisor
+addresses or its persisted named session UUID are admitted by this exception.
+The sender remains the authenticated worker UUID and replies use its session inbox.
+This permits a blocker report while preparation retains ownership; it does not
+admit ordinary messaging to peers or users, task mutations, or a report after the
+preparation binding has been released. Active pool messaging still requires an
+explicit claim epoch.
+
 `agent_message --reply-to` still threads only onto the target worker's own
 project's messages; a readable row from another project is refused with the
 `aq message reply <id>` that answers it, and an unreadable one stays

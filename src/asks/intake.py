@@ -12,6 +12,7 @@ from sqlalchemy import or_, select
 
 from src.asks import discussion
 from src.asks.authority import addressed_supervisor, public_allowed, visible
+from src.asks.delivery import config_fingerprint
 from src.asks.models import (
     AskError,
     DecisionActor,
@@ -113,7 +114,9 @@ async def admit_gateway(handler, envelope, *, source):
     if not envelope.text.strip() or len(envelope.text) > 4000:
         raise AskError("ask.invalid_input", "Live human input must contain 1–4000 characters")
     if not await handler.db.ask_channel_enabled(
-        channel_id=envelope.channel_id, guild_id=envelope.guild_id
+        channel_id=envelope.channel_id, guild_id=envelope.guild_id,
+        project_id=settings.project_id or None,
+        config_fingerprint=config_fingerprint(handler.config),
     ):
         raise AskError("ask.channel_disabled", "Shared intake ownership has not transferred")
     values = input_values(
@@ -309,7 +312,10 @@ async def route(handler, item):
                 mode = await db.get_ask_mode(
                     ask["project_id"], destination(handler.config), conn=conn
                 )
-                if not mode or mode["mode"] != "channel":
+                if (
+                    not mode or mode["mode"] != "channel"
+                    or mode["config_fingerprint"] != config_fingerprint(handler.config)
+                ):
                     return await clarify(
                         handler,
                         item,
@@ -634,6 +640,7 @@ async def apply_input(handler, args):
 
 
 async def backfill_legacy(handler, *, conn, limit=100, project_id=None):
+    from src.asks.reset_policy import before_reset
     """Bounded resumable import; conflicts remain owned repair cases."""
     rows = (
         (
@@ -648,6 +655,8 @@ async def backfill_legacy(handler, *, conn, limit=100, project_id=None):
                     escalation_messages.c.input_id.is_(None),
                     escalation_messages.c.external_message_id.is_not(None),
                     escalations.c.project_id == project_id if project_id else True,
+                    ~before_reset(escalation_messages, escalations.c.project_id),
+                    escalations.c.terminal_outcome.is_distinct_from("legacy_discarded"),
                 )
                 .order_by(escalation_messages.c.id)
                 .limit(limit)
