@@ -34,11 +34,12 @@ from enum import Enum
 from typing import Any
 
 from src.commands.authorization import authorize_command
-from src.commands.principal import PrincipalKind
+from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.commands.contracts.models import OutcomeClass
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
+from src.playbooks.authority import bind, binds_run_authority, caller_record, effect_principal
 from src.playbooks.definition import (
     AgentTaskStep,
     CommandStep,
@@ -181,6 +182,9 @@ class ChildTaskCompleted:
 class HumanDecision:
     decision: str
     payload: Mapping[str, Any] = field(default_factory=dict)
+    expected_wait_id: str | None = None
+    expected_artifact_sha256: str | None = None
+    decision_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,7 +793,14 @@ class PlaybookEngine:
                 )
                 continue
 
-            denied = isinstance(step, CommandStep) and not self._authorized(step, principal)
+            step_principal = principal
+            if (isinstance(step, CommandStep) and binds_run_authority(artifact)
+                    and isinstance(principal, ExecutionPrincipal)):
+                # Preview the effect under the authority live would bind.
+                step_principal = bind(
+                    principal, artifact, run_id_for(cursor.rule_id), cursor.step_id
+                )
+            denied = isinstance(step, CommandStep) and not self._authorized(step, step_principal)
             if denied:
                 # The live walk's stage 5.  Package 0 owns the decision and the
                 # engine only routes it, so a denial is a resolved outcome the
@@ -803,7 +814,7 @@ class PlaybookEngine:
                 )
             else:
                 result = await self._execute_symbolic(
-                    step, cursor, artifact, artifact_ref, principal, inputs,
+                    step, cursor, artifact, artifact_ref, step_principal, inputs,
                     authored_key=authored_key,
                     budget=budget,
                     mode=mode,
@@ -1129,6 +1140,7 @@ class PlaybookEngine:
             deadline_at=deadline_at,
             started_at=now,
             updated_at=now,
+            caller=caller_record(principal, artifact),
         )
         try:
             snapshot = await repository.create_run(snapshot)
@@ -1279,6 +1291,25 @@ class PlaybookEngine:
         snapshot = await repository.load_run(run_id)
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
+        if isinstance(cause, HumanDecision):
+            # Receipt reconciliation precedes terminal/current-visit checks. A
+            # replay can report its old result but cannot consume another visit.
+            receipts = await repository.list_receipts(run_id)
+            for receipt in receipts:
+                proof = (receipt.result or {}).get("human_decision", {})
+                if cause.decision_id and proof.get("decision_id") == cause.decision_id:
+                    matches = (proof.get("wait_id") == cause.expected_wait_id
+                               and proof.get("artifact_sha256") == cause.expected_artifact_sha256
+                               and proof.get("outcome") == cause.decision)
+                    return RunOutcome(run_id, snapshot.lifecycle,
+                                      "decision_replayed" if matches else "stale_human_decision",
+                                      snapshot)
+            if (not cause.decision_id or not snapshot.wait or snapshot.wait.kind != "human"
+                    or snapshot.wait.wait_id != cause.expected_wait_id
+                    or snapshot.artifact_sha256 != cause.expected_artifact_sha256):
+                return RunOutcome(run_id, snapshot.lifecycle, "stale_human_decision", snapshot)
+        if isinstance(cause, EventArrived) and snapshot.wait and snapshot.wait.kind == "human":
+            return RunOutcome(run_id, snapshot.lifecycle, "human_decision_required", snapshot)
         if snapshot.is_terminal:
             return RunOutcome(run_id, snapshot.lifecycle, "already_terminal", snapshot)
         from src.playbooks.private_values import PrivateValueError
@@ -1326,6 +1357,11 @@ class PlaybookEngine:
             snapshot = await repository.load_run(run_id) or snapshot
             snapshot = await self._resolve_private_run(snapshot, principal, repository)
         current_step = artifact.steps.get(snapshot.current_step_id or "")
+        if isinstance(cause, HumanDecision) and (
+            not isinstance(current_step, WaitStep) or current_step.wait_kind != "human"
+            or cause.decision not in current_step.outcomes
+        ):
+            return RunOutcome(run_id, snapshot.lifecycle, "undeclared_human_outcome", snapshot)
         if isinstance(cause, ChildTaskCompleted):
             if not isinstance(current_step, WaitStep):
                 return await self._resume_child_task(
@@ -2412,8 +2448,17 @@ class PlaybookEngine:
             )
 
         # 5. Authorize.  Package 0 owns the decision; the engine only routes
-        #    it, so an artifact can declare an edge for a denial.
-        if isinstance(step, CommandStep) and not self._authorized(step, principal):
+        #    it, so an artifact can declare an edge for a denial.  A gated
+        #    artifact's effect acts for the run's recorded caller, re-derived
+        #    now, never for whoever drives this attempt (an operator retry).
+        step_principal = principal
+        if isinstance(step, (CommandStep, ScriptStep)):
+            step_principal = await effect_principal(
+                snapshot, artifact, principal, self.services, step_id
+            )
+            if isinstance(step, CommandStep):
+                attempt.principal = step_principal
+        if isinstance(step, CommandStep) and not self._authorized(step, step_principal):
             attempt.outcome = "unauthorized"
             attempt.error = f"capability denied: {step.command}"
             return await finish(
@@ -2477,7 +2522,7 @@ class PlaybookEngine:
             artifact=artifact,
             rule_id=snapshot.rule_id,
             step_id=step_id,
-            principal=principal,
+            principal=step_principal,
             scope=scope,
             services=self.services,
             mode=mode,
@@ -3345,7 +3390,10 @@ class PlaybookEngine:
         ctx = StepContext(
             run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
             artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
-            step_id=attempt.step_id, principal=attempt.principal,
+            step_id=attempt.step_id,
+            principal=await effect_principal(
+                snapshot, artifact, attempt.principal, self.services, attempt.step_id
+            ),
             scope=self._scope(snapshot, artifact), services=self.services,
             iteration_path=snapshot.iteration_path,
             attempt=snapshot.attempts[attempt_key(attempt.step_id, attempt.iteration,
@@ -3416,6 +3464,8 @@ class PlaybookEngine:
             ),
         )
         attempt.outcome = outcome
+        if proof := claim.event_fields.get("human_decision"):
+            attempt.receipt_result = {"human_decision": dict(proof)}
         if outcome == "timed_out":
             attempt.timed_out = True
             attempt.error = f"{self._deadline_that_fired(snapshot, step, wait)} deadline fired"
@@ -3519,7 +3569,15 @@ class PlaybookEngine:
                 return None
             expired = True
         elif isinstance(cause, HumanDecision):
-            payload = {"resolution": cause.decision, **dict(cause.payload)}
+            if (wait.kind != "human" or wait.wait_id != cause.expected_wait_id
+                    or snapshot.artifact_sha256 != cause.expected_artifact_sha256
+                    or not cause.decision_id):
+                return None
+            payload = {**dict(cause.payload), "resolution": cause.decision,
+                       "human_decision": {"decision_id": cause.decision_id,
+                                          "wait_id": cause.expected_wait_id,
+                                          "artifact_sha256": cause.expected_artifact_sha256,
+                                          "outcome": cause.decision}}
         elif isinstance(cause, ChildTaskCompleted):
             payload = {"task_id": cause.task_id, "status": cause.status}
         else:

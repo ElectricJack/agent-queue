@@ -1029,7 +1029,19 @@ class PlaybookV2ShadowCompileResponse(V2Model):
 # ---------------------------------------------------------------------------
 
 
+class PlaybookSourceResyncResponse(V2Model):
+    success: bool = True
+    playbook_id: str
+    artifact_sha256: str
+    source_hash: str
+    previous_source_hash: str
+    source_path: str
+    backup_path: str | None = None
+    changed: bool
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "playbook_source_resync": PlaybookSourceResyncResponse,
     "playbook_v2_graph": PlaybookV2GraphResponse,
     "playbook_commands": PlaybookCommandCatalogResponse,
     "playbook_graph_layout_save": PlaybookGraphLayoutSaveResponse,
