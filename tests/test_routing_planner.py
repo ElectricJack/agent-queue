@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
+from hypothesis import given, strategies as st
 
 from src.routing.planner import (
     FALLBACK,
@@ -25,10 +26,11 @@ from src.routing.planner import (
     TaskFacts,
     is_candidate,
     plan_route,
+    read_classification,
     reselect,
     worker_classes,
 )
-from src.routing.policy import PolicyError, parse_policy, selector_matches
+from src.routing.policy import RISK_LEVELS, PolicyError, parse_policy, selector_matches
 
 #: Original balanced policy; retained to check backwards compatibility and replay.
 BALANCED_POLICY = """\
@@ -133,6 +135,124 @@ def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, back
         profiles=tuple(_fleet() if profiles is None else profiles),
         providers=providers, busy=dict(busy or {}), backlog=dict(backlog or {}),
     )
+
+
+@st.composite
+def routing_history(draw):
+    profiles = tuple(
+        _rung("standard-high", harness, slots=draw(st.integers(0, 5)),
+              enabled=draw(st.booleans()))
+        for harness in ("codex", "claude")
+    )
+    states = st.sampled_from([
+        "available", "degraded", "exhausted", "unauthenticated", "failing", "disabled",
+    ])
+    transitions = draw(st.lists(
+        st.tuples(st.integers(0, 1), st.booleans(), states, st.integers(0, 10)),
+        min_size=1, max_size=15,
+    ))
+    return profiles, transitions
+
+
+@given(history=routing_history())
+def test_property_routes_and_fresh_apply_never_choose_disabled_capacity(history):
+    profiles, transitions = history
+    providers = {p.provider: ProviderFacts() for p in profiles}
+    busy = {}
+    saved_candidates = []
+    task = _task(task_type="feature", class_hint="standard-high")
+    for index, enabled, state, load in transitions:
+        profiles = tuple(replace(p, enabled=enabled) if i == index else p
+                         for i, p in enumerate(profiles))
+        profile = profiles[index]
+        providers[profile.provider] = ProviderFacts(
+            state=state, launchable=state in {"available", "degraded"},
+        )
+        busy[profile.id] = load
+        snapshot = Snapshot(profiles=profiles, providers=providers, busy=busy)
+        # task_route_apply revalidates a saved plan against the fresh snapshot
+        # before scoring it; a profile/provider can change after planning.
+        selection = reselect(
+            [c for c in saved_candidates if is_candidate(c, snapshot)], snapshot, POLICY.balance,
+        )
+        if selection is not None:
+            chosen = snapshot.profile(selection.chosen.profile_id)
+            assert chosen.enabled and chosen.slots > 0
+            assert providers[chosen.provider].launchable
+            assert providers[chosen.provider].state in {"available", "degraded"}
+        result = _plan(task, snapshot, NARROW_NO)
+        if result.outcome == "planned":
+            chosen = snapshot.profile(result.value["profile_id"])
+            assert chosen is not None and chosen.enabled and chosen.slots > 0
+            assert providers[chosen.provider].state in {"available", "degraded"}
+            saved_candidates = [Candidate.from_dict(c) for c in result.value["candidates"]]
+        else:
+            assert result.outcome in {"held", "no_candidates"}
+            assert not any(p.enabled and p.slots > 0 and providers[p.provider].launchable
+                           for p in profiles)
+
+
+@given(excluded=st.sets(st.sampled_from(["codex", "claude"])),
+       loads=st.tuples(st.integers(0, 20), st.integers(0, 20)))
+def test_property_router_honors_provider_exclusions_at_any_load(excluded, loads):
+    profiles = tuple(_rung("standard-high", h) for h in ("codex", "claude"))
+    snapshot = _snapshot(profiles, busy=dict(zip((p.id for p in profiles), loads)))
+    result = _plan(_task(task_type="feature", exclude_providers=frozenset(excluded)),
+                   snapshot, NARROW_NO)
+    if excluded == {"codex", "claude"}:
+        assert result.outcome == "no_candidates"
+    else:
+        assert result.outcome == "planned"
+        assert result.value["provider"] not in excluded
+        assert all(c["provider"] not in excluded for c in result.value["candidates"])
+
+
+@pytest.mark.parametrize("class_hint", ["standard-high", "deep-high", "fast-high", "deep-low"])
+def test_operator_tasks_use_only_the_operator_frontier_role(class_hint):
+    text = BALANCED_POLICY.replace("kinds:\n", "kinds:\n  operator: {class: standard-high, max_class: deep-high}\n")
+    policy, digest = parse_policy(text)
+    operators = tuple(replace(p, id="operator-" + p.id, operator=True) for p in _fleet())
+    result = plan_route(_task(task_type="operator", class_hint=class_hint), policy,
+                        _snapshot((*_fleet(), *operators)), policy_sha256=digest)
+    assert result.outcome == "planned", result
+    assert result.value["profile_id"].startswith("operator-")
+    assert result.value["intelligence_class"] in {"standard-high", "deep-high"}
+    assert all(c["harness"] in {"claude", "codex"} for c in result.value["candidates"])
+    assert all(c["profile_id"].startswith("operator-") for c in result.value["candidates"])
+
+
+def test_operator_capacity_is_never_general_worker_capacity():
+    profiles = tuple(replace(p, id="operator-" + p.id, operator=True) for p in _fleet())
+    result = _plan(_task(task_type="feature"), _snapshot(profiles))
+    assert result.outcome == "no_candidates"
+    missing = _plan(_task(task_type="operator"), _snapshot((*_fleet(), *profiles)))
+    assert missing.outcome == "no_candidates" and missing.value["reason"] == "operator_rule_missing"
+    policy, digest = parse_policy(BALANCED_POLICY.replace(
+        "kinds:\n", "kinds:\n  operator: {class: standard-high, max_class: deep-high}\n",
+    ))
+    unavailable = plan_route(_task(task_type="operator"), policy, _snapshot(), policy_sha256=digest)
+    assert unavailable.outcome == "no_candidates"
+
+
+@pytest.mark.parametrize("prefer_mode", ["soft", "strict"])
+def test_missing_operator_rule_names_the_executed_policy_and_activation_fix(prefer_mode):
+    operators = tuple(replace(p, id="operator-" + p.id, operator=True) for p in _fleet())
+    result = _plan(
+        _task(task_type="operator", prefer_target="codex", prefer_mode=prefer_mode),
+        _snapshot((*_fleet(), *operators)),
+    )
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "operator_rule_missing"
+    assert result.value["policy_sha256"] == DIGEST
+    assert "kinds.operator" in result.value["detail"]
+    assert "activate" in result.value["detail"]
+    assert "kinds.feature" not in result.value["detail"]
+
+
+def test_operator_profiles_cannot_use_local_or_cheap_models():
+    assert not worker_classes(_rung("fast-high", "codex", operator=True))
+    assert not worker_classes(_rung("standard-high", "opencode", operator=True))
+    assert not worker_classes(_rung("standard-high", "codex", operator=True, local=True))
 
 
 def _task(**changes) -> TaskFacts:
@@ -544,21 +664,35 @@ def _local(plan: dict) -> set[str]:
     return {c["profile_id"] for c in plan["candidates"] if c["local"]}
 
 
+def test_priority_is_not_a_routing_input() -> None:
+    # rev-wise-impact (2026-10-09): a task's priority never dictates the
+    # model.  The planner is not given it, and no lane or local-model rule
+    # may name it.
+    assert "priority" not in {field.name for field in fields(TaskFacts)}
+    for text, path in (
+        (SHIPPED_POLICY + "local_models: {above_priority: 50}\n", "local_models.above_priority"),
+        (LANE_CAP_POLICY.replace("max_risk: low\n", "max_risk: low\n    above_priority: 99\n"),
+         "lanes.narrow.above_priority"),
+    ):
+        with pytest.raises(PolicyError, match=path):
+            parse_policy(text)
+
+
 @pytest.mark.parametrize("classification", [NARROW_YES, NARROW_NO])
-def test_a_priority_290_bugfix_never_picks_a_local_profile(classification) -> None:
+def test_a_train_bugfix_never_picks_a_local_profile(classification) -> None:
     # Every hosted rung full: the local model would win on load, and still is
     # not a candidate.
     busy = {
         "standard-high-claude": 4, "standard-high-codex": 4, "standard-high-opencode-zen": 1,
     }
-    task = _task(task_type="bugfix", priority=290)
+    task = _task(task_type="bugfix", on_train=True)
     plan = _planned(task, _snapshot(_hosted_fleet(), busy=busy), classification)
     assert _local(plan) == set()
     assert plan["profile_id"] != "standard-high-opencode"
 
 
-def test_a_priority_100_docs_task_can_still_run_on_a_local_profile() -> None:
-    task = _task(task_type="docs", priority=100)
+def test_a_narrow_docs_task_runs_on_a_local_profile() -> None:
+    task = _task(task_type="docs")
     plan = _planned(task, _snapshot(), {**NARROW_YES, "task_type": "docs"})
     assert plan["profile_id"] == "standard-high-opencode"
     assert plan["candidates"][0]["local"] is True
@@ -568,17 +702,15 @@ def test_a_priority_100_docs_task_can_still_run_on_a_local_profile() -> None:
     ("changes", "local_allowed"),
     [
         ({}, True),
-        ({"priority": 149}, True),
-        ({"priority": 150}, False),
         ({"on_train": True}, False),
         # Only the policy's train kinds lose the local model on a train.
         ({"on_train": True, "task_type": "docs"}, True),
         ({"blocks_work": True}, False),
     ],
-    ids=["default", "below", "at-threshold", "train-bugfix", "train-docs", "blocking"],
+    ids=["default", "train-bugfix", "train-docs", "blocking"],
 )
 def test_the_local_model_gate(changes, local_allowed) -> None:
-    values = {"task_type": "bugfix", "priority": 100, **changes}
+    values = {"task_type": "bugfix", **changes}
     classification = {**NARROW_YES, "task_type": values["task_type"]}
     plan = _planned(_task(**values), _snapshot(), classification)
     assert bool(_local(plan)) is local_allowed
@@ -587,7 +719,7 @@ def test_the_local_model_gate(changes, local_allowed) -> None:
 
 def test_the_gate_reads_the_classified_kind() -> None:
     # A kindless task on a train, classified as a bugfix, is a train bugfix.
-    plan = _planned(_task(priority=100, on_train=True), _snapshot(), NARROW_YES)
+    plan = _planned(_task(on_train=True), _snapshot(), NARROW_YES)
     assert plan["task_type"] == "bugfix"
     assert _local(plan) == set()
 
@@ -596,7 +728,6 @@ def test_local_models_policy_knobs() -> None:
     policy, digest = parse_policy(BALANCED_POLICY + (
         "local_models:\n"
         "  harnesses: [opencode-zen]\n"
-        "  below_priority: 300\n"
         "  train_kinds: []\n"
         "  allow_blocking: true\n"
     ))
@@ -613,11 +744,17 @@ def test_local_models_policy_knobs() -> None:
         return {c["profile_id"] for c in plan(task)["candidates"]}
 
     local = {"standard-high-opencode", "standard-high-opencode-zen"}
-    # A raised threshold, no train kinds and allow_blocking admit this task ...
-    task = _task(task_type="bugfix", priority=290, on_train=True, blocks_work=True)
+    # No train kinds and allow_blocking admit this task ...
+    task = _task(task_type="bugfix", on_train=True, blocks_work=True)
     assert local <= candidates(task)
-    # ... and a harness the policy names is local, past the threshold, too.
-    assert not candidates(replace(task, priority=300)) & local
+    # ... and a harness the policy names is local, behind the default gate, too.
+    gated, gated_digest = parse_policy(BALANCED_POLICY + (
+        "local_models: {harnesses: [opencode-zen]}\n"
+    ))
+    result = plan_route(task, gated, _snapshot(_hosted_fleet()), policy_sha256=gated_digest,
+                        classification=NARROW_YES)
+    assert result.outcome == "planned", result
+    assert not {c["profile_id"] for c in result.value["candidates"]} & local
 
 
 # -- hosted lanes: all three (Space Bunny + Nemotron + LongCat) -------------
@@ -733,7 +870,7 @@ def test_a_fleet_of_only_local_models_names_the_gate() -> None:
     )
     fleet = [p for p in _fleet() if p.harness in {"claude", "codex"}]
     result = plan_route(
-        _task(task_type="research", priority=290), policy, _snapshot(fleet),
+        _task(task_type="research", blocks_work=True), policy, _snapshot(fleet),
         policy_sha256=digest,
     )
     assert result.outcome == "no_candidates"
@@ -741,7 +878,8 @@ def test_a_fleet_of_only_local_models_names_the_gate() -> None:
 
 
 def test_an_allowlisted_benchmark_arm_skips_the_local_model_gate() -> None:
-    # The arm names its harness explicitly, so the gate does not second-guess it.
+    # The arm names its harness explicitly, so the gate does not second-guess
+    # it, even for a train bugfix.
     policy, digest = parse_policy(BALANCED_POLICY + """
 benchmark_arms:
   qwen:
@@ -750,7 +888,7 @@ benchmark_arms:
     requested_model: qwen3.8:27b
     observed_models: [qwen3.8*]
 """)
-    task = _task(task_type="bugfix", priority=290, benchmark_arms=("qwen",))
+    task = _task(task_type="bugfix", on_train=True, benchmark_arms=("qwen",))
     result = plan_route(task, policy, _snapshot(), policy_sha256=digest)
     assert result.outcome == "planned", result
     assert result.value["profile_id"] == "standard-high-opencode"
@@ -779,6 +917,131 @@ def test_a_degraded_provider_counts_at_its_degraded_factor() -> None:
     assert plan["profile_id"] == "standard-high-claude"
     codex = next(s for s in plan["scores"] if s["profile_id"] == "standard-high-codex")
     assert codex["avail_factor"] == 0.5
+
+
+def _headroom_policy():
+    return parse_policy(BALANCED_POLICY.replace(
+        "  usage_soft_percent: 80", "  usage_mode: headroom\n  usage_soft_percent: 80",
+    ))
+
+
+def _quota_provider(*readings, usage_percent=None):
+    from src.routing.context import quota_observations
+
+    return ProviderFacts(usage_percent=usage_percent, quota=quota_observations(
+        [{"window": window, "scope": "account", "used_percent": used,
+          "observed_at": observed, "resets_at": reset}
+         for window, used, observed, reset in readings],
+        now=1000, stale_after=100,
+    ))
+
+
+def test_usage_mode_is_opt_in_and_preserves_existing_policy_digests():
+    explicit, digest = parse_policy(BALANCED_POLICY.replace(
+        "  usage_soft_percent: 80", "  usage_mode: soft_limit\n  usage_soft_percent: 80",
+    ))
+    assert explicit.balance.usage_mode == POLICY.balance.usage_mode == "soft_limit"
+    assert digest == DIGEST
+    assert "usage_mode" not in json.loads(POLICY.canonical_json())["balance"]
+    headroom, headroom_digest = _headroom_policy()
+    assert headroom_digest != DIGEST
+    assert parse_policy(headroom.canonical_json())[1] == headroom_digest
+    with pytest.raises(PolicyError, match="usage_mode"):
+        parse_policy(BALANCED_POLICY.replace(
+            "  usage_soft_percent: 80", "  usage_mode: fullest\n  usage_soft_percent: 80",
+        ))
+
+
+def test_headroom_mode_spreads_routine_work_in_proportion_to_remaining_usage():
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={
+        "claude": _quota_provider(("weekly", 20, 995, 2000)),
+        "codex": _quota_provider(("five_hour", 70, 995, 1100)),
+    })
+    backlog = {}
+    for _ in range(110):
+        plan = plan_route(_task(task_type="feature"), policy,
+                          replace(snapshot, backlog=backlog), policy_sha256=digest,
+                          classification=NARROW_NO)
+        assert plan.outcome == "planned"
+        assert plan.value["intelligence_class"] == "standard-high"
+        profile = plan.value["profile_id"]
+        backlog[profile] = backlog.get(profile, 0) + 1
+    assert backlog == {"standard-high-claude": 80, "standard-high-codex": 30}
+    first = plan_route(_task(task_type="feature"), policy, snapshot,
+                       policy_sha256=digest, classification=NARROW_NO).value
+    assert first["provider"] == "claude"
+    assert "usage headroom factor 0.8 (binding weekly(account), resets at 2000)" in first["reason"]
+    assert {s["profile_id"]: s["usage_headroom_factor"] for s in first["scores"]} == {
+        "standard-high-claude": 0.8, "standard-high-codex": 0.3,
+    }
+
+
+@pytest.mark.parametrize("provider", [
+    ProviderFacts(), ProviderFacts(usage_percent=70),
+    _quota_provider(("weekly", 99, 100, 2000), usage_percent=99),
+    _quota_provider(("weekly", 99, 995, 999), usage_percent=99),
+    _quota_provider(("weekly", 99, 995, 1000), usage_percent=99),
+])
+def test_headroom_mode_keeps_stale_reset_and_unknown_quota_neutral(provider):
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={"claude": provider, "codex": ProviderFacts()})
+    result = plan_route(_task(task_type="feature"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO).value
+    assert result["provider"] == "codex"  # equal pressure, original tie order
+    assert {s["usage_headroom_factor"] for s in result["scores"]} == {1.0}
+    assert {s["usage_factor"] for s in result["scores"]} == {1.0}
+    assert all(s["usage_binding_window"] is None for s in result["scores"])
+
+
+def test_headroom_uses_the_fullest_fresh_window_and_ignores_expired_resets():
+    policy, digest = _headroom_policy()
+    provider = _quota_provider(
+        ("weekly", 20, 995, 2000), ("five_hour", 70, 990, 1100),
+        ("stale", 99, 100, 2000), ("reset", 100, 995, 999),
+    )
+    snapshot = replace(_snapshot(), providers={"claude": provider})
+    result = plan_route(_task(task_type="feature"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO).value
+    claude = next(s for s in result["scores"] if s["profile_id"] == "standard-high-claude")
+    assert claude["usage_percent"] == 70
+    assert claude["usage_headroom_factor"] == 0.3
+    assert claude["usage_binding_window"] == {
+        "window": "five_hour", "scope": "account", "resets_at": 1100,
+    }
+
+
+@pytest.mark.parametrize("usage", [0, 80, 80.00001, 95, 100])
+def test_headroom_preserves_the_existing_penalty_above_the_soft_limit(usage):
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={
+        "claude": _quota_provider(("weekly", usage, 995, 2000)),
+    })
+    task = _task(task_type="research")
+    original = _planned(task, snapshot)
+    result = plan_route(task, policy, snapshot, policy_sha256=digest).value
+    before = next(s for s in original["scores"] if s["profile_id"] == "standard-high-claude")
+    after = next(s for s in result["scores"] if s["profile_id"] == "standard-high-claude")
+    assert after["usage_factor"] == before["usage_factor"]
+    if usage > 80:
+        assert after["usage_headroom_factor"] == 1
+        assert after["pressure"] == before["pressure"]
+        assert result["provider"] == original["provider"]
+    else:
+        assert after["usage_headroom_factor"] == pytest.approx(1 - usage / 100)
+
+
+def test_headroom_mode_preserves_reserved_cells_and_design_lane_preference():
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={
+        "claude": _quota_provider(("weekly", 70, 995, 2000)),
+        "codex": _quota_provider(("weekly", 20, 995, 2000)),
+    })
+    bugfix = plan_route(_task(task_type="bugfix", class_hint="deep-high"), policy,
+                        snapshot, policy_sha256=digest, classification=NARROW_NO).value
+    assert {c["provider"] for c in bugfix["candidates"]} == {"codex"}
+    design = plan_route(_task(task_type="design"), policy, snapshot, policy_sha256=digest).value
+    assert design["profile_id"] == "deep-high-claude"
 
 
 def test_exclude_providers_steers_a_review_to_the_other_family() -> None:
@@ -924,6 +1187,40 @@ def test_reselection_drops_unlaunchable_candidates_and_returns_none_when_empty()
     assert reselect(candidates, _snapshot(out={"codex", "claude"}), POLICY.balance) is None
 
 
+@pytest.mark.parametrize("changes", [
+    {"enabled": False}, {"slots": 0}, {"quarantined": True},
+])
+@pytest.mark.parametrize("preference", [
+    {}, {"tier": PREFERRED}, {"tier": PREFERRED, "hold": True},
+    {"prefer_target": True}, {"preferred_hosted": True},
+])
+def test_reselection_never_uses_unavailable_spare_capacity(changes, preference):
+    snapshot = _snapshot([
+        _rung("standard-high", "codex"), _rung("standard-high", "claude"),
+    ])
+    plan = _planned(_task(task_type="research"), snapshot)
+    candidates = [replace(Candidate.from_dict(c), **preference)
+                  if c["harness"] == "claude" else Candidate.from_dict(c)
+                  for c in plan["candidates"]]
+    snapshot = replace(snapshot, profiles=tuple(
+        replace(p, **changes) if p.harness == "claude" else p for p in snapshot.profiles
+    ), busy={"standard-high-codex": 4}, headroom={"standard-high-codex": 0})
+    selected = reselect(candidates, snapshot, POLICY.balance)
+    assert selected is not None and selected.chosen.harness == "codex"
+    assert {s.profile_id for s in selected.scores} == {"standard-high-codex"}
+
+
+def test_pressure_fallback_keeps_least_pressured_enabled_full_pool():
+    snapshot = _snapshot([
+        _rung("standard-high", "codex"), _rung("standard-high", "claude"),
+    ], busy={"standard-high-codex": 5, "standard-high-claude": 3})
+    plan = _planned(_task(task_type="research"), snapshot)
+    assert plan["profile_id"] == "standard-high-claude"
+    assert {s["profile_id"] for s in plan["scores"]} == {
+        "standard-high-codex", "standard-high-claude",
+    }
+
+
 @pytest.mark.parametrize("change", [{"provider": "other"}, {"lifecycle": "task"}])
 def test_candidate_eligibility_rejects_changed_provider_or_lifecycle(change):
     snapshot = _snapshot()
@@ -1032,10 +1329,19 @@ def test_routine_preference_falls_back_to_claude_without_raising_class(cause):
 
 def test_routine_preference_preserves_local_design_art_and_operator_rules():
     policy, digest = routine_policy()
-    narrow = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
-                        policy_sha256=digest, classification=NARROW_YES)
+    narrow = plan_route(_task(task_type="feature"), policy, _snapshot(),
+                        policy_sha256=digest, classification={**NARROW_YES, "risk": "low"})
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
+    # Narrow, test-verified medium-risk work (an assumed medium included) may
+    # run on local OpenCode through narrow-medium; high risk never does.
+    for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
+        medium = plan_route(_task(task_type="feature"), policy, _snapshot(),
+                            policy_sha256=digest, classification=classification)
+        assert medium.value["provider"] == "opencode", classification
+    hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+                        policy_sha256=digest, classification={**NARROW_YES, "risk": "high"})
+    assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
     assert routine_plan(task_type="design").value["profile_id"] == "deep-high-claude"
     assert routine_plan(task_type="art").value["provider_intent"] == "pinned"
     assert routine_plan(_snapshot(out={"codex"}), task_type="art").outcome == "held"
@@ -1102,8 +1408,10 @@ def test_origin_can_disable_hosted_preference_without_changing_class_fit():
     body = policy.model_dump(mode="json", by_alias=True)
     body["origins"]["integration_repair"]["prefer_harnesses"] = []
     policy, digest = parse_policy(json.dumps(body))
+    # A repair's risk could raise its class, so the plan needs the risk answer.
     result = plan_route(_task(task_type="bugfix", created_by_kind="integration_repair"),
-                        policy, _snapshot(busy={"standard-high-codex": 1}), policy_sha256=digest)
+                        policy, _snapshot(busy={"standard-high-codex": 1}), policy_sha256=digest,
+                        classification={**NARROW_NO, "risk": "medium"})
     assert result.value["profile_id"] == "standard-high-claude"
     assert result.value["intelligence_class"] == "standard-high"
 
@@ -1154,7 +1462,29 @@ def test_replay_routes_a_projected_repair_on_its_routed_origin():
     assert report["after"] == {"claude": 3} and report["changed"] == 0, report
 
 
+def test_replay_respects_recorded_quarantine_even_when_alternative_is_full():
+    from src.routing.replay import replay_routes
+
+    snapshot = _snapshot([
+        _rung("standard-high", "codex"), _rung("standard-high", "claude"),
+    ], busy={"standard-high-claude": 4})
+    route = _planned(_task(task_type="research"), snapshot)
+    route["live_context"] = {"profiles": [
+        {"profile_id": p.id, "limit": p.slots, "enabled": True,
+         "effective_headroom": 0, "quarantine_until": 123 if p.harness == "codex" else None}
+        for p in snapshot.profiles
+    ]}
+    report = replay_routes([{"task_id": "old-pressure-fallback", "route": route}], POLICY, DIGEST)
+    assert report["before"] == {"codex": 1}
+    assert report["after"] == {"claude": 1}
+
+
 # -- the per-task preference (mandatory routing §4) -------------------------------
+
+
+#: A research task classified medium risk: the shipped policy's risk table
+#: could raise research, so the plan needs the risk answer before it routes.
+RESEARCH_MEDIUM = {**NARROW_NO, "task_type": "research", "risk": "medium"}
 
 
 def _preferred_plans(snapshot=None, **task_changes):
@@ -1166,6 +1496,7 @@ def _preferred_plans(snapshot=None, **task_changes):
         mode: plan_route(
             _task(**{**task_changes, "prefer_mode": mode}),
             policy, snapshot or _snapshot(), policy_sha256=digest,
+            classification=RESEARCH_MEDIUM,
         )
         for mode in ("soft", "strict")
     }
@@ -1237,9 +1568,11 @@ def test_a_preference_may_name_one_profile_as_well_as_a_harness():
 def test_a_preference_outranks_a_lane_preference_but_not_a_hold_lane():
     policy, digest = routine_policy()
     narrow = plan_route(
-        _task(task_type="bugfix", prefer_target="claude", prefer_mode="soft"),
-        policy, _snapshot(), policy_sha256=digest, classification=NARROW_YES,
+        _task(task_type="feature", prefer_target="claude", prefer_mode="soft"),
+        policy, _snapshot(), policy_sha256=digest,
+        classification={**NARROW_YES, "risk": "low"},
     )
+    assert "narrow" in {c["lane"] for c in narrow.value["candidates"]}
     assert narrow.value["profile_id"] == "standard-high-claude"
     assert narrow.value["decision"]["mode"] == "task_preference"
     art = plan_route(
@@ -1304,3 +1637,597 @@ def test_a_preference_survives_the_candidate_round_trip_through_a_plan():
     }), policy.balance)
     assert chosen.chosen.provider == "claude"
     assert chosen.took_preferred_target
+
+
+@pytest.mark.parametrize("origin", ["integration_repair", "development_repair", "integration_verifier", "integration_writer", None])
+@pytest.mark.parametrize("aliased", [False, True])
+def test_active_oct03_policy_never_admits_opencode_family_to_general_pool(origin, aliased):
+    policy_text = (Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml").read_text()
+    policy, digest = parse_policy(policy_text)
+    profiles = [
+        _rung("standard-high", "codex", slots=1),
+        _rung("standard-high", "claude", slots=1),
+        _rung("standard-high", "opencode-zen-longcat", slots=10),
+        _rung("standard-high", "opencode-zen-nemotron", slots=10),
+    ]
+    if aliased:
+        profiles.append(_rung("standard-high", "custom-cli", provider="openrouter",
+                              harness_family="opencode", slots=10))
+    snapshot = _snapshot(profiles, busy={"standard-high-codex": 1, "standard-high-claude": 1})
+    result = plan_route(_task(task_type="bugfix", created_by_kind=origin), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO)
+    assert result.outcome == "planned", result
+    result = result.value
+    assert result["provider"] in {"codex", "claude"}
+    assert {c["harness"] for c in result["candidates"]} <= {"codex", "claude"}
+
+
+def test_active_oct03_policy_preserves_explicit_narrow_lane_admission():
+    policy, digest = parse_policy((Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml").read_text())
+    result = plan_route(_task(task_type="bugfix"), policy,
+                        _snapshot([_rung("standard-high", "opencode-zen")]),
+                        policy_sha256=digest, classification=NARROW_YES)
+    assert result.outcome == "planned", result
+    result = result.value
+    assert result["provider"] == "opencode-zen"
+    assert result["candidates"][0]["lane"] == "narrow-hosted"
+
+
+# -- risk ---------------------------------------------------------------------------
+
+#: The shipped policy plus a ``risk`` block: a medium risk floors at
+#: standard-high, a high one also keeps to Claude and Codex, and a very high
+#: one floors at deep-high unless the change is narrow and test-verified.
+RISK_POLICY = SHIPPED_POLICY + """\
+risk:
+  medium: {min_class: standard-high}
+  high: {min_class: standard-high, harnesses: [claude, codex]}
+  very_high:
+    min_class: deep-high
+    harnesses: [claude, codex]
+    relax: {class: standard-high, requires: [narrow, test_verified]}
+"""
+
+_NARROW_CLASSES = (
+    "classes: {standard-high: standard-high, fast-high: fast-low, fast-low: fast-low}\n"
+)
+
+#: The shipped policy, no ``risk`` block, with the local ``narrow`` lane
+#: capped at a low risk.
+LANE_CAP_POLICY = SHIPPED_POLICY.replace(
+    _NARROW_CLASSES, _NARROW_CLASSES + "    max_risk: low\n",
+)
+assert "max_risk: low" in LANE_CAP_POLICY
+
+#: The keys a classification record had before risks existed.
+_RECORD_KEYS = {
+    "task_type", "intelligence_class", "narrow", "test_verified", "independent_verifier",
+    "reason",
+}
+
+
+def _risk_plan(text: str, task: TaskFacts, snapshot: Snapshot | None = None,
+               classification=None):
+    policy, digest = parse_policy(text)
+    return plan_route(task, policy, snapshot or _snapshot(), policy_sha256=digest,
+                      classification=classification)
+
+
+def test_a_policy_without_risk_keys_keeps_its_digest() -> None:
+    # An optional key at its default is left out of the canonical JSON, so
+    # no existing policy's digest moves when one is added.  SHIPPED_POLICY is
+    # the default routing playbook's policy before the risk-aware revision;
+    # the shipped playbook now uses the risk keys.  Re-pinned once when
+    # ``local_models`` (always dumped) lost its priority ceiling: priority no
+    # longer routes (rev-wise-impact), so the old digest named a removed rule.
+    assert DIGEST == "sha256:b9c8debd9e70dffbcf9ca3fac05e831c7be43be969e8f7bc1cb61da7ca9d70e2"
+    assert parse_policy(SHIPPED_POLICY)[1] == (
+        "sha256:4f01d917e1c24fbd7abb823f7f7e40b5b333ad7620194a3972a3bb8da3872f6b"
+    )
+    fixture = (Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml")
+    assert parse_policy(fixture.read_text())[1] == (
+        "sha256:a10459c0fe546c30e791a8ae15afa80fa4a1ce8f15f4971e6f678c36221d3cb1"
+    )
+    dumped = POLICY.model_dump(mode="json", by_alias=True)
+    assert "risk" not in dumped
+    assert not any("max_risk" in lane for lane in dumped["lanes"].values())
+    assert not POLICY.uses_risk
+
+    # A policy that uses them digests them.
+    risky, risky_digest = parse_policy(RISK_POLICY)
+    assert risky_digest != parse_policy(SHIPPED_POLICY)[1]
+    assert set(risky.model_dump(mode="json", by_alias=True)["risk"]) == {
+        "medium", "high", "very_high",
+    }
+    capped, capped_digest = parse_policy(LANE_CAP_POLICY)
+    assert capped_digest != parse_policy(SHIPPED_POLICY)[1]
+    lane = capped.model_dump(mode="json", by_alias=True)["lanes"]["narrow"]
+    assert lane["max_risk"] == "low"
+
+
+def test_a_risk_block_parses() -> None:
+    assert RISK_LEVELS == ("low", "medium", "high", "very_high")
+    policy, _digest = parse_policy(RISK_POLICY)
+    assert policy.uses_risk
+    very_high = policy.risk["very_high"]
+    assert (very_high.min_class, very_high.harnesses) == ("deep-high", ("claude", "codex"))
+    assert very_high.relax.class_ == "standard-high"
+    assert very_high.floor({"narrow", "test_verified"}) == "standard-high"
+    assert very_high.floor({"narrow"}) == "deep-high"
+    assert policy.risk["medium"].harnesses == ()
+
+    capped, _digest = parse_policy(LANE_CAP_POLICY)
+    assert capped.uses_risk and not capped.risk
+    assert capped.lanes["narrow"].max_risk == "low"
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        (SHIPPED_POLICY + "risk:\n  extreme: {min_class: deep-high}\n", "not a risk level"),
+        (SHIPPED_POLICY + "risk:\n  high: {harnesses: [claude]}\n", "risk.high.min_class"),
+        (SHIPPED_POLICY + "risk:\n  high: {min_class: galaxy}\n", "galaxy"),
+        (SHIPPED_POLICY + "risk:\n  high: {min_class: deep-high, harnesses: ['*']}\n",
+         "harness selectors"),
+        (SHIPPED_POLICY + "risk:\n  high:\n    min_class: standard-high\n"
+         "    relax: {class: deep-high, requires: [narrow]}\n",
+         "relax.class ranks above min_class"),
+        (SHIPPED_POLICY + "risk:\n  high:\n    min_class: deep-high\n"
+         "    relax: {class: standard-high, requires: []}\n", "risk.high.relax.requires"),
+        (SHIPPED_POLICY + "risk:\n  high:\n    min_class: deep-high\n"
+         "    relax: {class: standard-high, requires: [vibes]}\n", "vibes"),
+        (SHIPPED_POLICY.replace("hold: true}", "hold: true, max_risk: low}"),
+         "'max_risk' belongs to a narrow lane"),
+        (LANE_CAP_POLICY.replace("max_risk: low", "max_risk: extreme"), "not a risk level"),
+        # Priority no longer routes; a policy still writing the old ceiling
+        # is refused by name rather than silently ignored.
+        (LANE_CAP_POLICY.replace("max_risk: low\n", "max_risk: low\n    below_priority: 100\n"),
+         "'below_priority' is retired"),
+        (SHIPPED_POLICY + "local_models: {below_priority: 150}\n", "'below_priority' is retired"),
+    ],
+    ids=[
+        "unknown-level", "no-min-class", "unknown-class", "bad-selector", "relax-above-floor",
+        "relax-no-flags", "relax-unknown-flag", "max-risk-design-lane",
+        "unknown-max-risk", "lane-below-priority-retired", "local-below-priority-retired",
+    ],
+)
+def test_an_invalid_risk_key_is_refused(text: str, fragment: str) -> None:
+    with pytest.raises(PolicyError, match=fragment):
+        parse_policy(text)
+
+
+def test_read_classification_reads_an_optional_risk() -> None:
+    policy, _digest = parse_policy(RISK_POLICY)
+    classified, failed, error = read_classification(
+        {**NARROW_YES, "risk": "high", "risk_reason": "touches the scheduler"}, policy,
+    )
+    assert (failed, error) == (False, None)
+    assert (classified.risk, classified.risk_reason) == ("high", "touches the scheduler")
+    record = classified.as_dict()
+    assert (record["risk"], record["risk_reason"]) == ("high", "touches the scheduler")
+    assert read_classification(record, policy)[0] == classified  # replay reads it back
+
+    # Absent or null: unknown, and the record is the one it was before risks.
+    for raw in (NARROW_YES, {**NARROW_YES, "risk": None}):
+        classified, failed, _error = read_classification(raw, policy)
+        assert not failed and classified.risk is None
+        assert set(classified.as_dict()) == _RECORD_KEYS
+
+    long = read_classification({**NARROW_YES, "risk": "low", "risk_reason": "x" * 1000}, policy)
+    assert len(long[0].risk_reason) == 400
+
+
+@pytest.mark.parametrize("risk", ["extreme", "HIGH", 3, ["low"]])
+def test_an_unknown_risk_fails_the_classification(risk) -> None:
+    policy, _digest = parse_policy(RISK_POLICY)
+    classified, failed, error = read_classification({**NARROW_YES, "risk": risk}, policy)
+    assert classified is None and failed
+    assert error == f"classification risk {risk!r} is not a risk level"
+
+
+def test_a_non_string_risk_reason_fails_the_classification() -> None:
+    policy, _digest = parse_policy(RISK_POLICY)
+    classified, failed, error = read_classification(
+        {**NARROW_YES, "risk": "low", "risk_reason": 7}, policy,
+    )
+    assert classified is None and failed and "risk_reason" in error
+
+
+def test_a_medium_risk_raises_a_hinted_fast_high_task_to_standard_high() -> None:
+    task = _task(task_type="chore", class_hint="fast-high")
+    classification = {
+        **NARROW_NO, "task_type": "chore", "intelligence_class": "fast-high", "risk": "medium",
+    }
+    plan = _risk_plan(RISK_POLICY, task, classification=classification)
+    assert plan.outcome == "planned", plan
+    plan = plan.value
+    assert plan["intelligence_class"] == "standard-high"
+    assert plan["class_raised_for_risk"] == {
+        "from": "fast-high", "to": "standard-high", "risk": "medium",
+    }
+    assert "class raised from fast-high to standard-high for risk medium" in plan["reason"]
+    assert plan["classification"]["risk"] == "medium"
+
+    # A low risk has no rule: the hint stands and the plan carries no raise.
+    low = _risk_plan(RISK_POLICY, task, classification={**classification, "risk": "low"})
+    assert low.value["intelligence_class"] == "fast-high"
+    assert "class_raised_for_risk" not in low.value
+    # Nor does a plan under a policy without risks, nor its classification record.
+    plain = _risk_plan(SHIPPED_POLICY, task, classification={
+        **NARROW_NO, "task_type": "chore", "intelligence_class": "fast-high",
+    })
+    assert "class_raised_for_risk" not in plain.value
+    assert set(plain.value["classification"]) == _RECORD_KEYS
+
+
+@pytest.mark.parametrize(
+    ("flags", "floor"),
+    [
+        ({"narrow": True, "test_verified": True}, "standard-high"),
+        ({"narrow": True, "test_verified": False}, "deep-high"),
+    ],
+    ids=["relaxed", "not-relaxed"],
+)
+def test_a_very_high_risk_floors_at_deep_high_unless_narrow_and_tested(flags, floor) -> None:
+    task = _task(task_type="chore", class_hint="fast-high")
+    classification = {
+        **NARROW_NO, **flags, "task_type": "chore", "intelligence_class": "fast-high",
+        "risk": "very_high",
+    }
+    plan = _risk_plan(RISK_POLICY, task, classification=classification)
+    assert plan.outcome == "planned", plan
+    # The floor beats the hint and the chore's standard-high max_class alike.
+    assert plan.value["intelligence_class"] == floor
+    assert plan.value["class_raised_for_risk"] == {
+        "from": "fast-high", "to": floor, "risk": "very_high",
+    }
+    # Claude and Codex only: even a narrow, tested change skips OpenCode.
+    assert {c["harness"] for c in plan.value["candidates"]} <= {"claude", "codex"}
+
+
+def test_a_high_risk_keeps_only_claude_and_codex() -> None:
+    fleet = (*_hosted_fleet(), _rung("standard-high", "gemini", slots=4))
+    task = _task(task_type="bugfix")
+    low = _risk_plan(RISK_POLICY, task, _snapshot(fleet), {**NARROW_YES, "risk": "low"})
+    assert {"opencode", "opencode-zen", "gemini"} <= {
+        c["harness"] for c in low.value["candidates"]
+    }
+    high = _risk_plan(RISK_POLICY, task, _snapshot(fleet), {**NARROW_YES, "risk": "high"})
+    assert high.outcome == "planned", high
+    assert {c["harness"] for c in high.value["candidates"]} == {"claude", "codex"}
+
+    # Nothing else installed: the emptied list names the stage.
+    alone = _risk_plan(RISK_POLICY, task, _snapshot([_rung("standard-high", "gemini")]),
+                       {**NARROW_YES, "risk": "high"})
+    assert (alone.outcome, alone.value["reason"]) == ("no_candidates", "risk_harnesses")
+
+
+def test_a_missing_risk_answer_is_treated_as_medium() -> None:
+    # An answer without a risk gets the medium rule's floor, and the plan
+    # says the risk was assumed rather than answered.
+    task = _task(task_type="chore", class_hint="fast-high")
+    classification = {**NARROW_NO, "task_type": "chore", "intelligence_class": "fast-high"}
+    plan = _risk_plan(RISK_POLICY, task, classification=classification)
+    assert plan.outcome == "planned", plan
+    assert plan.value["intelligence_class"] == "standard-high"
+    assert plan.value["class_raised_for_risk"] == {
+        "from": "fast-high", "to": "standard-high", "risk": "medium", "assumed": True,
+    }
+    assert "no risk answer, treated as medium" in plan.value["reason"]
+    # The record keeps what the classifier said, which named no risk.
+    assert set(plan.value["classification"]) == _RECORD_KEYS
+
+    # A failed classification answered nothing, the risk included.
+    failed = _risk_plan(RISK_POLICY, task, classification={**classification, "risk": "extreme"})
+    assert failed.outcome == "planned", failed
+    assert failed.value["classification"]["failed"] is True
+    assert failed.value["intelligence_class"] == "standard-high"
+    assert failed.value["class_raised_for_risk"]["assumed"] is True
+
+    # An answered risk is not assumed.
+    answered = _risk_plan(RISK_POLICY, task, classification={**classification, "risk": "medium"})
+    assert "assumed" not in answered.value["class_raised_for_risk"]
+
+
+def test_an_assumed_medium_takes_the_medium_harnesses_and_meets_a_medium_cap() -> None:
+    policy = LANE_CAP_POLICY.replace("max_risk: low", "max_risk: medium") + (
+        "risk:\n  medium: {min_class: standard-high, harnesses: [claude, codex, opencode]}\n"
+    )
+    plan = _risk_plan(policy, _task(task_type="bugfix"), classification=NARROW_YES)
+    assert plan.outcome == "planned", plan
+    assert {c["harness"] for c in plan.value["candidates"]} <= {"claude", "codex", "opencode"}
+    assert plan.value["profile_id"] == "standard-high-opencode"
+    assert "no risk answer, treated as medium" in plan.value["reason"]
+
+
+def test_no_risk_is_assumed_before_the_classifier_answers() -> None:
+    # The question is still asked: an assumed medium would hide the lanes a
+    # low answer opens.
+    asked = _risk_plan(LANE_CAP_POLICY, _task(task_type="bugfix"))
+    assert asked.outcome == "needs_classification", asked
+    assert "risk" in asked.value["questions"]
+
+
+def test_a_policy_that_reads_no_risk_assumes_none() -> None:
+    task = _task(task_type="chore", class_hint="fast-high")
+    plain = _risk_plan(SHIPPED_POLICY, task, classification={
+        **NARROW_NO, "task_type": "chore", "intelligence_class": "fast-high",
+    })
+    assert plain.value["intelligence_class"] == "fast-high"
+    assert "treated as medium" not in plain.value["reason"]
+
+
+@pytest.mark.parametrize(
+    ("risk", "admitted"),
+    [("low", True), ("medium", False), ("very_high", False), (None, False)],
+)
+def test_a_narrow_lane_admits_work_up_to_its_max_risk(risk, admitted) -> None:
+    # No risk answer is treated as medium, which a low cap refuses.
+    classification = NARROW_YES if risk is None else {**NARROW_YES, "risk": risk}
+    plan = _risk_plan(LANE_CAP_POLICY, _task(task_type="bugfix"), classification=classification)
+    assert plan.outcome == "planned", plan
+    assert (plan.value["profile_id"] == "standard-high-opencode") is admitted
+    assert ("narrow" in {c["lane"] for c in plan.value["candidates"]}) is admitted
+
+
+def test_a_risk_rule_that_could_change_the_route_asks_for_the_risk() -> None:
+    # A typed, hinted task plans without a classifier call under a policy
+    # without risks...
+    task = _task(task_type="research", class_hint="standard-high")
+    assert _risk_plan(SHIPPED_POLICY, task).outcome == "planned"
+    # ...and asks once a risk floor could raise it: very_high floors at
+    # deep-high, and its relax reads two flags.
+    asked = _risk_plan(RISK_POLICY, task)
+    assert asked.outcome == "needs_classification", asked
+    assert asked.value["questions"] == ["narrow", "risk", "test_verified"]
+
+    # Already at the top floor, with every candidate on Claude or Codex: no
+    # risk answer could change the route.
+    top = _risk_plan(RISK_POLICY, _task(task_type="research", class_hint="deep-high"))
+    assert top.outcome == "planned", top
+
+    # A harness restriction alone asks when it would remove a candidate.
+    codex_only = SHIPPED_POLICY + "risk:\n  high: {min_class: fast-off, harnesses: [codex]}\n"
+    asked = _risk_plan(codex_only, task)
+    assert asked.outcome == "needs_classification", asked
+    assert asked.value["questions"] == ["risk"]
+
+
+def test_a_narrow_lane_with_max_risk_asks_for_the_risk() -> None:
+    task = _task(task_type="bugfix")
+    assert _risk_plan(LANE_CAP_POLICY, task).value["questions"] == [
+        "narrow", "risk", "test_verified",
+    ]
+    # Without risk keys the questions are the ones asked before risks existed.
+    assert _risk_plan(SHIPPED_POLICY, task).value["questions"] == ["narrow", "test_verified"]
+
+
+def test_operator_routing_cannot_bypass_frontier_role_using_a_benchmark_selector():
+    result = _plan(_task(task_type="operator", benchmark_arms=("cheap",)), _snapshot())
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "operator_work_cannot_use_benchmark_arms"
+
+
+# -- strict preference refusal diagnostics --------------------------------------
+
+
+@pytest.mark.parametrize("target", ["standard-high-claude", "claude"])
+def test_strict_bugfix_preference_routes_to_eligible_claude_with_capacity(target):
+    snapshot = replace(
+        _snapshot([_rung("standard-high", "claude", slots=8),
+                   _rung("standard-high", "codex")], busy={"standard-high-claude": 1}),
+        headroom={"standard-high-claude": 5, "standard-high-codex": 5},
+    )
+    result = _risk_plan(
+        RISK_POLICY, _task(task_type="bugfix", prefer_target=target, prefer_mode="strict"),
+        snapshot, {**NARROW_NO, "risk": "medium"},
+    )
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "standard-high-claude"
+    assert result.value["preference"]["honoured"]
+
+
+@pytest.mark.parametrize("target", ["standard-high-claude", "claude", "deep-high-claude"])
+@pytest.mark.parametrize("cause", ["classification", "risk", "escalation"])
+def test_strict_preference_explains_class_and_reservation_exclusions(target, cause):
+    policy = ESCALATING_POLICY if cause == "escalation" else RISK_POLICY
+    classification = {**NARROW_NO, "intelligence_class": "deep-high", "risk": "low"}
+    changes = {}
+    if cause == "risk":
+        classification.update(intelligence_class="standard-high", risk="very_high")
+    elif cause == "escalation":
+        changes["failed_attempts"] = ({"intelligence_class": "standard-high"},)
+    task = _task(task_type="bugfix", prefer_target=target, prefer_mode="strict", **changes)
+    snapshot = replace(_snapshot(), headroom={p.id: 5 for p in _fleet()})
+    result = _risk_plan(policy, task, snapshot, classification)
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "prefer_target_unavailable"
+    detail = result.value["detail"]
+    assert "kinds.bugfix: selected class deep-high" in detail
+    if target != "deep-high-claude":
+        assert "standard-high-claude: class deep-high required" in detail
+    if target != "standard-high-claude":
+        assert "deep-high-claude: reserved for lanes ['code-design', 'design-review']" in detail
+    if cause == "risk":
+        assert "class raised from standard-high to deep-high for risk very_high" in detail
+    elif cause == "escalation":
+        assert "escalated_after_failure: standard-high to deep-high" in detail
+    soft = _risk_plan(policy, replace(task, prefer_mode="soft"), snapshot, classification)
+    assert soft.outcome == "planned"
+    assert soft.value["profile_id"] == "deep-high-codex"
+
+
+def test_strict_preference_explains_origin_lane_harness_restriction():
+    policy = BALANCED_POLICY.replace(
+        "design-review: {class: deep-high, harnesses: [claude, codex]}",
+        "design-review: {class: deep-high, harnesses: [codex]}",
+    )
+    result = _risk_plan(policy, _task(
+        task_type="bugfix", created_by_kind="review_dispatch",
+        prefer_target="deep-high-claude", prefer_mode="strict",
+    ))
+    assert result.outcome == "no_candidates"
+    detail = result.value["detail"]
+    assert "kinds.bugfix+origins.review_dispatch" in detail
+    assert "lane design-review: class deep-high, harnesses ['codex']" in detail
+    assert "lane harnesses ['codex'] exclude claude" in detail
+
+
+@pytest.mark.parametrize(("changes", "expected"), [
+    ({"preferred_provider": "codex"}, "project preferred_provider=codex"),
+    ({"exclude_providers": frozenset({"claude"})}, "excluded_providers: ['claude']"),
+    ({"needs_task_lifecycle": True}, "workspace_requirement"),
+])
+def test_strict_preference_names_project_and_task_constraints(changes, expected):
+    result = _risk_plan(BALANCED_POLICY, _task(
+        task_type="research", prefer_target="standard-high-claude", prefer_mode="strict",
+        **changes,
+    ))
+    assert result.outcome == "no_candidates"
+    assert "kinds.research: selected class standard-high" in result.value["detail"]
+    assert expected in result.value["detail"]
+
+
+def test_strict_preference_names_risk_harness_restriction():
+    policy = RISK_POLICY.replace(
+        "high: {min_class: standard-high, harnesses: [claude, codex]}",
+        "high: {min_class: standard-high, harnesses: [codex]}",
+    )
+    result = _risk_plan(policy, _task(
+        task_type="bugfix", prefer_target="standard-high-claude", prefer_mode="strict",
+    ), classification={**NARROW_NO, "risk": "high"})
+    assert result.outcome == "no_candidates"
+    assert "risk_harnesses: allowed harnesses ['codex']" in result.value["detail"]
+
+
+@pytest.mark.parametrize(("profile_changes", "expected"), [
+    ({"enabled": False}, "profile disabled"),
+    ({"slots": 0}, "profile has no configured slots"),
+])
+def test_strict_preference_explains_unavailable_installed_workers(profile_changes, expected):
+    result = _risk_plan(BALANCED_POLICY, _task(
+        task_type="research", prefer_target="claude", prefer_mode="strict",
+    ), _snapshot([_rung("standard-high", "claude", **profile_changes)]))
+    assert result.outcome == "no_candidates"
+    assert expected in result.value["detail"]
+    missing = _preferred_plans(prefer_target="missing")["strict"]
+    assert "no installed profile matches the target" in missing.value["detail"]
+
+
+@pytest.mark.parametrize(("classification", "expected"), [
+    ({**NARROW_NO, "risk": "low"}, "requires ['narrow', 'test_verified']"),
+    ({**NARROW_YES, "risk": "high"}, "max_risk=low, risk=high"),
+])
+def test_strict_preference_explains_narrow_lane_eligibility(classification, expected):
+    result = _risk_plan(LANE_CAP_POLICY, _task(
+        task_type="bugfix", prefer_target="standard-high-opencode", prefer_mode="strict",
+    ), classification=classification)
+    assert result.outcome == "no_candidates"
+    assert "narrow-only harness opencode excluded from general candidates" in result.value["detail"]
+    assert expected in result.value["detail"]
+
+
+# -- standard-first escalation --------------------------------------------------
+
+ESCALATING_POLICY = RISK_POLICY.replace(
+    "  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true, "
+    "prefer_harnesses: [codex]}",
+    "  bugfix: {class: standard-high, max_class: deep-high, narrow: true, "
+    "prefer_harnesses: [codex], escalate: {after_failures: 1, to_class: deep-high}}",
+)
+assert ESCALATING_POLICY != RISK_POLICY
+
+
+@pytest.mark.parametrize("hint", [None, "deep-high", "fast-low"])
+@pytest.mark.parametrize("risk", ["low", "high", "very_high"])
+@pytest.mark.parametrize("narrow", [False, True])
+def test_bugfix_first_attempt_uses_standard_even_with_deep_classification(hint, risk, narrow):
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", class_hint=hint),
+        classification={**NARROW_NO, "narrow": narrow, "test_verified": narrow,
+                        "independent_verifier": narrow,
+                        "intelligence_class": "deep-high", "risk": risk},
+    )
+    assert result.outcome == "planned"
+    assert result.value["intelligence_class"] == "standard-high"
+    assert "escalated_after_failure" not in result.value
+    assert "class_raised_for_risk" not in result.value
+    if risk != "low":
+        assert {c["harness"] for c in result.value["candidates"]} <= {"claude", "codex"}
+
+
+def test_bugfix_escalation_names_the_failed_attempt():
+    failure = {"attempt_id": "attempt-1", "intelligence_class": "standard-high",
+               "reason": "session_close_hard_failure", "status": "BLOCKED"}
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(failure,)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert result.outcome == "planned"
+    assert result.value["intelligence_class"] == "deep-high"
+    assert result.value["escalated_after_failure"] == {
+        "from": "standard-high", "to": "deep-high", "after_failures": 1,
+        "failed_attempts": [failure],
+    }
+    assert "escalated_after_failure" in result.value["reason"]
+
+
+@pytest.mark.parametrize("rework", [
+    {"reason": "reopen_with_feedback", "previous_status": "COMPLETED"},
+    {"reason": "reopen_with_feedback", "previous_status": "BLOCKED"},
+    {"reason": "verification_reopen", "previous_status": "COMPLETED"},
+])
+def test_rework_after_a_passing_attempt_does_not_escalate(rework):
+    attempt = {"attempt_id": "rework", "intelligence_class": "standard-high", **rework}
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt,)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+    assert "escalated_after_failure" not in result.value
+    failure = {"attempt_id": "hard", "intelligence_class": "standard-high",
+               "reason": "session_close_hard_failure", "previous_status": "IN_PROGRESS"}
+    escalated = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt, failure)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert escalated.value["intelligence_class"] == "deep-high"
+    assert escalated.value["escalated_after_failure"]["failed_attempts"] == [failure]
+
+
+@pytest.mark.parametrize("failed_class", ["fast-high", "deep-high"])
+def test_failure_at_another_class_does_not_skip_the_standard_attempt(failed_class):
+    result = _risk_plan(
+        ESCALATING_POLICY,
+        _task(task_type="bugfix", failed_attempts=(
+            {"attempt_id": "other-class", "intelligence_class": failed_class},
+        )), classification={**NARROW_NO, "risk": "high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+
+
+def test_escalation_threshold_and_design_lane_are_policy_controlled():
+    failure = {"attempt_id": "one", "intelligence_class": "standard-high"}
+    result = _risk_plan(
+        ESCALATING_POLICY.replace("after_failures: 1", "after_failures: 2"),
+        _task(task_type="bugfix", failed_attempts=(failure,)),
+        classification={**NARROW_NO, "risk": "high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+    design = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="design", failed_attempts=(failure,)),
+        classification={**NARROW_NO, "task_type": "design", "risk": "very_high"},
+    )
+    assert (design.value["intelligence_class"], design.value["lane"]) == ("deep-high", "code-design")
+    assert "escalated_after_failure" not in design.value
+
+
+@pytest.mark.parametrize("rule", [
+    "{after_failures: 0, to_class: deep-high}",
+    "{after_failures: true, to_class: deep-high}",
+    "{after_failures: 1, to_class: missing}",
+    "{after_failures: 1, to_class: standard-high}",
+])
+def test_invalid_escalation_policy_is_refused(rule):
+    with pytest.raises(PolicyError):
+        parse_policy(ESCALATING_POLICY.replace("{after_failures: 1, to_class: deep-high}", rule))

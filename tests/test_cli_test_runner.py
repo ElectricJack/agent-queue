@@ -1553,6 +1553,19 @@ class TestOneFullSuiteRunAtATime:
         assert "Full-suite lock: held by task first-run, cwd /w/slot-9" in _flat(held.output)
         assert "busy (full suite)" in _flat(held.output)
 
+    def test_status_attributes_managed_slots_to_job_and_project(self, runner, box):
+        from src.resources.box_lock import BoxLock
+
+        with BoxLock(box.slots_dir, 2).acquire(timeout=0, meta={
+            "task_id": "full-task", "project_id": "agent-queue", "job_id": "managed-123",
+            "scope": "full",
+        }):
+            held = runner.invoke(cli, ["test", "--aq-status"])
+        assert held.exit_code == 0, held.output
+        output = _flat(held.output)
+        assert "Managed job managed-123: project agent-queue, task full-task, shared, slots 0" in output
+        assert "busy (full suite)" in output
+
 
 class TestFullSuiteLockReleasedOnSignals:
     """The full-suite lock is an ``flock`` like the slots: death releases it.
@@ -1578,6 +1591,7 @@ cli(["test", "tests/"], prog_name="aq")
     def wrapper(self, tmp_path):
         import os
         import signal
+        import site
         import subprocess
         import sys
         import threading
@@ -1597,6 +1611,11 @@ cli(["test", "tests/"], prog_name="aq")
             AQ_TEST_SLOTS="2",
             AQ_TASK_ID="signalled-run",
             POSTGRES_TEST_DSN="postgresql://test:test@localhost/postgres",
+        )
+        # Changing HOME also changes Python's user site. Keep this interpreter's
+        # installed dependencies while isolating the config and semaphore files.
+        env["PYTHONPATH"] = os.pathsep.join(
+            [site.getusersitepackages(), env.get("PYTHONPATH", "")]
         )
         proc = subprocess.Popen(
             [sys.executable, "-c", self._SCRIPT.format(root=str(root))],

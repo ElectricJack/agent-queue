@@ -1,0 +1,43 @@
+{
+  "generic_dependencies": {
+    "src/commands/handler.py::CommandHandler": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/handler.py::CommandHandler.<header>": {
+      "baseline_span": [
+        346,
+        404
+      ],
+      "landing_span": [
+        346,
+        404
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/handler.py::CommandHandler.execute": {
+      "reason": "Shared dispatch boundary applies durable holds to integration commands before mutation."
+    },
+    "src/commands/handler.py::import from src.commands.integration_commands import IntegrationCommandsMixin": {
+      "baseline_span": [
+        78,
+        78
+      ],
+      "landing_span": [
+        78,
+        78
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/handler.py::CommandHandler._record_capability_denial::8fd63e01bc34137f34a431dade77653ca4077a4f2809903b6b070d007b6c1a46": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 913,
+      "owner": "CommandHandler._record_capability_denial",
+      "owner_fingerprint": "e6bf4fccb8448f914e947bb836cf7662b8b386d83515a766aa1d8b68760b8d0a",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

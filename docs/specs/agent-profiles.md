@@ -12,6 +12,12 @@ tags: [spec, agents, profiles]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+For current behavior, use [profiles and classes](../reference/profiles-and-classes.md),
+[agents and routing](../concepts/agents-and-routing.md), and the
+[system spec](systems/routing-and-profiles.md).
+The original DB-only storage, project-default cascade, profile model pins and
+in-process runtime descriptions below are historical, superseded designs.
+
 ## Overview
 
 See [design/profiles](design/profiles.md) for the hybrid markdown profile format and vault storage.
@@ -48,6 +54,18 @@ Tasks gain an optional `profile_id` field (nullable foreign key to `agent_profil
 > playbook's `task_route_apply`), an audited `aq task route-override`, or a system role
 > (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`); `tasks.route_source` records which.
 > Filers pass hints (`--type`, `--intelligence-class`) instead.
+
+Role routes bind agent identity as well as capabilities: a task with
+`route_source=role` may launch only on an enabled worker whose saved `profile_id`
+matches the role profile. Scheduler matching and the fresh prelaunch check both
+enforce this, preserving the agent's name and execution overrides. Definitions
+belonging to `triage`, `spec-ingest`, `reviewer` or `final-reviewer` accept only
+tasks routed to their own role; ordinary push tasks and pool launches cannot
+recruit them, even with compatible classes. When an existing role definition is
+busy, disabled, suppressed, owned by a live session or incompatible, demand waits
+rather than creating a replacement. A role with no existing definition may
+bootstrap one; projects share that durable global definition. Renaming edits the
+existing row and retains its id.
 
 ### Project Extension
 

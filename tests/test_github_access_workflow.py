@@ -107,7 +107,7 @@ else:
             status = 201
         elif endpoint.endswith("/pulls/7"):
             payload = state["pull"]
-        elif "/commits/" in endpoint and endpoint.endswith("/check-runs?per_page=100"):
+        elif "/commits/" in endpoint and endpoint.endswith("/check-runs?filter=all&per_page=100"):
             payload = {"check_runs": [{"name": "required", "conclusion": "success"}]}
         elif "/commits/" in endpoint:
             payload = {"sha": state["heads"]["main"]}
@@ -256,7 +256,7 @@ async def test_private_repository_pr_ci_merge_workflow_has_credential_parity(wor
     with pytest.raises(GitHubAccessError):
         await client.pull_request("https://github.com/foreign/repo/pull/7")
     assert await client.merge_pull_request(
-        PR_URL, method="squash", expected_head_oid=HEAD, expected_base_ref="main"
+        PR_URL, method="merge", expected_head_oid=HEAD, expected_base_ref="main"
     ) == MERGE
     assert await client.exact_head_ref("aq/task") is None
     assert json.loads(state_path.read_text())["heads"]["main"] == MERGE

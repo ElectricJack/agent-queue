@@ -23,15 +23,19 @@ from jsonschema import Draft202012Validator
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
+    archived_tasks,
     integration_batch_members,
     integration_batches,
     integration_review_evidence,
     task_context,
+    task_completion_records,
     task_metadata,
     tasks,
 )
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import BatchObservation, BatchService
 from src.integration.ci import (
@@ -42,12 +46,54 @@ from src.integration.ci import (
     TrustedCIObservation,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
+from src.models import TaskStatus
 
 log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"
 PROMOTION_RESULT = "promotion_result"
 PROMOTION_PUBLISH = "promotion_publish_intent"
+
+
+async def backmerge_ledger(conn, repository_id):
+    """Recorded debts; only Git containment can satisfy these entries."""
+    values = (await conn.execute(select(task_metadata.c.value)
+        .join(tasks, tasks.c.id == task_metadata.c.task_id)
+        .where(tasks.c.repo_id == repository_id, tasks.c.task_type == "backmerge",
+               tasks.c.status.not_in(("FAILED", "CANCELLED")), task_metadata.c.key == "backmerge"))).scalars().all()
+    try:
+        entries = [json.loads(value) for value in values]
+    except (ValueError, TypeError) as exc:
+        raise PromotionIntentInvalid("Malformed daemon backmerge ledger JSON.") from exc
+    # Completion history survives archival, unlike live task metadata.
+    archived = select(archived_tasks.c.id).where(
+        archived_tasks.c.repo_id == repository_id, archived_tasks.c.task_type == "backmerge",
+        archived_tasks.c.status == "COMPLETED")
+    records = (await conn.execute(select(task_completion_records.c.notes).where(
+        task_completion_records.c.task_id.in_(archived),
+        task_completion_records.c.id.startswith("backmerge:"),
+    ))).scalars().all()
+    try:
+        entries.extend(json.loads(value)["backmerge"] for value in records)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise PromotionIntentInvalid("Malformed archived daemon backmerge ledger JSON.") from exc
+    rows = (await conn.execute(select(integration_batches.c.policy_snapshot).where(
+        integration_batches.c.repository_id == repository_id,
+        integration_batches.c.trigger == "promotion",
+        integration_batches.c.intent != "aborted",
+        integration_batches.c.lifecycle != "failed",
+    ))).scalars().all()
+    entries.extend(meta for row in rows
+                   if (meta := row.get(PROMOTION_CONTEXT, {})).get("kind") == "backmerge")
+    unique = {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or not is_valid_git_oid(entry.get("source_sha"))
+                or not all(isinstance(entry.get(key), str) and entry[key].startswith("refs/heads/")
+                           for key in ("target_ref", "origin_ref"))):
+            raise PromotionIntentInvalid("Malformed daemon backmerge ledger metadata.")
+        unique[(entry["source_sha"], entry["target_ref"])] = entry
+    return list(unique.values())
+
 
 DEFAULT_ATTESTATION = "Agent Queue Integration Attestation"
 STEP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -502,6 +548,257 @@ def flow_targets(flow: Any) -> list[str]:
     ]
 
 
+def promotion_rulesets(
+    flow: list[dict] | None, *, default_branch: str, app_id: int
+) -> list[dict]:
+    """The admin-owned branch and tag rulesets of revision 3 §3.8, in chain order.
+
+    Accept a normalized, validated flow. A bypass covers an entire ruleset,
+    so tag creation and immutability must always be separate.
+    """
+    branches = [(f"Train-only {default_branch}", default_branch, DEFAULT_ATTESTATION)]
+    branches += [
+        (f"Promotion-only {step['target']}", step["target"], step["gate"]["attestation"])
+        for step in flow or ()
+    ]
+
+    def ruleset(name: str, target: str, ref: str, rules: list[dict], bypass: list) -> dict:
+        return {
+            "name": name, "target": target, "enforcement": "active",
+            "conditions": {"ref_name": {"include": [ref], "exclude": []}},
+            "rules": rules, "bypass_actors": bypass,
+        }
+
+    result = [
+        ruleset(name, "branch", f"refs/heads/{branch}", [
+            {"type": "required_status_checks", "parameters": {
+                "strict_required_status_checks_policy": False,
+                "do_not_enforce_on_create": False,
+                "required_status_checks": [{"context": attestation, "integration_id": app_id}],
+            }},
+            {"type": "deletion"}, {"type": "non_fast_forward"},
+        ], [])
+        for name, branch, attestation in branches
+    ]
+    for step in flow or ():
+        versioning = step["versioning"]
+        if versioning["kind"] == "none":
+            continue
+        ref = "refs/tags/" + tag_glob(versioning["tag_format"])
+        result += [
+            ruleset(f"Promotion-tag creation ({step['id']})", "tag", ref,
+                    [{"type": "creation"}],
+                    [{"actor_id": app_id, "actor_type": "Integration", "bypass_mode": "always"}]),
+            ruleset(f"Promotion-tag immutability ({step['id']})", "tag", ref,
+                    [{"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}], []),
+        ]
+    return result
+
+
+async def read_stored_promotion_flow(db: Any, project_id: str) -> Any:
+    """Read the project column; lightweight injected databases may omit an engine."""
+    from sqlalchemy import select
+
+    from src.database.tables import projects
+
+    if getattr(db, "_engine", None) is None:
+        return None
+    async with db._engine.connect() as conn:
+        return (await conn.execute(
+            select(projects.c.promotion_flow).where(projects.c.id == project_id)
+        )).scalar_one()
+
+
+def promotion_workflow_triggers(flow: list[dict] | None, *, default_branch: str) -> dict:
+    """Copyable workflow event configuration derived from the same chain as protection."""
+    branches = [default_branch, *flow_targets(flow)]
+    return {
+        ".github/workflows/tests.yml": {
+            "pull_request": {
+                "branches": branches,
+                "types": ["opened", "synchronize", "reopened", "ready_for_review"],
+            },
+            "push": {"branches": ["aq/parent/**", "aq/integration/**",
+                                   "aq/batches/**", "aq/promote/**", "aq/backmerge/**"]},
+        },
+        ".github/workflows/main-attestation.yml": {"push": {"branches": branches}},
+    }
+
+
+async def read_promotion_protection(
+    client: Any, binding: Any, flow: list[dict] | None, *, default_branch: str,
+    app_id: int, policy: Any = None, ruleset_admin_reader: Any = None,
+) -> dict:
+    """Read every chain branch and tag pair, never issuing a GitHub write.
+
+    A hidden bypass list cannot prove tag immutability or exclusive creation.
+    Such a pair is reported as unverifiable, never as an empty actor list.
+    """
+    from src.integration.protection import MAX_RULE_PAGES, read_protection, read_ruleset_detail
+
+    expected = promotion_rulesets(flow, default_branch=default_branch, app_id=app_id)
+    branches = []
+    for item in expected:
+        if item["target"] != "branch":
+            continue
+        branch = item["conditions"]["ref_name"]["include"][0].removeprefix("refs/heads/")
+        attestation = item["rules"][0]["parameters"]["required_status_checks"][0]["context"]
+        reading = await read_protection(
+            client, binding, branch, app_id=app_id, policy=policy, attestation_name=attestation,
+        )
+        branches.append({"branch": branch, "attestation": attestation, **reading.as_dict()})
+    warnings = []
+
+    def warn(code: str, message: str, **evidence: Any) -> None:
+        warnings.append({"code": code, "pointer": "", "layer": 4,
+                         "message": message, **evidence})
+
+    try:
+        root = f"/repositories/{binding.repository_id}"
+        summaries = await client.paged_list(
+            f"{root}/rulesets?includes_parents=true&per_page=100", max_pages=MAX_RULE_PAGES,
+        )
+        documents = []
+        for summary in summaries:
+            if not isinstance(summary, dict) or type(summary.get("id")) is not int:
+                raise ValueError("a ruleset summary has no numeric id")
+            document = await read_ruleset_detail(
+                client, binding, summary["id"], admin_reader=ruleset_admin_reader,
+            )
+            documents.append(document)
+    except Exception as exc:  # noqa: BLE001 - provider boundary; unreadable is not missing
+        warn("ruleset_unverifiable", f"Remote rulesets could not be read: {type(exc).__name__}.")
+        return {"branches": branches, "tags": [], "warnings": warnings}
+
+    tags = []
+    for item in expected:
+        # Names identify the admin's copyable rulesets; semantic fields are
+        # compared too, so a disabled or repurposed namesake never passes.
+        candidates = [doc for doc in documents if doc.get("name") == item["name"]]
+        classification = "unverifiable"
+        if not candidates:
+            warn("ruleset_missing", f"Missing ruleset {item['name']!r}.", ruleset=item["name"])
+            classification = "missing"
+        elif len(candidates) != 1:
+            warn("ruleset_check_mismatch", f"Ambiguous ruleset {item['name']!r}.",
+                 ruleset=item["name"])
+        else:
+            observed = candidates[0]
+            # Order of rules and actors is immaterial. Unknown parameters or
+            # extra rules are drift; server-supplied metadata is ignored.
+            def canonical(entries: Any) -> Any:
+                import json
+
+                return sorted(json.dumps(entry, sort_keys=True) for entry in entries) \
+                    if isinstance(entries, list) else None
+
+            mismatch = any(observed.get(key) != item[key]
+                           for key in ("target", "enforcement", "conditions"))
+            mismatch |= canonical(observed.get("rules")) != canonical(item["rules"])
+            if isinstance(observed.get("bypass_actors"), list):
+                mismatch |= canonical(observed["bypass_actors"]) != canonical(item["bypass_actors"])
+            if mismatch:
+                classification = "mismatched"
+                warn("ruleset_check_mismatch", f"Ruleset {item['name']!r} differs from the flow.",
+                     ruleset=item["name"], ruleset_id=observed["id"])
+            elif not isinstance(observed.get("bypass_actors"), list):
+                warn("ruleset_unverifiable", f"Bypass actors of {item['name']!r} are hidden.",
+                     ruleset=item["name"], ruleset_id=observed["id"])
+            elif item["target"] == "tag":
+                classification = "tag_create_app_only" if item["bypass_actors"] else "tag_immutable"
+            else:
+                classification = "attested_only"
+        if item["target"] == "tag":
+            tags.append({"ruleset": item["name"], "classification": classification,
+                         "ref": item["conditions"]["ref_name"]["include"][0]})
+    for branch in branches:
+        if branch["classification"] != "attested_only":
+            code = "ruleset_unverifiable" if branch["classification"] == "unverifiable" \
+                else "ruleset_check_mismatch"
+            warn(code, f"Branch {branch['branch']!r} is "
+                 f"{branch['classification']}, expected attested_only.", branch=branch["branch"])
+    return {"branches": branches, "tags": tags, "warnings": warnings}
+
+
+def _workflow_accepts(event: Any, branch: str) -> bool:
+    """GitHub's ordered positive/negative branch filters, with slash-aware stars."""
+    if event is None:
+        return True
+    if not isinstance(event, dict) or event.get("paths") or event.get("paths-ignore"):
+        return False  # Required checks must run for every promotion source tree.
+
+    def matches(pattern: str) -> bool:
+        pattern = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        pattern = pattern.replace(r"\?", "[^/]")
+        return re.fullmatch(pattern, branch) is not None
+
+    include = event.get("branches")
+    excluded = event.get("branches-ignore", [])
+    if not isinstance(excluded, list) or not all(isinstance(p, str) for p in excluded):
+        return False
+    if any(matches(pattern) for pattern in excluded):
+        return False
+    if include is None:
+        return not event.get("tags") and not event.get("tags-ignore")
+    if not isinstance(include, list):
+        return False
+    accepted = False
+    for pattern in include:
+        if not isinstance(pattern, str):
+            return False
+        if matches(pattern.removeprefix("!")):
+            accepted = not pattern.startswith("!")
+    return accepted
+
+
+async def validate_promotion_remote(
+    client: Any, binding: Any, flow: list[dict] | None, *, default_branch: str, app_id: int,
+    ruleset_admin_reader: Any = None,
+) -> dict:
+    """Layer-four ruleset and workflow warnings at the default's exact remote SHA."""
+    import yaml
+
+    from src.integration.app_mode import read_file_at
+
+    report = await read_promotion_protection(
+        client, binding, flow, default_branch=default_branch, app_id=app_id,
+        ruleset_admin_reader=ruleset_admin_reader,
+    )
+    expected = promotion_workflow_triggers(flow, default_branch=default_branch)
+    warnings = report["warnings"]
+    try:
+        sha = await client.exact_head_ref(default_branch)
+        if not sha:
+            raise ValueError("the default branch is missing")
+        for path, events in expected.items():
+            raw = await read_file_at(client, binding, path, sha)
+            if raw is None and path.endswith("main-attestation.yml"):
+                raw = await read_file_at(client, binding, ".github/workflows/unattested-push.yml", sha)
+            document = yaml.safe_load(raw) if raw is not None else {}
+            triggers = document.get("on", document.get(True, {})) if isinstance(document, dict) else {}
+            for event, settings in events.items():
+                configured = triggers.get(event) if isinstance(triggers, dict) else None
+                present = event in triggers if isinstance(triggers, (dict, list)) else triggers == event
+                for branch in settings["branches"]:
+                    # Use a concrete nested ref to require ** rather than *.
+                    sample = branch.replace("**", "step/request")
+                    types = configured.get("types") if isinstance(configured, dict) else None
+                    if event == "pull_request" and types is None:
+                        types = ["opened", "synchronize", "reopened"]  # GitHub's default activity types.
+                    lifecycle = event != "pull_request" or (
+                        isinstance(types, list) and set(settings["types"]).issubset(types)
+                    )
+                    if not present or not lifecycle or not _workflow_accepts(configured, sample):
+                        warnings.append({"code": "workflow_trigger_missing", "pointer": "",
+                                         "layer": 4, "message": f"{path} lacks {event} for {branch}.",
+                                         "workflow": path, "event": event, "branch": branch})
+    except Exception as exc:  # noqa: BLE001 - unreadable workflow is never success
+        warnings.append({"code": "workflow_unverifiable", "pointer": "", "layer": 4,
+                         "message": f"Workflow triggers could not be read: {type(exc).__name__}."})
+    return {"protection": {key: report[key] for key in ("branches", "tags")},
+            "workflow_triggers": expected, "warnings": warnings}
+
+
 def flow_status(
     document: Any, *, default_branch: str | None, recorded: Any = ()
 ) -> dict[str, Any] | None:
@@ -674,6 +971,43 @@ async def create_missing_targets(
     return None, landed
 
 
+def promotion_task_defect(task, *, allow_completed=False) -> str | None:
+    """Why StepAdmission refuses a promotion's daemon-authored task row, or None."""
+    statuses = ("IN_PROGRESS", "COMPLETED") if allow_completed else ("IN_PROGRESS",)
+    if task["task_type"] != "promotion" or task["status"] not in statuses:
+        return (f"task {task['id']} is a {task['status']} {task['task_type']} task, "
+                f"not an {' or '.join(statuses)} promotion")
+    if task["profile_id"] is not None:
+        return f"promotion task {task['id']} is routed to profile {task['profile_id']!r}"
+    return None
+
+
+def stranded_promotion_tasks(**scope):
+    """IN_PROGRESS promotion tasks of aborted or failed intents, which never settle them."""
+    batch = integration_batches.c
+    return select(tasks.c.id.label("task_id"), integration_batches).select_from(
+        integration_batches.join(integration_batch_members,
+                                 integration_batch_members.c.batch_id == batch.id)
+        .join(tasks, tasks.c.id == integration_batch_members.c.task_id)).where(
+        batch.trigger == "promotion", tasks.c.task_type == "promotion",
+        tasks.c.status == "IN_PROGRESS", batch.lifecycle != "promoted",
+        (batch.intent == "aborted") | batch.lifecycle.in_(("aborted", "failed")),
+        *(batch[{"batch_id": "id"}.get(key, key)] == value for key, value in scope.items()),
+    ).order_by(tasks.c.id)
+
+
+async def fail_stranded_promotion_tasks_on(db, conn, *, now, **scope) -> list[str]:
+    """Project a terminal promotion intent onto its member task as FAILED."""
+    ids = list((await conn.execute(stranded_promotion_tasks(**scope).with_only_columns(
+        tasks.c.id).with_for_update(of=tasks, skip_locked=True))).scalars())
+    for task_id in ids:  # locked IN_PROGRESS rows: each update applies
+        await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == task_id)
+                                           .values(status="FAILED", updated_at=now))
+        await db._record_recovery_failure_generation_on(
+            conn, task_id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, now)
+    return ids
+
+
 class PromotionIntentInvalid(ValueError):
     """A requested step no longer names its frozen, retained source."""
 
@@ -711,22 +1045,24 @@ class StepAdmission:
             pinned_step = row["policy_snapshot"]["promotion_step"]
             pinned_intent = row["policy_snapshot"]["promotion_intent"]
             expected = (batch.project_id, batch.repository_id, batch.target_ref)
+            if defect := promotion_task_defect(task, allow_completed=allow_completed):
+                raise ValueError(f"{defect}; run `aq promote repair {row['request_id']} "
+                                 f"--project {batch.project_id}`")
             if (row["trigger"] != "promotion" or member.order != 0
                     or (row["project_id"], row["repository_id"], row["target_ref"]) != expected
                     or (task["project_id"], task["repo_id"]) != expected[:2]
-                    or task["task_type"] != "promotion" or task["profile_id"] is not None
-                    or task["status"] not in ({"IN_PROGRESS", "COMPLETED"} if allow_completed
-                                              else {"IN_PROGRESS"})
                     or (not allow_completed and row["intent"] != "open")
                     or meta != pinned_intent
                     or not meta.get("requester")
                     or "notes_sha256" not in meta
                     or (meta["notes_sha256"] is not None and re.fullmatch(
                         r"[0-9a-f]{64}", meta["notes_sha256"]) is None)
-                    or (step["notes"]["kind"] != "none" and meta["notes_sha256"] is None)
+                    or (meta.get("kind") != "backmerge" and step["notes"]["kind"] != "none"
+                        and meta["notes_sha256"] is None)
                     or meta["request_id"] != row["request_id"]
                     or not row["request_id"].startswith(
-                        f"promotion:{batch.repository_id}:{step['id']}:"
+                        f"{'backmerge' if meta.get('kind') == 'backmerge' else 'promotion'}:"
+                        f"{batch.repository_id}:{step['id']}:"
                     )
                     or meta["repository_id"] != batch.repository_id
                     or meta["target_ref"] != batch.target_ref
@@ -744,9 +1080,9 @@ class StepAdmission:
                 "promotion:" + meta["request_id"],
             )
             repository_url = f"https://github.com/{repo.binding.full_name}.git"
-            retained = await self.gitops.git.als_remote_ref(
-                str(repo.store), identity.branch, repository_url=repository_url,
-            )
+            provenance = GitProvenance(self.gitops.git, str(repo.store),
+                                       repository_url=repository_url)
+            retained_ref, retained = await provenance.remote_completion(identity)
             if retained.state is RemoteRefState.ERROR:
                 raise GitError(retained.error or "promotion retention cannot be observed")
             if retained.state is not RemoteRefState.PRESENT:
@@ -759,12 +1095,24 @@ class StepAdmission:
                     str(repo.store), repository=repo.binding, oid=retained.oid,
                     destination_ref="refs/aq/promotion-sources/" + retained.oid,
                 )
-            record = await GitProvenance(
-                self.gitops.git, str(repo.store), repository_url=repo.binding.clone_url
-                if hasattr(repo.binding, "clone_url") else f"https://github.com/{repo.binding.full_name}.git",
-            ).read_completion(identity, refs={"refs/remotes/origin/" + identity.branch: retained.oid})
+            record = await provenance.read_completion(identity, refs={retained_ref: retained.oid})
             if record is None or record["source_oid"] != member.source_sha:
                 raise ValueError("promotion source is not retained under its request generation")
+            if meta.get("kind") == "backmerge":
+                origin = meta["origin_ref"]
+                if not origin.startswith("refs/heads/") or origin == batch.target_ref:
+                    raise ValueError("backmerge origin is invalid")
+                tip = await self.gitops.remote(repo, origin)
+                if not tip:
+                    raise ValueError("backmerge originating branch is absent")
+                present = await self.gitops.git.arun_git_result(
+                    ["cat-file", "-e", tip], cwd=str(repo.store))
+                if present.returncode:
+                    await self.gitops.git.afetch_repository_oid(str(repo.store),
+                        repository=repo.binding, oid=tip,
+                        destination_ref="refs/aq/promotion-sources/" + tip)
+                if not await self.gitops.is_ancestor(repo, member.source_sha, tip):
+                    raise ValueError("backmerge source is no longer on its originating branch")
             return meta
         except (KeyError, TypeError, ValueError) as exc:
             raise PromotionIntentInvalid(str(exc)) from exc
@@ -790,13 +1138,14 @@ class StepAdmission:
 
 
 def promotion_ref(step: dict, meta: dict) -> str:
-    prefix = f"promotion:{meta['repository_id']}:{step['id']}:"
+    kind = "backmerge" if meta.get("kind") == "backmerge" else "promotion"
+    prefix = f"{kind}:{meta['repository_id']}:{step['id']}:"
     request_id = meta["request_id"]
     if not request_id.startswith(prefix) or not request_id[len(prefix):]:
         raise PromotionIntentInvalid("promotion request identity is invalid")
     suffix = request_id[len(prefix):]
     # Custom tag versions may contain '/', but never arbitrary Git revision syntax.
-    ref = f"refs/heads/aq/promote/{step['id']}/{suffix}"
+    ref = f"refs/heads/aq/{'backmerge' if kind == 'backmerge' else 'promote'}/{step['id']}/{suffix}"
     from src.integration.gitops import branch
 
     branch(ref)
@@ -1134,7 +1483,7 @@ class PromotionVisit(BatchService):
                                       authorize=delivered)
             if await self.gitops.remote(repo, ref) is None:
                 async with self.store.db.immediate() as conn:
-                    await conn.execute(update(integration_batches).where(
+                    await execute_batch_mutation(conn, update(integration_batches).where(
                         integration_batches.c.id == batch.id,
                     ).values(cleanup_state="complete", updated_at=self.clock()))
         except (GitError, OSError, RuntimeError, ValueError):
@@ -1178,7 +1527,7 @@ class PromotionVisit(BatchService):
 
     async def _tag(self, repo, meta, member):
         versioning = meta["step"]["versioning"]
-        if versioning["kind"] == "none":
+        if meta.get("kind") == "backmerge" or versioning["kind"] == "none":
             return None
         date = datetime.fromtimestamp(meta.get("requested_at", 0), UTC).strftime("%Y-%m-%d")
         name = versioning["tag_format"].format(
@@ -1231,7 +1580,10 @@ class PromotionVisit(BatchService):
     def _tag_message(tag, meta, member):
         return (f"Promote {meta['step']['id']} {tag}\n\n"
                 f"AQ-Promotion: {member.task_id}@{member.source_sha}\n"
-                f"AQ-Promotion-Request: {meta['request_id']}\n")
+                f"AQ-Promotion-Request: {meta['request_id']}\n"
+                + ("AQ-Migration-Admission: " + json.dumps(meta["migration_admission"],
+                                                         sort_keys=True) + "\n"
+                   if "migration_admission" in meta else ""))
 
     async def _create_tag(self, batch, repo, tag, meta, member, authorize):
         # Plumbing avoids a mutable local tag and gives deterministic objects on retry.
@@ -1285,6 +1637,20 @@ class PromotionVisit(BatchService):
             record.get("request_id"), record.get("source_sha"), record.get("target_ref"),
         ) == (meta["request_id"], member.source_sha, batch.target_ref)
 
+    async def _read_back(self, batch, repo, meta, member, tree, tag_state, tag_oid):
+        # A written tag reads "valid"; "none" only when the step names no tag.
+        source, fresh = member.source_sha, await self.snapshot()
+        proof = await fresh.contains_source(member.task_id, source, member.base_sha)
+        if tag_state == "conflict":
+            return BatchObservation("held", source, fresh.target_oid, tree,
+                                    detail={"reason": "promotion_tag_conflict"})
+        if (proof is True and tag_state in {"valid", "none"} and fresh.target_oid
+                and await self.gitops.is_ancestor(repo, source, fresh.target_oid)):
+            await self.cleanup(batch, repo, meta, member)
+            return BatchObservation("delivered", source, fresh.target_oid, tree,
+                                    detail={"tag_oid": tag_oid})
+        return BatchObservation("unknown", source, fresh.target_oid, tree)
+
     async def visit(self, batch, members, snapshot):
         from src.operator_decisions import OperatorDecisions
 
@@ -1319,13 +1685,18 @@ class PromotionVisit(BatchService):
             proof = proof and await self.gitops.is_ancestor(repo, source, target)
             if proof and tag_state in {"valid", "none"}:
                 await self.cleanup(batch, repo, meta, member)
-                return BatchObservation("delivered", source, target, detail={"tag_oid": tag_oid})
+                detail = {"tag_oid": tag_oid}
+                if meta.get("kind") == "backmerge" and not await self._publish_recorded(batch, meta, member):
+                    detail["reason"] = "superseded_by_route"
+                return BatchObservation("delivered", source, target, detail=detail)
             if (await OperatorDecisions(self.store.db).holds("batch", batch.id)
                     or not await self._authorized(batch, members)):
                 return BatchObservation("held", source, target)
             if not proof and not await self.gitops.is_ancestor(repo, target, source):
                 return BatchObservation("held", source, target,
-                                        detail={"reason": "promotion_not_fast_forward"})
+                                        detail={"reason": "backmerge_not_fast_forward"
+                                                if meta.get("kind") == "backmerge"
+                                                else "promotion_not_fast_forward"})
             await self.gitops.exact(repo, source)
             tree = await self.gitops.git.atree_sha(str(repo.store), source)
             if proof:
@@ -1340,17 +1711,7 @@ class PromotionVisit(BatchService):
                     batch, repo, tag, meta, member,
                     lambda: self._authorized(batch, members),
                 )
-                fresh = await self.snapshot()
-                proof = await fresh.contains_source(member.task_id, source, member.base_sha)
-                if tag_state == "conflict":
-                    return BatchObservation("held", source, fresh.target_oid, tree,
-                                            detail={"reason": "promotion_tag_conflict"})
-                if (proof is True and tag_state == "valid" and fresh.target_oid
-                        and await self.gitops.is_ancestor(repo, source, fresh.target_oid)):
-                    await self.cleanup(batch, repo, meta, member)
-                    return BatchObservation("delivered", source, fresh.target_oid, tree,
-                                            detail={"tag_oid": tag_oid})
-                return BatchObservation("unknown", source, fresh.target_oid, tree)
+                return await self._read_back(batch, repo, meta, member, tree, tag_state, tag_oid)
             # Resolve trust outside the publication fence. A cached lower-lane
             # success needs no candidate push and no new CI request.
             await self.checks.for_candidate(batch, source)
@@ -1390,22 +1751,22 @@ class PromotionVisit(BatchService):
                 tag_state, tag_oid = await self._create_tag(
                     batch, repo, tag, meta, member, authorize,
                 )
-            fresh = await self.snapshot()
-            proof = await fresh.contains_source(member.task_id, source, member.base_sha)
-            if tag_state == "conflict":
-                return BatchObservation("held", source, fresh.target_oid, tree,
-                                        detail={"reason": "promotion_tag_conflict"})
-            if (proof is True and tag_state in {"valid", "none"} and fresh.target_oid
-                    and await self.gitops.is_ancestor(repo, source, fresh.target_oid)):
-                await self.cleanup(batch, repo, meta, member)
-                return BatchObservation("delivered", source, fresh.target_oid, tree,
-                                        detail={"tag_oid": tag_oid})
-            return BatchObservation("unknown", source, fresh.target_oid, tree)
+            return await self._read_back(batch, repo, meta, member, tree, tag_state, tag_oid)
         except PromotionIntentInvalid as exc:
             return BatchObservation("held", detail={"reason": "promotion_intent_invalid",
                                                    "error": str(exc)})
         except (GitError, OSError, ValueError) as exc:
             return BatchObservation("unknown", detail={"reason": str(exc)})
+
+
+async def promotion_policy_event(conn, *, project_id, step_id, kind, identity, now, **facts):
+    """Durable notification; inactive bundles leave the project without an automatic author."""
+    from src.integration.outbox import enqueue_integration_event
+
+    key = f"promotion-policy:{kind}:{identity}:{step_id}"
+    await enqueue_integration_event(conn, event_id=key, dedup_key=key, project_id=project_id,
+        event_type="promotion." + kind,
+        payload={"project_id": project_id, "step_id": step_id, **facts}, available_at=now)
 
 
 async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None):
@@ -1418,11 +1779,13 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
     members = (await conn.execute(select(integration_batch_members.c.task_id).where(
         integration_batch_members.c.batch_id == batch.id,
     ))).scalars().all()
-    await conn.execute(update(tasks).where(tasks.c.id.in_(members),
+    await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id.in_(members),
                        tasks.c.task_type == "promotion", tasks.c.status == "IN_PROGRESS")
                        .values(status="COMPLETED", updated_at=clock()))
     result = {"tag_oid": (observation.detail or {}).get("tag_oid"),
               "source_sha": observation.candidate_sha, "batch_id": batch.id}
+    if (observation.detail or {}).get("reason"):
+        result["reason"] = observation.detail["reason"]
     for task_id in members:
         await conn.execute(insert(task_metadata).values(
             task_id=task_id, key=PROMOTION_RESULT, value=json.dumps(result, sort_keys=True),
@@ -1432,3 +1795,66 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
         ))
         if json.loads(recorded) != result:
             raise PromotionIntentInvalid("promotion settlement differs from its recorded result")
+
+
+class PromotionSourceRefusal(ValueError):
+    """Request-time exact-source CI cannot authorize an intent."""
+
+    def __init__(self, outcome, message):
+        super().__init__(message)
+        self.outcome = outcome
+
+
+async def check_source_green(client, trust, required, source):
+    from src.integration.ci import (
+        AttestationError,
+        AuthenticatedGitHubObserver,
+        CIObservationDeferred,
+        FailedCIObservation,
+        RequiredChecksManifest,
+    )
+
+    selected = trust.model_copy(update={"required_checks": required})
+    try:
+        observer = AuthenticatedGitHubObserver(
+            client, expected_event="push", ignore_cancelled_batches=True,
+        )
+        # Delivery-branch fallback CI is a reusable workflow whose check names
+        # include the caller job. Only source admission may use its explicitly
+        # trusted full names; canonical candidate/attestation names stay exact.
+        audit_names = tuple(f"unattested-ci / {name}" for name in required.names)
+        configured = trust.check_sets.get("promotion-source-audit", ())
+        audit_configured = set(audit_names).issubset(configured)
+        try:
+            observed = await observer.observe(selected, source)
+        except CIObservationDeferred as exc:
+            # An unrequired queued job cannot delay a complete configured audit.
+            # Any canonical check present still owns the source verdict.
+            if (not audit_configured or
+                    tuple(exc.details.get("missing_required_checks", ())) != required.names):
+                raise
+            observed = None
+        if (
+            audit_configured
+            and (observed is None or (
+                isinstance(observed, FailedCIObservation)
+                and observed.checks
+                and all(check["conclusion"] == "missing" for check in observed.checks)
+            ))
+        ):
+            audit_required = RequiredChecksManifest(version=required.version, names=audit_names)
+            observed = await observer.observe(
+                trust.model_copy(update={"required_checks": audit_required}), source,
+            )
+    except CIObservationDeferred as exc:
+        reason = "promotion_source_pending" if exc.classification in {"pending", "none"} \
+            else "promotion_source_unavailable"
+        raise PromotionSourceRefusal(reason, str(exc)) from exc
+    except AttestationError as exc:
+        raise PromotionSourceRefusal("promotion_source_untrusted", str(exc)) from exc
+    except GitHubAccessError as exc:
+        if rate_limit_cause(exc) is not None:
+            raise
+        raise PromotionSourceRefusal("promotion_source_unavailable", str(exc)) from exc
+    if isinstance(observed, FailedCIObservation):
+        raise PromotionSourceRefusal("promotion_source_red", "Required source checks are not green.")
