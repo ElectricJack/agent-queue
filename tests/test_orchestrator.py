@@ -367,18 +367,18 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert service._development_subject_runtime is None
     assert service._outbox is orch.integration_outbox
     assert "delegate cleanup" in service._maintenance
-    assert orch.integration_train is None and service._train is None
+    assert service._train.train is orch.integration_train is not None
     assert orch.integration_attestation_resolver.__self__ is orch.integration_attestation_service
 
 
-async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path, monkeypatch):
+async def test_default_config_runs_the_train_without_subject_runtimes(tmp_path, monkeypatch):
     config = AppConfig(
         database=DatabaseConfig(url=lease_dsn("train.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
     config.worktrees.enabled = False
-    config.integration.git_first = "active"
+    assert config.integration.git_first == "active"
     import sys
     for name in ("scheduler", "promotion", "main_promotion", "root_runtime", "parent_runtime",
                  "reconciler", "root_adapters", "candidates", "subjects", "parent_engine",

@@ -1,0 +1,15 @@
+{
+  "generic_dependencies": {
+    "src/workspace_disable.py::CLAIM_FAILURES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::CLAIM_FAILURE_COOLDOWN": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::OPERATOR": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::QUARANTINED_DIRTY": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::WORKTREE_REMOVED": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
+    "src/workspace_disable.py::describe_disabled_slot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::disable_fields": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
+    "src/workspace_disable.py::disabled_slots_in_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority.",
+    "src/workspace_disable.py::reason_code": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::slot_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

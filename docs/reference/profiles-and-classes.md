@@ -29,14 +29,15 @@ create agent rows.
 
 A profile is one markdown file: YAML frontmatter, then sections. Sections whose
 name is in the structured set are parsed from a fenced ```json``` block;
-sections in the prompt set are captured as text and injected into the agent's
-prompt. Anything else is ignored. Parsing is deterministic — invalid JSON is a
-parse error, never a silent fallback
+sections in the prompt set are captured as text. `## Role` and `## Rules`
+reach `aq prime`; `## Reflection` is reserved for post-task reflection, not
+the launch prompt. Anything else is ignored. Parsing is deterministic —
+invalid JSON is a parse error, never a silent fallback
 ([`src/profiles/parser.py`](../../src/profiles/parser.py)).
 
 | Section | Kind | Contents |
 |---|---|---|
-| frontmatter | YAML | `id`, `name`, `tags`; unknown keys are preserved |
+| frontmatter | YAML | `id`, `name`, `tags`, `extends`, `template`, `capability_sync`; unknown keys are preserved |
 | `## Config` | JSON | the table below |
 | `## Tools` | JSON | `allowed` / `denied` tool name lists (legacy) |
 | `## Capabilities` | JSON | `harness_tools`, `aq_commands`, `plugin_tools` |
@@ -50,18 +51,19 @@ parse error, never a silent fallback
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `harness` | string | none | **The only** selector for which CLI runs the agent: `claude`, `codex`, `gemini`. Implies the provider. |
-| `default_class` | string | `""` | Intelligence class used when the task does not name one. Also what makes a `pool` profile offerable to routing. |
+| `harness` | string | none | **The only** CLI selector: a registered harness id, such as `claude`, `codex`, `gemini` or `opencode`. The harness supplies the provider. |
+| `default_class` | string | `""` | Intelligence class used when the task does not name one. Together with a harness, makes an enabled worker profile offerable for that class; stage, named, template and read-only profiles are excluded. |
 | `lifecycle` | `task` \| `pool` \| `named` | `task` | Push one session per assigned task; pull work by claiming; or one long-lived named session. |
 | `mode` | `always` \| `on_demand` | none | `named` only: keep resident, or wake on demand. |
 | `wake_mode` | `resume` \| `fresh` | none | `named` only: resume the prior context or start clean. |
 | `idle_timeout` | int (s) | none | `named`/`on_demand` only: sleep after this idle. |
-| `max_session_age` | int (s) | none | Recycle a named session older than this. |
+| `max_session_age` | int (s) | none | `named` only, positive seconds: recycle a session older than this. |
 | `needs_workspace` | bool | `true` | Whether the orchestrator acquires a workspace before launching. |
-| `workspaces` | list | none | Workspace kinds to attach. Validated here, resolved by the session runtime. |
+| `workspaces` | list | none | Parsed and validated, but currently not persisted by profile sync. Routing uses the task's workspace requirements; this is not a working attachment selector. |
 | `read_only` | bool | `false` | A declaration of write *intent*. It no longer changes workspace acquisition; it gates the require-a-PR close check. |
 | `enabled` | bool | `true` | Operator kill switch. `false` = hand this profile no new work. |
 | `permission_mode` | enum | `""` | One of `default`, `plan`, `full`, `bypassPermissions`, `acceptEdits`, `auto`. |
+| `codex_service_tier` | `default` \| `fast` | none | Codex-only per-launch override of the class slice's `service_tier`. Absent inherits; neither set means no tier flag. |
 | `codex_full_auto` | bool | `false` | Codex-only autonomous permission opt-in. |
 | `claude_dangerously_skip_permissions` | bool | `false` | Claude-only autonomous permission opt-in. |
 | `max_tokens_per_task` | int | none | Per-task token ceiling. |
@@ -71,16 +73,29 @@ parse error, never a silent fallback
 | `min_per_project` | int | `0` | `pool` only: keep this many workers resident per eligible project. |
 | `max_claims_per_session` | int | none | `pool` only: claims before a session retires. `null` = unlimited. |
 
-Two keys were **removed** and are now rejected at parse time with a pointer to
-`harness`, rather than being silently ignored:
+Three keys were **removed** and are rejected at parse time:
 
-* `runtime` — the in-process Supervisor is gone; every agent is a session. The
-  one surviving non-empty value is `"supervisor"`, for the daemon's own brain.
+* `runtime` — every agent, including the supervisor, is a harness session.
+  All values are rejected; select the CLI with `harness`.
 * `agent_name` — went with the retired `acpx` runtime.
 * `model` — a per-profile model pin. Removed in favour of intelligence classes;
   [`src/profiles/model_pin_migration.py`](../../src/profiles/model_pin_migration.py)
   strips any left in a vault at startup, logging a mismatch so an operator can
   audit it.
+
+### Inheritance and templates
+
+`extends: worker-claude` loads one parent before sync. Inheritance is one level:
+a parent cannot itself extend another profile, and a missing or invalid parent
+leaves the last valid database row in place. Config merges key by key with the
+child winning. Nonempty child prompt, Tools, MCP and Install values replace
+the parent's whole value. An authored Capabilities block replaces all three
+namespaces together, including an explicitly empty policy; it is not appended.
+A `template: true` profile supplies inheritance but has no runnable database row.
+
+`capability_sync` controls additive shipped-grant updates (see
+[local versus shipped policy](../concepts/agents-and-routing.md#local-versus-shipped-policy));
+it does not change the inheritance merge rule.
 
 ### Capability namespaces
 
@@ -119,57 +134,48 @@ provider name to a runtime config slice
 | `customized` | frontmatter | `true` opts the file out of shipped-default refresh (see below). Set by the editor on an explicit save. |
 | `anthropic` | JSON | `{"model": …, "thinking": off\|low\|medium\|high\|xhigh\|max}` |
 | `openai` | JSON | `{"model": …, "reasoning_effort": none\|minimal\|low\|medium\|high\|xhigh}` |
-| `codex` | JSON | Optional. Overrides the `openai` slice **only** for the Codex CLI, whose account models are a separate namespace. |
+| `codex` | JSON | Optional. Overrides `openai` **only** for the Codex CLI. Accepts `model`, `reasoning_effort`, and optional `service_tier` (`default` or `fast`). |
 | `google` | JSON | `{"model": …, "thinking_budget": <int>}` |
 
 Resolution is `(class_id, provider) → slice`. A missing provider key yields
 `{}`, which means "no class-driven override" and leaves the launch model unset
 rather than guessing.
 
-### Provider inference
+### Provider resolution
 
-There is no provider field anywhere. It comes from the harness id
-([`_infer_provider_from_harness`](../../src/sessions/spec.py)):
+The harness definition's explicit `provider` wins. Legacy definitions fall back
+to the harness id or command (`claude` → `anthropic`, `codex` → `openai`,
+`gemini` → `google`). When neither identifies a provider, launch looks for a
+class slice keyed by the harness id. This supports operator-defined harnesses.
+See [`_resolve_class_config`](../../src/sessions/spec.py).
 
-| Harness | Provider key |
-|---|---|
-| `claude` | `anthropic` |
-| `codex` | `openai` (plus the optional `codex` slice) |
-| `gemini` | `google` |
-| anything else | `""` — no class-driven model |
-
-The Codex slice is only consulted when the harness id is `codex` **and** its
-command basename is `codex`, so another OpenAI-backed harness does not pick up
-Codex account models.
+The `codex` slice is consulted only when the harness id is `codex` and the
+command basename is `codex` or `codex.exe`. Other OpenAI-backed harnesses use
+`openai`. A mapping without a model supplies no launch override; routing
+refuses a candidate that cannot map its required class to a model.
 
 ### Shipped classes
 
-The twelve shipped classes are the cross product of three tiers with four
-thinking levels. Their current mappings are in the files themselves — read
-them rather than trusting a copy:
+Seven classes ship. Their mappings live in
+[`src/prompts/default_intelligence_classes/`](../../src/prompts/default_intelligence_classes/):
 
-```bash
-grep -H -o '"anthropic": {"model": "[^"]*"' src/prompts/default_intelligence_classes/*.md
-```
-
-```text
-src/prompts/default_intelligence_classes/deep-high.md:"anthropic": {"model": "claude-fable-5"
-src/prompts/default_intelligence_classes/deep-low.md:"anthropic": {"model": "claude-fable-5"
-…
-src/prompts/default_intelligence_classes/standard-high.md:"anthropic": {"model": "claude-opus-5"
-```
-
-The shape, as of the files in this checkout:
-
-| Class | `anthropic` | `openai` / `codex` | `google` |
+| Classes | `anthropic` | `openai` / `codex` | `google` |
 |---|---|---|---|
-| `fast-*` | `claude-sonnet-5` | `gpt-5.6-luna` | `gemini-2.5-flash` |
-| `standard-*` | `claude-opus-5` | `gpt-5.6-terra` | `gemini-2.5-flash` |
-| `deep-*` | `claude-fable-5` | `gpt-5.6-sol` | *no `google` slice* |
+| `fast-low`, `fast-high` | `claude-sonnet-5` | `gpt-5.6-luna` | `gemini-2.5-flash` |
+| `standard-high` | `claude-opus-5` | `gpt-5.6-terra` | `gemini-2.5-flash` |
+| `deep-low`, `deep-high` | `claude-fable-5` | `gpt-5.6-sol` | absent |
+| `astra-low`, `astra-high` | absent | `gpt-6-astra` | absent |
 
-The `-off` / `-low` / `-medium` / `-high` suffix sets the thinking or reasoning
-field, not the model. `google` expresses it as a `thinking_budget` in tokens
-(2048 / 8192 / 24576, and absent for `-off`).
+The low/high suffix changes effort, not the model: `low` / `xhigh` for
+Anthropic and OpenAI/Codex; Google's thinking budgets are 2048 / 24576 tokens.
+Class existence and routing eligibility are separate: the bound policy must
+include a class in `class_order`. The current default policy still omits
+Astra; see [known gaps](../specs/systems/routing-and-profiles.md#5-known-gaps).
+
+The older off/medium classes and `standard-low` were retired. Startup migrates
+uncustomized class files to `.md.retired`, repoints generic profile defaults,
+and disables rungs whose ids name a retired class. The database migration
+handles old task class pins; workers must not run operator migrations.
 
 ### Refreshing a stale shipped mapping
 
@@ -233,41 +239,27 @@ name across.
 
 ### A pool worker fixed on one class
 
+Derived rungs inherit the shared worker definition rather than copying it:
+
 ````markdown
 ---
 id: standard-high-claude
 name: "Claude · Standard (High)"
-tags: [profile, agent-type, worker, generic]
+extends: worker-claude
 ---
-
-# Claude · Standard (High)
-
-## Role
-You are a generic coding worker. …
 
 ## Config
 
 ```json
-{
-  "harness": "claude",
-  "lifecycle": "pool",
-  "needs_workspace": true,
-  "default_class": "standard-high",
-  "workspaces": ["project-repo"],
-  "min_active": 0,
-  "max_active": 4
-}
+{"default_class": "standard-high", "lifecycle": "pool", "min_active": 0, "max_active": 4}
 ```
 ````
 
-Read as: run the `claude` CLI, therefore provider `anthropic`; think at
-`standard-high`, therefore model `claude-opus-5`; pull work by claiming rather
-than waiting to be assigned; keep between zero and four of these alive
-fleet-wide; each needs a `project-repo` workspace.
-
-Because `default_class` is set, this profile is a router candidate for exactly
-one class. Because `lifecycle` is `pool`, its workers only ever claim tasks whose
-class is `standard-high`.
+This inherits the Claude harness, role, rules and capabilities from
+`worker-claude`, then fixes the class and pool bounds. Its sessions pull only
+compatible `standard-high` tasks. Bounds apply fleet-wide. Configure pool
+state through `aq pool set-lifecycle` and `aq pool scale`; see
+[worker pools §7b](../guides/worker-pools.md#7b-workers-are-derived-not-authored).
 
 ### A class that adds a provider
 
@@ -290,9 +282,10 @@ aq task route --task-id demo.4
 ```
 
 The first stores a new class hint, clears the task's profile, class and route
-record, and sets it `unrouted`, so the router plans it again on the next cascade;
-the router honours the hint up to the kind's `max_class`. `aq task edit
---intelligence-class` on a queued, unclaimed task does the same. The second is
+record, sets it `unrouted`, and immediately emits `task.route_needed`.
+The router clamps the hint to the kind's `max_class` and applies risk floors;
+a first bugfix attempt always starts at `standard-high`, regardless of the hint.
+`aq task edit --intelligence-class` on a queued, unclaimed task does the same. The second is
 the emergency override (local operator or live supervisor only): it pins the
 task to that profile, and `aq doctor --check routing.bypassed` lists it until
 the third sends the task back to the router. None is accepted while a worker
@@ -304,18 +297,26 @@ holds the task, and no filing command takes a profile.
 |---|---|
 | `aq agent list-profiles` / `get-profile` | Read the parsed profile rows. |
 | `aq agent create-profile` / `edit-profile` / `delete-profile` | Manage profiles; deleting a shipped id writes a tombstone. |
-| `aq agent import-profile` / `export-profile` | YAML round-trip. |
+| `aq agent import-profile` / `export-profile` | Portable YAML settings (or gist). Export omits lifecycle, inheritance, capabilities and pool state; back up the vault markdown for a complete profile. |
 | `aq agent profile-drift` | Which vault system profiles diverge from `src/profiles/defaults/`, on the semantic fields (`read_only`, `harness`, `lifecycle`, `needs_workspace`), missing/extra sections, and `missing_grants` (per-namespace `## Capabilities` grant names the shipped default has that the vault copy lacks). |
 | `aq agent profile-reseed --profile-id <id> --grants-only` | Additive repair: merge only the missing `## Capabilities` grants into the vault copy, keeping `.bak-<epoch>`; every other edit (e.g. `harness`) survives untouched. Refuses if the vault copy has no `## Capabilities` section. |
 | `aq agent profile-reseed --profile-id <id>` | Restore one vault profile from the shipped version while preserving a nonempty display name in valid vault frontmatter, keeping `.bak-<epoch>`; also clears its tombstone. |
 | `aq agent profile-audit --legacy-only` | Profiles still deriving capabilities from `allowed_tools`. |
 | `aq agent check-profile` / `install-profile` | Validate and install a profile's `## Install` dependencies. |
-| `aq agent show-effective-profile` | Run the resolution cascade for a `(project, agent-type)` pair. |
+| `aq agent show-effective-profile` | Resolve the explicitly named `--profile-id` in `--project-id` context. There is no project-default cascade. |
 | `aq agent create` / `edit` / `delete` | Manage worker identities and their per-worker `harness` / `model` / `intelligence-class` overrides. Changes apply to the worker's **next** session. |
 | `aq agent start-terminal` | Start a task-free interactive terminal for one worker. |
-| `aq system list-intelligence-classes` / `edit-intelligence-class` | Read and edit classes. Edits are revision-checked and refuse a stale write. |
+| `aq system list-intelligence-classes` / `edit-intelligence-class` / `delete-intelligence-class` | List mappings, loaded status, parse errors and raw-file revisions; edit or retire a class with `--expected-revision`. Editing/deleting requires a local operator or global admin session. Stale revisions return `revision_conflict`. Deletion refuses references from agents, profiles and non-terminal tasks; repoint them first. |
 | `aq system reload-config` | Force a vault rescan. |
 | `aq task route` / `route-override` | Send a queued task back to its router, optionally with a new class hint or kind; or, in an emergency, override its route (local operator or supervisor only, with a reason). An open `routing` gate resolves when the router, or an override, writes the route. |
+
+Class edits update the live registry; running sessions keep their launch settings.
+A save sets `customized: true`, preventing bundled-default refresh from replacing
+the edited mappings. Class deletion retires the file and prevents reseeding.
+
+Profile `## MCP Servers` lists are parsed and synced, but currently reach only
+a launch log; they do not configure the harness session. See
+[known gaps](../specs/systems/routing-and-profiles.md#5-known-gaps).
 
 ## Related pages
 
