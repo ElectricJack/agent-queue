@@ -548,6 +548,11 @@ fleet-wide whether or not you pass one, because filtering them would misreport
 the pool the sizer actually acts on. A profile with no standing in the named
 project drops out of the listing entirely.
 
+Project supervisors granted `pool_status` automatically receive their own project's
+view, including when they omit `--project-id`. They cannot select another project.
+This read keeps the shared bounds and aggregate counters visible; pool mutations
+still require global authority. Project-mode stall sweeps use this scoped read.
+
 `pool status` and `task explain` use cached delivery observations without network
 Git calls. A cold or expired observation withholds delivery-dependent demand
 until a background consumer refreshes it; task explanations report unknown
