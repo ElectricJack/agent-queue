@@ -12,6 +12,16 @@ file edit alone does not satisfy this gate. Refuse with
 keeps the claim and explains how to resubmit. Deliverable waivers cannot
 waive this requirement; a failing close remains available.
 
+Worker `review_submit` resolves the assigned review from the held task's
+`review_response` metadata when `review_id` is omitted. An explicit id must
+match that assignment; otherwise refuse with `not_your_task` and name the
+supported resubmission command. A revision worker cannot create a parallel
+review, including by using the ordinary new-document submission command.
+Keep the original author, gate and vault path, and attribute the new revision
+to the held revision task. Pool tokens resolve the task from the live session
+even when their token has no task id. Project boundaries and the existing
+assigned-revision/state checks still apply.
+
 Worker prime must expose this requirement from the metadata, independent of
 task type or description truncation. Instruct the worker to read the review
 and comments, revise a local draft, and publish with

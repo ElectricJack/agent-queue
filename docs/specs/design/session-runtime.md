@@ -217,6 +217,14 @@ The reconciler builds the **desired set** of named sessions each tick from profi
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
 
+Wait maintenance, including the startup legacy bridge and scheduler wait audit, runs
+in one background task. A cycle waits at most five seconds when starting that task;
+later cycles continue without queueing another pass while it runs. Dead-process
+classification, workspace release and pool starts must continue during a slow pass.
+Shutdown cancels and awaits the background task; durable bridge receipts permit
+restart recovery. Held or refused project bridge passes retry after five minutes,
+while completed project receipts suppress repeat migration.
+
 **The state machine is enforced** (2026-08-27). `update_session` validates every write to
 `state` against the transition table in `session_queries.py` and raises
 `InvalidSessionTransition` on an illegal edge; re-writing the state a row already has is a
@@ -270,12 +278,36 @@ disable that session's workspace. Empty-frontier polls and admission waits neith
 spend nor clear this budget; a different failure starts a new streak, and successful
 activation clears it. The count survives daemon restarts. The write is fenced by
 the session instance and preparation epoch, and cannot affect an active claim.
+Before permanent preparation cleanup, the same session row retains one bounded,
+scrubbed `failed_preparation` snapshot: selected task and creation time, designated
+repository/ref, origin identity and creation generation, checkpoint version and
+generation, session instance, preparation start and claim epoch, failure stage/reason,
+and observation time. Origin/checkpoint fields describe the persisted evidence at
+observation; missing evidence stays null. No exception locals, credentials, repository
+URLs or arbitrary metadata are copied. This is a last observation, not a journal.
+It survives binding release, cooldown, drain and daemon restart and appears in existing
+session diagnostics and failed claim responses. Successful activation clears it.
+Its write requires the exact still-preparing session/task/instance/epoch binding;
+stale, active or successor preparations cannot write it. The snapshot never supplies
+claim authority, creates a claim file, enables task mutations or authorizes recovery.
 The response is `drain_requested` and instructs the worker to run `aq session
 drain-ack` and exit. Reconciliation stops the exact session through normal guarded
 pool teardown even if the worker ignores the response. Attached branch ownership
 and its claim/workspace bindings remain available for recovery; quarantining a
 workspace never deletes its checkout or removes an index lock. An operator repairs
 and re-enables it after proving the retained work safe.
+
+An active pool claim must retain its workspace's `.aq/claim.json`. Preparation
+reads back the marker before activation; a failed write/readback releases ordinary
+preparation with backoff and drains the unusable worker. Each reconciliation pass
+also detects active claims whose marker is absent in an accessible checkout,
+rechecks the session instance, task binding and epoch under the task control lock,
+and stops the worker through confirmed pool teardown. Only then may the task return
+to READY, with `prepare_failed`, `needs_attention = claim_file_missing` and preparation
+backoff. Unconfirmed stops retain resources for retry. Attached integration owners
+retain the stopped writer's claim and workspace for owner recovery. Preparations,
+verified waits, terminal tasks, successor bindings, unreadable markers and unavailable
+checkouts are excluded. Recovery never recreates a claim marker from database state.
 
 Both operator stall sweeps report live pool workers with zero activated claims
 after 15 minutes, even when repeated claim attempts keep `last_activity` fresh.
@@ -318,9 +350,69 @@ holds, pinned jobs and integration-owned delegates are not automatically requeue
 the same preservation and release. Command callers must pass `dry_run: false` to
 apply. Preview performs no publication, detach, release or audit writes.
 
+Preservation requires a local task ref and its live, materialized
+`task_branch_origins` record. Each candidate must descend from the recorded filing
+base; every unpublished
+commit must have a committer timestamp at or after the writer's task-session
+attempt start (falling back to `claim_phase_at`, or `started_at` for a task
+session, when no attempt exists). A slot snapshot or HEAD additionally requires
+its sentinel to match task, branch, project and workspace, with an assignment
+at or after that claim. A missing local task ref
+is reported as `skip_preserve` in preview and never replaced with a slot HEAD.
+Unproven unpublished work refuses release as `unproven_task_work`, without
+snapshotting, publishing or detaching; an unrelated detached slot is skipped.
+When a detached slot is skipped because its sentinel does not match or its task
+ref is absent, retain its checkout and disable the released workspace, even if
+clean, so allocation cannot reset unknown commits. Preview reports that retention.
+
+`aq integration restore-task-origin` is an operator/live project supervisor
+control for a contaminated task branch. Preview is the default. Apply requires
+the exact task origin id, released owner fence token, expected remote head and
+a reason. Under the project admission lock and repository mutex, revalidate the
+task/origin/ref binding and released fence, exclude live task writers, locked
+workspaces, checked-out branches and reserved publications, then restore only the
+recorded base SHA with an exact remote lease. Never accept a caller-supplied
+destination or replacement commit. Retain the displaced remote head on an
+immutable recovery ref before rewriting; audit the principal, reason, origin,
+before/after OIDs and fresh fence.
+An existing local ref must equal the observed remote or the origin; repair it
+with an exact compare-and-swap so a retry cannot republish the contamination.
+Do not reset or clean any checkout. A moved remote, origin or fence refuses the
+write; preview leaves refs, fence and audit unchanged.
+
+Claim release also clears the exact old assignment when the task has already
+returned to READY: it matches the releasing session's agent and claim epoch,
+leaving a successor's assignment untouched. An attached integration owner still
+vetoes release. For an assignment stranded after its sessions stopped, the existing
+`aq task recover --decision release --operator-release --expected-hold-at …`
+control clears it while releasing the exact recovery hold, provided the incident's
+worker is confirmed stopped by its provider, its instance and claim generation
+still match, all sessions for that task and agent are stopped, and no integration
+owner remains. It preserves task status, retry budgets, workspaces and other
+frontier guards; releasing an integration-owned hold never clears its assignment.
+
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.
+
+An active pool holder whose native transcript explicitly ends its current turn
+(`end_turn` for Claude, `task_complete` for Codex) uses that transcript's quiet
+clock instead of tmux repaints for the stall ladder and the
+`sessions.idle_claim_timeout_seconds` backstop (15 minutes by default, 0 disables).
+The independent `agents.stuck_timeout_seconds` bound remains honored when enabled.
+New input, tool
+activity, a new turn, partial/unreadable evidence or a pre-claim completion
+invalidates the observation. Recent task heartbeats and wait-result consumption
+give fresh grace; live questions and bounded durable waits retain their existing
+exemptions. Recovery still stops the exact process before releasing resources,
+preserves integration ownership and uses the task's bounded failure streak.
+An unregistered instruction to wait for integration paperwork grants no exemption.
+
+Supervisors keep workers executing or closing their work while the integration
+owner handles delivery controls. With the train off, train controls are not a
+worker publication/close prerequisite. Actual command refusals and explicit
+human holds remain binding; a necessary execution question gets concrete
+guidance or one bounded durable wait, never an indefinite idle hold.
 
 Stalled tasks climb a ladder, each rung a typed event:
 
@@ -486,6 +578,28 @@ Accounting failures leave the byte checkpoint retryable. On adoption, consumed C
 records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
 or deleting the original rows. Historical inflation requires a separate evidenced
 correction; it is never repaired implicitly during ingest.
+
+For retention, calls attributed to sessions stopped for more than 30 days may be
+sealed after their counters have also been untouched for more than 30 days. Sealing
+freezes those historical calls: later observations, including higher counters and
+replays under another AQ session, add no usage. Live/recent calls retain exact maxima.
+The permanent anti-replay fence stores bounded batches of exact usage keys in JSONB
+sets with a GIN containment index. This keeps the identity information needed for
+historical hashes (which cannot be reversed into transcript watermarks), without
+keeping a database row and four counters per call. It is not a probabilistic filter.
+Fences have no session/ledger foreign keys and must never expire with those tables.
+
+The unscheduled `archive_transcript_usage_calls` callable archives eligible snapshots
+to `~/.agent-queue/backups/transcript-usage-calls-archive-<UTC-date>.jsonl.gz`.
+Compression, serialization, filesystem locking and fsync run in a worker thread,
+without an open database transaction. Each bounded deletion transaction rechecks
+session eligibility and exact snapshot equality under row locks, then commits the
+fence and deletion atomically. Concurrent ingestion locks the progress row and checks
+the fence before charging; a replay cannot fall between deletion and fence creation.
+Archive failure leaves database rows intact; a crash after archival can leave duplicate
+archive records, never unarchived deletions. Missing original ledger/session evidence
+is conservatively retained. Scheduling this callable belongs to the general retention
+job once available; this change does not register a scheduled job.
 
 Historical reconciliation is read-only and uses a frozen transcript/ledger window.
 Only unambiguous UUID matches with exact counter agreement and complete call coverage
