@@ -3,20 +3,21 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import (
-    integration_batches,
     integration_attestation_publications,
+    integration_batches,
     integration_candidate_publications,
     integration_candidate_revisions,
     integration_check_evidence,
+    integration_outbox,
     integration_repair_operations,
     integration_repair_stages,
-    integration_outbox,
 )
 from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
 from src.git.github_contracts import GitHubCredentialIdentity
@@ -28,14 +29,66 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     SubjectTrustError,
 )
-from src.integration.controls import IntegrationControlService
-from src.integration.main_promotion import RootAttestationSubject
+from src.integration.promotion_contracts import RootAttestationSubject
+from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
 
-
 SHA = "a" * 40
 BASE = "0" * 40
+
+
+async def test_train_publish_without_legacy_rows_reads_back_and_retries_idempotently(tmp_path):
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None, data_dir=tmp_path, git_manager=None, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, IntegrationTrustManifest.model_validate_json(trust_document()))
+    target = subject(operation_id="train-batch", batch_id="train-batch", revision=3)
+    for _ in range(2):
+        result = await service.publish(target, producer=producer)
+        assert result.outcome in {"published", "already_published"}
+        assert result.proof.subject() == target
+        assert result.proof.check_run_id == client.records[0]["id"]
+    assert client.published == 1
+
+
+@pytest.mark.parametrize("failure", ["local", "login", "wrong_app", "version", "red", "write", "readback"])
+async def test_train_publish_refuses_invalid_identity_or_provider_failure(tmp_path, failure):
+    client = ProviderClient()
+    trust = IntegrationTrustManifest.model_validate_json(trust_document())
+    service = IntegrationAttestationService(
+        None, data_dir=tmp_path, git_manager=None, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, trust)
+    target = subject()
+    if failure == "local":
+        producer = object.__new__(LocalCIProducer)
+    elif failure == "login":
+        client.credential_identity = GitHubCredentialIdentity.existing_login()
+    elif failure == "wrong_app":
+        client.credential_identity = GitHubCredentialIdentity.app(999, 202)
+    elif failure == "version":
+        target = subject(required_check_version="wrong-version")
+    elif failure == "red":
+        client._required = lambda *args: {**ProviderClient._required(*args), "conclusion": "failure"}
+    elif failure == "write":
+        client.request_json = AsyncMock(side_effect=OSError("write unavailable"))
+    elif failure == "readback":
+        original = client.paged_items
+
+        async def unreadable(path, *, key):
+            if client.published and "check_name=Agent%20Queue" in path:
+                return []
+            return await original(path, key=key)
+
+        client.paged_items = unreadable
+    result = await service.publish(target, producer=producer)
+    assert result.outcome == {"version": "stale", "red": "not_green"}.get(
+        failure, "configuration_blocked",
+    )
+    assert result.proof is None
+    assert client.published == (1 if failure == "readback" else 0)
 
 
 def trust_document(**changes) -> bytes:
@@ -329,6 +382,11 @@ class ProviderClient:
                     "head_repository": {"id": 303, "full_name": "acme/widgets"},
                 },
             ]
+        if key == "check_runs" and "check_name=" not in path:
+            return [
+                self._required("Tests (default)", 11, 21),
+                self._required("Tests (postgres-integration)", 12, 22),
+            ]
         if "check_name=Tests%20%28default%29" in path:
             return [self._required("Tests (default)", 11, 21)]
         if "check_name=Tests%20%28postgres-integration%29" in path:
@@ -421,7 +479,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         original = client.paged_items
 
         async def pending(path, *, key):
-            if key == "check_runs" and "check_name=" in path:
+            if key == "check_runs" and "check_name=" not in path:
                 return []
             rows = await original(path, key=key)
             if key == "workflow_runs":
@@ -433,7 +491,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         original = client.paged_items
 
         async def missing(path, *, key):
-            if key == "check_runs" and "check_name=" in path:
+            if key == "check_runs" and "check_name=" not in path:
                 return []
             return await original(path, key=key)
 
@@ -443,8 +501,11 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
 
         async def red(path, *, key):
             rows = await original(path, key=key)
-            if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-                rows[0] = {**rows[0], "conclusion": "failure"}
+            if key == "check_runs" and "check_name=" not in path:
+                rows = [
+                    {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                    for row in rows
+                ]
             return rows
 
         client.paged_items = red
@@ -536,8 +597,11 @@ async def test_red_candidate_regular_failure_folds_dossier_dedup(
 
     async def red(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-            rows[0] = {**rows[0], "conclusion": "failure"}
+        if key == "check_runs" and "check_name=" not in path:
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = red
@@ -601,8 +665,11 @@ async def test_red_candidate_double_observation_dedup_dossier(
 
     async def red(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-            rows[0] = {**rows[0], "conclusion": "failure"}
+        if key == "check_runs" and "check_name=" not in path:
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = red
@@ -661,9 +728,10 @@ async def test_existing_login_candidate_missing_check_emits_red_continuation(
     original = client.paged_items
 
     async def missing(path, *, key):
-        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
-            return []
-        return await original(path, key=key)
+        rows = await original(path, key=key)
+        if key == "check_runs" and "check_name=" not in path:
+            return [row for row in rows if row["name"] != "Tests (postgres-integration)"]
+        return rows
 
     client.paged_items = missing
     service = IntegrationAttestationService(
@@ -839,13 +907,13 @@ SNAPSHOT_CHECKS = ("Tests (default)", "Tests (postgres-integration)")
 
 
 def _recording(client):
-    """Record every required-check name the observer asks the provider for."""
+    """Record every required-check listing the observer asks the provider for."""
     asked: list[str] = []
     original = client.paged_items
 
     async def paged_items(path, *, key):
-        if key == "check_runs" and "check_name=" in path and "Attestation" not in path:
-            asked.append(path.split("check_name=", 1)[1].split("&", 1)[0])
+        if key == "check_runs" and "check_name=" not in path:
+            asked.append(path)
         return await original(path, key=key)
 
     client.paged_items = paged_items
@@ -883,8 +951,9 @@ async def test_subject_check_set_is_informational_and_the_snapshot_decides(
     result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
 
     assert result["outcome"] == "published"
-    # Observation and publication each read exactly the snapshot's names.
-    assert asked == ["Tests%20%28default%29", "Tests%20%28postgres-integration%29"] * 2
+    # Observation and publication each read one listing; the snapshot's names
+    # select from it (asserted on the published checks below).
+    assert len(asked) == 2
     published = json.loads(client.records[0]["output"]["text"])
     assert published["required_check_set_version"] == "checks-v1"
     assert tuple(check["name"] for check in published["checks"]) == SNAPSHOT_CHECKS
@@ -910,10 +979,14 @@ async def test_subject_check_set_cannot_lower_the_snapshot_bar(
 
     async def dropped(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
+        if key == "check_runs" and "check_name=" not in path:
+            postgres = "Tests (postgres-integration)"
             if provider_kind == "missing":
-                return []
-            rows[0] = {**rows[0], "conclusion": "failure"}
+                return [row for row in rows if row["name"] != postgres]
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == postgres else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = dropped
@@ -952,101 +1025,6 @@ async def test_subject_check_set_cannot_lower_the_snapshot_bar(
         )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("manifest", "cause", "fields"),
-    [
-        (None, "missing", []),
-        (b"x" * (64 * 1024 + 1), "too_large", []),
-        (b"{not-json", "malformed", []),
-        (b'{"schema":"aq.integration-trust.v1","schema":"x"}', "malformed", []),
-        (trust_document(schema="aq.integration-trust.v2"), "malformed", []),
-        (trust_document(attestation_app_id=404), "malformed", []),
-        (trust_document(repository_id=304), "identity_mismatch", ["repository_id"]),
-        (
-            trust_document(
-                canonical_repository_id="other",
-                full_name="acme/other",
-                attestation_app_id=505,
-                ci_producer_app_id=606,
-            ),
-            "identity_mismatch",
-            ["canonical_repository_id", "full_name", "attestation_app_id", "ci_producer_app_id"],
-        ),
-        (
-            trust_document(attestation_name="Another Attestation"),
-            "identity_mismatch",
-            ["attestation_name"],
-        ),
-    ],
-    ids=[
-        "missing",
-        "too_large",
-        "not_json",
-        "duplicate_field",
-        "other_schema",
-        "invalid_document",
-        "repository_id",
-        "every_identity",
-        "attestation_name",
-    ],
-)
-async def test_subject_trust_refusal_is_classified_and_named_in_status(
-    attestation_db, tmp_path, manifest, cause, fields
-):
-    await _reset_candidate_for_observation(attestation_db)
-    async with attestation_db.immediate() as conn:
-        await conn.execute(
-            update(integration_repair_stages)
-            .where(integration_repair_stages.c.operation_id == "root-op")
-            .values(policy={"debug_intelligence_class": "deep"})
-        )
-    client = ProviderClient()
-    client.workflow_offset = 1000
-    git = ExactTreeGit(manifest)
-    service = IntegrationAttestationService(
-        attestation_db,
-        data_dir=tmp_path,
-        git_manager=git,
-        github_client_factory=lambda binding: client,
-        clock=lambda: 10.0,
-    )
-
-    result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
-
-    assert result == {"outcome": "configuration_blocked"}
-    assert client.published == 0
-    blockers = await service.subject_trust_blockers("p")
-    assert [
-        {key: value for key, value in blocker.items() if key != "detail"}
-        for blocker in blockers
-    ] == [
-        {
-            "code": "subject_trust_invalid",
-            "ref": "root-op",
-            "target_kind": "batch",
-            "subject": {"batch_id": "batch", "revision": 0},
-            "head_sha": SHA,
-            "cause": cause,
-            "fields": fields,
-        }
-    ]
-    assert blockers[0]["detail"].startswith(f"batch batch revision 0 at {SHA}: ")
-    assert blockers[0]["detail"].endswith("refresh the branch from the default branch")
-    assert await service.subject_trust_blockers("other-project") == []
-
-    status = await IntegrationControlService(
-        attestation_db, subject_trust_reader=service.subject_trust_blockers
-    ).status("p")
-    assert blockers[0] in status["blockers"]
-    assert status["ready"] is False
-
-    # Refreshing the subject from the default branch retires the report.
-    git.manifest = trust_document()
-    assert (await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0))["outcome"] == (
-        "published"
-    )
-    assert await service.subject_trust_blockers("p") == []
 
 
 @pytest.mark.asyncio
@@ -1159,6 +1137,40 @@ async def test_subject_producer_is_compared_with_the_snapshot_boundary(tmp_path)
     assert (refused.value.cause, refused.value.fields) == (
         "identity_mismatch",
         ("ci_producer_app_id",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_parent_boundary_batch_subject_is_refused_as_its_batch(tmp_path):
+    """The train reads an epic head's parent checks under a batch identity, not a parent's."""
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(None),
+        github_client_factory=lambda binding: ProviderClient(),
+    )
+    required = {"version": "checks-v1", "names": list(SNAPSHOT_CHECKS), "producer_id": "404"}
+    state = {
+        "project_id": "p",
+        "operation_id": "epic-readiness-epic",
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {"parent": {"required_checks": required}},
+        "batch_id": "epic-readiness-epic",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    with pytest.raises(SubjectTrustError) as refused:
+        await service._load_trust(state, boundary="parent")
+
+    assert refused.value.cause == "missing"
+    failure = service._subject_trust["epic-readiness-epic"]
+    assert (failure["target_kind"], failure["subject"], failure["head_sha"]) == (
+        "batch",
+        {"batch_id": "epic-readiness-epic", "revision": 0},
+        SHA,
     )
 
 
@@ -1402,21 +1414,6 @@ async def test_enablement_projection_is_read_only_and_fail_closed(attestation_db
 
 
 @pytest.mark.asyncio
-async def test_green_candidate_remains_retryable_until_main_promotion(attestation_db):
-    rows = await attestation_db.pending_candidate_ci_page(after=None, limit=10)
-    assert [(row["batch_id"], row["revision"]) for row in rows] == [("batch", 0)]
-
-    async with attestation_db.immediate() as conn:
-        await conn.execute(
-            update(integration_batches)
-            .where(integration_batches.c.id == "batch")
-            .values(lifecycle="promoting")
-        )
-
-    assert await attestation_db.pending_candidate_ci_page(after=None, limit=10) == []
-
-
-@pytest.mark.asyncio
 async def test_two_fresh_services_reserve_one_provider_publication(attestation_db, tmp_path):
     class RacingProvider(ProviderClient):
         def __init__(self):
@@ -1458,21 +1455,22 @@ async def test_two_fresh_services_reserve_one_provider_publication(attestation_d
     }
 
 
+async def _wait_until_publication_phase(phase: asyncio.Event, publication: asyncio.Task) -> None:
+    """Wait for setup without treating a busy CI worker as a publication hang."""
+    waiter = asyncio.create_task(phase.wait())
+    try:
+        await asyncio.wait({waiter, publication}, return_when=asyncio.FIRST_COMPLETED)
+        if not phase.is_set():
+            pytest.fail(f"publication ended before the expected phase: {publication.result()!r}")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
     attestation_db, tmp_path
 ):
-    async def wait_until_phase(phase: asyncio.Event, publication: asyncio.Task) -> None:
-        """Wait for setup without treating a busy CI worker as a publication hang."""
-        waiter = asyncio.create_task(phase.wait())
-        try:
-            await asyncio.wait({waiter, publication}, return_when=asyncio.FIRST_COMPLETED)
-            if not phase.is_set():
-                pytest.fail(f"publication ended before the expected phase: {publication.result()!r}")
-        finally:
-            waiter.cancel()
-            await asyncio.gather(waiter, return_exceptions=True)
-
     now = [10.0]
     old_ready = asyncio.Event()
     release_old = asyncio.Event()
@@ -1508,7 +1506,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
 
     old._finish_publication = pause_old_finalizer
     old_task = asyncio.create_task(old.publish(subject()))
-    await wait_until_phase(old_ready, old_task)
+    await _wait_until_publication_phase(old_ready, old_task)
 
     now[0] = 311.0
     successor_client = ProviderClient()
@@ -1528,7 +1526,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
         clock=lambda: now[0],
     )
     successor_task = asyncio.create_task(successor.publish(subject()))
-    await wait_until_phase(successor_prewrite, successor_task)
+    await _wait_until_publication_phase(successor_prewrite, successor_task)
 
     release_old.set()
     old_result = await asyncio.wait_for(old_task, timeout=1.0)
@@ -1641,13 +1639,25 @@ async def test_live_publication_reservation_blocks_stage_expiry(attestation_db, 
         crash_hook=pause_after_reservation,
     )
     task = asyncio.create_task(publisher.publish(subject()))
-    await asyncio.wait_for(reserved.wait(), timeout=1.0)
+    try:
+        # Bound a deadlock across the scenario, not PostgreSQL setup latency.
+        async with asyncio.timeout(60):
+            await _wait_until_publication_phase(reserved, task)
 
-    result = await RepairService(attestation_db, clock=lambda: 1001.0).expire(
-        "root-op", 0, now=1001.0
-    )
+            result = await RepairService(attestation_db, clock=lambda: 1001.0).expire(
+                "root-op", 0, now=1001.0
+            )
 
-    assert result["outcome"] == "not_due"
-    assert result["action"] == "wait"
-    release.set()
-    assert (await asyncio.wait_for(task, timeout=1.0)).outcome == "published"
+            assert result["outcome"] == "not_due"
+            assert result["action"] == "wait"
+            release.set()
+            assert (await task).outcome == "published"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

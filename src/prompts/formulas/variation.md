@@ -17,12 +17,20 @@ Create one ordinary container directly under the object epic and cook with
 `--parent SUITE_ID`. AQ checks the exact current approved checkpoint, attaches
 its review gate, records experiment publication exclusions and refuses a second
 suite for this object. Each seed variable is a JSON array of five distinct
-integers; presets is a finite JSON object with at most 16 entries and 16 KiB. The suite consumes the existing
+integers; presets is a finite JSON object with at most 16 entries and 16 KiB. Every
+leaf materializes the approved candidate bundle artifact rather than rebuilding
+it, and captures under the attempt's pinned render profile and editor build:
+submit each capture with `--attempt-id` carrying that attempt id, and read the
+retained bundles and earlier round branches of this object as in scope. The suite consumes the existing
 final-suite reserve, never a new object allowance. Install before the terminal
 stop. Reconciliation waits for all its children, including exhausted failures.
 Use an admitted finite Matter job/GPU lease and atomic submit-and-wait when
 AQ-4 is operational; otherwise retain an audited bounded native invocation.
-Human review uses a closed evidence task and review gates, never a worker wait.
+Variation decisions use supervisor-only reviews and closed evidence tasks,
+never a human review or worker wait. Record captures, probes and failures in
+task notes for the supervisor. There is no implicit human-review deliverable.
+Jack receives the object's one final result with before/after images and a
+plain-English explanation; contact him during the run only if he must act.
 
 ```aq-graph
 version: 1

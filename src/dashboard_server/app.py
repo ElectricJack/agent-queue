@@ -9,7 +9,7 @@ One dispatcher decides where a request goes, in this order:
    with a ``.`` or ``..`` segment is ``400``, then the edge gates
    (:mod:`src.dashboard_server.edge`), then the daemon proxy.
 3. The daemon's non-dashboard prefixes and retired docs paths (``/mcp``,
-   ``/docs``, ``/redoc``, ``/openapi.json``, ``/plans``, ``/dashboard``) --
+   ``/docs``, ``/redoc``, ``/openapi.json``, ``/dashboard``) --
    ``404`` JSON, never ``index.html``, so a client pointed at the wrong port
    gets an error.
 4. Everything else -- the verified bundle with SPA fallback.
@@ -43,7 +43,7 @@ RESERVED_PREFIX = "/__aq"
 #: Forwarded to the daemon (spec §2.1).  ``/ws`` carries the WebSockets.
 PROXIED_PREFIXES = ("/api", "/health", "/ready", "/ws")
 #: Non-dashboard and retired documentation paths; never proxied nor an SPA route.
-NOT_SERVED_PREFIXES = ("/mcp", "/docs", "/redoc", "/openapi.json", "/plans", "/dashboard")
+NOT_SERVED_PREFIXES = ("/mcp", "/docs", "/redoc", "/openapi.json", "/dashboard")
 
 
 def has_prefix(path: str, prefix: str) -> bool:
@@ -140,11 +140,7 @@ class DashboardServerApp:
             # The daemon sees this proxy's loopback peer.  Replace any
             # untrusted client assertion with the edge's real-peer verdict so
             # read responses can hide operator controls from LAN viewers.
-            headers = [(key, value) for key, value in scope.get("headers", ())
-                       if key.lower() != b"x-aq-dashboard-viewer"]
-            headers.append((b"x-aq-dashboard-viewer",
-                            b"operator" if self.edge.operator_viewer(scope) else b"other"))
-            await self.proxy.http({**scope, "headers": headers}, receive, send)
+            await self.proxy.http({**scope, "headers": self._viewer_headers(scope)}, receive, send)
         elif route in {"identity", "metrics"}:
             if scope["method"] not in {"GET", "HEAD"}:
                 await self._json(send, 405, {"ok": False, "error": "method_not_allowed"},
@@ -234,7 +230,18 @@ class DashboardServerApp:
         if denial is not None:
             await self._deny(scope, send, denial)
             return
-        await self.proxy.websocket(scope, receive, send)
+        # Terminals (host shells in particular) need the same verdict.
+        await self.proxy.websocket({**scope, "headers": self._viewer_headers(scope)}, receive, send)
+
+    def _viewer_headers(self, scope: dict[str, Any]) -> list[tuple[bytes, bytes]]:
+        """Replace client viewer/peer assertions with this edge's real-peer verdict."""
+        headers = [(key, value) for key, value in scope.get("headers", ())
+                   if key.lower() not in {b"x-aq-dashboard-viewer", b"x-aq-dashboard-peer"}]
+        headers.append((b"x-aq-dashboard-viewer",
+                        b"operator" if self.edge.operator_viewer(scope) else b"other"))
+        client = scope.get("client") or ("unknown", 0)
+        headers.append((b"x-aq-dashboard-peer", str(client[0]).encode("latin-1", "replace")))
+        return headers
 
     async def _deny(self, scope: dict[str, Any], send: Any, denial: EdgeDenial) -> None:
         """Refuse a handshake before accepting it -- never accept-then-close."""

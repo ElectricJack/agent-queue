@@ -19,11 +19,11 @@ into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
 import re
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -32,6 +32,11 @@ from .global_options import AQGroup as GlobalOptionsAQGroup
 from .styles import AQ_THEME
 
 logger = logging.getLogger(__name__)
+
+# Command modules import this canonical name while registering. Reuse the
+# running module so ``python -m src.cli.app`` builds the tree only once.
+if __name__ == "__main__" and sys.modules[__name__].__dict__ is globals():
+    sys.modules["src.cli.app"] = sys.modules[__name__]
 
 
 def _installed_version() -> str:
@@ -55,6 +60,8 @@ console = Console(theme=AQ_THEME)
 
 def _run(coro):
     """Run an async coroutine synchronously."""
+    import asyncio
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -128,9 +135,11 @@ def _handle_errors(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         as_json = _json_mode()
+        ctx = click.get_current_context(silent=True)
+        save_output = bool(ctx is not None and (ctx.obj or {}).get("save_output"))
 
         def _fail_command(exc: CommandError) -> None:
-            if as_json:
+            if as_json or save_output:
                 emit_error(exc.code, exc.detail_message, exc.details or None)
             else:
                 from rich.text import Text
@@ -144,7 +153,7 @@ def _handle_errors(func):
         try:
             return func(*args, **kwargs)
         except DaemonNotRunningError as exc:
-            if as_json:
+            if as_json or save_output:
                 emit_error(exc.code, str(exc))
                 raise SystemExit(exc.exit_code)
             import os
@@ -306,6 +315,12 @@ def _print_full_help(ctx: click.Context) -> None:
     default=False,
     help="Trim output to each entity's lite projection (composes with --json).",
 )
+@click.option(
+    "--save-output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Save full emit-based output to a new private JSON file and print an evidence receipt.",
+)
 @click.version_option(version=_installed_version(), prog_name="aq")
 @click.pass_context
 def cli(
@@ -314,6 +329,7 @@ def cli(
     help_all: bool,
     output_json: bool,
     brief: bool,
+    save_output: Path | None,
 ) -> None:
     """Agent Q CLI — Modern terminal interface for task management.
 
@@ -323,6 +339,7 @@ def cli(
     ctx.obj["api_url"] = api_url
     ctx.obj["json"] = output_json
     ctx.obj["brief"] = brief
+    ctx.obj["save_output"] = save_output
 
     if help_all:
         _print_full_help(ctx)
@@ -426,6 +443,7 @@ from . import update as _update_cli  # noqa: E402, F401
 from . import logs  # noqa: E402, F401
 from . import tasks  # noqa: E402, F401
 from . import projects  # noqa: E402, F401
+from . import policy  # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
 from . import vault  # noqa: E402, F401
 from . import agent_surface  # noqa: E402, F401
@@ -439,12 +457,16 @@ from . import questions as _questions_cli  # noqa: E402, F401
 from . import reviews as _reviews_cli  # noqa: E402, F401
 from . import reports as _reports_cli  # noqa: E402, F401
 from . import jobs as _jobs_cli  # noqa: E402, F401
+from . import artifacts as _artifacts_cli  # noqa: E402, F401
 from . import waits as _waits_cli  # noqa: E402, F401
+from . import cron as _cron_cli  # noqa: E402, F401
 from . import collaboration as _collaboration_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401
 from . import integration as _integration_cli  # noqa: E402, F401
+from . import promote as _promote_cli  # noqa: E402, F401
+from . import promote_rulesets as _promote_rulesets_cli  # noqa: E402, F401
 # Before register_auto_commands(): the generated dashboard_state_* commands
 # merge into this hand-written group instead of creating their own.
 from . import dashboard as _dashboard_cli  # noqa: E402, F401
@@ -480,6 +502,8 @@ def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
     reader exposes no mutation methods, and the outer timeout bounds both
     connecting and querying an unavailable PostgreSQL server.
     """
+    import asyncio
+
     from .client import PluginConfigReader
 
     async def _fetch():
@@ -685,12 +709,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # ``python -m src.cli.app`` executes this file as ``__main__`` and then
-    # imports it AGAIN as ``src.cli.app`` when the submodules above run
-    # ``from .app import cli`` — so every hand-crafted command (inbox, reply,
-    # message, schema, prime, handoff, …) registers on the *other* module's
-    # ``cli`` group and silently vanishes from this one.  Delegate to the
-    # canonical module so both entry points see the same command set.
+    # Direct module execution reuses the alias above. runpy callers that keep
+    # their own __main__ module still need the canonical command tree.
     from src.cli.app import main as _canonical_main
 
     _canonical_main()

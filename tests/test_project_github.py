@@ -8,8 +8,8 @@ account.
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
 import shutil
 import stat
@@ -28,7 +28,6 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
-
 from src.projects.github import (
     GhClient,
     GitHubAuthStatus,
@@ -468,7 +467,7 @@ async def test_list_owners_returns_user_then_orgs_that_allow_creation(
     assert owners[0].to_dict() == {"login": "octocat", "kind": "user"}
     calls = invocations(argv_log)
     assert len(calls) == 1
-    assert calls[0][:4] == ["api", "--hostname", "github.com", "graphql"]
+    assert calls[0][:5] == ["api", "--include", "--hostname", "github.com", "graphql"]
 
 
 async def test_list_owners_requires_auth(fake_gh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -519,7 +518,7 @@ async def test_search_first_page_returns_identity_visibility_urls_branch_and_cur
 
     # The query and variables travel through stdin, never process arguments.
     (call,) = invocations(argv_log)
-    assert call[:4] == ["api", "--hostname", "github.com", "graphql"]
+    assert call[:5] == ["api", "--include", "--hostname", "github.com", "graphql"]
     assert call[-2:] == ["--input", "-"]
     assert graphql_requests(argv_log)[0]["variables"] == {"q": "widgets", "first": 2}
 

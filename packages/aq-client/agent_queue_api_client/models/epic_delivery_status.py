@@ -25,7 +25,9 @@ class EpicDeliveryStatus:
     A read-only display projection (``src/integration/epic_delivery.py``): it
     never changes the stored lifecycle and authorizes nothing. ``state`` is
     ``integrating``/``verifying`` only with a live, recently active session,
-    and ``delivered`` only with a receipt binding the current head.
+    and ``delivered`` only with evidence for the epic's *current* completion:
+    git's own request-scoped answer that it is on the project's target, or a
+    receipt binding the current head.
     ``display_status`` replaces the stored status on an epic card, so
     ``Paused`` appears only for an operator hold (``hold == "operator"``).
 
