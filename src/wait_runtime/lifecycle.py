@@ -2,8 +2,11 @@
 
 import time
 import json
+import asyncio
+import logging
 
 from sqlalchemy import Float, cast, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import continuations, events, messages, tasks, wait_records
@@ -15,6 +18,8 @@ from src.wait_runtime.hibernate import HibernationTransaction, begin_suspension
 from src.wait_runtime.resume import ResumeTransaction
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
+logger = logging.getLogger(__name__)
+
 
 class WaitLifecycle:
     def __init__(self, service, *, clock=time.time):
@@ -25,69 +30,82 @@ class WaitLifecycle:
         self.hibernate = HibernationTransaction(service, clock=clock)
         self.resume = ResumeTransaction(service, clock=clock)
         self.medians = {}
+        self._resume_tasks = {}
 
     async def register(self, args, *, principal, scope, handler):
+        watermark = await self.db.wait_source_watermark()
+        now = self.clock()
+        async with self.db._engine.begin() as conn:
+            return await self.register_in_transaction(
+                conn, args, scope=scope, source_watermark=watermark, now=now,
+            )
+
+    async def register_in_transaction(self, conn, args, *, scope, source_watermark, now):
+        """Share verified registration effects with atomic producer commands.
+
+        A caller already holding owner/source locks must first acquire the graph
+        fence and prefetch the watermark before opening its transaction.
+        """
         policy = project_policy(self.orch.config.wait_policy, scope.project_id) if scope else None
         if scope is None:
             raise WaitError("wait.out_of_scope", "registration needs a bound owner")
         if args["condition"]["kind"] == "human" and not policy.hibernation_enabled:
             raise WaitError("wait.disabled", "human waits require hibernation support")
-        watermark = await self.db.wait_source_watermark()
-        now = self.clock()
-        async with self.db._engine.begin() as conn:
-            await lock_graph(conn)
-            anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
-            if scope.project_id not in self.medians:
-                self.medians[scope.project_id] = await measurement_medians(
-                    conn, scope.project_id, now=now,
-                )
-            task_profile = await conn.scalar(select(tasks.c.profile_id).where(
-                tasks.c.id == scope.owner_id,
-            )) if scope.owner_kind == 'task' else None
-            pressure = getattr(self.orch, '_wait_slot_pressure', {}).get(
-                (scope.project_id, task_profile), 0,
+        await lock_graph(conn)
+        anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
+        if scope.project_id not in self.medians:
+            self.medians[scope.project_id] = await measurement_medians(
+                conn, scope.project_id, now=now,
             )
-            def measured_decision(cond, evidence):
-                return decide_sleep(measured_inputs(
-                    cond, evidence, policy=policy, medians=self.medians[scope.project_id],
-                    pressure=pressure, anchor=anchor, now=now,
-                ))
+        task_profile = await conn.scalar(select(tasks.c.profile_id).where(
+            tasks.c.id == scope.owner_id,
+        )) if scope.owner_kind == 'task' else None
+        pressure = getattr(self.orch, '_wait_slot_pressure', {}).get(
+            (scope.project_id, task_profile), 0,
+        )
+        def measured_decision(cond, evidence):
+            return decide_sleep(measured_inputs(
+                cond, evidence, policy=policy, medians=self.medians[scope.project_id],
+                pressure=pressure, anchor=anchor, now=now,
+            ))
 
-            receipt = await register_wait(
-                conn, scope=scope, condition=args["condition"],
-                idempotency_key=args["idempotency_key"], registry=self.service.registry,
-                policy=policy, source_watermark=watermark, now=now,
-                ceiling_anchor_at=anchor,
-                decide_sleep=measured_decision,
-                observe_sleep_inputs=lambda cond, evidence: measured_decision(cond, evidence).inputs,
-                claimed=args.get("claimed"),
-                escalate_after_seconds=args.get("escalate_after_seconds"),
-            )
-            if not receipt["success"] or scope.owner_kind != "task":
-                return receipt
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == receipt["wait_id"],
-            ))).mappings().one()
-            task = (await conn.execute(select(tasks).where(
-                tasks.c.id == scope.owner_id,
-            ))).mappings().one()
-            if wait["sleep_decision"] == "hibernate":
-                if not policy.hibernation_enabled:
-                    raise WaitError("wait.disabled", "forced hibernation is not enabled")
-                intent = await begin_suspension(
-                    conn, wait, task, now=now, budget=policy.transition_budget_seconds,
-                )
-                receipt = {**receipt, "continuation_id": intent["id"],
-                           "generation": intent["suspension_generation"]}
-                await conn.execute(update(wait_records).where(
-                    wait_records.c.id == wait["id"],
-                ).values(decision_inputs={**wait["decision_inputs"],
-                                          "registration_receipt": receipt}))
-            else:
-                await execute_task_status_mutation(conn, update(tasks).where(
-                    tasks.c.id == task["id"], tasks.c.status == "IN_PROGRESS",
-                ).values(status="WAITING", updated_at=now))
+        receipt = await register_wait(
+            conn, scope=scope, condition=args["condition"],
+            idempotency_key=args["idempotency_key"], registry=self.service.registry,
+            policy=policy, source_watermark=source_watermark, now=now,
+            ceiling_anchor_at=anchor,
+            decide_sleep=measured_decision,
+            observe_sleep_inputs=lambda cond, evidence: measured_decision(cond, evidence).inputs,
+            claimed=args.get("claimed"),
+            escalate_after_seconds=args.get("escalate_after_seconds"),
+        )
+        if not receipt["success"] or scope.owner_kind != "task":
             return receipt
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ))).mappings().one()
+        if wait["cleared_at"] is not None or wait["outcome"] != "pending":
+            return receipt
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == scope.owner_id,
+        ))).mappings().one()
+        if wait["sleep_decision"] == "hibernate":
+            if not policy.hibernation_enabled:
+                raise WaitError("wait.disabled", "forced hibernation is not enabled")
+            intent = await begin_suspension(
+                conn, wait, task, now=now, budget=policy.transition_budget_seconds,
+            )
+            receipt = {**receipt, "continuation_id": intent["id"],
+                       "generation": intent["suspension_generation"]}
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == wait["id"],
+            ).values(decision_inputs={**wait["decision_inputs"],
+                                      "registration_receipt": receipt}))
+        else:
+            await execute_task_status_mutation(conn, update(tasks).where(
+                tasks.c.id == task["id"], tasks.c.status == "IN_PROGRESS",
+            ).values(status="WAITING", updated_at=now))
+        return receipt
 
     async def sleep_decide(self, args, *, principal, scope, handler):
         from src.waits.conditions import Condition
@@ -143,7 +161,8 @@ class WaitLifecycle:
         """One checkpoint request; retain the registered source and its edges."""
         from src.waits.ownership import fence_owner
 
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
+        policy = project_policy(self.orch.config.wait_policy, wait['project_id'])
+        if not policy.hibernation_enabled:
             return {'success': True, 'suspended': False, 'reason': 'flag'}
         if wait['sleep_decision'] != 'in_place' or wait['outcome'] != 'pending':
             return {'success': True, 'suspended': False}
@@ -195,8 +214,7 @@ class WaitLifecycle:
 
     async def tick(self):
         self.medians.clear()
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
-            return
+        await self.resume_pending()
         async with self.db._engine.connect() as conn:
             ids = list((await conn.execute(select(continuations.c.wait_id).join(
                 wait_records, wait_records.c.id == continuations.c.wait_id,
@@ -221,11 +239,12 @@ class WaitLifecycle:
             ))).scalars())
         for wait_id in ids:
             await self.service.command("wait_sleep_decide", {"wait_id": wait_id})
-        await self.resume_pending()
 
     async def resume_pending(self):
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
-            return
+        try:
+            await self.orch._command_handler.wait_service_resume_stalls(self)
+        except Exception:
+            logger.exception("Could not report stalled wait resumes")
         async with self.db._engine.connect() as conn:
             ready = [dict(row) for row in (await conn.execute(select(continuations).join(
                 tasks, tasks.c.id == continuations.c.task_id,
@@ -234,6 +253,63 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
-            await self.service.command("wait_resume_dispatch", {
+            key = (intent["id"], intent["suspension_generation"])
+            pending = self._resume_tasks.get(key)
+            if pending is not None and not pending.done():
+                continue
+            self._resume_tasks[key] = asyncio.create_task(self._dispatch_resume(intent, key))
+
+    async def _dispatch_resume(self, intent, key):
+        try:
+            result = await self.service.command("wait_resume_dispatch", {
                 "continuation_id": intent["id"], "generation": intent["suspension_generation"],
             })
+            if not result.get("success"):
+                logger.warning("Wait resume dispatch refused for %s: %s", intent["id"], result)
+        except Exception:
+            logger.exception("Wait resume dispatch failed for %s", intent["id"])
+        finally:
+            self._resume_tasks.pop(key, None)
+
+    async def stop(self):
+        pending = list(self._resume_tasks.values())
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    async def report_resume_stalls(self):
+        """Notify once per continuation generation without bypassing admission or ACK."""
+        now = self.clock()
+        async with self.db._engine.begin() as conn:
+            rows = (await conn.execute(select(
+                continuations, tasks.c.project_id, tasks.c.title, wait_records.c.resolved_at,
+            ).join(tasks, tasks.c.id == continuations.c.task_id).join(
+                wait_records, wait_records.c.id == continuations.c.wait_id,
+            ).where(
+                tasks.c.status == "RESUME_PENDING",
+                continuations.c.resume_state.in_(("queued", "reserved", "launching", "delivered",
+                                                 "held")),
+                wait_records.c.outcome != "pending", wait_records.c.cleared_at.is_(None),
+            ).with_for_update(of=tasks, skip_locked=True))).mappings().all()
+            for row in rows:
+                policy = project_policy(self.orch.config.wait_policy, row["project_id"])
+                age = now - (row["resolved_at"] if row["resolved_at"] is not None
+                             else row["created_at"])
+                if age < policy.resume_stall_seconds:
+                    continue
+                # The durable message identity survives restarts and archived/read mail.
+                message_id = f"wait:{row['wait_id']}:resume-stalled:{row['suspension_generation']}"
+                await insert_message_with_source_event(conn, pg_insert(messages).values(
+                    id=message_id, project_id=row["project_id"], from_kind="system",
+                    from_id="wait-service", to_kind="session",
+                    to_id=f"supervisor-{row['project_id']}", created_at=now,
+                    subject=f"Resume stalled: {row['task_id']}",
+                    body=(f"Task {row['task_id']} ({row['title']}) has remained RESUME_PENDING "
+                          f"for {int(age)} seconds after wait {row['wait_id']} resolved. "
+                          f"Continuation {row['id']}, generation {row['suspension_generation']}, "
+                          f"state {row['resume_state']}, hold {row['hold_reason']}. "
+                          "Automatic retries remain subject to existing holds and admission. "
+                          "Inspect provider, "
+                          "workspace and fresh-session acknowledgement; preserve the outcome "
+                          "and saved checkout."),
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
