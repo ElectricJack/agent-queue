@@ -43,6 +43,19 @@ threshold and scoped reads; it excludes containers through canonical routing
 explanations. The sweep only reports the observation. Explicit re-runs request
 routing immediately as specified in [task re-routing recovery](task-reroute-recovery.md).
 
+Stale READY or DEFINED children whose canonical explanation includes
+`frontier_epic_refresh_pending` receive a distinct epic-refresh-needed finding,
+including the owning epic, blocking refresh batch ids when present, and
+`aq integration refresh-epic --task EPIC_ID --apply`. Doctor's `stall.sweep`
+reports the same condition as `epic_refresh_needed`. Use the explanation's
+`blocking_task_ids` or the child's parent identity, never the generic frontier
+reason's child `ref`, to name the epic. Missing epic identity remains explicit
+uncertainty. These observations reuse task explanations without fetching Git or
+changing admission. Refresh apply advances the existing immutable refresh batch;
+a merge conflict uses the ordinary bounded train repair path, and the child
+remains withheld until checks, attestation and publication finish. The diagnostic
+does not authorize bypassing holds or open human gates.
+
 ## Auto-deploy stalls
 
 `scripts/operator-checks/aq-auto-deploy.sh` is the canonical copy of the cron job

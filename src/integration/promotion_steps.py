@@ -23,6 +23,8 @@ from jsonschema import Draft202012Validator
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -45,6 +47,7 @@ from src.integration.ci import (
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.runtime_contracts import HeadIdentity
+from src.models import TaskStatus
 
 log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"
@@ -979,6 +982,32 @@ def promotion_task_defect(task, *, allow_completed=False) -> str | None:
     return None
 
 
+def stranded_promotion_tasks(**scope):
+    """IN_PROGRESS promotion tasks of aborted or failed intents, which never settle them."""
+    batch = integration_batches.c
+    return select(tasks.c.id.label("task_id"), integration_batches).select_from(
+        integration_batches.join(integration_batch_members,
+                                 integration_batch_members.c.batch_id == batch.id)
+        .join(tasks, tasks.c.id == integration_batch_members.c.task_id)).where(
+        batch.trigger == "promotion", tasks.c.task_type == "promotion",
+        tasks.c.status == "IN_PROGRESS", batch.lifecycle != "promoted",
+        (batch.intent == "aborted") | batch.lifecycle.in_(("aborted", "failed")),
+        *(batch[{"batch_id": "id"}.get(key, key)] == value for key, value in scope.items()),
+    ).order_by(tasks.c.id)
+
+
+async def fail_stranded_promotion_tasks_on(db, conn, *, now, **scope) -> list[str]:
+    """Project a terminal promotion intent onto its member task as FAILED."""
+    ids = list((await conn.execute(stranded_promotion_tasks(**scope).with_only_columns(
+        tasks.c.id).with_for_update(of=tasks, skip_locked=True))).scalars())
+    for task_id in ids:  # locked IN_PROGRESS rows: each update applies
+        await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == task_id)
+                                           .values(status="FAILED", updated_at=now))
+        await db._record_recovery_failure_generation_on(
+            conn, task_id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, now)
+    return ids
+
+
 class PromotionIntentInvalid(ValueError):
     """A requested step no longer names its frozen, retained source."""
 
@@ -1454,7 +1483,7 @@ class PromotionVisit(BatchService):
                                       authorize=delivered)
             if await self.gitops.remote(repo, ref) is None:
                 async with self.store.db.immediate() as conn:
-                    await conn.execute(update(integration_batches).where(
+                    await execute_batch_mutation(conn, update(integration_batches).where(
                         integration_batches.c.id == batch.id,
                     ).values(cleanup_state="complete", updated_at=self.clock()))
         except (GitError, OSError, RuntimeError, ValueError):
@@ -1608,6 +1637,20 @@ class PromotionVisit(BatchService):
             record.get("request_id"), record.get("source_sha"), record.get("target_ref"),
         ) == (meta["request_id"], member.source_sha, batch.target_ref)
 
+    async def _read_back(self, batch, repo, meta, member, tree, tag_state, tag_oid):
+        # A written tag reads "valid"; "none" only when the step names no tag.
+        source, fresh = member.source_sha, await self.snapshot()
+        proof = await fresh.contains_source(member.task_id, source, member.base_sha)
+        if tag_state == "conflict":
+            return BatchObservation("held", source, fresh.target_oid, tree,
+                                    detail={"reason": "promotion_tag_conflict"})
+        if (proof is True and tag_state in {"valid", "none"} and fresh.target_oid
+                and await self.gitops.is_ancestor(repo, source, fresh.target_oid)):
+            await self.cleanup(batch, repo, meta, member)
+            return BatchObservation("delivered", source, fresh.target_oid, tree,
+                                    detail={"tag_oid": tag_oid})
+        return BatchObservation("unknown", source, fresh.target_oid, tree)
+
     async def visit(self, batch, members, snapshot):
         from src.operator_decisions import OperatorDecisions
 
@@ -1668,17 +1711,7 @@ class PromotionVisit(BatchService):
                     batch, repo, tag, meta, member,
                     lambda: self._authorized(batch, members),
                 )
-                fresh = await self.snapshot()
-                proof = await fresh.contains_source(member.task_id, source, member.base_sha)
-                if tag_state == "conflict":
-                    return BatchObservation("held", source, fresh.target_oid, tree,
-                                            detail={"reason": "promotion_tag_conflict"})
-                if (proof is True and tag_state == "valid" and fresh.target_oid
-                        and await self.gitops.is_ancestor(repo, source, fresh.target_oid)):
-                    await self.cleanup(batch, repo, meta, member)
-                    return BatchObservation("delivered", source, fresh.target_oid, tree,
-                                            detail={"tag_oid": tag_oid})
-                return BatchObservation("unknown", source, fresh.target_oid, tree)
+                return await self._read_back(batch, repo, meta, member, tree, tag_state, tag_oid)
             # Resolve trust outside the publication fence. A cached lower-lane
             # success needs no candidate push and no new CI request.
             await self.checks.for_candidate(batch, source)
@@ -1718,17 +1751,7 @@ class PromotionVisit(BatchService):
                 tag_state, tag_oid = await self._create_tag(
                     batch, repo, tag, meta, member, authorize,
                 )
-            fresh = await self.snapshot()
-            proof = await fresh.contains_source(member.task_id, source, member.base_sha)
-            if tag_state == "conflict":
-                return BatchObservation("held", source, fresh.target_oid, tree,
-                                        detail={"reason": "promotion_tag_conflict"})
-            if (proof is True and tag_state in {"valid", "none"} and fresh.target_oid
-                    and await self.gitops.is_ancestor(repo, source, fresh.target_oid)):
-                await self.cleanup(batch, repo, meta, member)
-                return BatchObservation("delivered", source, fresh.target_oid, tree,
-                                        detail={"tag_oid": tag_oid})
-            return BatchObservation("unknown", source, fresh.target_oid, tree)
+            return await self._read_back(batch, repo, meta, member, tree, tag_state, tag_oid)
         except PromotionIntentInvalid as exc:
             return BatchObservation("held", detail={"reason": "promotion_intent_invalid",
                                                    "error": str(exc)})
@@ -1756,7 +1779,7 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
     members = (await conn.execute(select(integration_batch_members.c.task_id).where(
         integration_batch_members.c.batch_id == batch.id,
     ))).scalars().all()
-    await conn.execute(update(tasks).where(tasks.c.id.in_(members),
+    await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id.in_(members),
                        tasks.c.task_type == "promotion", tasks.c.status == "IN_PROGRESS")
                        .values(status="COMPLETED", updated_at=clock()))
     result = {"tag_oid": (observation.detail or {}).get("tag_oid"),

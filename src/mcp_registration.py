@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync", "wait_legacy_bridge",
+
     "ask_intake", "ask_button",
     "reconcile_agent_cron",
     "cron_delivery_begin",
@@ -54,6 +57,7 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "reconcile_agent_waits",  # daemon-only bounded durable scan
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 
@@ -399,7 +403,8 @@ def register_resources(mcp_server: FastMCP) -> None:
     async def list_active_tasks() -> str:
         """List all currently active tasks (IN_PROGRESS, ASSIGNED, READY)."""
         db = await _db(mcp_server)
-        active_statuses = [TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.READY]
+        active_statuses = [TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.READY,
+                           TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING]
         all_tasks = await db.list_tasks()
         active = [t for t in all_tasks if t.status in active_statuses]
         return json.dumps([task_to_dict(t) for t in active], indent=2)
