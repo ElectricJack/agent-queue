@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.database import Database
 from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.migration
 
@@ -90,7 +91,7 @@ def _retire_gate_applicability_only_while_empty(connection) -> None:
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
-    revision = import_module("migrations.versions.a00000000117_retire_legacy_gate_applicability")
+    revision = import_module("migrations.versions.a00000000119_retire_legacy_gate_applicability")
     table = "integration_legacy_gate_applicability"
 
     def present() -> bool:
@@ -127,7 +128,8 @@ def _retire_gate_applicability_only_while_empty(connection) -> None:
 
 
 async def test_unused_gate_applicability_is_dropped_only_while_empty():
-    database = Database(lease_dsn("integration-controls-retire"))
+    # This test retains a historical table, so a row-only lease reset cannot isolate it.
+    database = Database(await create_scratch_database("integration-controls-retire"))
     await database.initialize()
     try:
         async with database._engine.begin() as conn:

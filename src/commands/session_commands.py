@@ -36,7 +36,7 @@ from src.database.queries.result_queries import (
 from src.database.queries.task_queries import StaleClaim
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 from src.git.manager import GitError
-from src.models import TaskCompletion, TaskStatus
+from src.models import ProjectStatus, TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -201,6 +201,7 @@ class SessionCommandsMixin:
             "claim_failure_reason": session.claim_failure_reason,
             "claim_failure_at": session.claim_failure_at,
             "failed_preparation": session.failed_preparation,
+            "supervisor_health": session.supervisor_health,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -213,8 +214,6 @@ class SessionCommandsMixin:
     async def _cmd_supervisor_restart(self, args: dict) -> dict:
         from src.messages.session_lens import SupervisorRestartError
 
-        if error := self._agent_settings_scope_error():
-            return {"success": False, "error": error}
         name = args.get("name", "supervisor-global")
         resume = args.get("resume", False)
         session_id = args.get("session_id")
@@ -224,10 +223,27 @@ class SessionCommandsMixin:
             return {"success": False, "error": "resume must be a boolean"}
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
             return {"success": False, "error": "session_id must be a non-empty string"}
+        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and (
+            not scope.get("elevated") or scope.get("project_id") not in (None, project_id)
+        ):
+            return {"success": False, "error": "out of scope: supervisor restart"}
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, error = await operator_or_supervisor(self.db, project_id, subject="supervisor restart")
+        if error:
+            return {"success": False, "error": f"out of scope: {error}"}
+        from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
+
+        principal = current_principal()
+        if principal is not None and principal.kind is PrincipalKind.SESSION:
+            caller = await self.db.get_session(principal.session_id)
+            if caller is None or not matches_session_instance(principal, caller.instance_token):
+                return {"success": False, "error": "out of scope: stale supervisor identity"}
         lens = getattr(self.orchestrator, "session_lens", None)
         if lens is None:
             return {"success": False, "error": "Supervisor session service is unavailable"}
-        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
         try:
             session = await lens.restart_supervisor(
                 target_id=name, project_id=project_id, resume=resume,
@@ -810,6 +826,18 @@ class SessionCommandsMixin:
             "n-supervisor--" + session.project_id
         ):
             project = await self.db.get_project(session.project_id)
+            if (project is not None and project.status == ProjectStatus.PAUSED):
+                # A paused project's supervisor must not be woken; resume it
+                # with `aq project resume <project>` instead.
+                return {
+                    "success": False,
+                    "error": (
+                        f"project '{session.project_id}' is paused; resume the project "
+                        f"with `aq project resume {session.project_id}` to restart its "
+                        f"supervisor"
+                    ),
+                    "session_id": session.id,
+                }
             if project is not None and not project.supervisor_enabled:
                 # supervisor_enabled is the authority: its messages route to
                 # supervisor-global and nothing may mark its session wanted.

@@ -2,8 +2,11 @@
 
 import time
 import json
+import asyncio
+import logging
 
-from sqlalchemy import Float, cast, func, insert, select, update
+from sqlalchemy import Float, Integer, and_, cast, func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import continuations, events, messages, tasks, wait_records
@@ -11,9 +14,11 @@ from src.waits.conditions import WaitError
 from src.waits.decision import ceiling_anchor, decide_sleep, measured_inputs, project_policy
 from src.waits.graph import lock_graph
 from src.database.queries.continuation_queries import measurement_medians
-from src.wait_runtime.hibernate import HibernationTransaction, begin_suspension
+from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS, HibernationTransaction, begin_suspension
 from src.wait_runtime.resume import ResumeTransaction
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
+
+logger = logging.getLogger(__name__)
 
 
 class WaitLifecycle:
@@ -25,6 +30,8 @@ class WaitLifecycle:
         self.hibernate = HibernationTransaction(service, clock=clock)
         self.resume = ResumeTransaction(service, clock=clock)
         self.medians = {}
+        self._resume_tasks = {}
+        self._hibernate_tasks = {}
 
     async def register(self, args, *, principal, scope, handler):
         watermark = await self.db.wait_source_watermark()
@@ -45,6 +52,10 @@ class WaitLifecycle:
             raise WaitError("wait.out_of_scope", "registration needs a bound owner")
         if args["condition"]["kind"] == "human" and not policy.hibernation_enabled:
             raise WaitError("wait.disabled", "human waits require hibernation support")
+        from src.waits.loops import prepare_progress
+
+        await prepare_progress(conn, [{"owner_kind": scope.owner_kind, "owner_id": scope.owner_id,
+                                      "project_id": scope.project_id, "session_id": scope.session_id}])
         await lock_graph(conn)
         anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
         if scope.project_id not in self.medians:
@@ -75,14 +86,11 @@ class WaitLifecycle:
         )
         if not receipt["success"] or scope.owner_kind != "task":
             return receipt
-        wait = (await conn.execute(select(wait_records).where(
-            wait_records.c.id == receipt["wait_id"],
-        ))).mappings().one()
+        wait = (await conn.execute(
+            select(wait_records).where(wait_records.c.id == receipt["wait_id"]))).mappings().one()
         if wait["cleared_at"] is not None or wait["outcome"] != "pending":
             return receipt
-        task = (await conn.execute(select(tasks).where(
-            tasks.c.id == scope.owner_id,
-        ))).mappings().one()
+        task = (await conn.execute(select(tasks).where(tasks.c.id == scope.owner_id))).mappings().one()
         if wait["sleep_decision"] == "hibernate":
             if not policy.hibernation_enabled:
                 raise WaitError("wait.disabled", "forced hibernation is not enabled")
@@ -109,9 +117,8 @@ class WaitLifecycle:
 
         async with self.db._engine.begin() as conn:
             await lock_graph(conn)
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == args['wait_id'],
-            ))).mappings().first()
+            wait = (await conn.execute(
+                select(wait_records).where(wait_records.c.id == args['wait_id']))).mappings().first()
             if wait is None:
                 raise WaitError('wait.source_unresolved', 'wait disappeared')
             if wait['cleared_at'] is not None:
@@ -119,14 +126,12 @@ class WaitLifecycle:
             evicted = wait['decision_reason'] == 'evicted'
             if wait['sleep_decision'] == 'in_place':
                 policy = project_policy(self.orch.config.wait_policy, wait['project_id'])
-                task = (await conn.execute(select(tasks).where(
-                    tasks.c.id == wait['owner_id'],
-                ).with_for_update())).mappings().first()
+                task = (await conn.execute(select(tasks).where(tasks.c.id == wait['owner_id'])
+                                          .with_for_update())).mappings().first()
                 if not task:
                     return {'success': True, 'decision': 'in_place'}
                 wait = (await conn.execute(select(wait_records).where(
-                    wait_records.c.id == args['wait_id'],
-                ).with_for_update())).mappings().one()
+                    wait_records.c.id == args['wait_id']).with_for_update())).mappings().one()
                 medians = await measurement_medians(conn, wait['project_id'], now=self.clock())
                 decision = decide_sleep(measured_inputs(
                     Condition.from_record(wait['condition']), None, policy=policy, medians=medians,
@@ -140,10 +145,9 @@ class WaitLifecycle:
         result = await self.hibernate.advance(args["wait_id"], handler=handler)
         if result.get('parked'):
             await capture_costs(self, args['wait_id'])
-        if result.get('parked') and evicted:
-            # The suspension is now proved. Complete the waiting arbitration
-            # immediately from fresh occupancy, rather than waiting a pool tick.
-            await self.orch._reconcile_pools()
+            if evicted:
+                # Proved suspension permits arbitration from fresh occupancy.
+                await self.orch._reconcile_pools()
         return result
 
     async def evict(self, args, *, principal, scope, handler):
@@ -160,9 +164,8 @@ class WaitLifecycle:
             return {'success': True, 'suspended': False, 'reason': 'flag'}
         if wait['sleep_decision'] != 'in_place' or wait['outcome'] != 'pending':
             return {'success': True, 'suspended': False}
-        task = (await conn.execute(select(tasks).where(
-            tasks.c.id == wait['owner_id'],
-        ).with_for_update())).mappings().first()
+        task = (await conn.execute(select(tasks).where(tasks.c.id == wait['owner_id'])
+                                  .with_for_update())).mappings().first()
         if wait['owner_kind'] != 'task' or not task:
             return {'success': True, 'suspended': False}
         await fence_owner(conn, wait, task, parked_required=False)
@@ -208,16 +211,28 @@ class WaitLifecycle:
 
     async def tick(self):
         self.medians.clear()
+        await self.resume_pending()
         async with self.db._engine.connect() as conn:
-            ids = list((await conn.execute(select(continuations.c.wait_id).join(
+            suspensions = list((await conn.execute(select(
+                continuations.c.wait_id, continuations.c.stopped_at,
+            ).join(
                 wait_records, wait_records.c.id == continuations.c.wait_id,
             ).where(
                 # Sessionless legacy adoption has no writer to stop or checkout
                 # to release. Its server receipt is checked by resume admission.
                 wait_records.c.session_id.is_not(None),
-                continuations.c.resume_state.in_(("sleeping", "queued")),
+                or_(continuations.c.resume_state.in_(("sleeping", "queued")), and_(
+                    continuations.c.resume_state == "held",
+                    continuations.c.hold_reason == "stop_uncertain",
+                    continuations.c.stopped_at.is_(None),
+                    func.coalesce(cast(continuations.c.facts["hibernation"][
+                        "stop_proof_attempts"].astext, Integer), 0) < STOP_PROOF_MAX_ATTEMPTS,
+                    func.coalesce(cast(continuations.c.facts["hibernation"][
+                        "stop_retry_at"].astext, Float), 0) <= self.clock(),
+                )),
                 continuations.c.facts["workspace_released_at"].astext.is_(None),
-            ))).scalars())
+            ))).all())
+            ids = [wait_id for wait_id, stopped_at in suspensions if stopped_at is not None]
             # First-turn accounting can arrive after ACK. Retry only recent
             # continuations missing measured usage, at most once per 30 seconds.
             ids.extend((await conn.execute(select(continuations.c.wait_id).join(
@@ -230,11 +245,33 @@ class WaitLifecycle:
                 func.coalesce(cast(continuations.c.facts['usage_checked_at'].astext, Float), 0)
                 <= self.clock() - 30,
             ))).scalars())
+        # Finish parked accounting in this tick before source draining. Only
+        # writer stop/save needs background execution and its separate budget.
         for wait_id in ids:
             await self.service.command("wait_sleep_decide", {"wait_id": wait_id})
-        await self.resume_pending()
+        for wait_id, stopped_at in suspensions:
+            if stopped_at is not None:
+                continue
+            pending = self._hibernate_tasks.get(wait_id)
+            if pending is None or pending.done():
+                self._hibernate_tasks[wait_id] = asyncio.create_task(self._dispatch_hibernate(wait_id))
+
+    async def _dispatch_hibernate(self, wait_id):
+        """A slow stop/save cannot hide another writer behind an overdue timer."""
+        try:
+            result = await self.service.command("wait_sleep_decide", {"wait_id": wait_id})
+            if not result.get("success"):
+                logger.warning("Wait hibernation refused for %s: %s", wait_id, result)
+        except Exception:
+            logger.exception("Wait hibernation failed for %s", wait_id)
+        finally:
+            self._hibernate_tasks.pop(wait_id, None)
 
     async def resume_pending(self):
+        try:
+            await self.orch._command_handler.wait_service_resume_stalls(self)
+        except Exception:
+            logger.exception("Could not report stalled wait resumes")
         async with self.db._engine.connect() as conn:
             ready = [dict(row) for row in (await conn.execute(select(continuations).join(
                 tasks, tasks.c.id == continuations.c.task_id,
@@ -243,6 +280,65 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
-            await self.service.command("wait_resume_dispatch", {
+            if intent['facts'].get('workspace_retry', {}).get('due_at', 0) > self.clock():
+                continue
+            key = (intent["id"], intent["suspension_generation"])
+            pending = self._resume_tasks.get(key)
+            if pending is not None and not pending.done():
+                continue
+            self._resume_tasks[key] = asyncio.create_task(self._dispatch_resume(intent, key))
+
+    async def _dispatch_resume(self, intent, key):
+        try:
+            result = await self.service.command("wait_resume_dispatch", {
                 "continuation_id": intent["id"], "generation": intent["suspension_generation"],
             })
+            if not result.get("success"):
+                logger.warning("Wait resume dispatch refused for %s: %s", intent["id"], result)
+        except Exception:
+            logger.exception("Wait resume dispatch failed for %s", intent["id"])
+        finally:
+            self._resume_tasks.pop(key, None)
+
+    async def stop(self):
+        pending = [*self._resume_tasks.values(), *self._hibernate_tasks.values()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    async def report_resume_stalls(self):
+        """Notify once per continuation generation without bypassing admission or ACK."""
+        now = self.clock()
+        async with self.db._engine.begin() as conn:
+            rows = (await conn.execute(select(
+                continuations, tasks.c.project_id, tasks.c.title, wait_records.c.resolved_at,
+            ).join(tasks, tasks.c.id == continuations.c.task_id).join(
+                wait_records, wait_records.c.id == continuations.c.wait_id,
+            ).where(
+                tasks.c.status == "RESUME_PENDING",
+                continuations.c.resume_state.in_(("queued", "reserved", "launching", "delivered",
+                                                 "held")),
+                wait_records.c.outcome != "pending", wait_records.c.cleared_at.is_(None),
+            ).with_for_update(of=tasks, skip_locked=True))).mappings().all()
+            for row in rows:
+                policy = project_policy(self.orch.config.wait_policy, row["project_id"])
+                age = now - (row["resolved_at"] if row["resolved_at"] is not None
+                             else row["created_at"])
+                if age < policy.resume_stall_seconds:
+                    continue
+                # The durable message identity survives restarts and archived/read mail.
+                message_id = f"wait:{row['wait_id']}:resume-stalled:{row['suspension_generation']}"
+                await insert_message_with_source_event(conn, pg_insert(messages).values(
+                    id=message_id, project_id=row["project_id"], from_kind="system",
+                    from_id="wait-service", to_kind="session",
+                    to_id=f"supervisor-{row['project_id']}", created_at=now,
+                    subject=f"Resume stalled: {row['task_id']}",
+                    body=(f"Task {row['task_id']} ({row['title']}) has remained RESUME_PENDING "
+                          f"for {int(age)} seconds after wait {row['wait_id']} resolved. "
+                          f"Continuation {row['id']}, generation {row['suspension_generation']}, "
+                          f"state {row['resume_state']}, hold {row['hold_reason']}. "
+                          "Automatic retries remain subject to existing holds and admission. "
+                          "Inspect provider, "
+                          "workspace and fresh-session acknowledgement; preserve the outcome "
+                          "and saved checkout."),
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
