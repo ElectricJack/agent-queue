@@ -623,13 +623,16 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
 
     def claim():
         nonlocal last_claim
-        # Fixture assertions need the final ownership result. Let the daemon
-        # await its preparation job within this existing convergence budget.
-        last_claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
-        # READY and routed does not imply available to this single attempt:
-        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
-        # Releasing that lock emits no task.ready event, so retry explicitly.
+        # SKIP LOCKED can skip a READY fixture; releasing its row lock emits
+        # no task.ready event to wake a long poll. Leave time for retries.
+        # Preparation can outlive this short observation; the next call
+        # resumes the session's existing attempt.
+        last_claim = worker.claim_next(wait=1)
         if last_claim.get("result") == "no_ready_work":
+            return None
+        if last_claim.get("result") == "claim_in_progress":
+            check(last_claim.get("task_id") in fixtures,
+                  f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
             return None
         check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
         check(worker.task_id in fixtures,
@@ -1014,6 +1017,20 @@ def s3_worker_filed_work(state: dict) -> str:
 
 def s4_formulas(state: dict) -> str:
     """A formula resolves, cooks, renders back as-cooked, and settles."""
+    # S1 leaves two live idle pool sessions at the project's cap of two.
+    # Formula role tasks run in their own task sessions, so provision one
+    # additional seat while exercising their sequential execution. Idle
+    # pool sessions consume real capacity even without current task pins.
+    project = api_checked("get_project", {"project_id": PROJECT})
+    cap = project["max_concurrent_agents"]
+    api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap + 1})
+    try:
+        return _s4_formulas(state)
+    finally:
+        api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap})
+
+
+def _s4_formulas(state: dict) -> str:
     names = {f["name"] for f in aq("formula", "list", "--project-id", PROJECT)["formulas"]}
     check({"base-review", "review-and-fix"} <= names, f"formula fixtures missing: {names}")
 
@@ -1922,6 +1939,30 @@ def set_failover_policy_enabled(enabled: bool) -> None:
     check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
 
 
+def wait_for_restored_readiness() -> None:
+    """Wait for the health snapshot to observe an explicitly restored policy.
+
+    S16 temporarily disables a required policy. Re-enabling its activation is
+    synchronous, but the cached /ready verdict is collected independently. Do
+    not pass that disabled snapshot on to the next scenario's preflight.
+    """
+    from scripts.e2e.probe import READY, fetch
+
+    last = None
+    deadline = time.monotonic() + 15
+
+    def restored():
+        nonlocal last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        last = fetch(API_URL, timeout=min(2, remaining))
+        return last[0] == READY
+
+    wait_for(restored, what="readiness after restoring the failover policy", timeout=15,
+             diagnostic=lambda: f"last readiness probe={last!r}")
+
+
 def held_tasks() -> dict[str, dict]:
     rows = collection_rows(api_checked("provider_held_tasks", {"project_id": PROJECT}), "tasks")
     return {row["task_id"]: row for row in rows}
@@ -2054,6 +2095,7 @@ def _run_failover_phase(state: dict, phase) -> str:
             _restore_providers()
         finally:
             set_failover_policy_enabled(True)
+            wait_for_restored_readiness()
 
 
 def _s16(state: dict) -> str:
@@ -2892,6 +2934,15 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
     claim_fixture(worker, task_id, what=f"S18 worker to claim fixture {task_id}")
 
+    def triage_runs() -> list[dict]:
+        return collection_rows(
+            api_checked("list_playbook_runs", {
+                "playbook_id": "supervisor-failure-triage", "limit": 10,
+            }),
+            "runs",
+        )
+
+    previous_runs = {row["run_id"] for row in triage_runs()}
     failed = worker.aq(
         "task",
         "close",
@@ -2911,19 +2962,19 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     worker.drain_ack()
 
     def triage_run() -> dict | None:
-        rows = collection_rows(
-            api_checked("list_playbook_runs", {
-                "playbook_id": "supervisor-failure-triage", "limit": 10,
-            }),
-            "runs",
-        )
+        # This isolated world emits one failure here. Event inputs are private;
+        # correlate by the new public run id, then verify the task-specific notice.
+        rows = [row for row in triage_runs() if row["run_id"] not in previous_runs]
+        check(len(rows) <= 1, f"S18 expected one new triage run: {rows}")
         for row in rows:
             detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
-            if detail.get("event", {}).get("task_id") == task_id:
+            # The run row appears as soon as dispatch starts it; judge it only
+            # once it has left ``running`` (its command steps take a moment).
+            if detail.get("lifecycle") not in ("running", "cancelling"):
                 return detail
         return None
 
-    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
+    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run to finish")
     check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
     supervisor = supervisor_recipient()
 

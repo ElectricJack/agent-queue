@@ -146,6 +146,7 @@ def _row_to_session(row) -> SessionRecord:
         claim_failure_at=row.get("claim_failure_at"),
         failed_preparation=row.get("failed_preparation"),
         claim_refusal=row.get("claim_refusal"),
+        supervisor_health=row.get("supervisor_health"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
         git_identity_digest=row.get("git_identity_digest"),
     )
@@ -236,6 +237,7 @@ class SessionQueryMixin:
                 claim_failure_at=session.claim_failure_at,
                 failed_preparation=session.failed_preparation,
                 claim_refusal=session.claim_refusal,
+                supervisor_health=session.supervisor_health,
                 hooks_provisioned=session.hooks_provisioned,
                 git_identity_digest=session.git_identity_digest,
             )
@@ -565,6 +567,48 @@ class SessionQueryMixin:
             ):
                 return 0
             return await self._update_session_on(conn, session_id, fields)
+
+    async def request_session_sleep(
+        self, observed: SessionRecord, *, stopped_confirmed: bool = False,
+    ) -> SessionRecord:
+        """Record sleep intent without reattaching terminal pool history.
+
+        Provider proof is obtained outside the transaction. Lock and compare
+        its instance/claim identity before normalizing a legacy stopped pool;
+        this operation never releases claims, owners or workspace locks.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == observed.id,
+            ).with_for_update())).mappings().one_or_none()
+            identity = (
+                "instance_token", "provider", "name", "lifecycle", "work_dir",
+                "started_at", "last_claim_epoch",
+            )
+            if (row is None or any(row[key] != getattr(observed, key) for key in identity)
+                    or (observed.lifecycle == "pool" and observed.state == "stopped"
+                        and row["state"] != "stopped")):
+                raise ValueError("Session changed before sleep; refresh the session")
+            desired = "sleeping"
+            if row["lifecycle"] == "pool" and row["state"] == "stopped":
+                # A late sleep must never turn stopped/stopped history back
+                # into an attached writer. A concurrent teardown may already
+                # have completed since the command resolved the live row.
+                desired = "stopped"
+                if row["desired_state"] != "stopped" and not (
+                    stopped_confirmed
+                    and observed.state == "stopped"
+                    and observed.desired_state == row["desired_state"] == "sleeping"
+                    and row["task_id"] is None
+                    and row["claim_phase"] is None
+                    and row["failed_preparation"] is None
+                ):
+                    raise ValueError(
+                        "Stopped pool session retains work or lacks inactive-instance proof"
+                    )
+            if desired == "sleeping" or row["desired_state"] != desired:
+                await self._update_session_on(conn, observed.id, {"desired_state": desired})
+            return _row_to_session({**row, "desired_state": desired})
 
     async def _update_session_on(self, conn, session_id: str, fields: dict) -> int:
         row = (await conn.execute(select(sessions).where(
