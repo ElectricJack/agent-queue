@@ -142,6 +142,15 @@ class AgentReconciler:
                 TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
             ):
                 continue
+            # A continuation's reserved agent has no session until its fresh
+            # workspace is ready, which can outlast the heartbeat grace; the
+            # resume binds that exact agent, so it must stay pinned.
+            if (
+                task is not None
+                and task.status is TaskStatus.RESUME_PENDING
+                and task.assigned_agent_id == agent.id
+            ):
+                continue
             # Pool launch reservations have no task yet; do not steal an
             # identity while its provider is still starting the process.
             if agent.last_heartbeat and time.time() - agent.last_heartbeat < 120:

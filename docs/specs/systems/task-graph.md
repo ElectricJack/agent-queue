@@ -333,6 +333,11 @@ admission. The shared immutable, request-scoped `AdmissionView` in
 It observes completed prerequisites against fetched repository snapshots outside
 database locks and revalidates exact inputs before activation; missing evidence
 withholds affected tasks. Artifact-free prerequisites use the SQL fast path.
+Activation fences the selected candidate's route identity (profile, intelligence
+class, provider and route source), parent and repository inputs. An unrelated
+candidate's reroute or a refresh of router evidence that keeps the same identity
+does not invalidate that activation. Initial batch selection checks every
+candidate's identity; project policy, graph and prerequisite fences still apply.
 
 Prerequisite branch stacking is now the default unless project policy explicitly
 opts out (`src/integration/stacked_branches.py`). A dependent can prepare on a
