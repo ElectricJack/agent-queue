@@ -1,0 +1,1769 @@
+"""`aq update`: fetch, stop, fast-forward, rebuild, restart -- or roll back.
+
+Git is real here: every test builds a bare "origin" and a clone of it, so the
+refusals, the fast-forward and the rollback move real commits.  The daemon,
+pip, pg_dump and the dashboard build are fakes that record what they were
+asked to do.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from src.install import update as update_module
+from src.install import update_finish
+from src.install.command import CommandOutput, run_command
+from src.install.dashboard import BuildOutcome, bundle_directory
+from src.install.update import (
+    OUTCOME_FAILED,
+    OUTCOME_ROLLED_BACK,
+    OUTCOME_UPDATED,
+    Host,
+    UpdatePlan,
+    UpdateRefused,
+    apply_update,
+    backup_database,
+    installed_extras,
+    plan_update,
+)
+
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+
+def _git(cwd: Path, *args: str) -> str:
+    import os
+
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **GIT_ENV},
+    )
+    return completed.stdout.strip()
+
+
+class Repo:
+    def __init__(self, tmp_path: Path, *, shallow: bool = False):
+        self.origin = tmp_path / "origin.git"
+        self.seed = tmp_path / "seed"
+        self.checkout = tmp_path / "checkout"
+        _git(tmp_path, "init", "--quiet", "--bare", "-b", "main", str(self.origin))
+        _git(tmp_path, "clone", "--quiet", str(self.origin), str(self.seed))
+        for path, text in {
+            "pyproject.toml": "[project]\nname = 'agent-queue'\n",
+            "README.md": "AQ\n",
+            "migrations/versions/a0001.py": "revision = 'a0001'\ndown_revision = None\n",
+            "dashboard/src/app.ts": "export const x = 1\n",
+        }.items():
+            (self.seed / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.seed / path).write_text(text, encoding="utf-8")
+        _git(self.seed, "add", "-A")
+        _git(self.seed, "commit", "--quiet", "-m", "initial")
+        _git(self.seed, "push", "--quiet", "origin", "main")
+        clone = ["clone", "--quiet"]
+        if shallow:
+            clone += ["--depth", "1"]
+        _git(tmp_path, *clone, f"file://{self.origin}", str(self.checkout))
+
+    def push(self, path: str, text: str, message: str = "change") -> str:
+        target = self.seed / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        _git(self.seed, "add", "-A")
+        _git(self.seed, "commit", "--quiet", "-m", message)
+        _git(self.seed, "push", "--quiet", "origin", "main")
+        return _git(self.seed, "rev-parse", "HEAD")
+
+    def remove(self, path: str, message: str = "remove") -> str:
+        _git(self.seed, "rm", "--quiet", path)
+        _git(self.seed, "commit", "--quiet", "-m", message)
+        _git(self.seed, "push", "--quiet", "origin", "main")
+        return _git(self.seed, "rev-parse", "HEAD")
+
+    def pull(self) -> None:
+        _git(self.checkout, "pull", "--quiet", "--ff-only")
+
+    def head(self) -> str:
+        return _git(self.checkout, "rev-parse", "HEAD")
+
+
+FINISH = ("-m", "src.install.update_finish")
+#: Where the default `dashboard.server` settings put the dashboard server.
+DASHBOARD_URL = "http://127.0.0.1:8082/"
+
+
+class FakeHost:
+    """The daemon, pip, pg_dump and the dashboard build; git passes through.
+
+    The finisher -- the fresh process `aq update` hands the pulled code to --
+    runs in-process here with these same fakes, through its real command line
+    and its real output, so the hand-off protocol is exercised both ways.
+    ``real_finisher`` runs it as the subprocess it is in production.
+    """
+
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        running: bool = True,
+        dashboard_running: bool = False,
+        real_finisher: bool = False,
+    ):
+        self.state_dir = state_dir
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "config.yaml").write_text("messaging_platform: none\n", encoding="utf-8")
+        self.running = running
+        self.start_results: list[bool] = []
+        #: The dashboard server on the default dashboard.server URL.  `aq stop`
+        #: stops it with the daemon; `aq start` brings it up unless the next
+        #: ``dashboard_start_results`` entry says it fails to.
+        self.dashboard_running = dashboard_running
+        self.dashboard_start_results: list[bool] = []
+        self.dashboard_stops = True
+        #: Every URL that was probed, so a test can prove what was never asked.
+        self.probed: list[str] = []
+        self.fail_pip = False
+        self.calls: list[tuple[str, ...]] = []
+        self.pip_cwds: list[str | None] = []
+        self.builds = 0
+        self.real_finisher = real_finisher
+        self.finishes: list[tuple[tuple[str, ...], str | None]] = []
+        #: Per dashboard server start: does its identity report a verified bundle?
+        self.dashboard_verified: list[bool] = []
+        self._verified = True
+        self.heads_at_finish: list[str] = []
+
+    def execute(self, argv, **kwargs) -> CommandOutput:
+        command = tuple(str(part) for part in argv)
+        if command[0] == "git":
+            return run_command(command, **kwargs)
+        if command[1:3] == FINISH:
+            return self._finish(command, **kwargs)
+        self.calls.append(command)
+        if command[1:] == ("stop", "--keep-sessions"):
+            self.running = False
+            self.dashboard_running = self.dashboard_running and not self.dashboard_stops
+            return CommandOutput(argv=command, returncode=0)
+        if command[1:] == ("start", "--no-dashboard"):
+            ok = self.start_results.pop(0) if self.start_results else True
+            self.running = ok
+            if ok:
+                self._start_dashboard()
+            return CommandOutput(
+                argv=command, returncode=0 if ok else 1, stderr="" if ok else "boot failed"
+            )
+        if command[1:] == ("dashboard", "stop"):
+            self.dashboard_running = self.dashboard_running and not self.dashboard_stops
+            return CommandOutput(argv=command, returncode=0 if self.dashboard_stops else 1)
+        if command[1:] == ("dashboard", "start"):
+            ok = self._start_dashboard()
+            return CommandOutput(argv=command, returncode=0 if ok else 1)
+        if "pip" in command:
+            self.pip_cwds.append(kwargs.get("cwd"))
+            return CommandOutput(argv=command, returncode=1 if self.fail_pip else 0)
+        raise AssertionError(f"unexpected command: {command}")
+
+    def _finish(self, command, **kwargs) -> CommandOutput:
+        cwd = kwargs.get("cwd")
+        self.finishes.append((command, cwd))
+        if cwd:
+            self.heads_at_finish.append(_git(Path(cwd), "rev-parse", "HEAD"))
+        if self.real_finisher:
+            return run_command(command, **kwargs)
+        out = io.StringIO()
+        code = update_finish.main(
+            list(command[3:]),
+            host_factory=lambda **fields: replace(
+                Host(**fields),
+                execute=self.execute,
+                probe=self.probe,
+                identify=self.identify,
+                build=self.build,
+                sleep=lambda seconds: None,
+            ),
+            out=out,
+        )
+        return CommandOutput(argv=command, returncode=code, stdout=out.getvalue())
+
+    def _start_dashboard(self) -> bool:
+        if self.dashboard_running:
+            return True  # `aq start` leaves a running dashboard server alone
+        ok = self.dashboard_start_results.pop(0) if self.dashboard_start_results else True
+        self.dashboard_running = ok
+        self._verified = self.dashboard_verified.pop(0) if self.dashboard_verified else True
+        return ok
+
+    def probe(self, url: str) -> int | None:
+        self.probed.append(url)
+        if url.startswith(DASHBOARD_URL):
+            return 200 if self.dashboard_running else None
+        return 200 if self.running else None
+
+    def identify(self, url: str) -> dict | None:
+        self.probed.append(f"{url}__aq/health")
+        if url != DASHBOARD_URL or not self.dashboard_running:
+            return None
+        return {
+            "service": "aq-dashboard-server",
+            "pid": 4242,
+            "bundle": {"version": "2", "files": 3, "verified": self._verified},
+        }
+
+    def build(self, checkout, **kwargs) -> BuildOutcome:
+        self.builds += 1
+        return BuildOutcome(True, "built")
+
+    def host(self) -> Host:
+        return Host(
+            execute=self.execute,
+            probe=self.probe,
+            identify=self.identify,
+            python=sys.executable if self.real_finisher else "/venv/bin/python",
+            aq="/venv/bin/aq",
+            system="darwin",
+            arch="arm64",
+            state_dir=self.state_dir,
+            build=self.build,
+            extras=["cli"],
+            sleep=lambda seconds: None,
+        )
+
+    def ran(self, *tail: str) -> bool:
+        return any(call[1:] == tail for call in self.calls)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    return Repo(tmp_path)
+
+
+@pytest.fixture
+def fake(tmp_path):
+    return FakeHost(tmp_path / "aq")
+
+
+def _no_worker_scope(monkeypatch):
+    monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
+
+
+# -- planning ---------------------------------------------------------------
+
+
+def test_an_up_to_date_checkout_changes_nothing(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    plan = plan_update(repo.checkout)
+
+    report = apply_update(plan, fake.host())
+
+    assert plan.up_to_date
+    assert report.exit_code == 0
+    assert fake.calls == []
+
+
+def test_the_plan_names_what_the_update_changes(repo, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n", "add a migration")
+    repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n", "bump")
+    target = repo.push("dashboard/src/app.ts", "export const x = 2\n", "dashboard")
+
+    plan = plan_update(repo.checkout)
+
+    assert plan.target == target and not plan.up_to_date
+    assert plan.migrations and plan.dependencies and plan.dashboard_inputs
+    assert [line.split(" ", 1)[1] for line in plan.subjects] == [
+        "dashboard",
+        "bump",
+        "add a migration",
+    ]
+    assert repo.head() == plan.current  # planning only fetched
+
+
+def test_local_edits_are_refused_before_anything_is_fetched(repo, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "AQ 2\n")
+    (repo.checkout / "README.md").write_text("my edit\n", encoding="utf-8")
+
+    with pytest.raises(UpdateRefused, match="local changes to tracked files"):
+        plan_update(repo.checkout)
+    assert (repo.checkout / "README.md").read_text(encoding="utf-8") == "my edit\n"
+
+
+def test_untracked_files_do_not_block_an_update(repo, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "AQ 2\n")
+    (repo.checkout / "notes.txt").write_text("mine\n", encoding="utf-8")
+
+    assert not plan_update(repo.checkout).up_to_date
+
+
+def test_local_commits_are_refused_rather_than_merged_or_discarded(repo, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "AQ 2\n")
+    (repo.checkout / "LOCAL.md").write_text("local\n", encoding="utf-8")
+    _git(repo.checkout, "add", "LOCAL.md")
+    _git(repo.checkout, "commit", "--quiet", "-m", "local work")
+
+    with pytest.raises(UpdateRefused, match="only fast-forwards|does not"):
+        plan_update(repo.checkout)
+
+
+def test_a_worker_slot_is_refused(repo, monkeypatch):
+    monkeypatch.setenv("AQ_DB_SCOPE", "worker")
+
+    with pytest.raises(UpdateRefused, match="worker slot"):
+        plan_update(repo.checkout)
+
+
+def test_a_detached_head_is_refused(repo, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _git(repo.checkout, "checkout", "--quiet", "--detach")
+
+    with pytest.raises(UpdateRefused, match="detached HEAD"):
+        plan_update(repo.checkout)
+
+
+# -- applying ---------------------------------------------------------------
+
+
+def test_an_update_stops_moves_the_code_and_starts_again(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    target = repo.push("README.md", "AQ 2\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    assert repo.head() == target
+    stop = fake.calls.index(("/venv/bin/aq", "stop", "--keep-sessions"))
+    start = fake.calls.index(("/venv/bin/aq", "start", "--no-dashboard"))
+    assert stop < start
+    # Nothing it did not need: no dependency change, no dashboard change.
+    assert not [call for call in fake.calls if "pip" in call]
+    assert fake.builds == 0
+    assert not (fake.state_dir / "update.lock").exists()
+
+
+def test_a_shallow_installer_clone_is_updated(tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path, shallow=True)
+    fake = FakeHost(tmp_path / "aq")
+    target = repo.push("README.md", "AQ 2\n")
+
+    plan = plan_update(repo.checkout)
+    report = apply_update(plan, fake.host())
+
+    assert plan.shallow
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    assert repo.head() == target
+
+
+def test_a_daemon_that_was_not_running_is_not_started(repo, monkeypatch, tmp_path):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", running=False)
+    repo.push("README.md", "AQ 2\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED
+    assert fake.calls == []
+
+
+def test_changed_dependencies_are_reinstalled_from_inside_the_checkout(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n")
+
+    apply_update(plan_update(repo.checkout), fake.host())
+
+    pips = [call for call in fake.calls if "pip" in call]
+    assert pips[0][-1] == "./packages/aq-client"
+    assert pips[1][-1] == ".[cli]"
+    assert fake.pip_cwds == [str(repo.checkout)] * 2
+
+
+def test_a_built_dashboard_is_rebuilt_when_its_inputs_changed(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)  # the installer built one
+    repo.push("dashboard/src/app.ts", "export const x = 2\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED
+    assert fake.builds == 1
+
+
+def test_a_checkout_without_a_built_dashboard_is_not_given_one(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("dashboard/src/app.ts", "export const x = 2\n")
+
+    apply_update(plan_update(repo.checkout), fake.host())
+
+    assert fake.builds == 0
+
+
+def test_a_failed_start_rolls_back_and_starts_the_previous_version(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    fake.start_results = [False, True]  # the new code fails, the old code starts
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK
+    assert report.exit_code == 20
+    assert repo.head() == before
+    assert fake.running is True
+    assert "boot failed" in report.remediation
+
+
+def test_a_failed_dependency_install_rolls_back_before_the_daemon_starts(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n")
+    fake.fail_pip = True
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome in (OUTCOME_ROLLED_BACK, OUTCOME_FAILED)
+    assert repo.head() == before
+
+
+def test_migrations_are_backed_up_before_the_daemon_stops(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
+    order: list[str] = []
+
+    def backup(config_path, destination):
+        order.append(f"backup running={fake.running}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"dump")
+        return True, str(destination)
+
+    monkeypatch.setattr(update_module, "backup_database", backup)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert order == ["backup running=True"]
+    assert report.outcome == OUTCOME_UPDATED
+    assert report.backup is not None and report.backup.exists()
+
+
+def test_a_failed_backup_changes_nothing(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
+    monkeypatch.setattr(
+        update_module, "backup_database", lambda *a, **k: (False, "pg_dump was not found")
+    )
+
+    with pytest.raises(UpdateRefused, match="backup failed"):
+        apply_update(plan_update(repo.checkout), fake.host())
+
+    assert repo.head() == before
+    assert fake.running is True and fake.calls == []
+    assert not (fake.state_dir / "update.lock").exists()
+
+
+def test_no_backup_skips_it(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
+    monkeypatch.setattr(
+        update_module,
+        "backup_database",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("backup ran")),
+    )
+
+    report = apply_update(plan_update(repo.checkout), fake.host(), backup=False)
+
+    assert report.outcome == OUTCOME_UPDATED
+
+
+def test_a_failed_start_after_migrations_is_not_rolled_back(repo, fake, monkeypatch):
+    """The new daemon may have migrated; old code must not meet the newer schema."""
+    _no_worker_scope(monkeypatch)
+    target = repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
+    fake.start_results = [False]
+    monkeypatch.setattr(
+        update_module,
+        "backup_database",
+        lambda config_path, destination, **k: (True, str(destination)),
+    )
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_FAILED
+    assert repo.head() == target
+    assert "migrations may already have run" in report.remediation
+    assert "backup" in report.remediation
+
+
+def test_a_second_update_is_refused_while_one_holds_the_lock(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "AQ 2\n")
+    (fake.state_dir / "update.lock").write_text("123\n", encoding="utf-8")
+
+    with pytest.raises(UpdateRefused, match="in progress"):
+        apply_update(plan_update(repo.checkout), fake.host())
+    assert fake.calls == []
+
+
+# -- the hand-off to the new code --------------------------------------------
+
+
+def test_the_pulled_code_is_finished_by_a_fresh_process_from_the_new_checkout(
+    repo, fake, monkeypatch
+):
+    """The updater's own memory is the old code; only the pull runs there."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    target = repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    [(command, cwd)] = fake.finishes
+    assert command[:3] == ("/venv/bin/python", *FINISH)
+    assert cwd == str(repo.checkout)  # `-m` resolves `src` from the working directory
+    assert fake.heads_at_finish == [target]  # started only once the code had moved
+    # What the finisher did is reported as the update's own steps.
+    assert [name for name, ok, _ in report.steps if ok] == [
+        "Stop the daemon",
+        "Update the code",
+        "Reinstall Python dependencies",
+        "Rebuild the dashboard",
+        "Start the daemon",
+        "Start the dashboard server",
+    ]
+
+
+def test_the_old_process_runs_no_post_pull_step_itself(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n")
+    host = fake.host()
+    seen: list[tuple[str, ...]] = []
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            return CommandOutput(argv=command, returncode=0)
+        seen.append(command)
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_UPDATED
+    assert not [call for call in seen if "pip" in call or call[1:2] == ("start",)]
+    assert fake.builds == 0
+
+
+def test_a_module_that_disappears_with_the_pull_rolls_the_update_back(repo, fake, monkeypatch):
+    """An error nobody planned for must not leave the daemon stopped on moved code."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    before = repo.head()
+    target = repo.push("dashboard/src/app.ts", "export const x = 2\n")
+
+    def current(root, fingerprint):
+        if repo.head() == target:
+            raise ModuleNotFoundError("No module named 'src.dashboard_assets.runtime'")
+        return True
+
+    monkeypatch.setattr(update_module, "bundle_is_current", current)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "src.dashboard_assets.runtime" in report.remediation
+    assert not (fake.state_dir / "update.lock").exists()
+
+
+def test_a_new_daemon_that_came_up_is_stopped_before_the_code_moves_back(repo, fake, monkeypatch):
+    """`aq start` leaves a running daemon alone, so the rollback has to stop it first."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    fake.dashboard_start_results = [False]  # the new code's dashboard server never comes up
+    heads_at_stop: list[str] = []
+    execute = fake.execute
+
+    def watching(argv, **kwargs):
+        if tuple(argv)[1:] == ("stop", "--keep-sessions"):
+            heads_at_stop.append(repo.head())
+        return execute(argv, **kwargs)
+
+    fake.execute = watching
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert [call[1] for call in fake.calls] == ["stop", "start", "stop", "start"]
+    assert heads_at_stop[1] != before  # stopped while still on the new code
+    assert repo.head() == before and fake.running is True
+
+
+def _watch(fake: FakeHost, repo: Repo, *tails: tuple[str, ...]) -> list[tuple[tuple[str, ...], str]]:
+    """Record, for each command in *tails*, the commit the checkout was on when it ran."""
+    seen: list[tuple[tuple[str, ...], str]] = []
+    execute = fake.execute
+
+    def watching(argv, **kwargs):
+        tail = tuple(str(part) for part in argv)[1:]
+        if tail in tails:
+            seen.append((tail, repo.head()))
+        return execute(argv, **kwargs)
+
+    fake.execute = watching
+    return seen
+
+
+def test_the_dashboard_server_is_validated_and_the_daemon_never_probed_for_pages(
+    repo, fake, monkeypatch
+):
+    """Spec §6.2: /health on the daemon, /__aq/health and GET / on the dashboard server."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    repo.push("README.md", "AQ 2\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    assert ("Start the dashboard server", True, DASHBOARD_URL) in report.steps
+    assert f"{DASHBOARD_URL}__aq/health" in fake.probed and DASHBOARD_URL in fake.probed
+    assert not [url for url in fake.probed if "/dashboard" in url]
+
+
+def _pre_change_http_status(url: str, timeout: float = 2.0) -> int | None:
+    """``http_status`` exactly as a pre-change updater holds it in memory.
+
+    Frozen from ``src/install/onboarding.py`` at 4ccbb90d3 (the last commit
+    before the updater stopped probing the daemon for pages): it is what an
+    install older than that runs after its own pull, whatever the new code says.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as error:
+        code = int(error.code)
+        error.close()
+        return code
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _pre_change_start_daemon_probes(base: str) -> str | None:
+    """The checks the pre-change ``_start_daemon`` makes after ``aq start --no-dashboard``.
+
+    Frozen from ``src/install/update.py`` at 4ccbb90d3 (lines 508-515, with the
+    bundle present): ``None`` when it would pass, else the failure it reports.
+    """
+    if _pre_change_http_status(f"{base}/health") not in (200, 503):
+        return "it did not answer /health"
+    status = _pre_change_http_status(f"{base}/dashboard/")
+    if status is None or status >= 400:
+        return "the daemon is up but not serving the dashboard"
+    return None
+
+
+async def test_a_pre_change_updaters_dashboard_probe_passes_against_the_new_daemon(tmp_path):
+    """Spec §6.2 item 3 (smart-meadow.9): the old probe of ``/dashboard/`` still passes.
+
+    The real daemon app and the real dashboard server run on real sockets; the
+    daemon answers ``307`` and the pre-change probe, which is plain ``urllib``,
+    follows it to the dashboard server's ``200``.  With the ``404`` the daemon
+    first shipped, this is the exit 20 every pre-change install hit once.
+    """
+    from src.config import DashboardServerConfig
+    from src.dashboard_server.app import create_app as create_dashboard_server
+    from src.dashboard_server.settings import DashboardServerSettings
+    from tests.dashboard_server_helpers import serve_asgi, unused_port
+    from tests.test_api_dashboard_pointer import daemon_app
+    from tests.test_dashboard_server_app import INDEX_HTML, stage_bundle
+
+    settings = DashboardServerSettings(
+        bundle_directory=stage_bundle(tmp_path / "bundle"),
+        api_url=f"http://127.0.0.1:{unused_port()}",
+    )
+    async with serve_asgi(create_dashboard_server(settings, version="1.2.3")) as dashboard:
+        port = int(dashboard.rsplit(":", 1)[1])
+        server = DashboardServerConfig(enabled=True, host="127.0.0.1", port=port)
+        async with (
+            daemon_app(tmp_path, dashboard_server=server) as app,
+            serve_asgi(app) as daemon,
+        ):
+            assert await asyncio.to_thread(_pre_change_start_daemon_probes, daemon) is None
+
+            def landed(url: str) -> tuple[str, str]:
+                with urllib.request.urlopen(url, timeout=2.0) as response:
+                    return response.geturl(), response.read().decode("utf-8")
+
+            # Where the probe (and an old bookmark) actually ends up.
+            assert await asyncio.to_thread(landed, f"{daemon}/dashboard/") == (
+                f"{dashboard}/",
+                INDEX_HTML,
+            )
+            assert await asyncio.to_thread(landed, f"{daemon}/dashboard/tasks/abc?tab=log") == (
+                f"{dashboard}/tasks/abc?tab=log",
+                INDEX_HTML,
+            )
+
+
+def test_a_running_dashboard_server_is_stopped_before_the_code_moves(repo, tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", dashboard_running=True)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    target = repo.push("README.md", "AQ 2\n")
+    seen = _watch(fake, repo, ("dashboard", "stop"), ("stop", "--keep-sessions"),
+                  ("start", "--no-dashboard"))
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    assert seen == [
+        (("dashboard", "stop"), before),
+        (("stop", "--keep-sessions"), before),
+        (("start", "--no-dashboard"), target),
+    ]
+    assert fake.dashboard_running and fake.running
+    assert [name for name, ok, _ in report.steps if ok][:2] == [
+        "Stop the dashboard server", "Stop the daemon",
+    ]
+
+
+def test_a_dashboard_server_that_will_not_stop_changes_nothing(repo, tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", dashboard_running=True)
+    fake.dashboard_stops = False
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+
+    with pytest.raises(UpdateRefused, match="dashboard server did not stop"):
+        apply_update(plan_update(repo.checkout), fake.host())
+
+    assert repo.head() == before
+    assert fake.running, "the daemon was not stopped"
+    assert not fake.ran("stop", "--keep-sessions")
+
+
+def test_a_dashboard_server_running_alone_is_restarted_on_the_new_code(repo, tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", running=False, dashboard_running=True)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    target = repo.push("README.md", "AQ 2\n")
+    seen = _watch(fake, repo, ("dashboard", "stop"), ("dashboard", "start"))
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    [(command, _cwd)] = fake.finishes
+    assert "--start-dashboard-server" in command and "--start-daemon" not in command
+    assert seen == [(("dashboard", "stop"), before), (("dashboard", "start"), target)]
+    assert fake.dashboard_running and not fake.running
+
+
+def test_a_rollback_stops_the_new_dashboard_server_before_the_code_moves_back(
+    repo, fake, monkeypatch
+):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    target = repo.push("README.md", "AQ 2\n")
+    # The new code's dashboard server comes up but serves no verified bundle.
+    fake.dashboard_verified = [False]
+    seen = _watch(fake, repo, ("dashboard", "stop"), ("stop", "--keep-sessions"),
+                  ("start", "--no-dashboard"))
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert "reports no verified bundle" in report.remediation
+    assert seen == [
+        (("stop", "--keep-sessions"), before),
+        (("start", "--no-dashboard"), target),
+        (("dashboard", "stop"), target),  # still on the code it runs
+        (("stop", "--keep-sessions"), target),
+        (("start", "--no-dashboard"), before),
+    ]
+    assert repo.head() == before and fake.running and fake.dashboard_running
+
+
+def test_a_rollback_does_not_demand_a_dashboard_server_that_was_not_running(
+    repo, fake, monkeypatch
+):
+    """Before the update it was not up (say, its port was taken); restoring that is success."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    fake.dashboard_start_results = [False, False]
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert "nothing answers as the dashboard server" in report.remediation
+    assert repo.head() == before and fake.running and not fake.dashboard_running
+
+
+def test_the_plan_says_the_dashboard_server_is_restarted():
+    from src.install.update import describe
+
+    plan = UpdatePlan(
+        checkout=Path("/aq"), branch="main", upstream="origin/main",
+        current="a" * 40, target="b" * 40, shallow=False,
+    )
+
+    lines = describe(plan, backup=True, daemon_running=True, dashboard_server_running=True)
+
+    assert "Stops the dashboard server for the update and starts it again" in lines
+
+
+def test_an_unexpected_error_in_the_old_process_after_the_pull_rolls_back(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the hand-off blew up")
+
+    monkeypatch.setattr(update_module, "_finish_on_new_code", broken)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "the hand-off blew up" in report.remediation
+
+
+def test_an_unexpected_error_while_rolling_back_is_reported_not_raised(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    before = repo.head()
+    repo.push("dashboard/src/app.ts", "export const x = 2\n")
+
+    def current(root, fingerprint):
+        raise ModuleNotFoundError("No module named 'src.dashboard_assets.runtime'")
+
+    monkeypatch.setattr(update_module, "bundle_is_current", current)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_FAILED
+    assert repo.head() == before  # the code did move back
+    assert "aq start" in report.remediation
+    assert "src.dashboard_assets.runtime" in report.remediation
+
+
+def test_a_finisher_that_dies_without_a_word_rolls_back(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    host = fake.host()
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            return CommandOutput(
+                argv=command,
+                returncode=1,
+                stdout="not json\n[1, 2]\n",
+                stderr="Traceback (most recent call last):\nImportError: cannot import name 'x'\n",
+            )
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "cannot import name 'x'" in report.remediation
+
+
+def test_a_finisher_killed_after_it_began_starting_a_migrated_daemon_is_not_rolled_back(
+    repo, fake, monkeypatch
+):
+    """Its last word was that the new daemon was starting: the schema may have moved."""
+    _no_worker_scope(monkeypatch)
+    target = repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
+    monkeypatch.setattr(
+        update_module,
+        "backup_database",
+        lambda config_path, destination, **k: (True, str(destination)),
+    )
+    host = fake.host()
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            return CommandOutput(
+                argv=command,
+                stdout=json.dumps({"aq_update": "daemon_starting"}) + "\n",
+                error="python did not finish within 10s",
+            )
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_FAILED
+    assert repo.head() == target
+    assert "migrations may already have run" in report.remediation
+
+
+def test_events_a_newer_finisher_adds_are_ignored_by_an_older_updater(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "AQ 2\n")
+    host = fake.host()
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            lines = [
+                {"aq_update": "something_new", "detail": 1},
+                {"aq_update": "step", "name": "Start the daemon", "ok": True, "extra": "x"},
+                {"unrelated": True},
+            ]
+            return CommandOutput(
+                argv=command,
+                returncode=0,
+                stdout="npm said something\n" + "\n".join(json.dumps(line) for line in lines),
+            )
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_UPDATED
+    assert ("Start the daemon", True, "") in report.steps
+
+
+# -- the finisher as the real subprocess it is --------------------------------
+
+STUB_FINISHER = """\
+import json
+import sys
+
+print(json.dumps({"aq_update": "step", "name": "Ran the new checkout's finisher", "ok": True,
+                  "message": " ".join(sys.argv[1:])}))
+"""
+
+
+def _with_a_finisher(repo: Repo) -> None:
+    """Give the checkout a `src` package of its own, as a real one has.
+
+    Without it `-m src.install.update_finish` would fall through to the
+    agent-queue this test suite is installed from.
+    """
+    repo.push("src/__init__.py", "")
+    repo.push("src/install/__init__.py", "")
+    repo.push("src/install/update_finish.py", STUB_FINISHER)
+    repo.pull()
+
+
+def test_the_finisher_that_runs_is_the_pulled_checkouts_own(tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path)
+    fake = FakeHost(tmp_path / "aq", real_finisher=True)
+    _with_a_finisher(repo)
+    target = repo.push(
+        "src/install/update_finish.py", STUB_FINISHER.replace("Ran the new", "Ran the newer")
+    )
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    [ran] = [step for step in report.steps if step[0].startswith("Ran the")]
+    assert ran[0] == "Ran the newer checkout's finisher"
+    assert f"--target {target}" in ran[2] and f"--checkout {repo.checkout}" in ran[2]
+
+
+def test_a_pull_that_deletes_the_finisher_module_rolls_back(tmp_path, monkeypatch):
+    """The real thing: the module the old process counts on is gone from the new code."""
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path)
+    fake = FakeHost(tmp_path / "aq", real_finisher=True)
+    _with_a_finisher(repo)
+    before = repo.head()
+    repo.remove("src/install/update_finish.py")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "update_finish" in report.remediation
+    assert (repo.checkout / "src/install/update_finish.py").exists()
+
+
+def test_the_finisher_needs_nothing_the_new_code_has_not_installed_yet(tmp_path):
+    """It runs before `pip install`: standard library and `src.install` only."""
+    root = Path(update_finish.__file__).resolve().parents[2]
+
+    output = run_command([sys.executable, "-S", *FINISH, "--help"], cwd=str(root), timeout=60)
+
+    assert output.ok, output.stderr
+    assert "--checkout" in output.stdout
+
+
+def test_the_finisher_accepts_arguments_a_newer_updater_does_not_know(tmp_path):
+    out = io.StringIO()
+
+    code = update_finish.main(
+        [
+            "--checkout",
+            str(tmp_path),
+            "--state-dir",
+            str(tmp_path / "aq"),
+            "--previous",
+            "a" * 40,
+            "--target",
+            "b" * 40,
+            "--from-the-future",
+            "1",
+        ],
+        host_factory=lambda **fields: replace(
+            Host(**fields), execute=lambda argv, **k: CommandOutput(argv=tuple(argv), returncode=0)
+        ),
+        out=out,
+    )
+
+    assert code == 0, out.getvalue()
+
+
+def test_a_timed_out_command_keeps_what_it_had_printed():
+    output = run_command(
+        [sys.executable, "-c", "import time; print('so far', flush=True); time.sleep(30)"],
+        timeout=1.5,
+    )
+
+    assert not output.ok and "did not finish" in (output.error or "")
+    assert output.stdout.strip() == "so far"
+
+
+# -- pieces -----------------------------------------------------------------
+
+
+@pytest.fixture
+def updater_backup(tmp_path, monkeypatch):
+    import src.config
+    import src.database.backup as shared_backup
+
+    monkeypatch.setattr(
+        src.config, "load_config",
+        lambda path: SimpleNamespace(database=SimpleNamespace(
+            url="postgresql+asyncpg://aq:s3cret@127.0.0.1:6543/agent_queue"
+        )),
+    )
+    calls = []
+
+    async def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1] == "ps":
+            return b"postgres-container\n"
+        if argv[1] == "inspect":
+            return b'{"5432/tcp":[{"HostPort":"6543"}]}'
+        if "--format=custom" in argv:
+            kwargs["destination"].write_bytes(b"PGDMParchive")
+            return b""
+        if "--list" in argv:
+            return b"; Archive created at 2026-10-23 12:00:00 UTC\n"
+        if "--table=alembic_version" in argv:
+            return b"COPY public.alembic_version (version_num) FROM stdin;\na0001\n\\.\n"
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(shared_backup, "_run", run)
+    return shared_backup, calls
+
+
+@pytest.mark.parametrize("transport", ["local", "docker"])
+def test_updater_backup_uses_shared_clients_and_validates_archive(
+    tmp_path, monkeypatch, updater_backup, transport
+):
+    shared_backup, calls = updater_backup
+    tools = tmp_path / "clients"
+    tools.mkdir()
+    (tools / "pg_restore").touch()
+    (tools / "psql").touch()
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: (
+        str(tools / "pg_dump") if transport == "local" else None
+    ))
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: (
+        "/usr/bin/docker" if transport == "docker" else None
+    ))
+    destination = tmp_path / "backups" / "b.dump"
+
+    ok, where = backup_database(tmp_path / "config.yaml", destination)
+
+    assert ok and where == str(destination)
+    assert destination.read_bytes() == b"PGDMParchive"
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert all("s3cret" not in " ".join(argv) for argv, _ in calls)
+    dump, kwargs = next(call for call in calls if "--format=custom" in call[0])
+    assert kwargs["env"]["PGPASSWORD"] == "s3cret"
+    assert "--no-owner" in dump and "--no-acl" in dump
+    assert any("--list" in argv for argv, _ in calls)
+    assert any("--table=alembic_version" in argv for argv, _ in calls)
+    if transport == "docker":
+        assert "publish=6543" in calls[0][0]
+        assert dump[:3] == ["docker", "exec", "-i"]
+        assert "postgres-container" in dump
+        assert dump[dump.index("--port") + 1] == "5432"
+    else:
+        assert dump[0] == str(tools / "pg_dump")
+        assert dump[dump.index("--dbname") + 1] == "postgresql://aq@127.0.0.1:6543/agent_queue"
+
+
+@pytest.mark.parametrize("failure", ["dump", "header", "listing", "timestamp", "stamp", "timeout"])
+def test_updater_backup_refuses_failed_or_invalid_archives_and_removes_partial_file(
+    tmp_path, monkeypatch, updater_backup, failure
+):
+    shared_backup, calls = updater_backup
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: None)
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: "/usr/bin/docker")
+    run = shared_backup._run
+
+    async def broken(argv, **kwargs):
+        if "--format=custom" in argv:
+            if failure == "dump":
+                kwargs["destination"].write_bytes(b"partial")
+                raise shared_backup.BackupError("backup_client_failed: fixture dump failed")
+            if failure == "timeout":
+                raise TimeoutError
+            if failure == "header":
+                kwargs["destination"].write_bytes(b"invalid")
+                return b""
+        if "--list" in argv:
+            if failure == "listing":
+                raise shared_backup.BackupError("backup_client_failed: fixture archive corrupt")
+            if failure == "timestamp":
+                return b"; no archive timestamp\n"
+        if "--table=alembic_version" in argv and failure == "stamp":
+            return b"COPY public.alembic_version (version_num) FROM stdin;\nbad stamp\n\\.\n"
+        return await run(argv, **kwargs)
+
+    monkeypatch.setattr(shared_backup, "_run", broken)
+    destination = tmp_path / "bad.dump"
+    ok, message = backup_database(tmp_path / "config.yaml", destination)
+    assert not ok and message
+    assert not destination.exists()
+
+
+def test_updater_backup_preserves_existing_archive(tmp_path, monkeypatch, updater_backup):
+    shared_backup, calls = updater_backup
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: None)
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: "/usr/bin/docker")
+    destination = tmp_path / "keep.dump"
+    destination.write_bytes(b"keep")
+    ok, message = backup_database(tmp_path / "config.yaml", destination)
+    assert not ok and "File exists" in message
+    assert destination.read_bytes() == b"keep"
+    assert not any("--format=custom" in argv for argv, _ in calls)
+
+
+def test_invalid_updater_archive_refuses_before_service_shutdown(
+    repo, fake, monkeypatch, updater_backup
+):
+    _no_worker_scope(monkeypatch)
+    shared_backup, calls = updater_backup
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: None)
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: "/usr/bin/docker")
+    run = shared_backup._run
+
+    async def corrupt(argv, **kwargs):
+        if "--format=custom" in argv:
+            kwargs["destination"].write_bytes(b"invalid archive")
+            return b""
+        return await run(argv, **kwargs)
+
+    monkeypatch.setattr(shared_backup, "_run", corrupt)
+    repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'a0001'\n")
+    previous = repo.head()
+    with pytest.raises(UpdateRefused, match="backup failed.*restore_format_unsupported"):
+        apply_update(plan_update(repo.checkout), fake.host())
+    assert repo.head() == previous
+    assert fake.calls == [] and fake.running
+    assert not list((fake.state_dir / "backups").glob("*.dump"))
+
+
+def test_the_reinstall_keeps_the_extras_this_environment_has():
+    present = {"pytest", "anthropic"}.__contains__
+    assert installed_extras(present) == ["cli", "dev", "llm"]
+    assert installed_extras(lambda name: False) == ["cli"]
+
+
+def test_update_is_a_top_level_command():
+    import click
+
+    from src.cli.app import cli
+
+    assert "update" in cli.list_commands(click.Context(cli))
+
+
+# -- release selection: real remote tags, ancestry and detached activation ---
+
+
+def _release(repo, name, *, commit="HEAD", annotated=True, admission=None):
+    args = ["tag"]
+    if annotated:
+        message = f"Release {name}\n\nAQ-Promotion: test"
+        if admission is not None:
+            message += "\nAQ-Migration-Admission: " + json.dumps(admission, sort_keys=True)
+        args += ["-a", "-m", message]
+    _git(repo.seed, *args, name, commit)
+    _git(repo.seed, "push", "--quiet", "origin", f"refs/tags/{name}")
+
+
+def _breaking_admission(previous, current):
+    return {
+        "schema": "aq.migration-admission.v1",
+        "range": {"previous": previous, "current": current},
+        "previous_tag": "v0.1.0", "status": "breaking", "finding_count": 1,
+        "findings": ["migrations/versions/b.py:6: non-additive or unproven operation: execute"],
+        "findings_sha256": "a" * 64, "findings_truncated": False,
+        "override": {"identity": "human:local-operator", "github_login": "jack", "recorded_at": 1},
+    }
+
+
+def test_breaking_boundary_survives_skipped_release_and_disables_crossing_rollback(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    _release(repo, "v0.1.0")
+    boundary = repo.push("README.md", "breaking release\n")
+    audit = _breaking_admission(old, boundary)
+    _release(repo, "production-0.2.0", admission=audit)
+    repo.push("README.md", "compatible release after breaking\n")
+    _release(repo, "v0.3.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.3.0")
+    assert plan.selection.breaking_migrations[0]["admission"] == audit
+    description = update_module.describe(plan, backup=True, daemon_running=True)
+    assert any("production-0.2.0" in line and "jack" in line and "disabled" in line for line in description)
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["breaking_migrations"][0]["commit"] == boundary
+    # Returning to the breaking release itself keeps the schema boundary.
+    safe = plan_update(repo.checkout, state_dir=fake.state_dir, ref="production-0.2.0", allow_rollback=True)
+    assert safe.rollback
+    # The persisted record remains authoritative even if a remote tag disappears.
+    _git(repo.seed, "push", "origin", ":refs/tags/production-0.2.0")
+    calls = list(fake.calls)
+    with pytest.raises(UpdateRefused, match="rollback_crosses_breaking_migration"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True)
+    assert fake.calls == calls
+    assert repo.head() == plan.target
+
+
+def test_rollback_discovers_breaking_annotation_without_a_new_deploy_record(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    _release(repo, "v0.1.0")
+    new = repo.push("README.md", "breaking release\n")
+    _release(repo, "v0.2.0", admission=_breaking_admission(old, new))
+    _git(repo.checkout, "fetch", "origin")
+    _git(repo.checkout, "checkout", "--detach", new)
+    (fake.state_dir / "deploy.json").write_text(json.dumps({"selector": "v0.2.0", "commit": new}))
+    with pytest.raises(UpdateRefused, match="rollback_crosses_breaking_migration"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("change", ["wrong_source", "missing_override", "session_override", "unknown_schema", "false_additive"])
+def test_invalid_migration_annotation_refuses_before_update(repo, fake, monkeypatch, change):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    new = repo.push("README.md", "breaking release\n")
+    audit = _breaking_admission(old, new)
+    if change == "wrong_source":
+        audit["range"]["current"] = old
+    elif change == "missing_override":
+        audit["override"] = None
+    elif change == "session_override":
+        audit["override"]["identity"] = "session:supervisor"
+    elif change == "false_additive":
+        audit["status"] = "additive"
+    else:
+        audit["schema"] = "unknown"
+    _release(repo, "v0.2.0", admission=audit)
+    with pytest.raises(UpdateRefused, match="migration_evidence_invalid"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    assert fake.calls == [] and repo.head() == old
+
+
+@pytest.mark.parametrize("selector", ["glob", "ref", "record"])
+@pytest.mark.parametrize("graph", ["multiple_heads", "missing_parent", "invalid_python"])
+def test_release_planning_validates_pinned_migrations_before_mutation(
+    repo, fake, monkeypatch, selector, graph
+):
+    _no_worker_scope(monkeypatch)
+    previous = repo.head()
+    if graph == "multiple_heads":
+        repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'a0001'\n")
+        repo.push("migrations/versions/c.py", "revision = 'c'\ndown_revision = 'a0001'\n")
+    elif graph == "missing_parent":
+        repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'missing'\n")
+    else:
+        repo.push("migrations/versions/b.py", "invalid Python!\n")
+    _release(repo, "v0.2.0")
+    kwargs = {"tag_glob": "v*"} if selector == "glob" else {"ref": "v0.2.0"}
+    if selector == "record":
+        # An existing tag installation also validates when selecting its current ref.
+        from src.install.deploy import DeploySelection, write_record
+
+        _git(repo.checkout, "fetch", "origin", "tag", "v0.2.0")
+        commit = _git(repo.seed, "rev-parse", "HEAD")
+        _git(repo.checkout, "checkout", "--detach", commit)
+        write_record(fake.state_dir, DeploySelection(
+            "v0.2.0", commit, tag_oid=_git(repo.seed, "rev-parse", "v0.2.0"), kind="release",
+        ), previous)
+        previous = repo.head()
+        kwargs = {}
+    with pytest.raises(UpdateRefused, match="target Alembic preflight failed"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, **kwargs)
+    assert repo.head() == previous
+    assert fake.calls == []
+
+
+def test_release_selection_uses_semver_and_pins_the_peeled_commit(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.9.0")
+    expected = repo.push("README.md", "released\n")
+    _release(repo, "v0.10.0")
+    repo.push("migrations/versions/unreleased.py", "invalid Python!\n")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, tag_glob="v*")
+    assert plan.target == expected
+    assert plan.selection.selector == "v0.10.0"
+    assert plan.selection.tag_oid == _git(repo.seed, "rev-parse", "v0.10.0")
+    assert repo.head() == plan.current
+
+
+@pytest.mark.parametrize("tag,annotated", [("v0.2.0", False), ("v9.9.9", None)])
+def test_missing_or_lightweight_release_is_refused_before_stopping(
+    repo, fake, monkeypatch, tag, annotated
+):
+    _no_worker_scope(monkeypatch)
+    if annotated is not None:
+        _release(repo, tag, annotated=annotated)
+    with pytest.raises(UpdateRefused, match="deploy_tag_invalid"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref=tag)
+    assert fake.calls == [] and fake.running
+
+
+def test_a_release_off_the_promotion_target_is_refused(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _git(repo.seed, "checkout", "--quiet", "-b", "unpromoted")
+    (repo.seed / "README.md").write_text("not on main\n")
+    _git(repo.seed, "commit", "--quiet", "-am", "unpromoted")
+    _release(repo, "v0.2.0")
+    with pytest.raises(UpdateRefused, match="not reachable from origin/main"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+
+
+def test_release_activation_detaches_and_records_the_selected_tag(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    report = apply_update(plan, fake.host())
+    assert report.outcome == OUTCOME_UPDATED
+    assert repo.head() == expected
+    assert _git(repo.checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["selector"] == "v0.2.0"
+    assert record["commit"] == expected
+    assert record["tag_oid"] == _git(repo.seed, "rev-parse", "v0.2.0")
+    assert record["previous_commit"] == plan.current
+    assert record["installed_at"] and record["kind"] == "release"
+    assert plan_update(repo.checkout, state_dir=fake.state_dir).up_to_date
+
+
+def test_selecting_the_current_commit_still_activates_a_tag_install(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.1.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0")
+    assert not plan.up_to_date
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    assert (fake.state_dir / "deploy.json").exists()
+
+
+def test_rollback_requires_explicit_opt_in_and_preserves_the_database(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    _release(repo, "v0.1.0")
+    new = repo.push("README.md", "release 2\n")
+    _release(repo, "v0.2.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0"), fake.host())
+    with pytest.raises(UpdateRefused, match="older"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0")
+    plan = plan_update(
+        repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True
+    )
+    assert plan.rollback
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    assert repo.head() == old
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["kind"] == "rollback" and record["previous_commit"] == new
+    assert not any("restore" in " ".join(call) or "downgrade" in " ".join(call)
+                   for call in fake.calls)
+
+
+def test_local_commits_on_a_detached_install_are_refused_even_during_rollback(
+    repo, fake, monkeypatch
+):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.1.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0"), fake.host())
+    (repo.checkout / "README.md").write_text("local work\n")
+    _git(repo.checkout, "commit", "--quiet", "-am", "local")
+    with pytest.raises(UpdateRefused, match="local commits"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True)
+
+
+def test_failed_release_activation_restores_the_branch_and_deploy_record(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.1.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0"), fake.host())
+    original = json.loads((fake.state_dir / "deploy.json").read_text())
+    repo.push("pyproject.toml", "changed\n")
+    _release(repo, "v0.2.0")
+    fake.fail_pip = True
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    report = apply_update(plan, fake.host())
+    assert report.outcome == OUTCOME_FAILED  # restoring dependencies also fails
+    assert repo.head() == original["commit"]
+    assert json.loads((fake.state_dir / "deploy.json").read_text()) == original
+
+
+def test_an_explicit_branch_is_recorded_as_unreleased(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="main")
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["kind"] == "unreleased" and record["tag_oid"] is None
+    expected = repo.push("README.md", "branch update\n")
+    next_plan = plan_update(repo.checkout, state_dir=fake.state_dir)
+    assert next_plan.target == expected and next_plan.selection.selector == "main"
+
+
+def test_a_shallow_branch_install_can_deploy_an_annotated_tag(tmp_path, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path, shallow=True)
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    assert plan.target == expected
+    assert _git(repo.checkout, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_a_tag_changed_between_selection_and_fetch_is_refused(repo):
+    from src.install.deploy import DeployRefused, DeploySelector
+
+    _release(repo, "v0.2.0")
+
+    def execute(argv, **kwargs):
+        result = run_command(argv, **kwargs)
+        if "ls-remote" in argv:
+            _git(repo.seed, "tag", "-f", "-a", "-m", "moved tag", "v0.2.0")
+            _git(repo.seed, "push", "--quiet", "--force", "origin", "refs/tags/v0.2.0")
+        return result
+
+    with pytest.raises(DeployRefused, match="changed while fetching"):
+        DeploySelector(repo.checkout, execute=execute).resolve(ref="v0.2.0")
+
+
+def test_a_release_can_use_a_configured_promotion_target(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _git(repo.seed, "checkout", "--quiet", "-b", "production")
+    (repo.seed / "README.md").write_text("production release\n")
+    _git(repo.seed, "commit", "--quiet", "-am", "release")
+    _git(repo.seed, "push", "--quiet", "origin", "production")
+    _release(repo, "production-0.2.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, tag_glob="production-*",
+                       promotion_target="production")
+    assert plan.selection.selector == "production-0.2.0"
+
+
+def test_a_sideways_release_is_refused_even_when_rollback_is_allowed(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    base = repo.head()
+    repo.push("README.md", "release one\n")
+    _release(repo, "v0.1.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0"), fake.host())
+    _git(repo.seed, "checkout", "--quiet", "-b", "sideways", base)
+    (repo.seed / "README.md").write_text("different release\n")
+    _git(repo.seed, "commit", "--quiet", "-am", "sideways")
+    _git(repo.seed, "push", "--quiet", "origin", "sideways")
+    _release(repo, "v0.2.0")
+    with pytest.raises(UpdateRefused, match="sideways"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0",
+                    promotion_target="sideways", allow_rollback=True)
+
+
+def test_a_corrupt_deployment_record_is_refused_instead_of_following_main(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    (fake.state_dir / "deploy.json").write_text('{"selector": "v0.2.0", "commit": "invalid"}')
+    with pytest.raises(UpdateRefused, match="invalid commit"):
+        plan_update(repo.checkout, state_dir=fake.state_dir)
+
+
+def test_tag_preflight_through_the_cli_reports_the_selected_release(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--check", "--ref", "v0.2.0"])
+    assert result.exit_code == 0, result.output
+    assert "v0.2.0" in result.output and "release" in result.output
+    assert fake.calls == []
+    assert not (fake.state_dir / "deploy.json").exists()
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_tag_preflight_cli_displays_breaking_override_even_when_installed(
+    repo, fake, monkeypatch, installed,
+):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    current = repo.push("README.md", "breaking release\n")
+    _release(repo, "v0.2.0", admission=_breaking_admission(old, current))
+    if installed:
+        apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0"), fake.host())
+    calls = list(fake.calls)
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--check", "--ref", "v0.2.0"])
+    assert result.exit_code == 0, result.output
+    assert "v0.2.0" in result.output
+    assert "operator" in result.output
+    assert "rollback" in result.output and "disabled" in result.output
+    assert fake.calls == calls
+
+
+# -- automatic branch tracking ---------------------------------------------
+
+
+def test_tracked_branch_fast_forwards_and_records_cli_outcome(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.install.deploy_history import read_history
+
+    _no_worker_scope(monkeypatch)
+    previous = repo.head()
+    target = repo.push("dashboard/src/app.ts", "export const x = 2\n")
+    # Installed bundle makes the selective rebuild path observable.
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    (fake.state_dir / "config.yaml").write_text(
+        "messaging_platform: none\ndeploy:\n  track_branch: main\n"
+    )
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 0, result.output
+    assert repo.head() == target
+    assert fake.ran("stop", "--keep-sessions")
+    assert fake.builds == 1
+    assert any(url.endswith("/ready") for url in fake.probed)
+    history = read_history(fake.state_dir)
+    assert [row["outcome"] for row in history] == ["started", "updated"]
+    assert history[-1]["previous"] == previous
+    assert history[-1]["target"] == target
+    assert history[-1]["automatic"]
+
+
+@pytest.mark.parametrize("branch", ["dev", "main..oops", "-main"])
+def test_tracking_refuses_mismatched_or_invalid_branch(repo, monkeypatch, branch):
+    _no_worker_scope(monkeypatch)
+    with pytest.raises(UpdateRefused, match="does not match"):
+        plan_update(repo.checkout, track_branch=branch)
+
+
+def test_tracking_refuses_wrong_upstream_even_on_matching_branch(repo, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _git(repo.checkout, "checkout", "-b", "dev", "--track", "origin/main")
+    with pytest.raises(UpdateRefused, match="does not match"):
+        plan_update(repo.checkout, track_branch="dev")
+
+
+def test_tracking_refuses_multiple_target_migration_heads_without_stopping(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    previous = repo.head()
+    repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'a0001'\n")
+    repo.push("migrations/versions/c.py", "revision = 'c'\ndown_revision = 'a0001'\n")
+    with pytest.raises(UpdateRefused, match="one Alembic head"):
+        plan_update(repo.checkout, track_branch="main")
+    assert repo.head() == previous
+    assert fake.calls == []
+
+
+def test_tracking_expands_shallow_history_instead_of_discarding_local_commits(tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path, shallow=True)
+    _git(repo.checkout, "commit", "--quiet", "--allow-empty", "-m", "local")
+    repo.push("README.md", "remote\n")
+    with pytest.raises(UpdateRefused, match="has commits"):
+        plan_update(repo.checkout, track_branch="main")
+    assert _git(repo.checkout, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_branch_update_rechecks_clean_tree_under_lock(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "remote\n")
+    plan = plan_update(repo.checkout)
+    (repo.checkout / "README.md").write_text("local edit after preflight\n")
+    with pytest.raises(UpdateRefused, match="local changes after preflight"):
+        apply_update(plan, fake.host())
+    assert fake.calls == []
+
+
+def test_failed_automatic_restart_rolls_back_and_holds_target_until_manual_retry(
+    repo, fake, monkeypatch,
+):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.install.deploy_history import failed_target, read_history
+
+    _no_worker_scope(monkeypatch)
+    previous = repo.head()
+    target = repo.push("README.md", "bad version\n")
+    (fake.state_dir / "config.yaml").write_text(
+        "messaging_platform: none\ndeploy:\n  track_branch: main\n"
+    )
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    fake.start_results = [False, True]
+    result = CliRunner().invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 20, result.output
+    assert repo.head() == previous and fake.running
+    assert read_history(fake.state_dir)[-1]["outcome"] == "rolled_back"
+    assert failed_target(fake.state_dir, target)
+    calls = len(fake.calls)
+    result = CliRunner().invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 10 and len(fake.calls) == calls
+    result = CliRunner().invoke(cli, ["update", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert repo.head() == target and not failed_target(fake.state_dir, target)
+
+
+def test_deployment_history_is_bounded_private_and_sanitized(tmp_path):
+    from src.install.deploy_history import HISTORY_FILE, read_history, record_deploy
+
+    for index in range(103):
+        record_deploy(tmp_path, "failed", target=str(index), message=(
+            "fetch failed for https://user:password@example.test/repo "
+            "with ghp_012345678901234567890123456789"
+        ))
+    history = read_history(tmp_path)
+    assert len(history) == 100 and history[0]["target"] == "3"
+    assert "password" not in json.dumps(history)
+    assert "ghp_" not in json.dumps(history)
+    assert (tmp_path / HISTORY_FILE).stat().st_mode & 0o777 == 0o600
+    (tmp_path / HISTORY_FILE).write_text("corrupt json")
+    assert read_history(tmp_path) == []
+
+
+def test_degraded_daemon_is_not_a_successful_deployment(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "remote\n")
+    original_probe = fake.probe
+    monkeypatch.setattr(fake, "probe", lambda url: (
+        503 if url.endswith("/ready") else original_probe(url)
+    ))
+    report = apply_update(plan_update(repo.checkout), fake.host())
+    assert report.outcome == OUTCOME_FAILED  # rollback readiness also fails
+    assert any("/health and /ready" in message for _, _, message in report.steps)
+
+
+def test_worker_update_refuses_before_writing_install_history(monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    monkeypatch.setenv("AQ_DB_SCOPE", "worker")
+    monkeypatch.setattr(update_cli, "_host", lambda: pytest.fail("worker must not open install state"))
+    result = CliRunner().invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 10 and "worker slot" in result.output
+
+
+def test_migration_failure_holds_all_targets_until_verified_operator_recovery(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.install.deploy_history import read_history, record_deploy, recovery_pending
+
+    _no_worker_scope(monkeypatch)
+    target = repo.push(
+        "migrations/versions/a0002.py", "revision = 'a0002'\ndown_revision = 'a0001'\n"
+    )
+    (fake.state_dir / "config.yaml").write_text("deploy:\n  track_branch: main\n")
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    monkeypatch.setattr(update_module, "backup_database", lambda path, dest, **kw: (True, str(dest)))
+    fake.start_results = [False]
+    runner = CliRunner()
+    result = runner.invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 20, result.output
+    assert repo.head() == target and recovery_pending(fake.state_dir)
+    entry = read_history(fake.state_dir)[-1]
+    assert entry["outcome"] == "recovery_required"
+    assert "backup" in entry["message"] and "daemon.log" in entry["message"]
+    # Bounded evidence retention must never erase the safety hold.
+    for _ in range(101):
+        record_deploy(fake.state_dir, "refused", message="unrelated diagnostic")
+    newer = repo.push("README.md", "newer commit must remain held\n")
+    calls = len(fake.calls)
+    result = runner.invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 10 and len(fake.calls) == calls and repo.head() == target
+    result = runner.invoke(cli, ["update", "--yes", "--resume-after-recovery"])
+    assert result.exit_code == 10 and recovery_pending(fake.state_dir)
+    # The operator has fixed and started the newer-schema installation.
+    fake.running = True
+    result = runner.invoke(cli, ["update", "--yes", "--resume-after-recovery"])
+    assert result.exit_code == 0, result.output
+    assert not recovery_pending(fake.state_dir) and repo.head() == newer
+    assert any(row["outcome"] == "recovered" for row in read_history(fake.state_dir))
+
+
+def test_automatic_migration_update_requires_backup(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    _no_worker_scope(monkeypatch)
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--yes", "--automatic", "--no-backup"])
+    assert result.exit_code == 10 and fake.calls == []

@@ -1,0 +1,232 @@
+{
+  "status": "created",
+  "parent_id": "keen-harbor",
+  "children": [
+    {
+      "key": "create-input",
+      "task_id": "keen-harbor.1",
+      "title": "Preserve task-create flags and validate interactive/noninteractive input",
+      "needs": []
+    },
+    {
+      "key": "create-json",
+      "task_id": "keen-harbor.2",
+      "title": "Make task creation return a parseable success response in JSON mode",
+      "needs": [
+        {
+          "on": "create-input",
+          "task_id": "keen-harbor.1",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "output-contract",
+      "task_id": "keen-harbor.3",
+      "title": "Unify success/error envelopes, brief output, and exit codes across the CLI",
+      "needs": [
+        {
+          "on": "create-json",
+          "task_id": "keen-harbor.2",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "offline-startup",
+      "task_id": "keen-harbor.4",
+      "title": "Remove database initialization from CLI import and help discovery",
+      "needs": []
+    },
+    {
+      "key": "global-options",
+      "task_id": "keen-harbor.5",
+      "title": "Make global output flags consistent across command positions and help",
+      "needs": [
+        {
+          "on": "output-contract",
+          "task_id": "keen-harbor.3",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "offline-startup",
+          "task_id": "keen-harbor.4",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "workspace-input",
+      "task_id": "keen-harbor.6",
+      "title": "Expose task workspace requirements and guard handwritten CLI/backend parity",
+      "needs": [
+        {
+          "on": "create-json",
+          "task_id": "keen-harbor.2",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "ask-human",
+      "task_id": "keen-harbor.7",
+      "title": "Resolve the advertised but unimplemented task ask-human command",
+      "needs": []
+    },
+    {
+      "key": "plugin-logs",
+      "task_id": "keen-harbor.8",
+      "title": "Retire or explicitly deprecate the obsolete plugin hook-log command",
+      "needs": [
+        {
+          "on": "output-contract",
+          "task_id": "keen-harbor.3",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "documentation",
+      "task_id": "keen-harbor.9",
+      "title": "Refresh aq skills, command examples, auth/module docs and profile guidance",
+      "needs": [
+        {
+          "on": "create-input",
+          "task_id": "keen-harbor.1",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "create-json",
+          "task_id": "keen-harbor.2",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "global-options",
+          "task_id": "keen-harbor.5",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "workspace-input",
+          "task_id": "keen-harbor.6",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "ask-human",
+          "task_id": "keen-harbor.7",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "plugin-logs",
+          "task_id": "keen-harbor.8",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "offline-startup",
+          "task_id": "keen-harbor.4",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "conformance",
+      "task_id": "keen-harbor.10",
+      "title": "Add a maintained command inventory and CLI conformance regression suite",
+      "needs": [
+        {
+          "on": "global-options",
+          "task_id": "keen-harbor.5",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "workspace-input",
+          "task_id": "keen-harbor.6",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "ask-human",
+          "task_id": "keen-harbor.7",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "plugin-logs",
+          "task_id": "keen-harbor.8",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "test-environment",
+      "task_id": "keen-harbor.11",
+      "title": "Make CLI test preflight and scratch database isolation failures actionable",
+      "needs": [
+        {
+          "on": "offline-startup",
+          "task_id": "keen-harbor.4",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "isolated-e2e",
+      "task_id": "keen-harbor.12",
+      "title": "Cover stateful CLI workflows with disposable end-to-end smoke tests",
+      "needs": [
+        {
+          "on": "conformance",
+          "task_id": "keen-harbor.10",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "test-environment",
+          "task_id": "keen-harbor.11",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "atomic-graph",
+          "task_id": "keen-harbor.14",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "acceptance",
+      "task_id": "keen-harbor.13",
+      "title": "Re-audit CLI consistency and publish final per-command acceptance report",
+      "needs": [
+        {
+          "on": "documentation",
+          "task_id": "keen-harbor.9",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "isolated-e2e",
+          "task_id": "keen-harbor.12",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "atomic-graph",
+      "task_id": "keen-harbor.14",
+      "title": "Fix task graph creation rejected by atomic hierarchy integration guard",
+      "needs": [
+        {
+          "on": "root-origin",
+          "task_id": "keen-harbor.15",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "root-origin",
+      "task_id": "keen-harbor.15",
+      "title": "Bootstrap new root task origins from an existing repository ref",
+      "needs": []
+    }
+  ],
+  "dependency_count": 24,
+  "superseded_proposal_id": "prop-7d20e020498f",
+  "superseded_proposal_status": "discarded",
+  "daemon_pid": 3410998,
+  "verification": "202 affected tests passed; ruff and diff checks passed; isolated smoke 7/8, S7 pool-session creation timed out; live hierarchy readback confirmed 15 children"
+}

@@ -532,7 +532,7 @@ class TestDriftDetection:
             "task_show",
             "task_set",
             # aq-surface Phase S1: CLI/hook-only commands, not part of the
-            # nine-command task-scope MCP allowlist (design §8.2), so they
+            # task-scope MCP allowlist (design §8.2), so they
             # are intentionally left to auto-discovery rather than given a
             # rich schema here — see docs/specs/implementation/aq-surface.md
             # §3, §9.
@@ -564,6 +564,22 @@ class TestDriftDetection:
             "gate_resolve",
             "gate_show",
             "project_ready",
+            # Read-only doctor observations, snapshot cleanup and playbook state
+            # (doctor_observation_commands.py, playbook_state_commands.py). Their
+            # shared schemas are deliberately fallback schemas so every descriptor
+            # projection reads one source (docs/specs/design/trust-and-ops.md 5.7,
+            # docs/guides/observation-snapshots.md, docs/guides/playbook-state.md);
+            # no typed LLM-facing definition is written for them.
+            "doctor_catalog",
+            "doctor_run",
+            "observation_snapshot_cleanup",
+            "playbook_state_delete",
+            "playbook_state_get",
+            "playbook_state_inspect",
+            "playbook_state_list",
+            "playbook_state_notify",
+            "playbook_state_reset",
+            "playbook_state_set",
         }
         from src.mcp_registration import effective_tool_definitions
 
@@ -635,7 +651,7 @@ class TestDriftDetection:
             "task_show",
             "task_set",
             # aq-surface Phase S1: CLI/hook-only commands, not part of the
-            # nine-command task-scope MCP allowlist (design §8.2), so they
+            # task-scope MCP allowlist (design §8.2), so they
             # are intentionally left to auto-discovery rather than given a
             # rich schema here — see docs/specs/implementation/aq-surface.md
             # §3, §9.
@@ -672,16 +688,75 @@ class TestDriftDetection:
             # SubagentStart/SubagentStop hooks, not by the LLM, so it is left
             # to auto-discovery rather than given a rich schema.
             "subagent_event",
+            # Trusted daemon observations take a server-created typed object,
+            # and DEFAULT_EXCLUDED_COMMANDS keeps them off the agent surface.
+            "observe_integration_source_ci",
+            # Parent reconciler visit dispatch
+            # (src/commands/integration_commands.py).  Excluded from MCP
+            # outright (DEFAULT_EXCLUDED_COMMANDS): its authority is the
+            # process-bound visit exclusion the reconciler holds, so a client
+            # could only ever be refused.  The reconciler's own adapters call
+            # it, so it carries a codegen-only fallback schema rather than an
+            # LLM-facing definition.
+            "integration_parent_action",
             # Dev/e2e credential minter (src/commands/session_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS) and
             # elevated/local-only on HTTP, so it carries a codegen-only
             # schema rather than an LLM-facing definition.
             "session_token",
+            # Daemon-only durable wait scan (src/commands/wait_commands.py).
+            # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS); the
+            # orchestrator supplies its clock, so it carries a codegen-only
+            # fallback schema rather than an LLM-facing definition.
+            "reconcile_agent_waits",
+            # Cron reconciliation and delivery run only under the daemon's
+            # agent-cron service principal and remain excluded from MCP.
+            "reconcile_agent_cron",
+            "cron_delivery_begin",
+            "cron_delivery_finish",
+            # Daemon-only collaboration expiry/retention uses a fallback schema.
+            "reconcile_collaborations",
+            # Daemon-only git-first train dispatch uses a fallback schema.
+            "integration_train_tick",
+            "integration_reconcile_git_truth",
+            # Phase 2 managed-job substrate (src/commands/job_commands.py).
+            # Excluded from MCP, the CLI and HTTP until the phase 3 adapters
+            # land, so each carries a codegen-only fallback schema rather
+            # than an LLM-facing definition.
+            "job_cancel",
+            "job_get",
+            "job_list",
+            "job_logs",
+            "job_reconcile",
+            "job_result",
+            "job_submit",
+            # Internal integration job: provision a detached snapshot and submit
+            # at band zero.  Excluded from MCP, the CLI and HTTP (DEFAULT_
+            # EXCLUDED_COMMANDS); the publisher calls it directly, so it
+            # carries a codegen-only fallback schema rather than an LLM-facing
+            # definition.
+            "job_submit_integration",
             # Harness-hook telemetry writer (src/commands/surface_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS): the hook
             # calls it over the CLI/HTTP surface and the session comes from the
             # bearer scope, so there is no LLM-facing definition to write.
             "subagent_event",
+            # Read-only doctor observations, snapshot cleanup and playbook state
+            # (doctor_observation_commands.py, playbook_state_commands.py). Their
+            # shared schemas are deliberately fallback schemas so every descriptor
+            # projection reads one source (docs/specs/design/trust-and-ops.md 5.7,
+            # docs/guides/observation-snapshots.md, docs/guides/playbook-state.md);
+            # no typed LLM-facing definition is written for them.
+            "doctor_catalog",
+            "doctor_run",
+            "observation_snapshot_cleanup",
+            "playbook_state_delete",
+            "playbook_state_get",
+            "playbook_state_inspect",
+            "playbook_state_list",
+            "playbook_state_notify",
+            "playbook_state_reset",
+            "playbook_state_set",
         }
         from src.mcp_registration import effective_tool_definitions
 
@@ -1104,3 +1179,14 @@ async def test_registered_resource_invalid_status_and_missing_task_are_json_erro
     contents = await mcp_server.read_resource("agentqueue://tasks/no-such-task")
     data = json.loads(contents[0].content)
     assert data["error"] == "Task not found: no-such-task"
+
+
+async def test_mcp_strips_all_client_private_arguments(mcp_server_with_handler):
+    server, handler = mcp_server_with_handler
+    await server.call_tool("create_task", {
+        "project_id": "p1", "title": "Public filing",
+        "_created_by_kind": "integration_repair", "_route_constraints": {"preferred_provider": "codex"},
+        "_scope": {"kind": "local"}, "_future_private": True,
+    })
+    args = handler.execute.await_args.args[1]
+    assert args == {"project_id": "p1", "title": "Public filing"}
