@@ -1,0 +1,1286 @@
+{
+  "case_index": {
+    "cases": [
+      {
+        "assertions": [
+          "15/15 green read before any counter",
+          "promoted despite counter and no-progress fact",
+          "green consumes no attempt and raises no escalation",
+          "no repair allocated",
+          "every child contained in main"
+        ],
+        "family": "no-progress escalation on a root batch",
+        "name": "brisk-beacon-64",
+        "test": "test_brisk_beacon_64_green_root_head_promotes_despite_no_progress"
+      },
+      {
+        "assertions": [
+          "15/15 green epic candidate contains every child",
+          "promoted despite counter and no-progress fact",
+          "green consumes no attempt and raises no escalation",
+          "epic completes and reaches main",
+          "no repair allocated"
+        ],
+        "family": "no-progress escalation on an epic batch",
+        "name": "swift-delta-90",
+        "test": "test_swift_delta_90_green_epic_head_promotes_despite_no_progress"
+      },
+      {
+        "assertions": [
+          "every child is an ancestor of the epic head",
+          "no batch for contained children",
+          "epic completes as an ordinary close",
+          "epic reaches main"
+        ],
+        "family": "duplicate delegate-close audits broke a uniqueness check",
+        "name": "crisp-horizon-90",
+        "test": "test_crisp_horizon_90_children_already_in_epic_complete_it"
+      },
+      {
+        "assertions": [
+          "stale owner lease expires without stop proof",
+          "one repair task for the failing candidate",
+          "repair commits read from rev-list including merged commits",
+          "batch delivers the repaired candidate"
+        ],
+        "family": "cumulative repair list and an owner reserved with no expiry",
+        "name": "vivid-quest-44",
+        "test": "test_vivid_quest_44_repair_progress_from_git_and_expiring_owner"
+      },
+      {
+        "assertions": [
+          "review requested by tree SHA",
+          "approved tree completes epic with no prior generation",
+          "epic reaches main"
+        ],
+        "family": "parent review coupled to a verification generation",
+        "name": "epic-verifiers",
+        "test": "test_epic_verifiers_review_verdict_keyed_by_tree"
+      },
+      {
+        "assertions": [
+          "a reused slot is a different holder",
+          "train waits only until expiry",
+          "the old incarnation's push is refused",
+          "child delivered to the epic"
+        ],
+        "family": "workspace identity compared against reused slots",
+        "name": "stale-branch-owners",
+        "test": "test_stale_branch_owner_lease_is_per_session_and_expires"
+      },
+      {
+        "assertions": [
+          "squash commit proves delivery by whole patch",
+          "no batch frozen",
+          "main not pushed by train"
+        ],
+        "family": "cutover",
+        "name": "squash-delivery",
+        "test": "test_squash_merged_child_is_delivered_without_a_batch"
+      },
+      {
+        "assertions": [
+          "one commit's patch on main is not delivery",
+          "batch delivers the whole source",
+          "source is an ancestor of main"
+        ],
+        "family": "cutover",
+        "name": "multi-commit-partial-match",
+        "test": "test_partial_multi_commit_patch_match_stays_pending"
+      },
+      {
+        "assertions": [
+          "dead holder blocks the candidate ref only until expiry",
+          "open repair task recovered, not re-allocated",
+          "dead holder's fence is refused",
+          "repaired candidate delivered"
+        ],
+        "family": "cutover",
+        "name": "dead-worker-lease",
+        "test": "test_dead_worker_lease_expires_and_repair_is_recovered"
+      },
+      {
+        "assertions": [
+          "repair writer's commits read from Git",
+          "green read before counter and no-progress fact",
+          "promoted with the open repair's head",
+          "no second repair"
+        ],
+        "family": "cutover",
+        "name": "green-on-repair-entry",
+        "test": "test_green_on_repair_entry_promotes_despite_counter"
+      },
+      {
+        "assertions": [
+          "a failed attempt rerun green is green",
+          "a green attempt rerun red is red",
+          "rerun green promotes without repair"
+        ],
+        "family": "cutover",
+        "name": "checks-rerun",
+        "test": "test_checks_rerun_latest_attempt_decides"
+      },
+      {
+        "assertions": [
+          "a non-holder's managed push is refused",
+          "a stale fence of the same holder is refused",
+          "the current fence publishes with expected-old",
+          "a moved remote refuses the current fence"
+        ],
+        "family": "cutover",
+        "name": "non-holder-and-stale-fence",
+        "test": "test_non_holder_and_stale_fence_cannot_publish"
+      },
+      {
+        "assertions": [
+          "the first completion delivered with its trailer",
+          "an old trailer does not prove the reopened source",
+          "a new batch delivers the reopened source"
+        ],
+        "family": "cutover",
+        "name": "reopen-old-trailers",
+        "test": "test_old_trailer_after_reopen_does_not_prove_new_source"
+      },
+      {
+        "assertions": [
+          "review requested by candidate tree",
+          "an approval does not cover a changed tree",
+          "the approved tree is delivered"
+        ],
+        "family": "cutover",
+        "name": "changed-tree-review",
+        "test": "test_review_does_not_transfer_to_a_changed_tree"
+      },
+      {
+        "assertions": [
+          "the expected-old push refuses a moved target",
+          "the outside commit is kept",
+          "the rebuilt candidate delivers"
+        ],
+        "family": "cutover",
+        "name": "moving-target",
+        "test": "test_moving_target_refuses_then_rebuilds"
+      },
+      {
+        "assertions": [
+          "the child reaches the inner epic",
+          "the inner epic completes into the outer epic",
+          "the outer epic completes into main"
+        ],
+        "family": "cutover",
+        "name": "nested-epics",
+        "test": "test_nested_epics_complete_bottom_up"
+      },
+      {
+        "assertions": [
+          "a generated-only conflict is regenerated",
+          "the trailer stays the last paragraph",
+          "no repair allocated"
+        ],
+        "family": "cutover",
+        "name": "generated-conflict",
+        "test": "test_generated_file_conflict_is_regenerated"
+      },
+      {
+        "assertions": [
+          "two migration heads go to an ordinary repair",
+          "the repair writer's candidate is adopted from Git",
+          "main has one migration head"
+        ],
+        "family": "cutover",
+        "name": "migration-conflict",
+        "test": "test_migration_head_conflict_is_an_ordinary_repair"
+      },
+      {
+        "assertions": [
+          "the crash leaves the remote at its boundary",
+          "a restarted train waits for the dead lease, then delivers",
+          "each push happens once",
+          "every child is in main exactly once"
+        ],
+        "family": "cutover",
+        "name": "crash-restart",
+        "test": "test_crash_at_each_boundary_restarts_cleanly"
+      },
+      {
+        "assertions": [
+          "the crash leaves one repair task",
+          "the restart recovers it and its attempt",
+          "no duplicate repair after restart"
+        ],
+        "family": "cutover",
+        "name": "crash-after-repair-create",
+        "test": "test_crash_after_repair_create_recovers_the_task"
+      },
+      {
+        "assertions": [
+          "a lost candidate ref is rebuilt from exact sources",
+          "the rebuilt candidate has the same tree",
+          "delivered once"
+        ],
+        "family": "cutover",
+        "name": "candidate-ref-loss",
+        "test": "test_lost_candidate_ref_is_rebuilt"
+      },
+      {
+        "assertions": [
+          "an aborted batch is not recreated after ref loss",
+          "no candidate is re-pushed",
+          "main is unchanged"
+        ],
+        "family": "cutover",
+        "name": "aborted-after-ref-loss",
+        "test": "test_aborted_batch_is_not_recreated_after_ref_loss"
+      },
+      {
+        "assertions": [
+          "a new child freezes without the aborted member",
+          "the new child is delivered",
+          "the aborted member stays out of the target"
+        ],
+        "family": "cutover",
+        "name": "aborted-members-not-refrozen",
+        "test": "test_aborted_members_are_not_refrozen_with_a_new_child"
+      },
+      {
+        "assertions": [
+          "a red head past the budget escalates once",
+          "an ordinary repair is still allocated",
+          "the open repair is recovered without a second escalation",
+          "the repaired green head promotes and consumes no attempt"
+        ],
+        "family": "control",
+        "name": "escalation-never-gates",
+        "test": "test_counter_escalates_a_red_head_but_never_gates"
+      },
+      {
+        "assertions": [
+          "a visit inside another's critical section is locked out",
+          "each push happens once",
+          "a free race between two trains still pushes once",
+          "every child delivered"
+        ],
+        "family": "cutover",
+        "name": "simultaneous-visits",
+        "test": "test_simultaneous_visits_publish_once"
+      },
+      {
+        "assertions": [
+          "an explicit hold outranks green",
+          "releasing the hold delivers",
+          "a required rejection outranks green",
+          "no repair for a rejection"
+        ],
+        "family": "cutover",
+        "name": "hold-and-rejection",
+        "test": "test_hold_and_rejection_outrank_green"
+      },
+      {
+        "assertions": [
+          "an unavailable provider blocks only its own target",
+          "the other target delivers in the same visit",
+          "nothing unobserved is treated as green",
+          "the blocked target delivers once checks return"
+        ],
+        "family": "cutover",
+        "name": "unavailable-ci-other-target",
+        "test": "test_unavailable_ci_blocks_one_target_while_another_advances"
+      },
+      {
+        "assertions": [
+          "a slow check run stays pending without a repair or failure",
+          "another target advances while the slow run waits",
+          "the lease is released between visits, never held across the wait",
+          "the late success delivers once"
+        ],
+        "family": "cutover",
+        "name": "slow-ci",
+        "test": "test_slow_ci_waits_without_repair"
+      }
+    ],
+    "historical": {
+      "brisk-beacon-64": {
+        "capture": "gap",
+        "reconstructed": "test_brisk_beacon_64_green_root_head_promotes_despite_no_progress"
+      },
+      "crisp-horizon-90": {
+        "capture": "gap",
+        "reconstructed": "test_crisp_horizon_90_children_already_in_epic_complete_it"
+      },
+      "epic-verifiers": {
+        "capture": "gap",
+        "reconstructed": "test_epic_verifiers_review_verdict_keyed_by_tree"
+      },
+      "stale-branch-owners": {
+        "capture": "gap",
+        "reconstructed": "test_stale_branch_owner_lease_is_per_session_and_expires"
+      },
+      "swift-delta-90": {
+        "capture": "gap",
+        "reconstructed": "test_swift_delta_90_green_epic_head_promotes_despite_no_progress"
+      },
+      "vivid-quest-44": {
+        "capture": "gap",
+        "reconstructed": "test_vivid_quest_44_repair_progress_from_git_and_expiring_owner"
+      }
+    }
+  },
+  "cases": [
+    {
+      "assertions": [
+        "an aborted batch is not recreated after ref loss",
+        "no candidate is re-pushed",
+        "main is unchanged"
+      ],
+      "case": "aborted-after-ref-loss",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "batch_abort"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/main": "d440761bad24ba2758faa68b4f340106099a8a4f",
+        "refs/heads/task/ab": "33c9fe12c37cc0508cefd0afb2552f352f377e34"
+      }
+    },
+    {
+      "assertions": [
+        "a new child freezes without the aborted member",
+        "the new child is delivered",
+        "the aborted member stays out of the target"
+      ],
+      "case": "aborted-members-not-refrozen",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "batch_abort",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/1875e9bd82501c5af5d1914d31d16a54a7bf115b4cca62ca48c3184d7a8fd75a": "483f5e1d224240a68aa4eefdf132d645315a90bd",
+        "refs/heads/aq/batches/934a7342a5e621d7c450572f5a4af0adafc27b90ede0e6181463b0099c3c15cd": "e431e2ef3584f2f192be4b9d7cf8297508ed74c0",
+        "refs/heads/main": "e431e2ef3584f2f192be4b9d7cf8297508ed74c0",
+        "refs/heads/task/an": "07a41f7c489dba9b8f5a255a9acc53e9681e7bb1",
+        "refs/heads/task/ao": "5cb31496e1ed0d577571ea908d5e1092f63475fd"
+      }
+    },
+    {
+      "assertions": [
+        "15/15 green read before any counter",
+        "promoted despite counter and no-progress fact",
+        "green consumes no attempt and raises no escalation",
+        "no repair allocated",
+        "every child contained in main"
+      ],
+      "case": "brisk-beacon-64",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/4a925137e3e0dbbb5085b60d96af877aeb086fa40a3b455de95d2179447e6264": "09996230f58e0e2c3e8466a3dc1ecb5321906dd7",
+        "refs/heads/main": "09996230f58e0e2c3e8466a3dc1ecb5321906dd7",
+        "refs/heads/task/bb-0": "23fbda133f975a6c750f0099674e088e65223bda",
+        "refs/heads/task/bb-1": "1b078b0bd895a38aa8776841afa399b9f3fb8eee"
+      }
+    },
+    {
+      "assertions": [
+        "a lost candidate ref is rebuilt from exact sources",
+        "the rebuilt candidate has the same tree",
+        "delivered once"
+      ],
+      "case": "candidate-ref-loss",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/aq/batches/6adc1042c659f7da97933cc7c1f254010b569a7b767d71d37dc7044a5e75c9c8": "76ab4697ca57112ecfb1fe12a62bae93749d13c0",
+        "refs/heads/main": "76ab4697ca57112ecfb1fe12a62bae93749d13c0",
+        "refs/heads/task/cl": "1e846bf3e9c8b7019f13292a94566a6accc18f3b"
+      }
+    },
+    {
+      "assertions": [
+        "review requested by candidate tree",
+        "an approval does not cover a changed tree",
+        "the approved tree is delivered"
+      ],
+      "case": "changed-tree-review",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/aq/batches/9b00e6500a94f832d891210a761bfd9cb412361e7f9f3029bbad3d3b335a91d6": "516b1a2698c2c98f1772be6faf093304ebfabfd9",
+        "refs/heads/main": "516b1a2698c2c98f1772be6faf093304ebfabfd9",
+        "refs/heads/task/ct": "524a4ccc0b97542c651d69b9fc831dcaeb0e82a9"
+      }
+    },
+    {
+      "assertions": [
+        "a green attempt rerun red is red",
+        "a failed attempt rerun green is green",
+        "rerun green promotes without repair"
+      ],
+      "case": "checks-rerun",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/aq/batches/f486eb7ab2f7bf2d60fcff1e61a1a960ea283c094d72cebc3873e785deeccda9": "1e82c1bb4a4f0ae7018afe40f070671ccb73790b",
+        "refs/heads/main": "1e82c1bb4a4f0ae7018afe40f070671ccb73790b",
+        "refs/heads/task/rr": "75777f323d7e1bbdb9670d8fd8e5402fab7f9f58"
+      }
+    },
+    {
+      "assertions": [
+        "the crash leaves one repair task",
+        "the restart recovers it and its attempt",
+        "no duplicate repair after restart"
+      ],
+      "case": "crash-after-repair-create",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "task_create"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 1,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/36bb1ab7f6c0c7781bee3aed3274ab5a29fb56992f40e5e129dd28abfe029248": "ddbd4ea82bac8d0f4126f7192191f43c02374586",
+        "refs/heads/main": "4832ca90c9c31ac0d90b889f941ad273ff0bb9f8",
+        "refs/heads/task/ca": "181646f8807ca679536722f8aa43836f74dac999"
+      }
+    },
+    {
+      "assertions": [
+        "the crash leaves the remote at its boundary",
+        "a restarted train waits for the dead lease, then delivers",
+        "each push happens once",
+        "every child is in main exactly once"
+      ],
+      "case": "crash-restart[after_candidate_push]",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/b78f5d43ae817d4c0cf424fef7d145dc077ae6b72af2627b66dbe015e8d39b58": "3bafc83432edf4857c39dde28ce2c018fbf88fe4",
+        "refs/heads/main": "3bafc83432edf4857c39dde28ce2c018fbf88fe4",
+        "refs/heads/task/cr-0": "61272d048c6d1c202af52f7c3bfa97781daadee5",
+        "refs/heads/task/cr-1": "4b692ed5f6d05fdd57cc23178505afadb47d73ca"
+      }
+    },
+    {
+      "assertions": [
+        "the crash leaves the remote at its boundary",
+        "a restarted train waits for the dead lease, then delivers",
+        "each push happens once",
+        "every child is in main exactly once"
+      ],
+      "case": "crash-restart[after_target_push]",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/d0dc24ff3fd39c3b548f1bbaa088a04c53516b813862ad3eb30977ae96e1fbb1": "9aa3439544e06edfc93c28fbd8b1462255ec682e",
+        "refs/heads/main": "9aa3439544e06edfc93c28fbd8b1462255ec682e",
+        "refs/heads/task/cr-0": "f617c567c6a1bd8ab767a5e10f61e44bf8f74743",
+        "refs/heads/task/cr-1": "6dc636630a5634e4c81c2610ac50b06e144a2381"
+      }
+    },
+    {
+      "assertions": [
+        "the crash leaves the remote at its boundary",
+        "a restarted train waits for the dead lease, then delivers",
+        "each push happens once",
+        "every child is in main exactly once"
+      ],
+      "case": "crash-restart[before_candidate_push]",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/8ec51a52d6065305cc864fb8f1ab3910c024f2922c015de6bf006d05af432850": "f2fe255b246ddbed1944834e1bada7fc9ee7ef5d",
+        "refs/heads/main": "f2fe255b246ddbed1944834e1bada7fc9ee7ef5d",
+        "refs/heads/task/cr-0": "1e8a828c403171edf1c796d1f399e1da91d2defe",
+        "refs/heads/task/cr-1": "8cac72e0672c7eff4c380a485499b1c2eef86048"
+      }
+    },
+    {
+      "assertions": [
+        "the crash leaves the remote at its boundary",
+        "a restarted train waits for the dead lease, then delivers",
+        "each push happens once",
+        "every child is in main exactly once"
+      ],
+      "case": "crash-restart[before_settlement]",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/fb5bbdbfe66873368b8841c6390ea5d0b369c9079ad4baf631df01f778264317": "da1c68bb942f170945ee0bf744dcecff381e55a6",
+        "refs/heads/main": "da1c68bb942f170945ee0bf744dcecff381e55a6",
+        "refs/heads/task/cr-0": "8ff6665dec98d40d1a09729e3c645323dc40e3e0",
+        "refs/heads/task/cr-1": "d4bdb03182d51742a3a7dd64ddffd9eff796da4b"
+      }
+    },
+    {
+      "assertions": [
+        "the crash leaves the remote at its boundary",
+        "a restarted train waits for the dead lease, then delivers",
+        "each push happens once",
+        "every child is in main exactly once"
+      ],
+      "case": "crash-restart[before_target_push]",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/0bee80f3175b3ed704620ba88cc6cebb94e60e23e8dc87a579a2d8434ae27680": "68722c3a1d765436986ed151014482b451df6e8b",
+        "refs/heads/main": "68722c3a1d765436986ed151014482b451df6e8b",
+        "refs/heads/task/cr-0": "61272d048c6d1c202af52f7c3bfa97781daadee5",
+        "refs/heads/task/cr-1": "b6dee44203cb55f6ae13698ff1e26084c5e7b004"
+      }
+    },
+    {
+      "assertions": [
+        "every child is an ancestor of the epic head",
+        "no batch for contained children",
+        "epic completes as an ordinary close",
+        "epic reaches main"
+      ],
+      "case": "crisp-horizon-90",
+      "commands": [
+        "task_close",
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 3
+      },
+      "remote": {
+        "refs/heads/aq/batches/edb2ba1c5817d6e49c08ec753a78b2d8a12196721983e71e14831b141dee743d": "df10f991a249b5d827889262eddf1fc0cc6eaa79",
+        "refs/heads/epic/ch": "00cf9abdaf14d9fee1da1bff9c74e3986b84270d",
+        "refs/heads/main": "df10f991a249b5d827889262eddf1fc0cc6eaa79",
+        "refs/heads/task/ch-0": "1c8afc8e68d0dc8a854686892705d4468fd99eb9",
+        "refs/heads/task/ch-1": "e1ef5872b454b4320147d88ed710d34ba63ad618"
+      }
+    },
+    {
+      "assertions": [
+        "dead holder blocks the candidate ref only until expiry",
+        "open repair task recovered, not re-allocated",
+        "dead holder's fence is refused",
+        "repaired candidate delivered"
+      ],
+      "case": "dead-worker-lease",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "task_create",
+        "candidate_publish",
+        "task_close",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 1,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/16c857ac2e19cddb9015028064bf5a868f987bbf7cf33f1e2ddf5328846919f0": "df74873c1144add92af92308ae90a0ed214115cc",
+        "refs/heads/main": "df74873c1144add92af92308ae90a0ed214115cc",
+        "refs/heads/task/dw": "a89c38028c7c43c1c595c8594ada8a459910ee41"
+      }
+    },
+    {
+      "assertions": [
+        "review requested by tree SHA",
+        "approved tree completes epic with no prior generation",
+        "epic reaches main"
+      ],
+      "case": "epic-verifiers",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/0c2d95167b3b2fdcf11f5b7896c816ba0f0e77fcee4027f782a803640b0b4c5f": "51d301dd191487e572f6cd9dfe08beb0c8d04d45",
+        "refs/heads/aq/batches/efcc44793c3a231b9544419a2631155b5aaa9e5bd8a2a0e74c641a3c67886c9e": "affbe33164e8666da9081ea3d55786b6ece5fcde",
+        "refs/heads/epic/ev": "51d301dd191487e572f6cd9dfe08beb0c8d04d45",
+        "refs/heads/main": "affbe33164e8666da9081ea3d55786b6ece5fcde",
+        "refs/heads/task/ev-1": "fc86bd2219a73d67a8ac04d23ebea6d640ae18ed"
+      }
+    },
+    {
+      "assertions": [
+        "a red head past the budget escalates once",
+        "an ordinary repair is still allocated",
+        "the open repair is recovered without a second escalation",
+        "the repaired green head promotes and consumes no attempt"
+      ],
+      "case": "escalation-never-gates",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "task_create",
+        "batch_escalate",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 1,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/54562a60db581cae366218ee39b8fbf636d12c0521a67065ac085c94a12a2063": "b8f9e1b9f2aca5b64b3b23a8ca5464d6709ebb81",
+        "refs/heads/main": "b8f9e1b9f2aca5b64b3b23a8ca5464d6709ebb81",
+        "refs/heads/task/eg": "f610ca740f9bcd0219d23c54d0f5bafc213dfa32"
+      }
+    },
+    {
+      "assertions": [
+        "a generated-only conflict is regenerated",
+        "the trailer stays the last paragraph",
+        "no repair allocated"
+      ],
+      "case": "generated-conflict",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/1caa62ba6884a62160522ec3688aa8c3b28a6537a8b6ca73f5a6338d09476434": "72f03441608cf3428de9ca7894a2cc1fd82fcb17",
+        "refs/heads/main": "72f03441608cf3428de9ca7894a2cc1fd82fcb17",
+        "refs/heads/task/gc-1": "5af57e692bc496f31d6b405cffe04d91b4eace22",
+        "refs/heads/task/gc-2": "7569194606c41b4ef8982f9b17ae491d921f2df4"
+      }
+    },
+    {
+      "assertions": [
+        "repair writer's commits read from Git",
+        "green read before counter and no-progress fact",
+        "promoted with the open repair's head",
+        "no second repair"
+      ],
+      "case": "green-on-repair-entry",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "task_create",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 1,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/335e50005dd04da5134dca722297f99c4646585a7c285effc0cd61954ce6026b": "0c5f3a5311f5ae181089d90b56984e46b0eec4b3",
+        "refs/heads/main": "0c5f3a5311f5ae181089d90b56984e46b0eec4b3",
+        "refs/heads/task/gr": "30fa3fdd7853abd33f585f31d73fa440c81a3ed1"
+      }
+    },
+    {
+      "assertions": [
+        "an explicit hold outranks green",
+        "releasing the hold delivers",
+        "a required rejection outranks green",
+        "no repair for a rejection"
+      ],
+      "case": "hold-and-rejection",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/2a9e84bb9c51f385ac6cf1db7140c4887229490ca46b5df75c1699ab107c4689": "0a03aed8997ee8bd402ccbcd571fe674075bb65e",
+        "refs/heads/aq/batches/bad23685fbfc55762c61d677f98f92478aee83ec99937f58ff1292debe82d0c9": "6f0d041e7927d8096f5e735e44f45b1e5e5fcf47",
+        "refs/heads/main": "6f0d041e7927d8096f5e735e44f45b1e5e5fcf47",
+        "refs/heads/task/ho": "c62863594efb2d7eeb8db145f4e3175694ca4ac8",
+        "refs/heads/task/rj": "b9fd116dc9c31fa2e5e30be46e3bf0d0b7e265a0"
+      }
+    },
+    {
+      "assertions": [
+        "two migration heads go to an ordinary repair",
+        "the repair writer's candidate is adopted from Git",
+        "main has one migration head"
+      ],
+      "case": "migration-conflict",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "task_create",
+        "task_close",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 1,
+        "tasks": 3
+      },
+      "remote": {
+        "refs/heads/aq/batches/fc657356f2f89804f39ec9276a675345d170a24d94cba142afaf719af7d04a3f": "5ee8a6cdba749e655f24b8ea72a484df1778c42d",
+        "refs/heads/main": "5ee8a6cdba749e655f24b8ea72a484df1778c42d",
+        "refs/heads/task/mg-1": "85e370bd23ba8e112d4d50f3a2c7e0ed4a2cc8a6",
+        "refs/heads/task/mg-2": "c44a06d361aa6a5133d728155d816113614d1a6f"
+      }
+    },
+    {
+      "assertions": [
+        "the expected-old push refuses a moved target",
+        "the outside commit is kept",
+        "the rebuilt candidate delivers"
+      ],
+      "case": "moving-target",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/aq/batches/4045a164bb438035455eaccb6585e7531fab538604c81b133f4e42c21a3ab63a": "3770f53fd8ca302212ee80e909395428b5010416",
+        "refs/heads/main": "3770f53fd8ca302212ee80e909395428b5010416",
+        "refs/heads/task/mt": "dae9a91b9aec3a594bd38d17cc1c70cefcfe2147"
+      }
+    },
+    {
+      "assertions": [
+        "one commit's patch on main is not delivery",
+        "batch delivers the whole source",
+        "source is an ancestor of main"
+      ],
+      "case": "multi-commit-partial-match",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/aq/batches/99c4c65207a38ed23ffe3637d5dc666ee39aac8c083e172323c7ea61e9e024ff": "34f2ced39db950a9e48954d96004b540afcf4722",
+        "refs/heads/main": "34f2ced39db950a9e48954d96004b540afcf4722",
+        "refs/heads/task/mc": "af13258b4313ebf547ceffeb8b3a95e04e7d958f"
+      }
+    },
+    {
+      "assertions": [
+        "the child reaches the inner epic",
+        "the inner epic completes into the outer epic",
+        "the outer epic completes into main"
+      ],
+      "case": "nested-epics",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 3,
+        "repairs": 0,
+        "tasks": 3
+      },
+      "remote": {
+        "refs/heads/aq/batches/275a1a5d0ff0ed023ee0791faf27e052319184761c93c98ff0a23789294c4766": "4108be0ec963d080f111fc6f0c9757627d100c07",
+        "refs/heads/aq/batches/d3ccfd6e0c44d75fc04a9bff52bf4ab977ed1fcc0559f8c0942ec2688d359d1e": "3277d584456985f962b3775dd2c6eca6b483209c",
+        "refs/heads/aq/batches/e1fdac612117a9d75e10c65ed1849dfc5d5618215205f69efc4e2c31001dcf84": "4f2ccbfe444d3e452982d00cea3c508b34437c7d",
+        "refs/heads/epic/ne": "4f2ccbfe444d3e452982d00cea3c508b34437c7d",
+        "refs/heads/epic/ne-in": "4108be0ec963d080f111fc6f0c9757627d100c07",
+        "refs/heads/main": "3277d584456985f962b3775dd2c6eca6b483209c",
+        "refs/heads/task/ne-c": "47f7e9a65a4477b8620741e3bdd0761025b2b0ef"
+      }
+    },
+    {
+      "assertions": [
+        "a non-holder's managed push is refused",
+        "a stale fence of the same holder is refused",
+        "a moved remote refuses the current fence",
+        "the current fence publishes with expected-old"
+      ],
+      "case": "non-holder-and-stale-fence",
+      "commands": [],
+      "counts": {
+        "batches": 0,
+        "repairs": 0,
+        "tasks": 0
+      },
+      "remote": {
+        "refs/heads/main": "4a1a4bb41fa5ce0c624c3f71757d3b153107f5ae",
+        "refs/heads/side": "f74d00a0360c121c9b8664a0aebfc34111f9d9c2"
+      }
+    },
+    {
+      "assertions": [
+        "the first completion delivered with its trailer",
+        "an old trailer does not prove the reopened source",
+        "a new batch delivers the reopened source"
+      ],
+      "case": "reopen-old-trailers",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_reopen",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/aq/batches/e535ba2778af6647165c6670dd297772715fa1a9d5ffde50d8758002fa6c7565": "90ebe0c01a97e7ac346d81f29bfb03eb03c61de5",
+        "refs/heads/aq/batches/f657c41cb08ff2d37524d36a0be9068d0ffcfb80f536a715de095dd0b8325696": "f77d3caf863da61183773a07746c616c0c04d48e",
+        "refs/heads/main": "90ebe0c01a97e7ac346d81f29bfb03eb03c61de5",
+        "refs/heads/task/ro": "596ae54a9445dc2ebdc54732625e2cd30fbaf06d"
+      }
+    },
+    {
+      "assertions": [
+        "a visit inside another's critical section is locked out",
+        "each push happens once",
+        "a free race between two trains still pushes once",
+        "every child delivered"
+      ],
+      "case": "simultaneous-visits",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 4
+      },
+      "remote": {
+        "refs/heads/aq/batches/906465e1b7f7cbebc8e23304d4490436f4d23493142cc75c280244ff1ccedef1": "0c12b70227ec0f293baae1f6600d68394a7aa2f2",
+        "refs/heads/aq/batches/d5d08903d325fef79b65fe28628ac4f52b01658d3557777dc14363c09a2dd0ec": "c3e83a349d963b752d34288a5a9c7c6cda4dffc3",
+        "refs/heads/main": "c3e83a349d963b752d34288a5a9c7c6cda4dffc3",
+        "refs/heads/task/sr-0": "c961defbdcc02492655b9baa0e137ffa1b1ad4ea",
+        "refs/heads/task/sr-1": "337ddc2d6f09189854bf85ceef6db684662f38e0",
+        "refs/heads/task/sv-0": "c2fa249201dda9aef8009ea15e04e027d3eb3346",
+        "refs/heads/task/sv-1": "ce20931314541e632446e6c0f84e0486d7e48d2a"
+      }
+    },
+    {
+      "assertions": [
+        "a slow check run stays pending without a repair or failure",
+        "another target advances while the slow run waits",
+        "the lease is released between visits, never held across the wait",
+        "the late success delivers once"
+      ],
+      "case": "slow-ci",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 6,
+        "repairs": 0,
+        "tasks": 6
+      },
+      "remote": {
+        "refs/heads/aq/batches/3af7d6d3eeb67af070fc69ceced919fa7804061d4cc2180753ca18e075410793": "72399b3aec0a17f1c821a353e7de3616196bb85c",
+        "refs/heads/aq/batches/9a564d9dedfc234474461c6d25498104e164a0dcf04ce700e8b7b42c49163541": "c47d0372410431b370ee9f2f19ecf1602bc58cc3",
+        "refs/heads/aq/batches/a33d73eee9c20f9a71b7f57e95c03435b395e81fff360a38db8a0e545389dcf2": "bf50559fd802759bd06352f5aa6c5246847cf360",
+        "refs/heads/aq/batches/e323d2e5360ca9ade8cde24104318a3a3efd75585c1f851b4ba1e121a2dac5cb": "b417cbafbad3e990cef913a14054d4af8a23bf5a",
+        "refs/heads/aq/batches/e75229f095a8aab53d457eccd7ad1860685fe0c0ece2de07f4052d654323889b": "705b3ac26d2fb6feda33e1ed16af3c045da437db",
+        "refs/heads/aq/batches/fdfd8a4ba1e71deea1527284af3bdd5efbe03b1c40f46592d14c26b6cda8b80f": "18d418c7e14657270742e437e5895aa0b08b7624",
+        "refs/heads/epic/sl": "18d418c7e14657270742e437e5895aa0b08b7624",
+        "refs/heads/main": "bf50559fd802759bd06352f5aa6c5246847cf360",
+        "refs/heads/task/rt-0": "c1f8007505fdb90318c24c60b4c29b6aed70a32d",
+        "refs/heads/task/rt-1": "799c73b2a95b0c7e6950f5b48170bf20316b14af",
+        "refs/heads/task/rt-2": "dc1bb185d0314b99fa091dc21dc24aec8268c583",
+        "refs/heads/task/rt-3": "6b93df3f5bd785bc81411e242c1bccd15e7a6a2b",
+        "refs/heads/task/sl-1": "63a53c03b5a1cede1a32c74fe9990a48fa9643ed"
+      }
+    },
+    {
+      "assertions": [
+        "squash commit proves delivery by whole patch",
+        "no batch frozen",
+        "main not pushed by train"
+      ],
+      "case": "squash-delivery",
+      "commands": [
+        "task_close"
+      ],
+      "counts": {
+        "batches": 0,
+        "repairs": 0,
+        "tasks": 1
+      },
+      "remote": {
+        "refs/heads/main": "4bcb8fc4d86b70498fb26b0ecf3a5905fc305f9d",
+        "refs/heads/task/sq": "8f197fa2e5d4fc779c5ce838828f5e676cd8e2b0"
+      }
+    },
+    {
+      "assertions": [
+        "a reused slot is a different holder",
+        "train waits only until expiry",
+        "the old incarnation's push is refused",
+        "child delivered to the epic"
+      ],
+      "case": "stale-branch-owners",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/49715ca44d15e7b2dc9ccbb6796fac7a16d5494d3b1948612872d1df7863ae6b": "48bd75ba8a22f09da774087629dfbd85996e0d55",
+        "refs/heads/aq/batches/ae0d5a48f5f79fcd68d0c31299fceddebc8bfa206917ed91df8f6cb72c91dc07": "340396a22094ce5c4fcf2e0a707e63a2983e7097",
+        "refs/heads/epic/so": "48bd75ba8a22f09da774087629dfbd85996e0d55",
+        "refs/heads/main": "340396a22094ce5c4fcf2e0a707e63a2983e7097",
+        "refs/heads/stray": "50fbd68005ad0736b55186e7a02e9b43bde725b8",
+        "refs/heads/task/so-1": "afb0d2e0b8a54c97d899ceb26165287513125db7"
+      }
+    },
+    {
+      "assertions": [
+        "15/15 green epic candidate contains every child",
+        "promoted despite counter and no-progress fact",
+        "green consumes no attempt and raises no escalation",
+        "epic completes and reaches main",
+        "no repair allocated"
+      ],
+      "case": "swift-delta-90",
+      "commands": [
+        "task_close",
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 2,
+        "repairs": 0,
+        "tasks": 4
+      },
+      "remote": {
+        "refs/heads/aq/batches/44658edddbce20e35bf523850bd477f03065cc9acd3d66b0eb1f4a7a4e1557a2": "3ca5462519a0b0d6be29afd5da229236579e311d",
+        "refs/heads/aq/batches/6afe7ecc5c0b5295312816eec6719340084eedbbfcc126f078daa2a780894d38": "908da3f4cb8e1c0a289f6fb0de526f7122b2e4a7",
+        "refs/heads/epic/sd": "908da3f4cb8e1c0a289f6fb0de526f7122b2e4a7",
+        "refs/heads/main": "3ca5462519a0b0d6be29afd5da229236579e311d",
+        "refs/heads/task/sd-0": "110d35893ee8250317397dfc77089d2be57034a8",
+        "refs/heads/task/sd-1": "2e783ef514f95ac138a5d799776c00bedc055b4b",
+        "refs/heads/task/sd-2": "86e4818a1dc5c34b98e2366ee28228cfa3262759"
+      }
+    },
+    {
+      "assertions": [
+        "an unavailable provider blocks only its own target",
+        "the other target delivers in the same visit",
+        "nothing unobserved is treated as green",
+        "the blocked target delivers once checks return"
+      ],
+      "case": "unavailable-ci-other-target",
+      "commands": [
+        "task_close",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle",
+        "target_publish",
+        "batch_settle",
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 3,
+        "repairs": 0,
+        "tasks": 3
+      },
+      "remote": {
+        "refs/heads/aq/batches/01d935ae6bf954fae1d0be49b535f2fe98aa59e8a998bc7abe74a809e8030472": "6cc8b7b0930403e3f50a0ca01e3ad7a4903a0770",
+        "refs/heads/aq/batches/849a2e58b158d14573aa3cc86f7915cd4c255e1e8bd3e1e312de73bed4058bbe": "8dbf6e67cf40c9955ba7fab5da6c36235c40a737",
+        "refs/heads/aq/batches/bbb976b550c06c2ad672a5a455cfce38bff993b6288d75634daf86fc4de4da9f": "a93a9d73310e77f6bb95ece05fb18caccd9628dd",
+        "refs/heads/epic/uc": "8dbf6e67cf40c9955ba7fab5da6c36235c40a737",
+        "refs/heads/main": "a93a9d73310e77f6bb95ece05fb18caccd9628dd",
+        "refs/heads/task/rt-1": "d58bf666186694ffb5affb8ab86247886e5808e3",
+        "refs/heads/task/uc-1": "72ed9676ba13d94ac3f5e56f4d557b67474b56b4"
+      }
+    },
+    {
+      "assertions": [
+        "stale owner lease expires without stop proof",
+        "one repair task for the failing candidate",
+        "repair commits read from rev-list including merged commits",
+        "batch delivers the repaired candidate"
+      ],
+      "case": "vivid-quest-44",
+      "commands": [
+        "task_close",
+        "batch_freeze",
+        "candidate_publish",
+        "task_create",
+        "task_close",
+        "target_publish",
+        "batch_settle"
+      ],
+      "counts": {
+        "batches": 1,
+        "repairs": 1,
+        "tasks": 2
+      },
+      "remote": {
+        "refs/heads/aq/batches/49a37011fd19ec5d3d8eff69ade99e024dca6718c75bf4f956f5ffb4a9bdbf11": "982e5a8609beac462849172932f40388c589d64e",
+        "refs/heads/main": "982e5a8609beac462849172932f40388c589d64e",
+        "refs/heads/task/vq": "795c40c7e0c42e34cca8c0231f171ae3b1c917b3"
+      }
+    }
+  ],
+  "scope": "reconstructed_reference_train_with_real_disposable_git"
+}

@@ -2,25 +2,25 @@
 
 Spec: docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md.
 The orchestrator reads ``tasks.intelligence_class`` and emits
-``task.route_needed`` for anything missing a class or a profile; the
+``task.route_needed`` for work its router still owes a route; the
 ``default-assignment-routing`` playbook does the deciding through
-``task_route_options`` and ``task_route``.
+``task_route_plan`` and ``task_route_apply`` (tests/test_routing_router.py).
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.assignment_routing import EffectiveAssignmentRoute, explicit_route, explicit_routes
-from src.commands.routing_commands import build_route_options, profile_for_class
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, Project, ProjectStatus, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
 
 CLASSES = {
@@ -59,7 +59,7 @@ def test_explicit_route_is_the_task_class_or_nothing() -> None:
     assert set(routes) == {"t2"}
 
 
-# -- the option catalog and the deterministic profile pick --------------------
+# -- a real handler -----------------------------------------------------------
 
 
 def _profiles():
@@ -77,48 +77,6 @@ def _profiles():
     ]
 
 
-def _registry():
-    from src.sessions.harness_registry import HarnessRegistry
-
-    registry = HarnessRegistry()
-    for harness in ("claude", "codex"):
-        registry.upsert(Harness(id=harness, name=harness, command=harness, model_flag="--model"))
-    return registry
-
-
-def test_build_route_options_is_one_row_per_class_provider_profile() -> None:
-    agents = [Agent(id="a1", name="a", profile_id="worker-generic", state=AgentState.IDLE)]
-    rows = build_route_options("p", _profiles(), agents, _registry(), CLASSES)
-    keyed = {(r["intelligence_class"], r["provider"], r["profile_id"]): r for r in rows}
-    assert ("deep-low", "anthropic", "deep-low-claude") in keyed
-    assert ("deep-low", "openai", "deep-low-codex") in keyed
-    assert ("standard-medium", "anthropic", "standard-medium-claude") in keyed
-    # a generic task-lifecycle profile offers every class its provider maps
-    assert ("fast-low", "anthropic", "worker-generic") in keyed
-    assert keyed[("fast-low", "anthropic", "worker-generic")]["idle_count"] == 1
-    # control profiles, retired ids and class-less pools offer nothing
-    assert not [r for r in rows if r["profile_id"] in {"reviewer", "project:old:thing", "pool-no-class"}]
-    assert keyed[("deep-low", "anthropic", "deep-low-claude")]["configured_capacity"] == 2
-    assert rows == sorted(rows, key=lambda r: (r["intelligence_class"], r["provider"], r["profile_id"]))
-
-
-def test_profile_for_class_prefers_pin_then_pool_on_default_provider_then_id() -> None:
-    rows = build_route_options("p", _profiles(), [], _registry(), CLASSES)
-    assert profile_for_class(rows, "deep-low", prefer_provider="anthropic") == "deep-low-claude"
-    assert profile_for_class(rows, "deep-low", prefer_provider="openai") == "deep-low-codex"
-    assert profile_for_class(rows, "deep-low") == "deep-low-claude"
-    assert profile_for_class(rows, "deep-low", pinned_profile_id="deep-low-codex") == "deep-low-codex"
-    # a pin that cannot serve the class is ignored
-    assert profile_for_class(rows, "deep-low", pinned_profile_id="standard-medium-claude",
-                             prefer_provider="anthropic") == "deep-low-claude"
-    # pools beat generic task profiles; only the generic one runs fast-low
-    assert profile_for_class(rows, "fast-low") == "worker-generic"
-    assert profile_for_class(rows, "nope") is None
-
-
-# -- task_route_options + task_route through a real handler ------------------
-
-
 @pytest.fixture
 async def orch(tmp_path):
     db = Database(lease_dsn("routing.db"))
@@ -127,9 +85,7 @@ async def orch(tmp_path):
         if ":" in profile.id:
             continue
         await db.create_profile(profile)
-    await db.create_project(
-        Project(id="p", name="Project", default_profile_id="standard-medium-claude")
-    )
+    await db.create_project(Project(id="p", name="Project"))
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
@@ -160,6 +116,7 @@ def handler(orch):
 
 
 async def _create(db, task_id: str, **kw) -> Task:
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(Task(
         id=task_id, project_id="p", title=task_id, description="d",
         status=TaskStatus.READY, **kw,
@@ -167,52 +124,50 @@ async def _create(db, task_id: str, **kw) -> Task:
     return await db.get_task(task_id)
 
 
-async def test_route_options_undecided_when_no_class(handler, orch):
+async def test_an_override_writes_class_profile_and_reason(handler, orch):
     await _create(orch.db, "t")
-    res = await handler._cmd_task_route_options({"task_id": "t"})
-    assert res["success"] and res["outcome"] == "undecided"
-    assert res["intelligence_class"] is None and res["explicit_profile_id"] is None
-    assert res["default_profile_id"] == "standard-medium-claude"
-    assert {r["profile_id"] for r in res["options"]} >= {"deep-low-claude", "standard-medium-claude"}
-
-
-async def test_route_options_explicit_names_the_serving_profile(handler, orch):
-    await _create(orch.db, "t", intelligence_class="deep-low")
-    res = await handler._cmd_task_route_options({"task_id": "t"})
-    assert res["outcome"] == "explicit"
-    assert res["explicit_profile_id"] == "deep-low-claude"
-
-
-async def test_route_options_already_routed_and_no_options(handler, orch):
-    await _create(orch.db, "done", intelligence_class="deep-low", profile_id="deep-low-codex")
-    res = await handler._cmd_task_route_options({"task_id": "done"})
-    assert res["outcome"] == "already_routed" and res["explicit_profile_id"] == "deep-low-codex"
-
-    await _create(orch.db, "orphan", intelligence_class="spark-ultra")
-    res = await handler._cmd_task_route_options({"task_id": "orphan"})
-    assert res["outcome"] == "no_options"
-
-    res = await handler._cmd_task_route_options({"task_id": "missing"})
-    assert res["success"] is False
-
-
-async def test_task_route_writes_class_profile_and_reason(handler, orch):
-    await _create(orch.db, "t")
-    res = await handler._cmd_task_route({
+    res = await handler._cmd_task_route_override({
         "task_id": "t", "profile_id": "deep-low-claude",
-        "intelligence_class": "deep-low", "reason": "hard problem",
+        "intelligence_class": "deep-low", "reason": "hard problem, pinned by hand",
     })
     assert res["success"], res
     task = await orch.db.get_task("t")
     assert (task.intelligence_class, task.profile_id) == ("deep-low", "deep-low-claude")
     explained = await handler._cmd_explain_task({"task_id": "t"})
-    assert explained["assignment_route"]["reason"] == "hard problem"
-    assert explained["assignment_route"]["source"] == "explicit"
+    assert "hard problem, pinned by hand" in explained["assignment_route"]["reason"]
+    assert explained["assignment_route"]["source"] == "override"
     # the pool that runs the class now sees the demand
     assert await orch.db.count_ready_by_profile("p") == {"deep-low-claude": 1}
 
 
 # -- the cascade's only routing job: emit task.route_needed ------------------
+
+
+@pytest.mark.parametrize("project_status", [ProjectStatus.PAUSED, ProjectStatus.ARCHIVED])
+@pytest.mark.parametrize("task_status", [TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED])
+async def test_route_needed_skips_inactive_projects_before_loading_tasks(
+    orch, project_status, task_status,
+):
+    await orch.db.create_project(Project(id="inactive", name="Inactive", status=project_status))
+    await orch.db.create_task(_task(id="inactive-task", project_id="inactive", status=task_status))
+    await _create(orch.db, "active-task")
+    row_to_task = orch.db._row_to_task
+
+    def load_active_row(row):
+        assert row["project_id"] == "p", "inactive backlog must not be materialized"
+        return row_to_task(row)
+
+    with patch.object(orch.db, "_row_to_task", side_effect=load_active_row) as load:
+        assert await orch._emit_route_needed_events() == 1
+        assert load.call_count == 1
+    emitted = orch.bus.emit.call_args.args[1]
+    assert emitted["task_id"] == "active-task"
+    assert "inactive-task" not in orch._route_needed_emitted
+
+    # Reactivation makes the held work eligible without waiting for a throttle.
+    await orch.db.update_project("inactive", status=ProjectStatus.ACTIVE)
+    assert await orch._emit_route_needed_events() == 1
+    assert orch.bus.emit.call_args.args[1]["task_id"] == "inactive-task"
 
 
 async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch):
@@ -239,12 +194,35 @@ async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch)
 
     # once routed, the task drops out and its throttle entry is forgotten
     await orch.db.update_task_routing(
-        "no-class", profile_id="deep-low-claude", intelligence_class="deep-low",
+        "no-class", profile_id="deep-low-claude",
+        route_source="legacy", intelligence_class="deep-low",
         preferred_workspace_id=None,
     )
     orch._route_needed_emitted["class-only"] -= ROUTE_NEEDED_INTERVAL_SECONDS + 1
     assert await orch._emit_route_needed_events() == 1
     assert "no-class" not in orch._route_needed_emitted
+
+
+async def test_a_filing_hold_survives_manual_completion_and_reopening(handler, orch):
+    """S15's operator-owned source must never enter routing between CLI calls."""
+    result = await handler._cmd_create_task({
+        "project_id": "p", "title": "operator adoption", "labels": ["hold:e2e-adoption"],
+    })
+    task_id = result["created"]
+    assert await orch._emit_route_needed_events() == 0
+    for status in (TaskStatus.COMPLETED, TaskStatus.READY):
+        await orch.db.transition_task(task_id, status, context="adoption fixture")
+        assert await orch._emit_route_needed_events() == 0
+        assert (await orch.db.get_task(task_id)).route_source == "unrouted"
+    await handler._cmd_pause_task({"task_id": task_id})
+    assert await orch._emit_route_needed_events() == 0
+    await handler._cmd_resume_task({"task_id": task_id})
+    assert await orch._emit_route_needed_events() == 0
+
+    # The hold, rather than a disabled router or inactive project, is the fence.
+    await handler._cmd_task_set({"task_id": task_id, "labels_remove": ["hold:e2e-adoption"]})
+    assert await orch._emit_route_needed_events() == 1
+    assert orch.bus.emit.call_args.args[1]["task_id"] == task_id
 
 
 async def test_cycle_uses_the_task_row_as_the_route(orch):

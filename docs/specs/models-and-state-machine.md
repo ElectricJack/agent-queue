@@ -4,11 +4,19 @@ tags: [spec, models, state-machine, core]
 
 # Models and State Machine Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 This document specifies the core domain models and task state machine for Agent Queue. Together they define every entity the system tracks (tasks, agents, projects, repos, hooks) and the rules governing how a task moves through its lifecycle from initial definition to completion or permanent failure.
 
-See [[design/agent-coordination]] for workflow-level coordination on top of the task state machine.
+See [design/agent-coordination](design/agent-coordination.md) for workflow-level coordination on top of the task state machine.
 
 ---
 
@@ -96,6 +104,11 @@ Classifies the nature of a task for reporting and workflow differentiation.
 | `RESEARCH` | Investigation or research. |
 | `PLAN` | Plan generation task. |
 | `SYNC` | Workspace synchronization task (orchestrator-managed). |
+| `DESIGN` | Code or system design; the router sends it to the code-design lane (mandatory task routing, 2026-09-28). |
+| `ART` | Art-heavy design; the router sends it to the art-design lane. |
+
+Since mandatory task routing (2026-09-28) the type is also the filer's **kind** hint to the
+project's router: the routing policy maps each kind to a class, a class ceiling and a lane.
 
 ---
 
@@ -199,12 +212,15 @@ Represents a software project managed by the system. Projects are the top-level 
 | `status` | `ProjectStatus` | Whether the project is ACTIVE, PAUSED, or ARCHIVED. Defaults to ACTIVE. |
 | `total_tokens_used` | `int` | Cumulative count of tokens consumed by all agents across all tasks for this project. |
 | `budget_limit` | `int \| None` | Optional hard cap on total tokens. When set, no new tasks are started once this limit is reached. `None` means unlimited. |
-| `discord_channel_id` | `str \| None` | Optional Discord channel ID for project-specific notifications. When set, all task output for this project is routed to this channel instead of the default control channel. |
 | `repo_url` | `str` | Repository URL for the project. Empty string if not set. |
 | `repo_default_branch` | `str` | Default branch name for the project's repository. Defaults to `"main"`. |
-| `default_profile_id` | `str \| None` | Default agent profile ID for tasks in this project. `None` if no profile resolved. |
-| `assignment_playbook_id` | `str \| None` | Assignment-routing playbook selected for the project. `None` uses the bundled default. |
+| `assignment_playbook_id` | `str` | The project's router binding: the routing playbook that routes its tasks and is the only writer of their worker routes. Never `None` (NOT NULL); defaults to `default-assignment-routing` (config `routing.default_router`). Re-bound with `aq project set <project> router <playbook-id>` (local operator only). |
 | `integration_mode` | `str \| None` | Project integration policy: `"direct"`, `"pull_request"`, or `None` to inherit `integration.default_mode`. |
+
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** `Project` no longer
+> has `default_profile_id` ("default agent profile for tasks in this project"). The column
+> was dropped in revision `a00000000043`, and no path falls back to a project default.
 
 ---
 
@@ -232,8 +248,13 @@ The central entity of the system. A task represents a unit of work to be execute
 | `pr_url` | `str \| None` | URL of the pull request created for this task. `None` until a PR exists. |
 | `plan_source` | `str \| None` | Filesystem path to the archived plan file that auto-generated this task. `None` for manually created tasks. |
 | `is_plan_subtask` | `bool` | `True` if this task was automatically generated from a parent task's plan output. Defaults to `False`. |
-| `task_type` | `TaskType` | Classification of the task (feature, bugfix, docs, etc.). Defaults to `FEATURE`. |
-| `profile_id` | `str` | ID of the agent profile to use for execution. Empty string if not set. |
+| `task_type` | `TaskType` | Classification of the task (feature, bugfix, docs, etc.). Defaults to `FEATURE`. The filer's kind hint to the router. |
+| `profile_id` | `str \| None` | ID of the agent profile to use for execution. Written only by the project's router, an audited override or a role creator — never by a filer. `None` while the task is unrouted. |
+| `intelligence_class` | `str \| None` | The class the route runs at. Written with `profile_id` by the router; `None` while unrouted. |
+| `provider_intent` | `str` | `pinned`, `preferred` or `class_only` (provider-failover D8). The router writes `pinned` for a hold lane or an override, else `class_only`. Defaults to `class_only`. |
+| `route_source` | `str` | Who wrote the route: `unrouted` (no route yet), `router`, `override`, `role` or `legacy` (written before the cutover). Defaults to `unrouted`. `(profile_id is None) == (route_source == "unrouted")` is a database check. |
+| `class_hint` | `str \| None` | The filer's intelligence-class hint (`--intelligence-class`), honoured by the router up to the kind's class ceiling. |
+| `route` | `dict \| None` | The router's record of the route: hints, classification, rule, lane, `candidates`, scores, reason, policy digest, playbook run, and `override` / `legacy` entries. Failover and spill move the task only among `route.candidates`. |
 | `preferred_workspace_id` | `str` | ID of a specific workspace to use. Empty string if not set. |
 | `attachments` | `list[str]` | File paths or URLs attached as additional context. Defaults to empty list. |
 
@@ -243,6 +264,54 @@ The central entity of the system. A task represents a unit of work to be execute
 - Consequently a PAUSED task with `resume_after IS NULL` and **no** `manual_pause` snapshot is unreachable — no timer promotes it and no transition may touch it. `_resume_paused_tasks` treats that as a wedge (a backoff pause whose timer never landed, a partial write) and recovers it through `recover_orphaned_pause`, which restores it to READY. That write is guarded, not forced: it re-checks the status, the timer and the snapshot under the task-row lock in the same transaction as the transition, because the cascade's own reads are separate transactions and an operator hold that commits between them is indistinguishable from a wedge. A hold or a timer that landed after the scan is left untouched. This is the only state where the daemon resumes a task nobody asked it to.
 - An ASSIGNED or IN_PROGRESS task must have a non-`None` `assigned_agent_id`.
 - An operator hold must **converge**. `pause_task` writes the snapshot with `cleanup_pending: True` and `_finish_manual_pause` clears it once the claim's session, adapter and workspace are released; `_resume_paused_tasks` retries a still-pending cleanup every cycle. Steps that must not be abandoned while a process may still be running (session stop, adapter stop) retry indefinitely, but the final Git checkpoint of the paused workspace does not: a workspace that is *gone* is accepted immediately, and any other capture failure is retried `PAUSE_CHECKPOINT_MAX_ATTEMPTS` times with backoff, after which the pause finishes anyway — salvaging uncommitted work through the worktree-salvage path and recording a `manual_pause_no_checkpoint` task-context row naming the reason. A task left half-paused forever is worse than a paused task that says what could not be preserved.
+
+Pause cleanup after interrupted preparation must prove quiescence of the exact
+claim preparation as well as its session and adapter before checkpointing. New
+pause snapshots retain task/claim, session instance, workspace and branch-owner
+identities; changed or unproved source identities (including legacy snapshots
+without these fences) fail closed, outside the bounded Git retries. An
+attached integration owner retains its workspace until its existing guarded
+handoff protocol releases it. A checkpoint alone does not prove cleanup complete.
+The recorded task branch is part of the pause fence. When it is present, an
+attached checkout must match it before capture or partial salvage; a mismatch
+retains the source without publishing preservation evidence. A captured session
+must also belong to the claim epoch being stopped, not a previous pool claim.
+An existing workspace claim file must match that task, claim epoch and captured
+session; missing files alone do not prove writer termination.
+
+A legitimate detached HEAD can be checkpointed: record `branch: null`, the exact
+HEAD, index tree and worktree commit under a reachable local ref. Do not infer a
+branch from task metadata. Capture and fallback salvage use an isolated index,
+exclude the lock sentinel, and leave the source HEAD, branch, index and files
+unchanged. Detached snapshots remain inspectable but automatic worker preparation
+refuses them before reset/clean; selecting a branch requires separate ownership
+proof. With source identity fenced, unborn/unreadable repositories receive an
+honest no-checkpoint receipt after bounded retries; missing workspaces receive
+one immediately. Salvage limitations are stated explicitly.
+
+Restoration validates the checkpoint's task and expected execution branch before
+fetch, index/lock cleanup or reset. New checkpoints carry their task identity;
+legacy snapshots require the existing task's branch proof. A supplied restoration
+plan is revalidated before switching or writing trees. The destination may still
+be on a legitimate predecessor's branch: the comparison concerns the saved
+checkpoint and the proved incoming target, not the current destination HEAD.
+
+The supported per-task cleanup command is `aq task pause <id>` again; the cascade
+also retries pending cleanup. It preserves the manual hold, incident/human holds,
+route and budgets and never launches execution. Error guidance must name repeat
+Pause, not Resume. `PAUSED` alone proves neither writer termination nor checkpoint
+success; inspect `manual_pause.cleanup_pending` and checkpoint/no-checkpoint context.
+
+Resume may recover a stale pause binding after its captured harnesses are confirmed
+stopped and their current database identities are rechecked under locks. When no
+workspace or active integration owner remains attached, discard the stale binding
+and resume with the recorded branch, source history, gates and budgets preserved.
+Never stop or release a replacement worker. For an unchanged retained workspace,
+an operator or project supervisor can request `aq task resume --task-id <id>
+--recover-stale-pause`; this records the recovery and retries ordinary checkpoint
+cleanup using the stopped original harness identities. Changed source generations,
+job pins, active integration ownership and unproved preparation termination still
+refuse recovery. A stopped database marker alone is not process termination proof.
 
 ---
 
@@ -273,7 +342,9 @@ the "workspace identity, dynamic profile" model.
 part of this rewrite (see the design doc above). The coordination-category
 filter (`_task_agent_type_matches`) the former column supported was specced
 in `design/agent-coordination.md` but never implemented; profile selection
-now uses `task.profile_id → project.default_profile_id` directly.
+now uses `task.profile_id` directly. (It once fell back to
+`project.default_profile_id`; mandatory task routing, 2026-09-28, removed the project
+default, so a task runs only on the profile its router, an override or a role wrote.)
 
 ---
 

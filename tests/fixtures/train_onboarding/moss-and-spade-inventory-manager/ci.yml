@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all workspaces (type-check via tsc)
+        # Filter to the @stockling/* scope so pnpm doesn't also invoke the
+        # root package's build script, which kicks off the web build in
+        # parallel with packages/* and races against their dist/ outputs.
+        run: pnpm --filter '@stockling/*' --filter '!@stockling/e2e' --filter '!@stockling/db-tests' build
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start Supabase (applies migrations from supabase/migrations/)
+        run: supabase start
+
+      - name: Export Supabase env for tests
+        # Supabase emits API_URL / SERVICE_ROLE_KEY / JWT_SECRET; the backend
+        # reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_JWT_SECRET.
+        run: |
+          eval "$(supabase status -o env)"
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "SUPABASE_JWT_SECRET=$JWT_SECRET"
+          } >> "$GITHUB_ENV"
+
+      - name: Backend tests
+        run: pnpm backend:test

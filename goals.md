@@ -1,5 +1,10 @@
 # Agent Queue — Goals
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](docs/README.md); see [historical material](docs/history/README.md).
+
 ## Vision
 
 Turn idle compute into finished work. Agent Queue is an autonomous orchestration platform that keeps AI agents continuously productive across your projects — managing rate limits, scheduling work fairly, and learning from every completed task. Control it from your phone, come back to pull requests.
