@@ -43,7 +43,7 @@ __all__ = [
 ]
 
 #: Long forms of the options this module keeps consistent across positions.
-GLOBAL_OPTION_NAMES: tuple[str, ...] = ("--json", "--brief", "--api-url")
+GLOBAL_OPTION_NAMES: tuple[str, ...] = ("--json", "--brief", "--save-output", "--api-url")
 
 
 def _record(key: str):
@@ -98,6 +98,15 @@ def global_params() -> list[click.Parameter]:
             is_eager=True,
             callback=_record("brief"),
             help="Global: trim output to each entity's lite projection.",
+        ),
+        click.Option(
+            ["--save-output"],
+            type=click.Path(),
+            default=None,
+            expose_value=False,
+            is_eager=True,
+            callback=_record("save_output"),
+            help="Global: save full emit-based output to a new private JSON file; print a receipt.",
         ),
         click.Option(
             ["--api-url"],
