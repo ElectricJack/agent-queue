@@ -31,10 +31,10 @@ export function activityWindowLabel(key: string): string {
 
 // These are the engine's states; legacy terminal spellings remain readable.
 export const TASK_STATUSES = [
-  "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "PAUSED",
+  "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING", "HIBERNATED", "RESUME_PENDING", "PAUSED",
   "BLOCKED", "FAILED", "COMPLETED",
 ];
-export const TASK_FILTER_STATUSES = [...TASK_STATUSES, "WAITING", "WAITING_ON_DELIVERY", "WITHHELD"];
+export const TASK_FILTER_STATUSES = [...TASK_STATUSES, "WAITING_ON_DELIVERY", "WITHHELD"];
 export const FINISHED_STATUSES = new Set(["COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"]);
 
 export function readTaskFilters(params: URLSearchParams): TaskFilters {
