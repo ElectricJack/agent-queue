@@ -171,10 +171,6 @@ class DatabaseBackend(Protocol):
         """Gracefully shut down the database connection."""
         ...
 
-    async def due_integration_schedule_page(
-        self, *, now: float, after: tuple[float, str] | None, limit: int
-    ) -> list[dict]: ...
-
     async def due_integration_repair_stage_page(
         self,
         *,
@@ -183,48 +179,11 @@ class DatabaseBackend(Protocol):
         limit: int,
     ) -> list[dict]: ...
 
-    async def pending_candidate_ci_page(
-        self, *, after: tuple[float, str, int] | None, limit: int
-    ) -> list[dict]: ...
-
-    async def unresolved_integration_intent_page(
-        self, *, after: tuple[float, str] | None, limit: int
-    ) -> list[dict]: ...
-
-    async def pending_integration_cleanup_page(
-        self, *, now: float, after: tuple[float, str, str] | None, limit: int
-    ) -> list[dict]: ...
-
     # --- Integration subjects (src/integration/subjects.py) ---
 
     async def ensure_integration_subject(self, values: dict) -> tuple[dict, bool]: ...
 
     async def get_integration_subject(self, subject_id: str) -> dict | None: ...
-
-    async def get_integration_subject_by_key(
-        self, *, project_id: str, kind: str, subject_key: str
-    ) -> dict | None: ...
-
-    async def due_integration_subject_page(
-        self,
-        *,
-        now: float,
-        after: tuple[float, str] | None,
-        limit: int,
-        kinds: Sequence[str] | None = None,
-        engine: str | None = None,
-    ) -> list[dict]: ...
-
-    async def wake_integration_subjects(
-        self,
-        *,
-        now: float,
-        subject_ids: Iterable[str] = (),
-        task_ids: Iterable[str] = (),
-        writer_task_ids: Iterable[str] = (),
-        batch_ids: Iterable[str] = (),
-        gate_ids: Iterable[str] = (),
-    ) -> int: ...
 
     async def append_integration_subject_journal(self, values: dict) -> tuple[dict, bool]: ...
 
@@ -721,11 +680,15 @@ class DatabaseBackend(Protocol):
     ) -> tuple[SessionRecord | None, AgentProfile | None]: ...
     async def get_session_by_name(self, name: str) -> SessionRecord | None: ...
     async def get_session_for_task(self, task_id: str) -> SessionRecord | None: ...
+    async def list_flock_sessions(
+        self, *, include_stopped: bool = False,
+    ) -> list[SessionRecord]: ...
     async def list_sessions(
         self,
         *,
         state: str | None = None,
         states: list[str] | tuple[str, ...] | None = None,
+        excluded_states: tuple[str, ...] = (),
         lifecycle: str | None = None,
         project_id: str | None = None,
         name: str | None = None,
@@ -828,12 +791,6 @@ class DatabaseBackend(Protocol):
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[dict]: ...
-    async def delivered_root_task_ids_on(
-        self, conn: AsyncConnection, *, project_id: str, repository_id: str
-    ) -> set[str]: ...
-    async def latest_exact_reviews_on(
-        self, conn: AsyncConnection, candidates: list[dict]
-    ) -> dict[tuple[str, str, str, str, int], dict]: ...
     async def get_repair_filing_scope(
         self,
         repair_task_id: str,
@@ -858,27 +815,7 @@ class DatabaseBackend(Protocol):
     async def get_task_branch_origin_for_promotion(
         self, task_id: str, repository_id: str
     ) -> dict | None: ...
-    async def reserve_integration_promotion_intent(self, values: dict) -> dict: ...
     async def get_integration_promotion_intent(self, intent_id: str) -> dict | None: ...
-    async def reserve_integration_conflict_resolution(
-        self, conn, intent_id: str, values: dict
-    ) -> dict: ...
-    async def record_integration_resolution_push_on(
-        self, conn, intent_id: str, evidence: dict
-    ) -> dict: ...
-    async def mark_integration_resolution_push_started_on(
-        self, conn, intent_id: str, *, started_at: float
-    ) -> dict: ...
-    async def authorize_legacy_resolution_recovery_on(
-        self, conn, intent_id: str, evidence: dict
-    ) -> dict: ...
-    async def mark_integration_promotion_prepared(
-        self, intent_id: str, *, prepared_sha: str, recovery_ref: str
-    ) -> dict: ...
-    async def mark_integration_promotion_conflict(
-        self, intent_id: str, diagnostics: dict
-    ) -> dict: ...
-    async def mark_integration_promotion_pushed(self, intent_id: str, evidence: dict) -> None: ...
     async def list_integration_delivery_receipts(
         self, *, source_task_id: str, repository_id: str, target_branch: str
     ) -> list[dict]: ...

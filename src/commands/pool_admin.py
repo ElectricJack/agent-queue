@@ -241,6 +241,90 @@ async def rename_pool(handler, args: dict) -> dict:
     }
 
 
+async def delete_pool(handler, args: dict) -> dict:
+    """Retire a global pool without vetoes for live workers or routed work."""
+    import asyncio
+    import json
+    import shutil
+    from pathlib import Path
+
+    from src.profiles.retired_defaults import is_retired, retire_default
+
+    profile_id = args.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        return {"success": False, "error": "profile_id is required"}
+    profile_id = profile_id.strip()
+    if any(char in profile_id for char in "/\\:") or profile_id in {".", ".."}:
+        return {"success": False, "error": "profile_id must be a global profile ID"}
+    depth = args.get("depth", "profile")
+    if depth not in {"profile", "directory"}:
+        return {"success": False, "error": "depth must be profile or directory"}
+    target = await handler.db.get_profile(profile_id)
+    retired = await asyncio.to_thread(is_retired, handler.config.data_dir, profile_id)
+    if target is not None and target.lifecycle != "pool":
+        return {"success": False, "error": f"no pool profile '{profile_id}'"}
+    if target is None and not retired:
+        return {"success": False, "error": f"no pool profile '{profile_id}'"}
+
+    warnings = []
+    # Fence new claims and launches before the first slow process or file operation.
+    if target is not None:
+        await handler.db.update_profile(profile_id, enabled=False)
+    try:
+        await asyncio.to_thread(
+            retire_default, handler.config.data_dir, profile_id,
+            args.get("reason") or "pool deleted",
+        )
+        retired = True
+    except OSError as exc:
+        warnings.append(f"Could not persist retirement; install may recreate this pool: {exc}")
+
+    sessions = [s for s in await handler.db.list_sessions(lifecycle="pool", live_only=True)
+                if s.profile_id == profile_id]
+    # Persist intent for the entire fleet first. Reconciliation retries failed
+    # stops even after restart, without ever releasing an unconfirmed writer.
+    for session in sessions:
+        await handler.db.update_session(session.id, desired_state="stopped")
+    for session in sessions:
+        try:
+            await handler.orchestrator._terminate_pool_session(session, reason="profile_deleted")
+        except Exception:
+            logger.exception("pool delete: stop failed for %s", session.id)
+        current = await handler.db.get_session(session.id)
+        if current is not None and current.state != "stopped":
+            warnings.append(f"Session {session.id} is still stopping; its resources remain held.")
+
+    directory = Path(_system_profile_path(handler, profile_id)).parent
+
+    def remove_source():
+        # Never follow a profile-directory symlink when deleting vault content.
+        if directory.is_symlink():
+            directory.unlink()
+        elif depth == "directory":
+            if directory.exists():
+                shutil.rmtree(directory)
+        else:
+            (directory / "profile.md").unlink(missing_ok=True)
+
+    try:
+        await asyncio.to_thread(remove_source)
+    except OSError as exc:
+        warnings.append(f"Vault cleanup incomplete: {exc}")
+
+    # Also resets route_source and provider intent atomically. Missing rows on
+    # a repeated request are harmless; deletion is safe to retry after a timeout.
+    await handler.db.delete_profile(profile_id)
+    payload = {
+        "profile_id": profile_id,
+        "depth": depth,
+        "sessions": [s.id for s in sessions],
+        "warnings": warnings,
+    }
+    seq = await handler.db.log_event("pool.deleted", payload=json.dumps(payload))
+    await _emit(handler, None, "pool.deleted", {**payload, "seq": seq})
+    return {"success": True, "deleted": profile_id, "retired": retired, **payload}
+
+
 async def set_pool_lifecycle(
     handler,
     args: dict,

@@ -191,8 +191,11 @@ def plan_deliveries(
     yet, keyed on the form so a replay or a second daemon converges on the same
     row (§5.1: nothing appends a second root).
     """
-    if not facts.wants_human_delivery:
-        return DeliveryPlan(skipped=("supervisor delivery incidents stay in internal inboxes",))
+    if not facts.wants_human_delivery and not (
+        facts.is_terminal and binding_from_deliveries(deliveries).has_root
+        and facts.source_kind != "supervisor_delivery"
+    ):
+        return DeliveryPlan(skipped=("operational incidents stay in supervisor inboxes",))
     planned: list[PlannedDelivery] = []
     skipped: list[str] = []
     generation = current_generation(deliveries)
@@ -201,7 +204,7 @@ def plan_deliveries(
     display = display_state(facts.state, stale=stale)
 
     root_key = root_dedup_key(facts.id, generation)
-    if root_key not in known:
+    if root_key not in known and facts.wants_human_delivery:
         if not facts.needs_human_answer and not binding.has_root:
             # Closed before it was ever posted: nothing to announce, and a
             # post now would ask a human for a decision nobody still needs.
@@ -221,7 +224,7 @@ def plan_deliveries(
             )
 
     posted = binding.has_root or (root_key in known and facts.needs_human_answer)
-    if posted:
+    if posted and facts.wants_human_delivery:
         for message in messages:
             message_id = str(message["id"])
             if message.get("direction") == "inbound":
