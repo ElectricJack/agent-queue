@@ -5,38 +5,39 @@ import math
 
 from jsonschema import Draft202012Validator
 
+from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
 from src.commands.principal import PrincipalKind, current_principal
-from src.doctor.models import DoctorContext
-from src.doctor.observations import bounded_inline, catalog, collect_observations, failure
 
-CATALOG_SCHEMA = {"type": "object", "properties": {}, "additionalProperties": False}
-RUN_SCHEMA = {
-    "type": "object", "additionalProperties": False,
-    "properties": {
-        "check_id": {"type": "string", "minLength": 1},
-        "group": {"type": "string", "minLength": 1},
-        "project_id": {"type": ["string", "null"], "minLength": 1},
-        "now": {"type": "number", "minimum": 0, "maximum": 253402300799},
-        "timeout_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
-        "pagination": {"type": "string", "enum": ["snapshot"]},
-        "snapshot_id": {"type": "string", "minLength": 1},
-        "page_token": {"type": "string", "minLength": 1},
-        "page_size": {"type": "integer", "minimum": 1, "maximum": 500},
-    },
-    "oneOf": [{"required": ["check_id"]}, {"required": ["group"]}],
-    "dependentRequired": {"page_token": ["snapshot_id", "pagination"],
-                          "snapshot_id": ["page_token", "pagination"],
-                          "page_size": ["pagination"]},
-}
+
+def failure(code: str) -> dict:
+    # ``src.doctor`` loads every check (and the orchestrator) on import; the
+    # handler module is imported by CLI command discovery, so defer it.
+    from src.doctor.observations import failure as _failure
+
+    return _failure(code)
 
 
 class DoctorObservationCommandsMixin:
+    async def _cmd_observation_snapshot_cleanup(self, args: dict) -> dict:
+        """Collect at most 100 expired snapshots; daemon/operator maintenance only."""
+        from src.database.queries.observation_snapshot_queries import cleanup_expired
+
+        principal = current_principal()
+        if principal is None or principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}:
+            return {"success": False, "error_code": "operator_only", "error": "operator_only"}
+        if args:
+            return {"success": False, "error_code": "invalid_arguments", "error": "invalid_arguments"}
+        removed = await cleanup_expired(self.db._engine)
+        return {"success": True, "removed": removed}
+
     async def _cmd_doctor_catalog(self, args: dict) -> dict:
         """List doctor observation audits, identity schemas, scope and coverage contracts."""
         if not Draft202012Validator(CATALOG_SCHEMA).is_valid(args):
             return failure("doctor.invalid_arguments")
         if self.doctor_registry is None:
             return failure("doctor.subsystem_unavailable")
+        from src.doctor.observations import catalog
+
         return catalog(self.doctor_registry)
 
     async def _cmd_doctor_run(self, args: dict) -> dict:
@@ -54,9 +55,12 @@ class DoctorObservationCommandsMixin:
         if self.doctor_registry is None:
             return failure("doctor.subsystem_unavailable")
         if "pagination" in args:
-            # C2 attaches durable materialization here. Never rerun a continuation
-            # as a live query or pretend inline data is an immutable snapshot.
-            return failure("doctor.snapshot_unavailable")
+            from src.observations.commands import snapshot_command
+
+            return await snapshot_command(self, "doctor_run", args)
+        from src.doctor.models import DoctorContext
+        from src.doctor.observations import bounded_inline, collect_observations
+
         return bounded_inline(await collect_observations(
             self.doctor_registry,
             DoctorContext(config=self.config, db=self.db, handler=self,

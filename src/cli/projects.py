@@ -234,7 +234,7 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     async def _details():
         async with _get_client(api_url) as client:
-            proj_result = await client.execute("list_projects")
+            proj_result = await client.execute("get_project", {"project_id": project_id})
             task_result = await client.execute(
                 "list_tasks",
                 {
@@ -246,13 +246,8 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     proj_result, task_result = _run(_details())
 
-    p = None
-    for proj in _getval(proj_result, "projects", []):
-        if _getval(proj, "id") == project_id:
-            p = proj
-            break
-
-    if not p:
+    p = proj_result
+    if _getval(p, "id") != project_id:
         from .exceptions import CommandError
 
         raise CommandError("project_details", f"Project not found: {project_id}")

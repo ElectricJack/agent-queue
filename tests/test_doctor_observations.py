@@ -162,7 +162,7 @@ async def test_snapshot_arguments_never_fall_back_to_live_scan():
     response = await handler(db, HOLDER).execute("doctor_run", {
         "check_id": HOLDER.id, "pagination": "snapshot", "snapshot_id": "saved", "page_token": "x",
     })
-    assert response["error_code"] == "doctor.snapshot_unavailable"
+    assert response["error_code"] == "snapshot.unavailable"
     db.list_tasks.assert_not_awaited()
 
 
@@ -303,11 +303,15 @@ def sweep(monkeypatch):
     for name in ("_flock_findings", "_conversation_findings", "_container_dependency_findings",
                  "_branch_findings", "_session_findings", "_delivery_findings", "_provider_findings",
                  "_unmaterialized_pr_findings", "_completed_undelivered_findings",
+                 "_delivery_stuck_findings",
                  "_unadmitted_parent_findings", "_stranded_child_findings",
                  "_reviewed_file_guard_findings", "_orphaned_pr_findings", "_validation_findings",
                  "_subject_unknown_findings", "_object_bootstrap_findings",
-                 "_continuous_promotion_findings", "_escalation_delivery_findings"):
+                 "_continuous_promotion_findings", "_escalation_delivery_findings",
+                 "_slot_capacity_findings", "_workspace_capacity_findings", "_train_batch_findings",
+                 "_stranded_promotion_findings"):
         monkeypatch.setattr(stall, name, AsyncMock(return_value=[]))
+    monkeypatch.setattr(stall, "_waiting_train_repairs", AsyncMock(return_value={}))
     monkeypatch.setattr(stall, "_log_findings", lambda *args: [])
     monkeypatch.setattr(importlib.import_module("src.integration.delivery_engine"),
                         "project_delivery_issues", AsyncMock(return_value=[]))
