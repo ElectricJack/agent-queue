@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:fd3378ee5d384d8815d19d55d74e4c43a94811ff84088e62fa93a35412230d80` |
+| Contract fingerprint | `sha256:8d322e6f6b1858e8d5260538117190194d10e4f7b3b4cdd0815a2abdaa856491` |
 
 ## Parameters
 
@@ -37,8 +37,10 @@
 | `layer` | `integer \| null` | — |
 | `problems` | `object[]` | — |
 | `warnings` | `object[]` | — |
+| `protection` | `object \| null` | — |
+| `workflow_triggers` | `object \| null` | — |
 
-Projected into the run receipt: `project_id`, `valid`, `flow`, `layer`, `problems`, `warnings`.
+Projected into the run receipt: `project_id`, `valid`, `flow`, `layer`, `problems`, `warnings`, `protection`, `workflow_triggers`.
 
 ## Outcomes
 

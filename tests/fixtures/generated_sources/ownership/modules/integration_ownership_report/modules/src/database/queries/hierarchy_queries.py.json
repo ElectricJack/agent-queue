@@ -1,0 +1,274 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/hierarchy_queries.py::_configured_cross_parent_delivery": {
+      "fingerprint": "1987e8fc360c6cd9592b95393846a16f91f53a8ac1e44d0d7c0b1b421397d1ef",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_delivered_same_parent_prerequisites": {
+      "fingerprint": "91715e5712d7296d22e9e45785f490ad4c9e3af093a7385ea5aa6ed74b62bba1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_materialized_origin_when_hierarchical": {
+      "fingerprint": "ac4114174ae2b6cc274b15b3339c2c1585933efebb5ebb74ea37ca9788032525",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_train_disabled_for_binding": {
+      "fingerprint": "9ff69a3ef02aba96d7ed40d0e0aed5fbcd0949f0af24b5a4a23c71b64340817d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "fingerprint": "8db461ca6476869f0fb1a076504d232ba3e9301514486ac496f6f3755cf9eefb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
+      "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container": {
+      "reason": "Stale container settlement applies the guarded episode completion check before completing a train container whose legacy collection episode was cancelled."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.abandon_subtree": {
+      "reason": "Queues an explicit branch retirement for each abandoned descendant in the abandon transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.guard_hierarchy_bulk_write": {
+      "baseline_span": [
+        605,
+        619
+      ],
+      "landing_span": [
+        605,
+        619
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.guard_integration_mutation": {
+      "baseline_span": [
+        1065,
+        1341
+      ],
+      "landing_span": [
+        1065,
+        1341
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.hierarchy_prerequisite_delivery_head": {
+      "baseline_span": [
+        682,
+        747
+      ],
+      "landing_span": [
+        682,
+        747
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.hierarchy_runnable_task_ids": {
+      "reason": "Scheduler readiness applies preserved-origin and Git delivery predicates for sibling prerequisites."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.phase_mode_refusal": {
+      "baseline_span": [
+        620,
+        656
+      ],
+      "landing_span": [
+        620,
+        656
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.set_parent": {
+      "baseline_span": [
+        1342,
+        1524
+      ],
+      "landing_span": [
+        1342,
+        1524
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.settle_containers": {
+      "baseline_span": [
+        1708,
+        1810
+      ],
+      "landing_span": [
+        1708,
+        1810
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::ProjectIntegrationMode": {
+      "baseline_span": [
+        294,
+        332
+      ],
+      "landing_span": [
+        294,
+        332
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::ProjectIntegrationMode.integration_repository_id": {
+      "baseline_span": [
+        317,
+        317
+      ],
+      "landing_span": [
+        317,
+        317
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::ProjectIntegrationMode.of": {
+      "baseline_span": [
+        318,
+        332
+      ],
+      "landing_span": [
+        318,
+        332
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::_cross_parent_delivery_enabled": {
+      "reason": "Selects hierarchical default-branch delivery admission from the explicit project policy or its persisted configuration."
+    },
+    "src/database/queries/hierarchy_queries.py::_cross_parent_prerequisites": {
+      "reason": "Builds the correlated completed cross-parent blocks query shared by default-branch delivery proof and epic refresh admission."
+    },
+    "src/database/queries/hierarchy_queries.py::_ordinary_repair_branch": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/database/queries/hierarchy_queries.py::_reserved_repair_branch": {
+      "baseline_span": [
+        389,
+        426
+      ],
+      "landing_span": [
+        389,
+        426
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::_reserved_verifier_branch": {
+      "baseline_span": [
+        427,
+        467
+      ],
+      "landing_span": [
+        427,
+        467
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::_settlement_clauses": {
+      "baseline_span": [
+        192,
+        230
+      ],
+      "landing_span": [
+        192,
+        230
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::cross_parent_prerequisites_on_default": {
+      "reason": "Requires exact default-branch delivery for completed cross-parent blocks prerequisites; epic containment and refresh admission have separate predicates."
+    },
+    "src/database/queries/hierarchy_queries.py::delivered_prerequisites_for_projects": {
+      "reason": "Selects each project's revalidated Git delivery predicate while retaining receipt admission for other modes."
+    },
+    "src/database/queries/hierarchy_queries.py::delivered_same_parent_prerequisites_when_hierarchical": {
+      "baseline_span": [
+        488,
+        583
+      ],
+      "landing_span": [
+        488,
+        583
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::epic_refresh_ready": {
+      "reason": "Requires proven cross-epic sources to be contained in the dependent epic and blocks admission while an epic-refresh batch remains open."
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY, STALE_OPEN_ATTENTION, TransitionResult": {
+      "baseline_span": [
+        36,
+        41
+      ],
+      "landing_span": [
+        36,
+        41
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_delivery_receipts, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_delivery_receipts, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "baseline_span": [
+        42,
+        58
+      ],
+      "landing_span": [
+        42,
+        58
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::integration_rework_cutoff": {
+      "baseline_span": [
+        468,
+        487
+      ],
+      "landing_span": [
+        468,
+        487
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::materialized_origin_when_hierarchical": {
+      "baseline_span": [
+        333,
+        388
+      ],
+      "landing_span": [
+        333,
+        388
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::never_leaseable_container": {
+      "reason": "Shared container frontier predicate consumed by hierarchical stale-claim recovery."
+    },
+    "src/database/queries/hierarchy_queries.py::open_epic_refresh_batches": {
+      "reason": "Reads unresolved epic-refresh batches on the dependent parent branch, excluding ordinary sibling collections from the refresh fence."
+    },
+    "src/database/queries/hierarchy_queries.py::stale_container_clauses": {
+      "baseline_span": [
+        231,
+        248
+      ],
+      "landing_span": [
+        231,
+        248
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/hierarchy_queries.py::stale_delivery_children": {
+      "baseline_span": [
+        249,
+        284
+      ],
+      "landing_span": [
+        249,
+        284
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
