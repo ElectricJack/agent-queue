@@ -30,7 +30,7 @@ KNOWN_FEATURES: Final = frozenset({
     "observation_context_v1", "state_v1", "script_v1",
 })
 # Add a feature only with its complete executor. Knowing its name is not support.
-SUPPORTED_FEATURES: Final = KNOWN_FEATURES - {"script_v1"}
+SUPPORTED_FEATURES: Final = KNOWN_FEATURES
 STATE_COMMANDS: Final = frozenset({
     "playbook_state_get", "playbook_state_list", "playbook_state_set",
     "playbook_state_delete", "playbook_state_notify", "playbook_state_inspect",
@@ -76,9 +76,13 @@ def infer_required_features(
             required.add("state_v1")
         if name == "playbook_script_run":
             required.add("script_v1")
-        contract = contracts.get(name) if contracts is not None else None
-        if contract is not None:
-            required.update(contract.required_features)
+        feature_lookup = getattr(contracts, "required_features", None)
+        if callable(feature_lookup):
+            required.update(feature_lookup(name))
+        else:
+            contract = contracts.get(name) if contracts is not None else None
+            if contract is not None:
+                required.update(contract.required_features)
     metadata = definition.trusted_execution
     if metadata is not None and metadata.state_schema_version is not None:
         required.add("state_v1")
@@ -90,14 +94,21 @@ def infer_required_features(
 def execution_metadata_from_source(
     frontmatter: Mapping[str, Any], definition: PlaybookDefinition
 ) -> TrustedExecutionMetadata | None:
-    """Pin the authored state version, defaulting to one only for a state user."""
+    """Pin source declarations without granting any caller authority."""
+    from src.playbooks.authoring import execution_source_errors
+
+    errors = execution_source_errors(frontmatter)
+    if errors:
+        raise ValueError("; ".join(errors))
+    version = None
     if "state_schema_version" in frontmatter or STATE_COMMANDS.intersection(
         referenced_commands(definition)
     ):
-        if frontmatter.get("state_schema_version", 1) is None:
-            raise ValueError("state_schema_version must be a positive integer")
+        version = frontmatter.get("state_schema_version", 1)
+    required = tuple(sorted(set(frontmatter.get("required_capabilities", ()))))
+    if version is not None or required:
         return TrustedExecutionMetadata(
-            state_schema_version=frontmatter.get("state_schema_version", 1)
+            state_schema_version=version, required_capabilities=required,
         )
     return None
 

@@ -397,6 +397,9 @@ class Cutover:
                     raise ValueError("invalid promotion flow: " + result.problems[0].code)
                 flow = result.flow
             inventory = await inventory_on(conn, project_id, repository.id, now=self.clock())
+            from src.integration.hierarchy import missing_origin_tasks_on
+
+            missing_origins = await missing_origin_tasks_on(conn, project_id, repository.id)
             receipt_targets = await receipt_targets_on(conn, repository.id,
                 repository.default_branch, prior=prior["receipt_ids"] if reverse else None)
             receipt_ids = list(receipt_targets)
@@ -420,6 +423,9 @@ class Cutover:
         facts = await self.git.observe(project_id, repository, default, branches=branches)
         missing = await self.git.retained(project_id, repository, missing)
         blockers = barrier(inventory, allow_epics=allow_epics, targets=targets, project_id=project_id)
+        if missing_origins:
+            blockers.append({"code": "branch_origins_missing", "task_ids": missing_origins,
+                             "control": "aq doctor --check integration.branch_origins --fix"})
         if not reverse and project["default_branch_cutover"]:
             blockers.append({"code": "cutover_already_active",
                              "control": "reverse the active cutover before replacing it"})
@@ -561,6 +567,10 @@ class _Activation:
             await BranchLock(db).lock_on(conn, BranchKey(
                 repository_id=plan["repository_id"], branch=branch))
         live = await inventory_on(conn, project["id"], plan["repository_id"], now=self.service.clock())
+        from src.integration.hierarchy import missing_origin_tasks_on
+
+        if await missing_origin_tasks_on(conn, project["id"], plan["repository_id"]):
+            return {"outcome": "refused", "error": "branch_origins_missing"}
         await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(
             [row["task_id"] for row in plan["aborted_member_fence"]])).order_by(
                 tasks.c.id).with_for_update())

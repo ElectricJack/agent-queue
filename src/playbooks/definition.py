@@ -27,6 +27,8 @@ from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
+from src.playbooks.script_policy import ScriptProgram
+from src.playbooks.script_inputs import PinnedScript
 from src.playbooks.expressions import (
     Condition,
     Identifier,
@@ -177,7 +179,7 @@ def scope_to_v1(scope: Any) -> str:
 # §4.5 — step common shapes
 # --------------------------------------------------------------------------
 
-StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal"]
+StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal", "script"]
 
 
 class StepBase(V2Base):
@@ -212,6 +214,30 @@ class ToolUsePolicy(V2Base):
 # --------------------------------------------------------------------------
 # §4.5 — the seven steps
 # --------------------------------------------------------------------------
+
+
+# Script programs are shared with the durable job dispatch boundary.
+
+
+SCRIPT_OUTCOMES: Final = frozenset({
+    "succeeded", "nonzero_exit", "timed_out", "cancelled",
+    "output_limit_exceeded", "invalid_json", "admission_denied", "admission_timed_out",
+})
+
+
+class ScriptStep(StepBase):
+    type: Literal["script"] = "script"
+    program: ScriptProgram
+    environment: dict[str, Value] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _environment_policy(self):
+        if set(self.environment) - set(self.program.env_allowlist):
+            raise ValueError("script environment names must be in env_allowlist")
+        return self
+
+    save_result_as: Identifier | None = None
+    transitions: dict[str, Identifier]
 
 
 class CommandStep(StepBase):
@@ -275,7 +301,9 @@ AGENT_TASK_ROUTE_INPUTS: Final[frozenset[str]] = frozenset(
 class AgentTaskStep(StepBase):
     type: Literal["agent_task"] = "agent_task"
     #: Only control-plane roles bypass routing (mandatory-routing §5.1).
-    profile_id: Literal["triage", "spec-ingest", "reviewer", "final-reviewer"] | None = None
+    profile_id: Literal[
+        "triage", "spec-ingest", "reviewer", "final-reviewer", "fidelity-reviewer"
+    ] | None = None
     intelligence_class: QualifiedName | None = None  # hint, never a worker route
     task_type: QualifiedName | None = None  # kind hint for the router
     objective: Value  # rendered to a string
@@ -378,12 +406,13 @@ class TerminalStep(StepBase):
 
 
 Step = Annotated[
-    CommandStep | LlmStep | AgentTaskStep | DecisionStep | WaitStep | ForEachStep | TerminalStep,
+    CommandStep | LlmStep | AgentTaskStep | DecisionStep | WaitStep | ForEachStep | TerminalStep | ScriptStep,
     Field(discriminator="type"),
 ]
 
 #: Every step model, for the invariant walks and the diff.
 STEP_MODELS: Final[tuple[type[StepBase], ...]] = (
+    ScriptStep,
     CommandStep,
     LlmStep,
     AgentTaskStep,
@@ -487,6 +516,8 @@ def business_outcomes(step: Any, *, contract_outcomes: frozenset[str] | None = N
     command's business set is empty and §6.6 has already emitted
     ``unknown_command``.
     """
+    if isinstance(step, ScriptStep):
+        return SCRIPT_OUTCOMES
     if isinstance(step, CommandStep):
         return contract_outcomes if contract_outcomes is not None else frozenset()
     if isinstance(step, LlmStep):
@@ -525,6 +556,23 @@ def _outcome_enum(step: LlmStep) -> list[str] | None:
 
 def result_schema_for(step: Any, *, command_schema: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The JSON-Schema-shaped result a step binds through ``save_result_as``."""
+    if isinstance(step, ScriptStep):
+        return {"type": "object", "properties": {
+            "stdout": {"type": ["string", "null"]},
+            "stderr": {"type": ["string", "null"]},
+            "stdout_json": {},
+            "outcome": {"type": "string"},
+            "terminal_cause": {"type": "string"},
+            "execution_id": {"type": "string"},
+            "exit_code": {"type": ["integer", "null"]},
+            "signal": {"type": ["integer", "null"]},
+            "capture_complete": {"type": "boolean"},
+            "cleanup_complete": {"type": "boolean"},
+            "inline_omitted": {"type": "boolean"},
+            "output_refs": {"type": "object", "properties": {
+                "stdout": {"type": "string"}, "stderr": {"type": "string"},
+            }},
+        }, "additionalProperties": True}
     if isinstance(step, CommandStep):
         return command_schema
     if isinstance(step, LlmStep):
@@ -569,6 +617,14 @@ def step_values(step: Any, *, scoped: bool = False) -> list[Any]:
             values.extend(walk_value(node, scoped=scoped))
     for node in getattr(step, "inputs", {}).values():
         values.extend(walk_value(node, scoped=scoped))
+    if isinstance(step, ScriptStep):
+        program = step.program
+        inputs = [*(program.argv[1:] if program.argv else program.arguments),
+                  *step.environment.values()]
+        if program.stdin is not None:
+            inputs.append(program.stdin)
+        for node in inputs:
+            values.extend(walk_value(node, scoped=scoped))
     if isinstance(step, DecisionStep):
         for case in step.cases:
             values.extend(condition_values(case.when, scoped=scoped))
@@ -588,14 +644,16 @@ DELEGATED_PROFILE_INPUT: Final[str] = "profile_id"
 def step_profile_ids(step: Any) -> tuple[str, ...]:
     """Every capability profile one step depends on, in declaration order.
 
-    Two positions carry one, and both are real dependencies of the artifact:
+    These are real dependencies of the artifact:
 
     * the *own* profile of an :class:`LlmStep` or :class:`AgentTaskStep`, which
-      the step runs as; and
+      the step runs as;
     * a *delegated* profile — a literal :data:`DELEGATED_PROFILE_INPUT` input,
-      which is how a command step hands work to another profile.
+      which is how a command step hands work to another profile; and
+    * a server-owned role created by a domain command, whose profile cannot
+      be supplied by the caller.
 
-    Only a literal counts.  A ``profile_id`` computed from an event reference
+    Only a literal delegated input counts. A ``profile_id`` computed from an event reference
     is not knowable at compile time, so there is no fingerprint to record and
     pretending otherwise would freeze a value the run picks.
     """
@@ -607,6 +665,10 @@ def step_profile_ids(step: Any) -> tuple[str, ...]:
     value = delegated.get(DELEGATED_PROFILE_INPUT) if hasattr(delegated, "get") else None
     if isinstance(value, LiteralValue) and isinstance(value.value, str) and value.value:
         found.append(value.value)
+    if isinstance(step, CommandStep) and step.command == "ensure_spec_ingest":
+        found.append("spec-ingest")
+    if isinstance(step, CommandStep) and step.command == "ensure_fidelity_review":
+        found.append("fidelity-reviewer")
     return tuple(dict.fromkeys(found))
 
 
@@ -624,21 +686,37 @@ def referenced_profile_ids(definition: PlaybookDefinition) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+#: Commands whose effect needs another command's authority.  A command step
+#: grants the dependency only when the artifact's pinned source declaration
+#: (``trusted_execution.required_capabilities``) names it, so the reviewed
+#: source shows every authority the step exercises.
+DECLARED_COMMAND_DEPENDENCIES: dict[str, frozenset[str]] = {
+    "playbook_state_notify": frozenset({"message_send"}),
+}
+
+
 def granted_aq_commands(definition: Any) -> frozenset[str]:
-    """Every AQ command the artifact grants: its command steps' commands and
-    the ``aq_commands`` its steps' tool use names.
+    """Every AQ command the artifact grants: its command steps' commands, the
+    ``aq_commands`` its steps' tool use names, and the declared dependencies
+    of those commands (:data:`DECLARED_COMMAND_DEPENDENCIES`).
 
     Derived from the immutable artifact itself, never from a reviewed
-    manifest, so a repository write cannot grant anything.  A command that
+    manifest, so a repository write cannot grant anything.  A declared
+    capability no step depends on grants nothing.  A command that
     must only run from one kind of playbook (``task_route_apply`` runs only
     from the project's bound router) checks it on the live invocation
     (:mod:`src.playbooks.invocation`).
     """
+    metadata = getattr(definition, "trusted_execution", None)
+    declared = frozenset(getattr(metadata, "required_capabilities", None) or ())
     found: set[str] = set()
     for step in getattr(definition, "steps", {}).values():
+        if isinstance(step, ScriptStep):
+            found.update(("playbook_script_run", "job_cancel"))
         command = getattr(step, "command", None)
         if isinstance(command, str) and command:
             found.add(command)
+            found.update(DECLARED_COMMAND_DEPENDENCIES.get(command, frozenset()) & declared)
         tool_use = getattr(step, "tool_use", None)
         if tool_use is not None:
             found.update(getattr(tool_use, "aq_commands", None) or ())
@@ -696,7 +774,13 @@ class TrustedExecutionMetadata(V2Base):
     security policy remains in the execution contracts, not in author assertions.
     """
 
+    required_capabilities: tuple[QualifiedName, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     state_schema_version: Annotated[int, Field(strict=True, ge=1)] | None = None
+    scripts: dict[Identifier, PinnedScript] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
 
 
 class PlaybookDefinition(V2Base):
