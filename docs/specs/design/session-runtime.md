@@ -297,6 +297,18 @@ and its claim/workspace bindings remain available for recovery; quarantining a
 workspace never deletes its checkout or removes an index lock. An operator repairs
 and re-enables it after proving the retained work safe.
 
+An active pool claim must retain its workspace's `.aq/claim.json`. Preparation
+reads back the marker before activation; a failed write/readback releases ordinary
+preparation with backoff and drains the unusable worker. Each reconciliation pass
+also detects active claims whose marker is absent in an accessible checkout,
+rechecks the session instance, task binding and epoch under the task control lock,
+and stops the worker through confirmed pool teardown. Only then may the task return
+to READY, with `prepare_failed`, `needs_attention = claim_file_missing` and preparation
+backoff. Unconfirmed stops retain resources for retry. Attached integration owners
+retain the stopped writer's claim and workspace for owner recovery. Preparations,
+verified waits, terminal tasks, successor bindings, unreadable markers and unavailable
+checkouts are excluded. Recovery never recreates a claim marker from database state.
+
 Both operator stall sweeps report live pool workers with zero activated claims
 after 15 minutes, even when repeated claim attempts keep `last_activity` fresh.
 Idle pools without matching READY work and without preparation failures are normal

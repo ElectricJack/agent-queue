@@ -92,7 +92,11 @@ S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
 skip a READY fixture while another transaction holds its row. Each claim waits
 one second so an unlock without a `task.ready` event cannot consume the retry
 budget in a few long polls. `claim_in_progress` for an expected fixture resumes
-the same preparation on the next call. Other claim outcomes and claims or
+the same preparation on the next call. S16 requests its three exact fixtures
+with `aq task claim TASK_ID`: `--next` may skip a locked fixture and claim other
+queued work, even when the fixture has higher priority. An untargeted conflict
+fails immediately; S16 retries a targeted conflict only while the fixture is
+still READY, unclaimed and unblocked. Other claim outcomes and claims or
 preparations of an unexpected task fail immediately. S2 and S3 accept only the
 remaining S1 fixtures, including when separate pytest items run them in different
 subprocesses. A timeout reports the last claim and the fixture state.

@@ -1173,6 +1173,12 @@ _CANONICAL_PAYLOADS.update(
         "session.claim_timeout": {
             "session_id": "sess-1",
         },
+        "session.claim_file_missing": {
+            "session_id": "sess-1",
+            "task_id": "t-1",
+            "claim_epoch": 1,
+            "project_id": "proj-1",
+        },
         "session.stop_intent_stopped": {
             "session_id": "sess-1",
             "name": "p-worker--p1--abc",
