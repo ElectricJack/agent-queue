@@ -142,6 +142,7 @@ class DecisionIntent:
     expected: SourceVersion
     overall_note: str = ""
     dispositions: tuple[JsonObject, ...] = ()
+    responder_class: str | None = None
 
     def __post_init__(self):
         if not self.option_key or len(self.overall_note) > 16_000:

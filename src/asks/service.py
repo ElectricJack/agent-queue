@@ -1,7 +1,7 @@
 """Foundation for CommandHandler-owned ask publication and packet reservation.
 
-This package enables no entry points or external sends. Domain adapters added by
-subsequent packages own approval, gates, feedback operations and finalization.
+Domain adapters own approval, gates, feedback operations and finalization.
+CommandHandler exposes preparation and accepted decisions through this boundary.
 Every method takes the caller's connection; snapshot() locks the source before
 publication takes an ask lock. A reservation is never an applied decision.
 """
@@ -82,6 +82,19 @@ class AskService:
         Conflicts return a quarantined publication so the repair record commits;
         callers must not turn that result into a transaction-rolling exception.
         """
+        from src.asks.reset_policy import reset_state
+
+        identity = snapshot.identity
+        previous = await self.db.get_ask_by_source(
+            identity.project_id, identity.kind, identity.key, conn=conn,
+        )
+        if previous and previous["context"].get("legacy_discarded"):
+            return Publication(previous, False)
+        reset = await reset_state(conn, identity.project_id)
+        if reset and identity.kind == "review" and identity.key not in reset["kept_reviews"]:
+            review = await self.db.get_review(identity.key, conn=conn)
+            if review and review["created_at"] <= reset["cutoff"]:
+                raise AskError("ask.discarded", "This legacy request was discarded by the project reset")
         invalid = validate_context(snapshot)
         if invalid and not legacy:
             raise AskError("ask.context_missing", "Missing or invalid ask context", fields=invalid)
@@ -291,6 +304,16 @@ class AskService:
             },
             conn=conn,
         )
+
+    async def decide(self, source, actor, intent, *, conn, **kwargs) -> tuple[dict, bool]:
+        """Reserve a complete domain decision; never report reservation as application."""
+        adapter = self.adapters.get(source.kind, kwargs.get("policy", ""))
+        if not callable(getattr(adapter, "reserve_on", None)):
+            raise AskError("ask.unsupported_source", "Source has no decision application boundary")
+        decision, created = await self.reserve_decision(source, actor, intent, conn=conn, **kwargs)
+        if created:
+            await adapter.reserve_on(decision, conn=conn)
+        return decision, created
 
     async def reserve_decision(
         self,
