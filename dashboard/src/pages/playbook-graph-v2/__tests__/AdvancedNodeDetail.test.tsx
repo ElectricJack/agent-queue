@@ -51,7 +51,7 @@ describe("AdvancedNodeDetail", () => {
     // contract to name its arguments either, so the projector says so in the
     // value rather than inventing one.
     const resolved = within(screen.getByRole("group", { name: "Resolved inputs" }));
-    expect(resolved.getAllByText("(unresolved)")).toHaveLength(2);
+    expect(resolved.getAllByText("Unresolved: (unresolved)")).toHaveLength(2);
     // An unregistered command claims no idempotency rather than none at all.
     const idempotency = within(screen.getByRole("group", { name: "Idempotency" }));
     expect(idempotency.getByText("no")).toBeInTheDocument();
@@ -86,7 +86,7 @@ describe("AdvancedNodeDetail", () => {
   it("renders a redacted value without its canonical payload", () => {
     render(<AdvancedNodeDetail node={ensureReviewTask} />);
     const resolved = within(screen.getByRole("group", { name: "Resolved inputs" }));
-    expect(resolved.getByText("(redacted)")).toBeInTheDocument();
+    expect(resolved.getByText("Protected value")).toBeInTheDocument();
     // A redacted row has no canonical JSON to disclose, so nothing names the
     // argument's value anywhere in the block.
     expect(resolved.queryByText(/"dedup_key"/)).not.toBeInTheDocument();

@@ -14,12 +14,16 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:09fdaec8b41996233ac8755ee06e2fc0a8f2868dc80f8aa7e6ef5379243f8288` |
+| Contract fingerprint | `sha256:95a4898d4fcfc24201c24da1cb9619b2814030056fd4228fa3f87289adf01df8` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `expected` | `object` | no | — | — |
+| `preview_id` | `string` | no | — | — |
+| `idempotency_key` | `string` | no | — | — |
+| `overall_note` | `string` | no | — | — |
 | `run_id` | `string` | yes | — | The playbook run ID to resume |
 | `human_input` | `string` | yes | — | Your review decision or feedback text. This is added to the conversation history and used to determine the next transition. |
 
@@ -46,7 +50,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using run_id, human_input | — | always |
+| Composite using expected, preview_id, idempotency_key, overall_note, run_id, human_input | — | always |
 
 <!-- aq:generated:end -->
 

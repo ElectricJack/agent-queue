@@ -194,6 +194,67 @@ class ProjectCommandsMixin:
                 "code": "repository_authorization_missing", "recovery_command": command,
                 "message": "Local repository has no authorized remote. Review and run the binding command."}
 
+    async def _cmd_repair_repository_checkout(self, args: dict) -> dict:
+        """Repoint stale path fields without deleting a repository's identity."""
+        from dataclasses import asdict
+        from pathlib import Path
+
+        from src.commands.supervisor_authority import operator_or_global_supervisor
+        from src.git.manager import repository_urls_match
+        from src.workspace_registration import path_is_missing
+
+        operator_id, refusal = await operator_or_global_supervisor(self.db)
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        required = {"project_id", "repository_id", "expected_path", "replacement_path", "reason"}
+        if (set(args) - required - {"apply"} or not required <= set(args)
+                or any(not isinstance(args[k], str) or not args[k].strip() for k in required)
+                or not isinstance(args.get("apply", False), bool)):
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": "Provide project, repository, expected/replacement paths and reason"}
+        repo = await self.db.get_repo(args["repository_id"])
+        if repo is None or repo.project_id != args["project_id"]:
+            return {"success": False, "error_code": "repository_not_found",
+                    "error": "Repository not found in this project"}
+        expected = args["expected_path"]
+        replacement = args["replacement_path"]
+        fields = [field for field in ("source_path", "checkout_base_path")
+                  if getattr(repo, field) == expected]
+        if not fields:
+            return {"success": False, "error_code": "repository_checkout_stale",
+                    "error": "The expected path no longer matches the registration"}
+        if not Path(expected).is_absolute() or not path_is_missing(expected):
+            return {"success": False, "error_code": "checkout_not_missing",
+                    "error": "Expected path must be absolute and confirmed missing"}
+        if not Path(replacement).is_absolute() or not Path(replacement).is_dir() or not repo.url:
+            return {"success": False, "error_code": "replacement_unverified",
+                    "error": "Require an existing absolute checkout and a registered repository URL"}
+        replacement = str(Path(replacement).resolve())
+        try:
+            await self.orchestrator.git._arun(["rev-parse", "--git-dir"], cwd=replacement)
+            origin = await self.orchestrator.git.aget_remote_url(replacement)
+        except (GitError, OSError):
+            origin = None
+        if not origin or not repository_urls_match(repo.url, origin, base=replacement):
+            return {"success": False, "error_code": "replacement_unverified",
+                    "error": "Replacement must be a Git checkout of the registered repository"}
+        before = {**asdict(repo), "source_type": repo.source_type.value}
+        after = {**before, **dict.fromkeys(fields, replacement)}
+        if not args.get("apply", False):
+            return {"success": True, "project_id": repo.project_id, "repository_id": repo.id,
+                    "changed": False, "preview": True, "before": before, "after": after}
+        # Network/filesystem validation may have yielded; recheck the live authority
+        # and absence before committing a compare-and-swap of the full config.
+        operator_id, refusal = await operator_or_global_supervisor(self.db)
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        if not path_is_missing(expected):
+            return {"success": False, "error_code": "checkout_not_missing",
+                    "error": "The old checkout path is no longer confirmed missing"}
+        return await self.db.repair_repository_checkout(
+            repo, after=after, reason=args["reason"].strip(), operator_id=operator_id,
+        )
+
     async def _cmd_pause_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
@@ -234,7 +295,7 @@ class ProjectCommandsMixin:
         for session in sessions:
             if session.task_id is None:
                 continue
-            result = await self._cmd_message_send({
+            result = await self._queue_message_notification({
                 "project_id": project_id,
                 "from_kind": "system",
                 "from_id": "project-pause",
@@ -542,7 +603,11 @@ class ProjectCommandsMixin:
                 return await self._configure_promotion_flow(
                     project, sensitive, args, operator_id=operator_id
                 )
-            return await PolicyActivation(self.db).configure(
+            return await PolicyActivation(
+                self.db, hierarchy_service_factory=self._hierarchy_integration_service
+                if sensitive.get("hierarchical_integration_mode") in {"hierarchy", "train"}
+                else None,
+            ).configure(
                 pid,
                 updates=sensitive,
                 expected_generation=int(args["expected_integration_generation"]),
@@ -686,7 +751,9 @@ class ProjectCommandsMixin:
                     "error": "trust_manifest_unavailable",
                     "message": str(exc),
                 }
-        activation = PolicyActivation(self.db)
+        activation = PolicyActivation(
+            self.db, hierarchy_service_factory=lambda: self._hierarchy_integration_service(),
+        )
         fence = {
             "expected_generation": int(args["expected_integration_generation"]),
             "reason": str(args.get("reason") or "configure promotion flow"),
