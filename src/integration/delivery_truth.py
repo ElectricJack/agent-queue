@@ -521,6 +521,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
 
     from sqlalchemy import and_, select
 
+    from src.database.queries.result_queries import ResultQueryMixin
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
@@ -611,7 +612,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         ).where(task_metadata.c.task_id.in_(task_ids | parent_history),
                 task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
     completion_by_id = {
-        row["task_id"]: db._row_to_task_completion(row) for row in completions
+        row["task_id"]: ResultQueryMixin._row_to_task_completion(row) for row in completions
     }
     requests = {}
     for rows, is_archived in ((live, False), (archived, True)):

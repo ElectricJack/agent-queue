@@ -1,6 +1,7 @@
 """Remote Git delivery proofs with real histories and retained completion identities."""
 
 from dataclasses import dataclass, replace
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -1152,10 +1153,13 @@ async def test_tick_scope_shares_started_and_sequential_fetches_with_isolated_an
     assert repo.git.afetch_origin.await_count == 2
 
 
-async def test_unchanged_snapshot_skips_transfer_fsck_and_maintenance(repository):
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_unchanged_snapshot_skips_transfer_fsck_and_maintenance(repository, recovered):
     repo = repository
     truth = GitTruth(repo.git, skip_unchanged=True)
     first = await repo.snapshot(truth=truth)
+    if recovered:
+        historical_recovery_journal(repo)
     repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
     repo.git.arun_git_result = AsyncMock(wraps=repo.git.arun_git_result)
     metrics = SelectionMetrics()
@@ -1171,8 +1175,40 @@ async def test_unchanged_snapshot_skips_transfer_fsck_and_maintenance(repository
     assert await second.is_fresh()
 
 
+def historical_recovery_journal(repo):
+    root = repo.path / ".git/aq-empty-object-backups"
+    root.mkdir(exist_ok=True)
+    (root / "incident.json").write_text(json.dumps({
+        "cache": str(repo.path.absolute()), "project_id": "p", "repository_id": "r",
+        "status": "recovered", "backup": str(root / "historical"), "attempts": 1,
+        "id": "historical", "moves": [], "checks": [],
+    }))
+    (root / "pending").touch()  # A completed journal also clears a leftover sentinel.
+
+
+async def test_recovered_journal_cannot_bypass_a_durable_recovery_hold(repository):
+    repo = repository
+    truth = GitTruth(repo.git, skip_unchanged=True)
+    await repo.snapshot(truth=truth)
+    historical_recovery_journal(repo)
+    repo.git.retained_recovery_state = AsyncMock(return_value={
+        "status": "exhausted", "attempts": 2,
+    })
+    repo.git.als_remote_snapshot_refs = AsyncMock()
+    repo.git.afetch_origin = AsyncMock()
+    snapshot = await repo.snapshot(truth=truth)
+    assert snapshot.error.startswith("snapshot_git_error: retained recovery exhausted")
+    assert snapshot.target_oid is None
+    repo.git.als_remote_snapshot_refs.assert_not_awaited()
+    repo.git.afetch_origin.assert_not_awaited()
+    assert (repo.path / ".git/aq-empty-object-backups/pending").exists()
+
+
+@pytest.mark.parametrize("recovered", [False, True])
 @pytest.mark.parametrize("change", ["branch", "tag", "provenance", "delete", "force"])
-async def test_snapshot_probe_detects_every_imported_ref_namespace(repository, remote_writer, change):
+async def test_snapshot_probe_detects_every_imported_ref_namespace(
+    repository, remote_writer, change, recovered,
+):
     repo = repository
     writer = remote_writer
     truth = GitTruth(repo.git, skip_unchanged=True)
@@ -1182,6 +1218,8 @@ async def test_snapshot_probe_detects_every_imported_ref_namespace(repository, r
         await writer.commit("before-rewind")
         await writer.publish()
     await repo.snapshot(truth=truth)
+    if recovered:
+        historical_recovery_journal(repo)
     head = repo.base if change in {"force", "delete"} else await writer.commit("next-tip")
     if change == "delete":
         await writer.run("push", "origin", ":refs/heads/disappearing")
@@ -1247,10 +1285,13 @@ async def test_snapshot_probe_failure_cannot_reuse_old_tracking_refs(repository)
     assert snapshot.target_oid is None
 
 
-async def test_unchanged_remote_requires_a_reusable_local_integrity_baseline(repository):
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_unchanged_remote_requires_a_reusable_local_integrity_baseline(repository, recovered):
     repo = repository
     truth = GitTruth(repo.git, skip_unchanged=True)
     await repo.snapshot(truth=truth)
+    if recovered:
+        historical_recovery_journal(repo)
     repo.git.aretained_store_verified = AsyncMock(return_value=False)
     repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
     metrics = SelectionMetrics()
