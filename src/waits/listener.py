@@ -716,46 +716,96 @@ class WaitSourceListener:
                 "event": dict(candidate) if candidate else None, "retry": bool(retry),
                 "retry_pending": retry_pending}
 
+    async def _redispatch_event(self, conn, args):
+        from src.database.tables import projects
+
+        project_id = args["project_id"]
+        if not await conn.scalar(select(projects.c.id).where(projects.c.id == project_id)):
+            raise WaitError("wait.out_of_scope", "project not found")
+        event = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.seq == args["source_seq"],
+        ))).mappings().first()
+        if event is None:
+            raise WaitError("wait.source_unresolved", "source event not found")
+        payload_project = event["payload"].get("project_id")
+        if payload_project is not None and payload_project != project_id:
+            raise WaitError("wait.out_of_scope", "source belongs to another project")
+        return event
+
+    @staticmethod
+    def _redispatch_status(event, project_id):
+        if event["dispatched_at"] is not None:
+            return {"success": True, "result": {
+                "source_seq": event["seq"], "project_id": project_id,
+                "outcome": "already_dispatched", "dispatched_at": event["dispatched_at"],
+                "redispatched": False, "retired_events": 0,
+            }}
+
+    @asynccontextmanager
+    async def _redispatch_budget(self, args):
+        started = time.monotonic()
+        budget = asyncio.timeout(self.event_budget_seconds)
+        work = {"phase": "listener_lock", "dispatch_attempts": 0, "candidate_waits": 0}
+        try:
+            async with budget:
+                yield work
+        except TimeoutError as exc:
+            message = ("source re-dispatch exceeded its work budget" if budget.expired()
+                       else f"source re-dispatch timed out during {work['phase']}")
+            raise WaitError(
+                "wait.unavailable", message, source_seq=args["source_seq"],
+                budget_seconds=self.event_budget_seconds,
+                elapsed_seconds=time.monotonic() - started, **work,
+            ) from exc
+
     async def redispatch(self, args, *, principal, scope, handler):
         """Reobserve one durable source within an explicitly authorized project."""
-        from src.database.tables import events, projects
+        from src.database.tables import events
         from src.waits.loops import prepare_progress
 
         project_id = args["project_id"]
-        async with asyncio.timeout(self.event_budget_seconds), self._tick_lock:
-            if not await self.service.lease():
-                raise WaitError("wait.unavailable", "listener lease belongs to another instance")
+        # A dispatched stamp needs no observation, leadership or graph work.
+        # Validate scope first so the fast path cannot reveal foreign sources.
+        async with self.db._engine.connect() as conn:
+            event = await self._redispatch_event(conn, args)
+            if result := self._redispatch_status(event, project_id):
+                return result
+        async with self._redispatch_budget(args) as work, self._tick_lock:
             async with self.db._engine.begin() as conn:
-                if not await conn.scalar(select(projects.c.id).where(projects.c.id == project_id)):
-                    raise WaitError("wait.out_of_scope", "project not found")
-                event = (await conn.execute(select(wait_source_events).where(
-                    wait_source_events.c.seq == args["source_seq"],
-                ))).mappings().first()
-                if event is None:
-                    raise WaitError("wait.source_unresolved", "source event not found")
-                payload_project = event["payload"].get("project_id")
-                if payload_project is not None and payload_project != project_id:
-                    raise WaitError("wait.out_of_scope", "source belongs to another project")
+                work["phase"] = "source_recheck"
+                event = await self._redispatch_event(conn, args)
+                if result := self._redispatch_status(event, project_id):
+                    return result
+                work["phase"] = "lease"
+                if not await self.service.lease():
+                    raise WaitError("wait.unavailable", "listener lease belongs to another instance")
+                work["phase"] = "owner_preparation"
                 owners = (await conn.execute(select(wait_records).where(
                     wait_records.c.project_id == project_id,
                     wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
                     or_(wait_records.c.source_key == event["source_key"],
                         wait_records.c.condition_kind == "resource"),
                 ))).mappings().all()
+                work["candidate_waits"] = len(owners)
                 await prepare_progress(conn, owners)
                 observations = None
                 prepare = getattr(self.service.dispatcher, "prepare_observations", None)
                 if prepare is not None and event["source_key"].startswith((
                     "ci_check:", "ci_run:", "pull_request:",
                 )):
+                    work["phase"] = "observation_preparation"
                     observations = await prepare(conn, owners)
+                work["phase"] = "graph_lock"
                 await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
                 await self.locked_lease(conn)
                 kwargs = {"observations": observations} if observations is not None else {}
+                work["phase"] = "dispatch"
+                work["dispatch_attempts"] += 1
                 retry_after = await self._dispatch(
                     conn, dict(event), project_id=project_id, **kwargs) or 0
                 # Observation-only sources can retire without subscribers.
                 # Other sources retain their forward/retry lifecycle ownership.
+                work["phase"] = "retirement"
                 retired = []
                 if event["source_key"].startswith(_OBSERVATION_ONLY_PREFIXES):
                     retired = await self._unobserved_events(conn, event["seq"], source=event)
@@ -763,6 +813,7 @@ class WaitSourceListener:
                         await conn.execute(update(wait_source_events).where(
                             wait_source_events.c.seq.in_(retired),
                         ).values(dispatched_at=self.clock()))
+                work["phase"] = "audit"
                 await conn.execute(insert(events).values(
                     event_type="wait.source_redispatched", project_id=project_id,
                     timestamp=self.clock(), payload=json.dumps({
@@ -773,6 +824,7 @@ class WaitSourceListener:
                     }),
                 ))
                 await self.locked_lease(conn)
+                work["phase"] = "transaction_commit"
             self.changed.set()
             return {"success": True, "result": {
                 "source_seq": event["seq"], "project_id": project_id,

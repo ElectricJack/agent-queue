@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import heapq
 import json
@@ -27,12 +28,28 @@ from src.waits.admission import admission_pass
 logger = logging.getLogger(__name__)
 
 # These identify an invalid/stale owner or request, rather than missing runtime
-# infrastructure. Unknown errors and lease/service failures remain retryable.
+# infrastructure. Reservation source lookups can also be temporarily unresolved.
 PERMANENT_REFUSALS = frozenset({
     "wait.out_of_scope", "wait.invalid", "wait.condition_required",
     "wait.not_escalated", "wait.source_unresolved", "continuation.stale_generation",
     "stale_claim",
 })
+
+
+def _deadline_refusal(result):
+    """Recover the effect code from the old command-runtime exception wrapper."""
+    prefix = "deadline effect failed: "
+    error = result.get("error")
+    if (result.get("error_code") == "command_runtime_error"
+            and isinstance(error, str) and error.startswith(prefix)):
+        try:
+            effect = ast.literal_eval(error[len(prefix):])
+        except (ValueError, SyntaxError):
+            return result
+        if (isinstance(effect, dict) and effect.get("success") is False
+                and isinstance(effect.get("error_code"), str)):
+            return {**result, "error_code": effect["error_code"], "effect_refusal": effect}
+    return result
 
 
 class WaitTimerDriver:
@@ -78,26 +95,42 @@ class WaitTimerDriver:
                         "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
                         "generation": row["generation"],
                     })
-                if not result.get("success") and result.get("error_code") != "wait.deadline_stale":
-                    if result.get("error_code") == "wait.graph_busy":
-                        raise WaitError("wait.graph_busy", result.get("error", "graph busy"))
-                    if result.get("error_code") not in PERMANENT_REFUSALS:
+                result = _deadline_refusal(result)
+                code = result.get("error_code")
+                if not result.get("success") and code != "wait.deadline_stale":
+                    logger.warning(
+                        "wait.deadline_refused wait_id=%s deadline_type=%s generation=%s refusal=%s",
+                        row["wait_id"], row["deadline_type"], row["generation"], result,
+                    )
+                    if code in {None, "command_runtime_error", "wait.unavailable"}:
                         raise ListenerUnavailable(f"wait deadline fire refused: {result}")
+                    if (code not in PERMANENT_REFUSALS or (
+                            code == "wait.source_unresolved"
+                            and row["deadline_type"] == "reservation")):
+                        self._retry_deadline(deadline_id, row, code)
+                        continue
                     await self.service.quarantine_deadline(row, result)
             except WaitError as exc:
                 if exc.code != "wait.graph_busy":
                     raise
-                previous = self._retry_deadlines.get(deadline_id)
-                delay = min(previous[1] * 2, self.max_retry_seconds) if previous else self.retry_seconds
-                due = self.clock() + delay
-                self._retry_deadlines[deadline_id] = (due, delay)
-                heapq.heapreplace(self.heap, (due, deadline_id, row))
-                logger.debug("wait.deadline_graph_busy id=%s retry_after=%s", deadline_id, delay)
+                self._retry_deadline(deadline_id, row, exc.code)
                 continue
             heapq.heappop(self.heap)
             self._retry_deadlines.pop(deadline_id, None)
             fired += bool(result.get("success"))
         return fired
+
+    def _retry_deadline(self, deadline_id, row, code):
+        previous = self._retry_deadlines.get(deadline_id)
+        delay = min(previous[1] * 2, self.max_retry_seconds) if previous else self.retry_seconds
+        due = self.clock() + delay
+        self._retry_deadlines[deadline_id] = (due, delay)
+        heapq.heapreplace(self.heap, (due, deadline_id, row))
+        logger.debug(
+            "wait.deadline_retry id=%s wait_id=%s deadline_type=%s generation=%s "
+            "error_code=%s retry_after=%s",
+            deadline_id, row["wait_id"], row["deadline_type"], row["generation"], code, delay,
+        )
 
     @background_graph_work()
     async def quarantine(self, deadline, refusal):
@@ -233,8 +266,9 @@ class WaitTimerDriver:
                             "error": f"{row['deadline_type']} deadline effect is unavailable"}
                 result = await callback(conn, dict(row), dict(wait), now=now, handler=handler)
                 if not isinstance(result, dict) or not result.get("success"):
-                    if isinstance(result, dict) and result.get("error_code") == "wait.graph_busy":
-                        raise WaitError("wait.graph_busy", result.get("error", "graph busy"))
+                    if isinstance(result, dict) and isinstance(result.get("error_code"), str):
+                        raise WaitError(result["error_code"], result.get("error", "effect refused"),
+                                        effect_refusal=result)
                     raise ListenerUnavailable(f"deadline effect failed: {result}")
                 await conn.execute(update(wait_deadlines).where(
                     wait_deadlines.c.id == row["id"],
