@@ -64,8 +64,8 @@ UNPROTECTED = "unprotected"
 class LocalRulesetReader:
     """Explicit operator login, limited to reading one bound ruleset's detail.
 
-    The App's administration:read token hides bypass actors. A LOCAL command
-    may supply this reader to observe those actors with the operator's gh login.
+    The App token hides bypass actors. Authorized callers may supply this reader
+    to observe them with the operator's gh login, enforcing authority and scope.
     The App remains the authority for all writes and its own bypass ability.
     """
 

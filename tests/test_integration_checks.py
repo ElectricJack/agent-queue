@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
-from src.database.tables import integration_check_evidence
+from src.database.tables import integration_check_evidence, wait_source_events
 from src.git.manager import GitError
 from src.integration.checks import (
     ChecksState,
@@ -535,6 +535,66 @@ async def test_database_guard_keeps_run_attempt_rows_append_only(db):
     assert await stored(db) == []
 
 
+async def test_repeated_check_poll_only_emits_changed_evidence(db):
+    clock = Clock()
+    provider = SimpleNamespace(
+        required=RequiredChecks(version="v1", names=("unit",), producer_id="p"),
+        observe=AsyncMock(),
+    )
+    checks = ExactChecks(db, provider, clock=clock)
+
+    async def refresh(conclusion="pending", **fields):
+        clock.now += 1
+        provider.observe.return_value = (row(
+            "unit", conclusion, producer_id="p", run_id="run", attempt=1,
+            observed_at=clock.now, **fields,
+        ),)
+        return await checks.refresh(head())
+
+    await refresh()
+    for _ in range(10):
+        await refresh()
+    [cached] = await stored(db)
+    assert cached["observed_at"] == clock.now
+    assert cached["due_at"] == clock.now + checks.poll_seconds
+    await refresh("success")
+    await refresh("success")
+    # Returning to an earlier state is a new transition, not a replay.
+    await refresh()
+    clock.now -= 1
+    await refresh(reason="waiting for runner")
+    clock.now -= 1
+    await refresh("success")
+    clock.now -= 1
+    await refresh(reason="waiting for runner")
+    async with db._engine.connect() as conn:
+        events = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == f"ci_check:repo:{HEAD}:unit",
+        ).order_by(wait_source_events.c.seq))).mappings().all()
+    assert [event["payload"]["conclusion"] for event in events] == [
+        "pending", "success", "pending", "pending", "success", "pending",
+    ]
+
+
+async def test_concurrent_identical_first_check_polls_emit_once(db):
+    barrier = asyncio.Barrier(8)
+
+    class Provider:
+        required = RequiredChecks(version="v1", names=("unit",), producer_id="p")
+
+        async def observe(self, observed_head, *, now):
+            await barrier.wait()
+            return (row("unit", "success", producer_id="p", observed_at=now),)
+
+    await asyncio.gather(*(ExactChecks(db, Provider(), clock=Clock(1000 + n)).refresh(head())
+                           for n in range(8)))
+    async with db._engine.connect() as conn:
+        events = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == f"ci_check:repo:{HEAD}:unit",
+        ))).mappings().all()
+    assert len(events) == 1
+
+
 async def test_slow_provider_holds_no_connection_lock_or_transaction(db):
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -713,6 +773,26 @@ async def test_pr_checks_are_separate_from_push_cache_and_share_one_listing_per_
     with hosted_observation_scope():
         await push.refresh(head())
     assert listed.count("check_runs") == 2
+
+
+async def test_root_pr_fallback_cache_cannot_satisfy_strict_pr_or_candidate_checks(db):
+    client, trust = github(app=False, names=("unit",))
+    admission = ExactChecks(db, HostedChecks(HostedCIProducer(
+        client, trust, expected_event="pull_request", allow_push_fallback=True,
+    )))
+    push = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)))
+    strict_pr = ExactChecks(db, HostedChecks(HostedCIProducer(
+        client, trust, expected_event="pull_request",
+    )))
+    assert (await admission.refresh(head())).green
+    assert admission.required.producer_id == "15368:pull_request+push"
+    assert not (await push.read(head())).green
+    assert not (await strict_pr.read(head())).green
+    assert (await strict_pr.refresh(head())).state is ChecksState.PENDING
+    assert (await admission.read(head())).green
+    rerun(client, status="completed", conclusion="failure")
+    assert (await admission.refresh(head())).state is ChecksState.RED
+    assert not (await admission.read(head())).green
 
 
 async def test_exact_check_changes_wake_readiness_once_per_conclusion_or_attempt(db):

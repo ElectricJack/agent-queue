@@ -28,3 +28,24 @@ Successful candidate pushes wake the matching delivery target. The next train
 visit fetches the branch and evaluates checks for its new exact SHA, including
 when automatic repair attempts are exhausted. The wake carries no green evidence
 and does not reset the attempt budget or override operator intent.
+
+## Retained task-free fixer authority after restart
+
+Task-free in-place batch fixers retain their session, checkout, frozen members
+and candidate ref across daemon restarts. Before a fixer push, the lane fetches
+a fresh Git observation outside publication locks. Eligibility checks use that
+observation for this command, independently of the train's in-memory visit cache.
+An epic refresh remains eligible when its frozen default-branch source is an
+ancestor of the newly observed default head. A later target advance does not
+discard or reset the fixer's commit; the train rebuilds and validates the repaired
+candidate against the current target through its ordinary publication gates.
+
+`aq integration rebind-batch-authority BATCH` lets a local operator or live owning
+project/global supervisor preview the same current publication proof.
+`--apply --reason TEXT` records the refreshed authority evidence and audit event.
+It leaves the checkout, candidate ref, frozen sources, session and repair budget
+intact. Every subsequent push obtains its own fresh observation and repeats the
+guards; an audit record grants no continuing authority. Paused/aborted batches
+(apart from retained deferred/companion publication), operator holds, withdrawn
+sources, stopped/replaced sessions and unavailable Git evidence still refuse.
+The control does not override those refusals or publish to the delivery target.
