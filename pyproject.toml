@@ -176,6 +176,8 @@ dev = [
     "pytest-cov>=6.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.5",
+    # Property-based tests (random lifecycle sequences and invariants); see
+    # tests/test_task_lifecycle_properties.py.
     "hypothesis>=6.100",
     # Keep shard selection reproducible across CI runners and timing refreshes.
     "pytest-split==0.11.0",
