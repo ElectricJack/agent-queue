@@ -33,6 +33,7 @@ generation, transport, output and formatting layers they share.
 | [src/cli/formulas.py](../../../src/cli/formulas.py) | Implements `aq formula show` and `aq formula cook`, including repeatable `--var k=v`. | [cli/commands.md](../cli/commands.md) | `tests/test_formula_surface.py`, `tests/test_formula_commands.py` |
 | [src/cli/global_options.py](../../../src/cli/global_options.py) | Copies `--json`, `--brief` and `--api-url` onto every command so they parse at any position. | [cli/README.md](../cli/README.md) | `tests/test_cli_global_options.py`. Must run last in `app.py`. |
 | [src/cli/integration.py](../../../src/cli/integration.py) | Implements the `aq integration` control verbs with positional identities and compare-and-set fences. | [cli/commands.md](../cli/commands.md) | `tests/test_cli_integration.py` |
+| [src/cli/install.py](../../../src/cli/install.py) | Implements `aq install` — builds the step registry, runs the installer engine in-process with no daemon, and maps the outcome onto the documented exit codes. | [cli/install.md](../cli/install.md) | `tests/test_install_cli.py` |
 | [src/cli/inventory.py](../../../src/cli/inventory.py) | Walks the live Click tree to produce the command inventory, its alias and deprecation ledgers, and its validation. | [cli/README.md](../cli/README.md) | `tests/test_cli_inventory.py`; artifact at `docs/reference/cli-command-inventory.json`. |
 | [src/cli/logs.py](../../../src/cli/logs.py) | Implements `aq logs` — tails and filters the JSONL log file directly, with no daemon. | [cli/commands.md](../cli/commands.md) | `tests/test_cli_logs.py` |
 | [src/cli/menus.py](../../../src/cli/menus.py) | Provides the interactive prompts: the task wizard, fuzzy select, confirmations. | [cli/commands.md](../cli/commands.md) | `tests/test_cli_menus.py` |
@@ -63,7 +64,7 @@ supplies `_cmd_<name>` methods that `execute()` dispatches to.
 | [src/commands/authorization.py](../../../src/commands/authorization.py) | Decides whether a principal may dispatch a command, and filters tool schemas with the same predicate. | [cli/README.md](../cli/README.md) | `tests/test_command_capability_authorization.py`, `tests/test_capability_policy.py` |
 | [src/commands/helpers.py](../../../src/commands/helpers.py) | Provides the shared helpers the mixins use to resolve projects, tasks and agents and to shape results. | [cli/commands.md](../cli/commands.md) | Exercised through the mixins' own tests. |
 | [src/commands/agent_commands.py](../../../src/commands/agent_commands.py) | Implements the agent listing and workspace commands. | [cli/commands.md](../cli/commands.md) | `tests/test_agent_flock.py` |
-| [src/commands/ci_commands.py](../../../src/commands/ci_commands.py) | Implements `ci_baseline_status` — the read-only CI verdict for a default-branch head. | [cli/commands.md](../cli/commands.md) | `tests/test_ci_baseline_status.py`, `tests/test_ci_main_sentinel.py` |
+| [src/commands/ci_commands.py](../../../src/commands/ci_commands.py) | Implements `ci_baseline_status` — the read-only CI verdict for a default-branch head — and `ci_repair_adopt`, which records the failure a repair owns. | [cli/commands.md](../cli/commands.md) | `tests/test_ci_baseline_status.py`, `tests/test_ci_main_sentinel.py` |
 | [src/commands/claim_commands.py](../../../src/commands/claim_commands.py) | Implements `task_claim` — pull-based work selection with the epoch fence. | [cli/commands.md](../cli/commands.md) | `tests/test_claim_commands.py`, `tests/test_swarm_surface.py` |
 | [src/commands/digest_commands.py](../../../src/commands/digest_commands.py) | Implements the read-only digest preview and schedule status. | [cli/commands.md](../cli/commands.md) | `tests/test_digest_commands.py` |
 | [src/commands/discord_commands.py](../../../src/commands/discord_commands.py) | Implements shared-channel Discord housekeeping. | [cli/commands.md](../cli/commands.md) | `tests/test_discord_housekeeping.py` |
@@ -88,7 +89,7 @@ supplies `_cmd_<name>` methods that `execute()` dispatches to.
 | [src/commands/proposal_commands.py](../../../src/commands/proposal_commands.py) | Implements the staged task-batch proposal flow. | [cli/commands.md](../cli/commands.md) | `tests/test_proposal_api.py`, `tests/test_proposal_status_event.py` |
 | [src/commands/provider_commands.py](../../../src/commands/provider_commands.py) | Implements the provider quota probe. | [cli/commands.md](../cli/commands.md) | `tests/test_provider_usage_probe.py` |
 | [src/commands/question_commands.py](../../../src/commands/question_commands.py) | Implements the worker-question commands, always taking actor identity from the server scope. | [cli/commands.md](../cli/commands.md) | `tests/test_agent_questions.py`, `tests/test_cli_questions.py` |
-| [src/commands/routing_commands.py](../../../src/commands/routing_commands.py) | Implements the routing read: what a task needs and what could serve it. | [cli/commands.md](../cli/commands.md) | `tests/test_task_routing_contract.py`, `tests/test_routing_admission_v2.py` |
+| [src/commands/routing_commands.py](../../../src/commands/routing_commands.py) | Implements the router's commands: `task_route_plan` and `task_route_apply`, which only the bound routing playbook may call, `aq task route` (re-run the router) and the audited `aq task route-override`. | [cli/commands.md](../cli/commands.md) | `tests/test_task_routing_contract.py`, `tests/test_routing_admission_v2.py` |
 | [src/commands/session_commands.py](../../../src/commands/session_commands.py) | Implements the session commands and the daemon side of the completion protocol, including `task_close`. | [cli/commands.md](../cli/commands.md) | `tests/test_session_commands.py`, `tests/test_task_close_summary_enforcement.py` |
 | [src/commands/spec_commands.py](../../../src/commands/spec_commands.py) | Implements the spec lifecycle commands. | [cli/commands.md](../cli/commands.md) | `tests/test_spec_approve_command.py` |
 | [src/commands/surface_commands.py](../../../src/commands/surface_commands.py) | Implements the agent-facing context surface: `prime`, `get_schema`, `task_show`, `task_set`, `task_handoff`, `subagent_event`. | [cli/prime.md](../cli/prime.md) | `tests/test_surface_commands.py`, `tests/test_agent_subagents.py` |
@@ -120,6 +121,32 @@ supplies `_cmd_<name>` methods that `execute()` dispatches to.
 | [src/tools/definitions.py](../../../src/tools/definitions.py) | Holds every authored tool definition and the tool-to-category mapping. | [cli/agent-tools.md](../cli/agent-tools.md) | `tests/test_tool_registry.py`. Pure data, so the CLI can generate its tree offline. |
 | [src/tools/registry.py](../../../src/tools/registry.py) | Splits tools into core and on-demand categories, compresses schemas and merges plugin tools. | [cli/agent-tools.md](../cli/agent-tools.md) | `tests/test_tool_registry.py` |
 | [src/tools/tool_index.py](../../../src/tools/tool_index.py) | Embeds tool names and descriptions in memory so `find_applicable_tool` can search them. | [cli/agent-tools.md](../cli/agent-tools.md) | `tests/test_tool_index.py`. Degrades to empty when no embedding provider is available. |
+
+## Installer engine — `src/install/`
+
+The shared orchestration behind `aq install`, plus the database adapter that
+registers into it. Platform, packaging and provider adapters register steps the
+same way rather than shipping installers of their own.
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [src/install/\_\_init\_\_.py](../../../src/install/__init__.py) | Exposes the installer engine's public surface. | [cli/install.md](../cli/install.md) | — |
+| [src/install/platform.py](../../../src/install/platform.py) | Detects the host — OS, version, architecture, distro, WSL generation — and places it in the supported-platform matrix. | [cli/install.md](../cli/install.md) | `tests/test_install_platform.py`. Every reader is injectable, so the whole matrix is testable on one box. |
+| [src/install/results.py](../../../src/install/results.py) | Defines the four terminal step states, the run outcomes, the stable exit-code table and the machine-readable result. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Exit codes are API: added, never reassigned. |
+| [src/install/steps.py](../../../src/install/steps.py) | Declares the step protocol and the ordered, validated registry adapters register into. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Cycles and mistyped dependencies fail at plan time. |
+| [src/install/state.py](../../../src/install/state.py) | Reads and atomically writes the secret-free resume record, and refuses one written by another installer version. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Mode `0600`; a leaked credential fails the write. |
+| [src/install/redaction.py](../../../src/install/redaction.py) | Redacts secret-shaped keys and values, and fences the record against anything it missed. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Reuses the denylist in `src/env_scrub.py`. |
+| [src/install/engine.py](../../../src/install/engine.py) | Admits the host, orders and gates the steps, revalidates completed work instead of repeating it, collects consent, and stops at the first unsatisfied step. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Clock-injectable; writes only the resume record. |
+| [src/install/prerequisites.py](../../../src/install/prerequisites.py) | Supplies the engine's own steps: host admission, interpreter, Git, tmux and the AQ data directory. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Detection only — installing anything belongs to an adapter. |
+| [src/install/postgres.py](../../../src/install/postgres.py) | PostgreSQL mechanism: settings, connection classification, the administrator route, package and service plans, and the protected credential store. | [cli/install.md](../cli/install.md) | `tests/test_install_postgres.py`. Every host reader is injectable; passwords go to `psql` on stdin, never in argv. |
+| [src/install/postgres_steps.py](../../../src/install/postgres_steps.py) | The nine `postgres.*` steps: install, start, admit, role, database, rotate, credentials, connection, boot. | [cli/install.md](../cli/install.md) | `tests/test_install_postgres.py`. Existing roles and databases are reused untouched; the schema stays the daemon's. |
+| [src/install/command.py](../../../src/install/command.py) | Runs one external command for a step, with timeouts, captured output and an injectable runner. | [cli/install.md](../cli/install.md) | `tests/test_install_macos.py`. Deliberately synchronous — `aq install` runs before any event loop exists. |
+| [src/install/macos.py](../../../src/install/macos.py) | Supplies the macOS steps: native (non-Rosetta) shell, Command Line Tools, Homebrew at its real prefix, `PATH`, the per-user `launchd` domain and a non-system interpreter. | [cli/install.md](../cli/install.md) | `tests/test_install_macos.py`. Every reader is injectable, so the Apple Silicon/Intel matrix is provable from Linux CI. |
+| [src/install/registry.py](../../../src/install/registry.py) | Composes the engine's steps with this host's platform adapter, ordering adapter provisioning ahead of the prerequisite checks it satisfies. | [cli/install.md](../cli/install.md) | `tests/test_install_macos.py`. An unsupported host still composes; the engine refuses it before any step runs. |
+| [src/install/providers.py](../../../src/install/providers.py) | Detects and installs the optional agent-CLI providers (Claude Code, Codex, Gemini) and records their non-secret executable metadata. | [cli/install.md](../cli/install.md) | `tests/test_install_providers.py`. Detection and install only — credentials belong to the login flow. |
+| [src/install/logins.py](../../../src/install/logins.py) | Decides provider authentication readiness from non-secret signals and hands the human the provider's own login command when none is found. | [cli/install.md](../cli/install.md) | `tests/test_install_logins.py`. AQ never enters a credential and the probe reads no credential material. |
+| [src/install/onboarding.py](../../../src/install/onboarding.py) | Supplies the steps that finish the newcomer's path: the tuned configuration, the check that it loads, optional Discord delivery, the daemon and the dashboard URL. | [cli/install.md](../cli/install.md) | `tests/test_install_onboarding.py`. Discord is capability-gated and a bot token never reaches config.yaml, the result or the resume record. |
+| [src/install/wizard.py](../../../src/install/wizard.py) | The short question plan whose defaults come from what the machine already has, and the closing summary the human view and `--json` share. | [cli/install.md](../cli/install.md) | `tests/test_install_wizard.py`. Pure: it prompts nothing, prints nothing and reads no file. |
 
 ## Startup context — `src/prime/`
 
@@ -154,15 +181,16 @@ context. They are covered where their behaviour is explained.
 | [src/prime/templates/hooks/codex.json](../../../src/prime/templates/hooks/codex.json) | The Codex harness hook file: both sub-agent events. | [cli/prime.md](../cli/prime.md) |
 | [src/skills/aq-cli/SKILL.md](../../../src/skills/aq-cli/SKILL.md) | Orients an agent in the command surface and how to get detail on a command. | [cli/agent-tools.md](../cli/agent-tools.md) |
 | [src/skills/aq-tasks/SKILL.md](../../../src/skills/aq-tasks/SKILL.md) | Explains the task lifecycle from a worker's seat. | [cli/agent-tools.md](../cli/agent-tools.md) |
-| [src/skills/aq-comms/SKILL.md](../../../src/skills/aq-comms/SKILL.md) | Explains messages, the inbox and reporting a blocker. Carries a stale inbox-hook claim — ledger entry 9. | [cli/agent-tools.md](../cli/agent-tools.md) |
+| [src/skills/aq-comms/SKILL.md](../../../src/skills/aq-comms/SKILL.md) | Explains messages, the inbox and reporting a blocker. | [cli/agent-tools.md](../cli/agent-tools.md) |
 | [src/skills/aq-workspaces-and-git/SKILL.md](../../../src/skills/aq-workspaces-and-git/SKILL.md) | Explains the assigned worktree, its branch, and committing, pushing and opening a PR. | [cli/agent-tools.md](../cli/agent-tools.md) |
-| [src/skills/aq-playbooks-and-gates/SKILL.md](../../../src/skills/aq-playbooks-and-gates/SKILL.md) | Explains inspecting a paused run and resolving a human gate. Carries a stale default-pipeline claim — ledger entry 8. | [cli/agent-tools.md](../cli/agent-tools.md) |
+| [src/skills/aq-playbooks-and-gates/SKILL.md](../../../src/skills/aq-playbooks-and-gates/SKILL.md) | Explains inspecting a paused run, resolving a human gate, and what the shipped default pipeline does. | [cli/agent-tools.md](../cli/agent-tools.md) |
+| [src/skills/aq-reviews/SKILL.md](../../../src/skills/aq-reviews/SKILL.md) | Explains document reviews by seat and the opt-in adversarial review recipe across model families. | [cli/agent-tools.md](../cli/agent-tools.md) |
 
 ## Code-adjacent notes
 
 | File | Purpose | Component |
 |---|---|---|
-| [src/cli/CLAUDE.md](../../../src/cli/CLAUDE.md) | The contributor-facing map of `src/cli/`, kept honest by `tests/test_cli_module_map.py`. | [cli/README.md](../cli/README.md) |
+| [src/cli/AGENTS.md](../../../src/cli/AGENTS.md) | The contributor-facing map of `src/cli/`, kept honest by `tests/test_cli_module_map.py`. | [cli/README.md](../cli/README.md) |
 
 ## Coverage
 

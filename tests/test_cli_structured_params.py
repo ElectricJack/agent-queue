@@ -283,3 +283,67 @@ class TestContractProjectionSchemas:
         param = _schema_to_click_type({"$ref": "#/$defs/Fence"})
         assert isinstance(param, StructuredParam)
         assert param.convert('{"epoch": 1}', None, None) == {"epoch": 1}
+
+
+def _supervisor_tool(verb):
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+    return next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == f"supervisor_inbox_{verb}")
+
+
+def test_supervisor_history_repeatable_states_reach_the_server():
+    assert _invoke_tool(
+        _supervisor_tool("history"),
+        "history",
+        "--state",
+        "open",
+        "--state",
+        "closed",
+        "--limit",
+        "7",
+        "--before",
+        "123.5",
+        "--before-id",
+        "conv-x",
+    ) == {"states": ["open", "closed"], "limit": 7, "before": 123.5, "before_id": "conv-x"}
+    assert _invoke_tool(_supervisor_tool("history"), "history") == {}
+
+
+def test_supervisor_reply_file_is_read_before_dispatch(tmp_path):
+    text_file = tmp_path / "reply.txt"
+    text_file.write_text("A Unicode answer: é\n", encoding="utf-8")
+    assert _invoke_tool(
+        _supervisor_tool("reply"),
+        "reply",
+        "--conversation-id",
+        "conv",
+        "--input-id",
+        "input",
+        "--idempotency-key",
+        "key",
+        "--file",
+        str(text_file),
+    ) == {
+        "conversation_id": "conv",
+        "input_id": "input",
+        "idempotency_key": "key",
+        "text": "A Unicode answer: é\n",
+    }
+
+
+@pytest.mark.parametrize("text_options", [[], ["--text", "answer", "--file"]])
+def test_supervisor_reply_requires_exactly_one_text_source(tmp_path, text_options):
+    from rich.console import Console
+
+    text_file = tmp_path / "reply.txt"
+    text_file.write_text("answer", encoding="utf-8")
+    command = _make_auto_command(
+        "supervisor_inbox_reply", "reply", _supervisor_tool("reply"), Console()
+    )
+    argv = ["--conversation-id", "conv", "--input-id", "input", "--idempotency-key", "key"]
+    if text_options:
+        argv.extend([*text_options, str(text_file)])
+    with patch("src.cli.app._get_client") as client:
+        result = CliRunner().invoke(command, argv, obj={})
+    assert result.exit_code == 2 and "exactly one" in result.output
+    client.assert_not_called()

@@ -250,12 +250,15 @@ The 80% / 95% budget-warning helper in the orchestrator has no caller on
 
 | Module | Status on `main` |
 |---|---|
-| [`src/tokens/budget.py`](../../src/tokens/budget.py) (`BudgetManager`) | Constructed by the orchestrator from `global_token_budget_daily`, but no production caller reads its ratios, deficits or exhaustion predicates. The scheduler takes `global_budget` and `global_tokens_used` from config and the ledger directly. |
-| [`src/tokens/tracker.py`](../../src/tokens/tracker.py) (`RateLimitWindow`) | No production importer. |
+| [`src/tokens/budget.py`](../../src/tokens/budget.py) (`BudgetManager`) | The orchestrator's single instance (`Orchestrator.budget`) owns the configured `global_token_budget_daily`: `_on_config_reloaded` writes it and `_schedule` copies it into every `SchedulerState`, so the fleet cap is hot-reloadable. Its ratio / deficit / per-project helpers still have no production caller — `Scheduler.schedule` recomputes the same arithmetic inline (see [scheduler-and-budget](../specs/scheduler-and-budget.md) §4). |
 
-Both are covered by `tests/test_budget.py` and are documented here so nobody
-mistakes them for the live path. Treat their behaviour as unenforced until a
-caller appears.
+`src/tokens/tracker.py` (`RateLimitWindow`) was deleted: no production importer,
+no test, and it counted against a hand-configured cap rather than a provider's
+real quota. Provider headroom remains unstarted design work.
+
+`BudgetManager` is covered by `tests/test_budget.py`; the reload wiring by
+`tests/test_orchestrator.py::TestGlobalBudgetReload`. Treat everything on it
+*except* `global_budget` as unenforced until a caller appears.
 
 ## Configuration keys
 
@@ -292,6 +295,7 @@ are present, `llm:` wins.
 | `GET /api/providers/usage` ([`src/api/providers.py`](../../src/api/providers.py)) | Newest snapshot per series; `?provider=` filters, `?since=` adds history (max 2000 points per series). |
 | `GET /api/metrics/series` ([`src/api/metrics.py`](../../src/api/metrics.py)) | Includes the `tokens` block: per-minute rates overall and `by_model`, plus `unattributed_per_min`. |
 | `aq doctor --check providers.claude_usage` ([`src/doctor/provider_checks.py`](../../src/doctor/provider_checks.py)) | Report-only health verdict. No `--fix`. |
+| `aq doctor --check providers.usage_activity_gap` | Report-only warning when a provider's newest quota confirmation trails its newest live session activity by more than 30 minutes. No `--fix`. |
 
 ### Probe outcomes
 
@@ -318,6 +322,15 @@ last good reading always survives.
 
 Wording faults are reported before staleness: when a probe is both stale and
 unparsed, "the regex needs a human" is the sentence that gets it fixed.
+
+`providers.usage_activity_gap` compares `last_seen_at` (falling back to
+`observed_at`) with live session activity, independently of wall-clock age.
+An idle fleet's old snapshot does not trigger it. With no snapshot, live
+activity must extend more than 30 minutes past the earliest live launch before
+it warns. Providers without quota feeds and a deliberately disabled Claude
+probe are excluded. Codex rollout adoption backfills the latest complete quota
+record using its original timestamp, even when a checkpoint or replay guard
+skips historical token and output records.
 
 ## Log files — [`src/llm_logger.py`](../../src/llm_logger.py)
 
