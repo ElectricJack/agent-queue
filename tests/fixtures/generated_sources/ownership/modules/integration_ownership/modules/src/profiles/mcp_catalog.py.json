@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/profiles/mcp_catalog.py::McpToolCatalog": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_catalog.py::build_agent_queue_tools": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_catalog.py::import from src.profiles.mcp_probe import ProbedTool, ProbeResult, probe_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_catalog.py::make_reload_hook": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_catalog.py::populate_catalog": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_catalog.py::refresh_one": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
