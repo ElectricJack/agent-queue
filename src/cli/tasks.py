@@ -608,11 +608,17 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
 @task.command("restart")
 @click.argument("task_id")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
+@click.option("--override-hold", is_flag=True, help="Explicitly release a recovery hold")
+@click.option("--reason", default=None, help="Required explanation for a hold override")
 @click.pass_context
 @_handle_errors
-def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
+def task_restart(
+    ctx: click.Context, task_id: str, yes: bool, override_hold: bool, reason: str | None,
+) -> None:
     """Restart a failed or stopped task."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if override_hold and (not reason or not reason.strip()):
+        raise click.UsageError("--override-hold requires --reason")
 
     if not yes:
         from .menus import confirm
@@ -623,7 +629,10 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     async def _restart():
         async with _get_client(api_url) as client:
-            return await client.execute("restart_task", {"task_id": task_id})
+            args = {"task_id": task_id}
+            if override_hold:
+                args.update(override_hold=True, reason=reason)
+            return await client.execute("restart_task", args)
 
     result = _run(_restart())
     emit(
@@ -881,6 +890,7 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
 @task.command("set")
 @click.argument("task_id")
 @click.option("--branch", default=None, help="Set the task's branch name")
+@click.option("--repair-batch", default=None, help="Supervisor/operator: assign this task to repair an open batch")
 @click.option("--pr-url", default=None, help="Set the task's PR URL")
 @click.option("--work-dir", default=None, help="Record the task's working directory")
 @click.option("--note", default=None, help="Append a legacy note to task context")
@@ -907,6 +917,7 @@ def task_set(
     ctx: click.Context,
     task_id: str,
     branch: str | None,
+    repair_batch: str | None,
     pr_url: str | None,
     work_dir: str | None,
     note: str | None,
@@ -942,6 +953,8 @@ def task_set(
     args: dict[str, Any] = {"task_id": task_id}
     if branch is not None:
         args["branch"] = branch
+    if repair_batch is not None:
+        args["repair_batch"] = repair_batch
     if pr_url is not None:
         args["pr_url"] = pr_url
     if work_dir is not None:
