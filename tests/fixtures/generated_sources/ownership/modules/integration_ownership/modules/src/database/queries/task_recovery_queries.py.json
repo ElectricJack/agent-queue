@@ -1,0 +1,171 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._clear_stopped_recovery_assignment_on": {
+      "reason": "Refuses assignment cleanup while live integration ownership or unreleased branch reservations exist, then rechecks exact stopped-worker authority."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._ensure_task_recovery_incident": {
+      "baseline_span": [
+        420,
+        570
+      ],
+      "landing_span": [
+        420,
+        570
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._guard_operator_handoff": {
+      "baseline_span": [
+        842,
+        1042
+      ],
+      "landing_span": [
+        842,
+        1042
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._guard_task_recovery": {
+      "baseline_span": [
+        1043,
+        1153
+      ],
+      "landing_span": [
+        1043,
+        1153
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._missing_session_candidate": {
+      "landing_span": [
+        187,
+        295
+      ],
+      "reason": "Missing-session recovery excludes integration-owned tasks, episode checkpoints and attached branch writers before releasing an orphan assignment."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._recovery_hold_deadline": {
+      "reason": "Identifies active train repair ownership from immutable filing input and durable batch/stage rows to bound silent supervisor holds; deadline escalates without authorizing execution or publication."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._recovery_owner": {
+      "baseline_span": [
+        207,
+        278
+      ],
+      "landing_span": [
+        207,
+        278
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._supersede_stale_task_recovery_incident": {
+      "baseline_span": [
+        359,
+        415
+      ],
+      "landing_span": [
+        359,
+        415
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery": {
+      "baseline_span": [
+        682,
+        841
+      ],
+      "landing_span": [
+        682,
+        841
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::_INTEGRATION_ENDED": {
+      "baseline_span": [
+        68,
+        68
+      ],
+      "landing_span": [
+        68,
+        68
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::_INTEGRATION_LIVE": {
+      "baseline_span": [
+        67,
+        67
+      ],
+      "landing_span": [
+        67,
+        67
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::_next_action": {
+      "baseline_span": [
+        124,
+        146
+      ],
+      "landing_span": [
+        124,
+        146
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_recovery_queries.py::_recovery_row": {
+      "landing_span": [
+        71,
+        76
+      ],
+      "reason": "Shared recovery query-result helper preserves integration owner, checkpoint, audit and session row predicates, locking and cardinality."
+    },
+    "src/database/queries/task_recovery_queries.py::import from src.database.queries.blocked_state import apply_label_filters, blocked_predicate": {
+      "baseline_span": [
+        11,
+        12
+      ],
+      "landing_span": [
+        11,
+        12
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_batches, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_context, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
+    },
+    "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "baseline_span": [
+        14,
+        32
+      ],
+      "landing_span": [
+        14,
+        32
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1293,
+      "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
+      "owner_fingerprint": "19d83c3345c0430d48ae14400652bf93a3c4cd88a8f372530b36c47733650972",
+      "reason": "Removes claimed_by_session or needs_attention only during a fenced recovery decision; incident identity, task state and recovery budget authorize retry."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.recover_missing_session_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 408,
+      "owner": "TaskRecoveryQueryMixin.recover_missing_session_task",
+      "owner_fingerprint": "d958606933b4c3796cd08ea56aa6935214de876511e377696f1cd1948ec27d67",
+      "reason": "Clears stale claimed_by_session task metadata during a fenced orphan release; exhausted worker retries set ordinary needs_attention=session_missing state. No Git ref replay authority or duplicate integration lifecycle."
+    }
+  }
+}

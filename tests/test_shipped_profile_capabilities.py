@@ -12,14 +12,17 @@ this list"), now mechanically checkable.
 from __future__ import annotations
 
 import pathlib
+import runpy
 
 import pytest
 
 from src.api.scope import (
     AGENT_COMMAND_SET,
     _PLAYBOOK_COMPILER_COMMANDS,
+    _SPEC_INGEST_COMMANDS,
     _TRIAGE_COMMANDS,
 )
+from src.commands.operator_authority import OPERATOR_READS, OPERATOR_WRITES
 from src.profiles.capabilities import (
     HARNESS_TOOL_NAMES,
     NAMESPACES,
@@ -46,18 +49,27 @@ PROFILE_IDS = sorted(p.name for p in DEFAULTS_DIR.iterdir() if (p / "profile.md"
 #: Resolutions are filed for Package 1 in the child plan §14.
 EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "final-reviewer": {"pr_merge", "reopen_with_feedback"},
+    "operator-claude": set(),
+    "operator-codex": set(),
     "planner": set(),
     "playbook-compiler": set(),
     "pr-merger": {"pr_merge"},
     "reviewer": {"reopen_with_feedback"},
-    "spec-ingest": {"get_downstream_tasks", "task_batch_propose"},
+    "spec-ingest": set(),
     "supervisor": set(),
     "triage": {"edit_task"},
     "worker-claude": {"pr_merge"},
     "worker-codex": {"pr_merge"},
+    "worker-opencode": {"pr_merge"},
 }
 
-REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+# These catalogues have an existing empty-argument, capability-gated exception
+# in check_command_scope, before the role-specific command sets.
+REACHABLE = (AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+             | {"doctor_catalog", "playbook_commands"})
+#: An operator template's setup grants are dispatched through ``operator_execute``
+#: under a request-local grant, never by its session token directly.
+OPERATOR_REACHABLE = REACHABLE | OPERATOR_READS | OPERATOR_WRITES
 
 
 def _parsed(profile_id: str):
@@ -67,7 +79,38 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 10
+    assert len(PROFILE_IDS) == 13
+
+
+@pytest.mark.parametrize("profile_id", [pid for pid in PROFILE_IDS if pid.startswith("worker-")])
+def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_id):
+    parsed = _parsed(profile_id)
+    assert parsed.frontmatter.template is True
+    policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+    assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("read_file")
+    assert policy.allows_plugin_tool("git_create_pr")
+    assert parsed.capabilities == _parsed("worker-codex").capabilities
+
+
+def test_worker_grant_generator_repairs_drift_without_changing_harness_or_prose(tmp_path):
+    generate = runpy.run_path(
+        str(DEFAULTS_DIR.parents[2] / "scripts" / "generate-worker-capabilities.py")
+    )["generate"]
+    source = tmp_path / "worker-codex" / "profile.md"
+    source.parent.mkdir()
+    source.write_text((DEFAULTS_DIR / "worker-codex" / "profile.md").read_text())
+    target = tmp_path / "worker-opencode" / "profile.md"
+    target.parent.mkdir()
+    original = (DEFAULTS_DIR / "worker-opencode" / "profile.md").read_text()
+    stale = original.replace('    "git_push",\n', '').replace('    "job_submit",\n', '')
+    target.write_text(stale)
+
+    assert generate(tmp_path, check=True) == [target]
+    assert target.read_text() == stale
+    assert generate(tmp_path) == [target]
+    assert target.read_text() == original
+    assert generate(tmp_path, check=True) == []
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)
@@ -99,9 +142,12 @@ class TestShippedProfile:
         assert set(harness) <= HARNESS_TOOL_NAMES
 
     def test_every_aq_command_is_a_real_command(self, profile_id):
-        """No aspirational names: each one resolves to a dispatchable handler."""
+        """Every grant names a handler or an explicitly defined read scope."""
         parsed = _parsed(profile_id)
-        unknown = sorted(set(parsed.capabilities["aq_commands"]) - _builtin_command_names())
+        from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+        unknown = sorted(set(parsed.capabilities["aq_commands"]) -
+                         (_builtin_command_names() | AQ_FEATURE_CAPABILITIES))
         assert unknown == []
 
     def test_policy_is_constructible_and_not_legacy(self, profile_id):
@@ -120,11 +166,12 @@ class TestShippedProfile:
     def test_unreachable_command_report_matches_the_pin(self, profile_id):
         """§1.5 report — surfaced, not failed, but pinned so it cannot grow."""
         parsed = _parsed(profile_id)
-        unreachable = (
-            set()
-            if profile_id == "supervisor"
-            else set(parsed.capabilities["aq_commands"]) - REACHABLE
-        )
+        granted = set(parsed.capabilities["aq_commands"])
+        reachable = OPERATOR_REACHABLE if "operator_execute" in granted else REACHABLE
+        if profile_id == "spec-ingest":
+            # These commands require the live server-owned ingestion role.
+            reachable = reachable | _SPEC_INGEST_COMMANDS
+        unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
 
@@ -140,7 +187,14 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
         "supervisor_inbox_status",
     } <= granted
     assert "supervisor_inbox_post" not in granted
-    assert granted <= _builtin_command_names()
+    from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+    assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
+
+
+def test_supervisor_can_diagnose_and_repair_repository_checkouts():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +225,12 @@ def test_emergent_work_prime_matches_the_create_task_capability(profile_id):
 
     body = build_completion_protocol_section("t-1", allow_emergent_work=allows).body
     assert ("## Emergent work" in body) is allows
+
+
+def test_promotion_controls_keep_operator_approval_and_publish_out_of_agent_grants():
+    supervisor = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"promote_request", "promote_cancel", "promote_status", "promote_list"} <= supervisor
+    for profile_id in PROFILE_IDS:
+        grants = set(_parsed(profile_id).capabilities["aq_commands"])
+        assert "integration_promotion_publish" not in grants
+        assert "promote_approve" not in grants
