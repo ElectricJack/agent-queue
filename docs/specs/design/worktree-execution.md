@@ -101,7 +101,7 @@ Every slot carries a sentinel at `<slot>/.aq-worktree.json`:
 }
 ```
 
-Written at slot creation, updated at every assignment. It is the filesystem half of adoption and doctoring: a directory with a sentinel but no DB row is an orphan; a DB row with no sentinel is a broken slot; a `setup_hash` mismatch means `worktree_setup` changed and the setup commands re-run at next reset. The sentinel is data for recovery — the DB row remains authoritative for locks.
+Written at slot creation, updated at every assignment. It is the filesystem half of adoption and doctoring: a directory with a sentinel but no DB row is an orphan; a DB row with no sentinel needs its identity re-proved during preparation; a `setup_hash` mismatch means `worktree_setup` changed and the setup commands re-run at next reset. The sentinel is data for recovery — the DB row remains authoritative for locks.
 
 ---
 
@@ -158,6 +158,58 @@ restoration retains the original checkpoint metadata/ref until execution starts;
 pause restoration keeps its existing changed-branch refusal. All handoff proof and owner
 fencing checks still run before this reconciliation.
 
+Exact owned-branch preparation also reconciles a manual-pause checkpoint against
+the owned continuation, rather than the branch currently checked out in the reused
+slot. A saved branch label may differ when the checkpoint explicitly identifies the
+same task and its project identity matches; legacy snapshots without a task identity
+retain the branch-label check. The checkpoint HEAD must be proved reachable
+from the owned branch tip or its proved continuation commit. A checkpoint captured
+on the exact owned branch may instead hold newer commits descending from that
+proved task history. Compare the eligible saved HEAD, local owned ref and its exact
+origin ref after an authorized fresh fetch, even when both refs exist;
+keep the newest head related by ancestry, never an older local checkpoint. A checkpoint
+equal to that tip or the base is valid even with no task commits. Related local progress
+is retained, and the saved index and worktree layers are reconciled separately on
+that continuation before any reset. Child preparation uses the child's owned tip
+for this proof, then merges its prerequisite as usual. Divergent or unknown history
+and conflicting snapshot contents refuse without changing the checkout or snapshots.
+An ownership/ancestry refusal names the saved HEAD and snapshot commit, saved branch,
+owned branch and observed tip, proved continuation, and slot HEAD. The slot HEAD is
+diagnostic evidence, never the authority for checkpoint reachability.
+
+Immediately before restoring an owned pause plan, refuse a reset whose target does
+not contain the observed origin tip. Successful authorized worker publication advances
+the task's working checkpoint SHA and generation when the tip changes, invalidating
+prior verification while preserving the immutable filing origin. Repeating the same
+publication is idempotent; delegates and active parent episodes retain their separate
+checkpoint authority.
+
+A manual pause captures only the task's own checkout. A shared slot with no recorded
+task branch is held to `aq/<task_id>`, so a slot still on another task's branch refuses
+the pause instead of saving that checkout. A checkpoint that names a branch other than
+the task's own and carries no other proof (legacy captures with no task identity, or
+a recorded branch that no longer matches) is foreign: preparation discards it before
+any Git change and prepares normally. The discard deletes the metadata under a
+compare-and-delete fence and appends `task_context(type=manual_pause_checkpoint_discarded)`
+with the actor, the reason and the whole checkpoint; the pause ref keeps the work. A
+checkpoint from another task or project still refuses, and so does a retained-stop
+checkpoint, because it proves release. An explicitly supplied stale plan is never
+discarded. Operators and supervisors discard a checkpoint with
+`aq task discard-pause-checkpoint --task-id <id> --reason <why>`, which writes the
+same audit record. Never delete the metadata row by hand.
+
+Stack preparation compares an existing local child tip with the freshly observed
+published child tip in the observation store. Equal tips use the published tip;
+if the published tip is an ancestor of the local tip, preparation retains the
+local commits. If that ancestry is definitively false and the local tip is proved
+an ancestor of the published tip, preparation uses the published descendant.
+Divergent or unknown ancestry still refuses preparation. This comparison only
+selects an overlay input: it does not move the shared local branch or checkout,
+replace the immutable filing origin, or release a hold. Remote and prerequisite
+proofs are rechecked through activation, and checkout changes still require the
+existing task, repository, claim, workspace and branch owner fences. Dirty state
+and unpublished checkpoints retain their existing preservation rules.
+
 Branch naming is fixed at `aq/<task_id>` — no title slug, so the branch is derivable from the task id alone (crash recovery, `aq task branch`, reaper matching by `aq/*` prefix).
 
 ### 3.3 While running
@@ -172,9 +224,147 @@ The slot is the session `work_dir` (delivery owned by the session-runtime spec).
 
 **Salvage pushes; it does not merely keep a local branch.** "The branch survives independently of the worktree" was only ever true for a branch the remote also has. On 2026-09-03 a worker committed five commits (~5.8k lines) in a slot, never pushed, and closed `blocked`; the close was accepted, the slot moved on, and three re-runs of the same task each started from `main`, could not find the work or its prerequisites, and closed `blocked` again. So before any reset — `restore_slot_after_task` *and* `reset_slot_for_task` — `WorktreeSlotManager.salvage_unpushed` pushes every commit no remote branch carries to `aq/<task_id>`, or to `aq/<task_id>-wip` when that name already holds commits this HEAD does not descend from (never `--force`, never a discard), and records `unmerged_branch` / `unmerged_commit` on the task. The same rule runs on the close itself: a close whose outcome is not `pass` preserves the commits first and, when the push fails while the closing session is still live, the **close is refused** and the task stays IN_PROGRESS under the same claim so the agent can push by hand. A repository with no remote reports the local branch and SHA rather than an error — there is nowhere to push, and the record is what a human needs.
 
+An unknown preservation result also refuses a live failure-close with an assigned
+workspace, before any task transition, completion record, token revocation, claim
+release or slot reset. Git inspection errors, including unproved process cleanup,
+must retain the exact checkout and current claim with actionable diagnostics; they
+are never evidence of clean or published work. Confirmed absence of a workspace
+does not require Git proof. A failed remote probe is unknown, distinct from a
+confirmed repository with no remote. Repair delegates continue through their
+operation-owned bounded recovery protocol and human gates.
+
 One consequence is deliberate: because a failed attempt is now published, `_retry_reset_ref` keeps it (a published tip the start point does not contain wins over the start point), so a retry lands on its predecessor's work instead of silently below it.
 
 **Slot affinity is the price of the forensic exception.** A slot left on an unpushed `aq/<task_id>` branch means the *next push dispatch* of that same task must land on that slot or it cannot check the branch out at all. Pool sessions acquire slots before they know the task, so preparation detects an idle unclaimed holder and detaches it; a live holder is never disturbed. Clean pushed branches are normally detached at release, avoiding the collision altogether. Push acquisition still **prefers the slot that already holds the task's branch** (`WorkspaceMixin._slot_branch_affinity` → `acquire_for_task(preferred_workspaces=...)` → the existing `prefer_workspace_id` seam).
+
+**Preparation identity and reconciliation.** Preparation requires an enabled
+registered row with the exact project, session `work_dir`, agent and task lock.
+A failed holder UPDATE never authorizes an agent-only fallback. Session instance,
+claim epoch and workspace acquisition generation are captured transactionally
+in `claim_workspace` metadata and checked before reset and activation, including
+a resumed preparation whose original in-memory workspace row is gone; the registered workspace is locked through reset, claim-file writing
+and activation. A changed binding cannot publish a branch or active claim.
+The task key remains protected during reset, while dependency/gate status
+updates can invalidate admission; activation rechecks under a task status lock.
+Missing directories, foreign claims and mismatched sentinel/repository identity
+are preserved for investigation. Preparation does not transfer misplaced locks,
+unlock Git registrations or recreate a missing source. Valid idle predecessor
+branches remain reusable after existing salvage/checkpoint ownership checks.
+An absent sentinel alone does not permanently quarantine a registered slot.
+Under the preparation workspace fence, recovery requires the enabled base and
+slot in the incoming project, the canonical slot path and index, an exact Git
+worktree-list registration, matching nonempty common repository identity,
+reciprocal Git administrative-directory pointers and the slot's actual top-level
+directory. Duplicate registrations, Git locks,
+retained owners/job pins, foreign live sessions and foreign or unreadable claim
+files still refuse recovery. An existing unreadable or conflicting sentinel is
+preserved, never overwritten. A predecessor task id in an otherwise valid
+sentinel is ordinary reusable-slot metadata, not a reason to delete that file.
+Before restoring a missing sentinel, preparation records the identity proof,
+HEAD and branch on the incoming task, explicitly leaving predecessor authorship
+unknown. Any unpublished commits must be successfully salvaged to the incoming
+task's recovery branch before proceeding; a failed/unknown salvage preserves
+the checkout and refuses preparation. The reconstructed sentinel records the
+actual branch, no predecessor task and an unknown setup hash, so normal reset
+salvages dirty work and reruns setup. Publishing the sentinel must not overwrite
+a file that appeared concurrently. No branch, index, working file, claim or
+workspace binding is changed by metadata reconstruction.
+Managed slots detached by normal release may retain the predecessor sentinel
+while HEAD equals the cached default tip; an explicit operator handoff may use
+its proved commit instead. A pool close whose claim release succeeds returns
+the sentinel to the free form once HEAD is detached, clean and contained in a
+remote ref. A detached, clean slot whose sentinel still names a terminal task
+with no retained integration owner or job pin is reclaimed even after that
+task's branch was deleted and the default tip moved; the sentinel is kept until
+reset so salvage still attributes unpublished commits to the predecessor.
+This claim-time reconcile is the authority for every terminal path (complete,
+abandon, repair end, session drain): close-time release is an optimisation, and
+integration closes keep HEAD on the delivery branch until handoff. The retained
+binding check excludes the claimant's own integration owner row, which claim
+preparation attaches to the slot between the preflight and the reset.
+`workspace_clear_sentinel` is the supervisor's explicit form of the same
+reconcile: it frees a sentinel naming a terminal or missing task when the slot
+holds no task lock, claim file, live claiming session, owner or job pin, and its
+clean HEAD is contained in a remote ref, then emits `worktree.sentinel_cleared`.
+Attached branch disagreement still refuses reset.
+Legacy clones retain their existing branch-cleanup behavior.
+
+Retirement re-reads and locks the registered workspace instead of trusting the
+cycle's snapshot. Live session, claim, owner, job pin, changed generation,
+unproved repository identity or dirty checkout refuses deletion. Unknown process
+inventory also refuses retirement, including hosts without readable `/proc`.
+The DB DELETE is attempted before disk removal within that transaction; a failed
+DELETE leaves disk intact, and a Git refusal rolls the DELETE back. Removal uses
+Git's non-forcing primitive. Only successful commit emits `worktree.reaped`.
+Filesystem removal and PostgreSQL commit cannot be one atomic operation: a commit
+failure after Git succeeds must be reported as incomplete, never as a completed
+reap. Missing registered paths retain that evidence for supervisor reconciliation.
+Shared workspace faults are infrastructure incidents for supervisor escalation,
+not grounds for mass-pausing otherwise ready tasks. Bounded retries still apply.
+
+**Cancellation is not writer quiescence.** On Linux/WSL, local Git and setup
+commands own an isolated process group. A timeout or cancellation, including cancellation while
+the subprocess handle is being created, must settle that group before returning
+and releasing preparation's locks. Repeated cancellation cannot interrupt this
+cleanup. Killing only Git's leader leaves hooks and filter processes able to
+write into a successor checkout. Cleanup has a separate bounded safety margin;
+if startup or termination cannot be proved complete, retain the exact claim,
+workspace acquisition receipt, claim file and integration attachment. Record a
+`prepare_cleanup_unproved` hold, using the existing scrubbed failure description.
+Once recorded, neither expiry, retry nor deferred owner handoff may clear that hold. An operator
+needs fresh process/source evidence and the supported recovery owner to resolve
+it; absence of a marker or expiration of a deadline is not that proof.
+
+`swarm.prepare_timeout` is the reconciler's stale preparation threshold; it skips
+an in-flight request registered in `claim_preparations`. It is not an outer Git
+deadline. `worktrees.slot_reset_git_timeout_seconds` bounds each Git command in
+slot reset (explicit command timeouts win), while
+`worktrees.setup_timeout_seconds` bounds each setup command. A safely terminated
+setup timeout remains a nonfatal cache failure; external cancellation propagates.
+Increasing any of these values does not repair cancellation or prove the cause
+of an earlier incident. Detached, deliberately escaping operator commands and
+abrupt daemon/host death require separate process evidence. Other platforms retain
+normal successful command behavior, but an interrupted command without process-group
+proof fails closed; leader termination alone does not permit reuse.
+
+**Cause-first evidence (2026-10-13).** The pre-fix sequence `record_holder`
+(exact-path/enabled UPDATE returning no row) → agent-only workspace fallback →
+slot reset → claim-file write at the session path → session/task-only activation
+could make DB task locks, physical branch and claim path disagree. Trailing-slash,
+disabled, foreign and reassigned rows are disposable regressions for this mechanism.
+The workspace-edit command also checked an unlocked snapshot before an
+unconditional path update; a concurrent acquisition could make that check stale.
+Relocation now compares the acquisition generation and unlocked state in its
+UPDATE. Mutex keys use physical path aliases only for serialization; registered
+ownership remains byte-exact. The startup slot/base lock map already rebuilds
+from registered rows, and preparation verifies their actual Git common repository.
+The retired-slot sweep selected earlier unlocked rows, while `reap_slot` previously
+removed the directory before a separately committed DB deletion and swallowed
+its failure. That ordering could leave a registered missing directory and a false
+success event. Its process scanner returned an empty inventory on enumeration
+failure; empty inventory did not establish quiescence. Legacy cleanup already
+short-circuits correctly classified slot rows, so restart cleanup alone does not
+prove a deletion cause. The actual Matter incident's deletion event and first
+`jobs.cwd_invalid` clause remain unknown; the reported absolute external test
+argument independently violates managed-job path policy. Fixture mechanisms are
+not host incident attribution. Checkpoint capture/restore provenance is a separate
+coordinated correction; reconciliation must preserve evidence for it.
+
+**Existing bindings.** Preparation fencing applies to new and resumed attempts;
+it does not repair locks left by an older daemon. Every five-minute inventory
+pass also reconciles existing locked slots against their registered generation,
+task, source sentinel, actual branch, claim file and retained owner/job pins.
+`workspace_doctor` exposes the same findings on demand. A foreign claim, deferred
+owner, unavailable process inventory or changed snapshot is a retained binding,
+not proof that its writer has disappeared. A preparing session may legitimately
+still hold the predecessor checkout and is reported as preparation in progress.
+Findings go to the project supervisor once per changed evidence set, through
+CommandHandler. This pass never transfers a lock, clears a claim, resets a task,
+changes its retry budget or writes a guessed acquisition receipt. Existing
+mislocked rows require the existing owner-fenced recovery/operator controls;
+reported clean detached HEAD and a missing live-session row alone are insufficient
+authority to release a historical source. This distinction also applies to a
+stopped continuation whose dirty checkpoint or integration owner remains retained.
 
 Three decisions make that a hint rather than a new piece of state:
 
@@ -257,6 +447,8 @@ What *is* fixed for the sibling case itself is the reporting. The refusal was su
 The reaper is a cascade housekeeping step that acts on **slots**. A slot worktree is removed only when the slot is *retired*: project caps shrank below its index, the project was archived or removed, the base workspace was removed, or the kind's mode flipped to `exclusive-clone`. Task completion never reaps a slot.
 
 Before removal, a **liveness check** against the process table: any process whose environment carries a matching `AQ_TASK_ID` or whose cwd is inside the slot path blocks the reap. If the process table cannot be read, the reaper *skips* — never reap on partial information. Removal sequence, under the base mutex: `git worktree remove <slot>` (`--force` fallback), `git worktree prune`, delete the slot's `workspaces` row, emit `worktree.reaped`.
+
+**Disabled slots are reconciled, not reaped.** A slot inside the cap that is disabled still occupies its index, so it caps the pool without ever being retired. Every disable records `workspaces.disabled_reason` (`<code>: <detail>`, codes in `src/workspace_disable.py`) and `disabled_at`. After its per-workspace pass the reaper runs `restore_disabled_slots` (`src/orchestrator/slot_restore.py`): operator-disabled slots, slots inside the claim-failure cooldown, and live (or unprovable) slots are left alone; a missing worktree is re-provisioned at the slot's path keeping its row id; a clean checkout is re-enabled (`worktree.restored`); a dirty or unprovable checkout is kept disabled as `quarantined_dirty` with `worktree.quarantined` and one message to the project supervisor, and is re-enabled on a later pass once clean. `aq doctor --check worktrees.capacity` and the stall sweep report "enabled slots < cap".
 
 Branch pruning is a separate reaper concern: merged `aq/*` branches (`git branch --merged origin/<default>`, filtered to the `aq/` prefix) are deleted locally; remote deletion per policy; unmerged `aq/*` branches whose tasks are terminal-failed are pruned only after `retain_failed_days`.
 

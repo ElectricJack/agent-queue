@@ -18,7 +18,7 @@ from src.cli.app import cli
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.report_commands import ReportCommandsMixin
 from src.config import AppConfig
-from src.database import Database, tables
+from src.database import tables
 from src.delivery.message import operation_marker
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -29,6 +29,7 @@ from src.reports.hourly import MAX_BRIEF_BYTES
 from src.reports.morning import collect_morning_evidence, preview_until, report_window
 from src.reports.morning_due import EVENT_TYPE as MORNING_DUE
 from src.reports.morning_due import MorningDueEmitter, morning_due_event_id
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures/reports/morning"
@@ -43,6 +44,7 @@ def frozen(name):
 
 def snapshot():
     return {
+        "needs_you": {"count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "projects": [{"id": "p", "name": "Project P", "repo_default_branch": "main"}],
         "sources": {
             name: frozen(name)
@@ -221,6 +223,17 @@ async def test_replayed_fact_is_late_and_morning_membership_deduplicates_it():
     # Critical outstanding failures remain visible even when reported before.
     third, _, _ = await build(data, reported_keys=frozenset({"escalation:e1"}))
     assert "escalation:e1" in {f["key"] for f in third["brief"]["facts"]}
+
+
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_answered_escalations_do_not_recur_as_unresolved_morning_facts(state):
+    data = snapshot()
+    data["sources"]["escalations"][0]["state"] = state
+    first, _, _ = await build(data)
+    fact = next(f for f in first["brief"]["facts"] if f["key"] == "escalation:e1")
+    assert fact["detail"]["unresolved"] is False
+    again, _, _ = await build(data, reported_keys=frozenset({"escalation:e1"}))
+    assert "escalation:e1" not in {f["key"] for f in again["brief"]["facts"]}
 
 
 async def test_partial_source_never_suppresses_or_advances_its_cursor():
@@ -454,9 +467,8 @@ def test_cli_preview_requires_dry_run_and_forwards_window(monkeypatch):
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("morning_reports"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("morning_reports")
     await database.create_project(Project(id="p", name="Project P"))
     await database.create_project(Project(id="q", name="Private Project Q"))
     for task_id in ("t1", "t2", "t3"):
@@ -497,7 +509,6 @@ async def db():
             .values(status="FAILED", updated_at=incident["updated_at"])
         )
     yield database
-    await database.close()
 
 
 async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds(db):
@@ -519,7 +530,7 @@ async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert len(connections) == 1
     assert all(
-        sql.startswith(("SELECT", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
+        sql.startswith(("SELECT", "WITH", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
         for sql in statements
     )
     for source in ("completions", "deliveries", "incidents", "escalations", "attempts", "reroutes"):
@@ -1860,6 +1871,7 @@ async def morning_playbook(command_handler_factory, monkeypatch):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -2190,3 +2202,20 @@ async def test_the_orchestrator_cycle_emits_morning_due_from_the_live_config(tmp
         assert [event["local_date"] for event in events] == ["2026-09-27"]
     finally:
         await orch.shutdown()
+
+
+async def test_morning_human_reminders_survive_empty_days_and_fit_the_brief():
+    data = snapshot()
+    data["waiting_on_you"] = [
+        dict(wait_id=f"w-{i}", task_id="human-owner", project_id="p", subject="task_comment",
+             title="Question", created_at=1000 + i, age_seconds=200000)
+        for i in range(12)
+    ]
+    for key in data["sources"]:
+        if key not in {"repos", "workspaces"}:
+            data["sources"][key] = []
+    result, _, _ = await build(data, observed={**frozen("git")[0], "commits": []})
+    reminder = result["brief"]["waiting_on_you"]
+    assert reminder["count"] == 12 and reminder["more"] == 2 and len(reminder["items"]) == 10
+    assert not result["would_suppress"]
+    assert len(json.dumps(result["brief"], ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES

@@ -9,6 +9,7 @@ reported as an ``error`` result rather than propagating.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -18,6 +19,7 @@ from src.doctor.models import (
     CheckResult,
     DoctorCheck,
     DoctorContext,
+    ObservationUnavailable,
     Severity,
 )
 
@@ -88,6 +90,13 @@ async def _run_one(check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
             severity=Severity.ERROR,
             detail=f"check failed: timed out after {check.timeout_s:g}s",
             duration_ms=int((time.monotonic() - started) * 1000),
+            execution_status="timeout", reasons=["timeout"],
+        )
+    except ObservationUnavailable as exc:
+        return CheckResult(
+            check.id, Severity.INFO, str(exc), execution_status="unavailable",
+            reasons=["dependency_unavailable"],
+            duration_ms=int((time.monotonic() - started) * 1000),
         )
     except asyncio.CancelledError:  # pragma: no cover - propagate shutdown
         raise
@@ -98,6 +107,7 @@ async def _run_one(check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
             severity=Severity.ERROR,
             detail=f"check failed: {type(exc).__name__}: {exc}",
             duration_ms=int((time.monotonic() - started) * 1000),
+            execution_status="exception", reasons=["execution_exception"],
         )
     if not isinstance(result, CheckResult):  # defensive: a badly behaved check
         return CheckResult(
@@ -105,7 +115,40 @@ async def _run_one(check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
             severity=Severity.ERROR,
             detail=f"check failed: returned {type(result).__name__}, expected CheckResult",
             duration_ms=int((time.monotonic() - started) * 1000),
+            execution_status="malformed", reasons=["malformed_result"],
         )
+    try:
+        if (not isinstance(result.severity, Severity) or not isinstance(result.data, dict)
+                or not isinstance(result.detail, str) or type(result.complete) is not bool
+                or not isinstance(result.coverage, list) or not isinstance(result.reasons, list)
+                or any(not isinstance(reason, str) for reason in result.reasons)
+                or not isinstance(result.observation_data, list)
+                or result.execution_status not in {
+                    "unknown", "succeeded", "partial", "timeout", "exception", "unavailable",
+                    "malformed", "unsupported",
+                }
+                or (ctx.read_only and result.id != check.id)):
+            raise ValueError("invalid result metadata")
+        for part in result.coverage:
+            if (not isinstance(part, dict) or part.get("check_id") != check.id
+                    or part.get("kind") not in check.finding_schema.get("kinds", [])
+                    or part.get("kind_version") != 1
+                    or type(part.get("complete")) is not bool
+                    or (part.get("project_id") is not None and (
+                        not isinstance(part["project_id"], str) or not part["project_id"]))
+                    or type(part.get("observed")) is not int or part["observed"] < 0
+                    or (part.get("total") is not None and (
+                        type(part["total"]) is not int or part["total"] < part["observed"]))
+                    or not isinstance(part.get("reasons"), list)
+                    or any(not isinstance(reason, str) for reason in part["reasons"])):
+                raise ValueError("invalid coverage metadata")
+        json.dumps(result.to_dict(), allow_nan=False)
+        json.dumps(result.observation_data, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return CheckResult(check.id, Severity.ERROR, "check failed: malformed result",
+                           execution_status="malformed", reasons=["malformed_result"])
+    if result.execution_status != "succeeded":
+        result.complete = False
     if not result.duration_ms:
         result.duration_ms = int((time.monotonic() - started) * 1000)
     return result

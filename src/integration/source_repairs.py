@@ -9,7 +9,7 @@ re-running the same shared fixes a second time.
 
 :func:`prove_source_delivered` is that one answer, and it deliberately asks
 the question the root scheduler already asks and trusts
-(:meth:`~src.integration.scheduler.TrainService._git_delivered_roots_on` on
+(the historical train frontier on
 top of :mod:`src.integration.delivery_truth`): the *exact* completion
 generation, the *exact* repository and the *exact* default target ref.  A
 merge, a squash and a cherry-pick are equally delivered, because the proof
@@ -212,7 +212,7 @@ async def prove_source_delivered(db, observer, *, task_id: str, source) -> Sourc
     the target an earlier call saw.
 
     *source* is the exact observed source identity
-    (:meth:`~src.integration.review_evidence.ReviewEvidenceProducer._pull_request_source_on`),
+    (:meth:`~src.integration.reviews.ReviewEvidenceProducer._pull_request_source_on`),
     and only its repository scopes the question: the proof is about the
     generation, not about the pull-request head, because adoption lands that
     generation's work under a different commit.  The caller revalidates that
@@ -309,7 +309,7 @@ async def delivered_queued_repairs(db, observer, *, project_id: str) -> dict[str
     the result: nothing is persisted and no frontier predicate reads a record,
     so the next claim re-proves it.
     """
-    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.integration.reviews import ReviewEvidenceProducer
 
     candidates = await queued_source_repairs(db, project_id=project_id)
     if not candidates:
@@ -338,31 +338,18 @@ async def delivered_queued_repairs(db, observer, *, project_id: str) -> dict[str
 
 
 async def delivered_repair_sources_on(db, conn, records, *, git_delivered, repository_id):
-    """Exact repair ancestors already delivered by Git or a root receipt.
+    """Exact repair ancestors delivered by current Git proof.
 
     A task-id proof cannot satisfy an observation for another generation.
-    Receipts can also answer for an archived original, but must name its head
-    and the repository's current default target.
+    Historical receipts cannot retire repair work.
     """
-    from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
-    from src.database.tables import repos, task_delivery_receipts
-    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.integration.reviews import ReviewEvidenceProducer
 
-    receipts = set((await conn.execute(select(
-        task_delivery_receipts.c.source_task_id, task_delivery_receipts.c.reviewed_head_sha,
-    ).select_from(task_delivery_receipts.join(
-        repos, repos.c.id == task_delivery_receipts.c.repository_id,
-    )).where(
-        task_delivery_receipts.c.source_task_id.in_({row["task_id"] for row in records}),
-        *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
-    ))).all())
     producer = ReviewEvidenceProducer(db, None)
     satisfied = set()
     for row in records:
         key = (row["task_id"], row["source_base"], row["source_head"], row["generation"])
-        if (row["task_id"], row["source_head"]) in receipts:
-            satisfied.add(key)
-        elif row["task_id"] in git_delivered:
+        if row["task_id"] in git_delivered:
             source = await producer._pull_request_source_on(conn, row["task_id"])
             if source is not None and source_identity(row["task_id"], source) == (
                 row["task_id"], repository_id, *key[1:],
@@ -392,7 +379,7 @@ async def retire_delivered_queued_repairs(db, proofs, *, project_id: str, retire
         workspaces,
     )
     from src.integration.delivery_observer import delivery_targets
-    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.integration.reviews import ReviewEvidenceProducer
     from src.models import TaskStatus
 
     valid = {}

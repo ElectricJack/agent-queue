@@ -11,10 +11,8 @@ from src.commands.principal import ExecutionPrincipal, principal_context
 from src.config import AppConfig
 from src.conversations.maintenance import ConversationMaintenance
 from src.conversations.outbox import RecordingOutbox, UnboundOutbox
-from src.database import Database
 from src.database.tables import messages
 from src.orchestrator import Orchestrator
-from tests.db_fixtures import lease_dsn
 
 DAY = 86400
 NOW = 100 * DAY
@@ -25,11 +23,9 @@ THREAD = "555555555555555555"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("conversation-maintenance"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("conversation-maintenance")
     yield database
-    await database.close()
 
 
 async def accept(db, *, external_id="900", received_at=NOW - 901, conversation_id=None):
