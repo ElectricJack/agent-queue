@@ -1857,6 +1857,7 @@ class ClaimCommandsMixin:
         # assignment inside ``try`` (a missing slot raises first).
         hierarchy_enabled = False
         fresh = None
+        recheck_detail = None
         prepared_branch: str | None = None
         # The preparation step running when an exception escapes; the
         # failure description names it (src/preparation_failure.py).
@@ -1933,7 +1934,7 @@ class ClaimCommandsMixin:
             async def prepare_and_activate(
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
-                nonlocal prepared_branch, stage, slot
+                nonlocal prepared_branch, stage, slot, recheck_detail
                 if conn is None:
                     timing = current_claim_timing.get()
                     if timing is not None and timing.activation_stack is not None:
@@ -2029,6 +2030,10 @@ class ClaimCommandsMixin:
                     )
                 except OrdinaryAdmissionChanged:
                     stage = "admission_recheck"
+                    recheck_detail = (
+                        "ordinary_admission_changed: artifact-free source, integration policy "
+                        "or graph eligibility changed; retry with current admission"
+                    )
                     return None
                 if activated and hierarchy_enabled:
                     stage = "finalize_preparation"
@@ -2499,14 +2504,20 @@ class ClaimCommandsMixin:
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
             if stage == "admission_recheck" or (
-                admission is not None and not await admission.matches()
+                admission is not None and (
+                    admission.rejection_reasons(task.id) or not await admission.matches()
+                )
             ):
                 from src.preparation_failure import describe_preparation_failure
 
-                reasons = admission.reasons.get(task.id, []) if admission is not None else []
+                reasons = admission.rejection_reasons(task.id) if admission is not None else []
                 detail = "; ".join(
                     f"{reason['code']}: {reason['detail']}" for reason in reasons
-                ) or "delivery_snapshot_changed"
+                ) or recheck_detail or (
+                    "admission_recheck_unexplained: admission guard rejected preparation "
+                    f"at {stage} without comparison diagnostics; inspect task {task.id} "
+                    f"claim epoch {epoch}"
+                )
                 failure = describe_preparation_failure(RuntimeError(detail), "admission_recheck")
                 await self.db.record_failed_preparation(
                     session.id, instance_token=session.instance_token, task_id=task.id,
