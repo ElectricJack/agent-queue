@@ -48,6 +48,7 @@ from src.playbooks.expressions import (
     resolve_value,
     walk_value,
 )
+from src.playbooks.train_policy import TrainPolicy
 
 if TYPE_CHECKING:
     from src.playbooks.definition import PlaybookDefinition
@@ -241,10 +242,13 @@ def _is_true(condition: Condition, path: str) -> bool:
 class IntegrationPolicy(V2Base):
     version: Literal[1] = 1
     max_wait_seconds: int = Field(gt=0, le=86400)
-    tables: dict[SubjectKind, SubjectDecisionTable] = Field(min_length=1, max_length=3)
+    tables: dict[SubjectKind, SubjectDecisionTable] = Field(default_factory=dict, max_length=3)
+    train: TrainPolicy | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _bounded(self) -> IntegrationPolicy:
+        if not self.tables and self.train is None:
+            raise ValueError("integration policy needs a decision table or train policy")
         for kind, table in self.tables.items():
             for action in table.actions.values():
                 if (
