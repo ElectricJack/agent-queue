@@ -14,7 +14,12 @@ from src.doctor.observations import collect_observations
 from src.observations.snapshots import (
     MAX_IDENTITIES, PAGING_KEYS, SnapshotError, SnapshotService, authority, failure, validate_paging,
 )
+from src.playbooks.invocation import current_invocation
 from src.playbooks.private_values import PrivateValueError, PrivateValueService
+
+# Bounded generic fields a manifest row keeps, so an authored filter/key map
+# applies the same status/age predicate to manifests as to payload rows.
+MANIFEST_KEYS = ("id", "task_id", "project_id", "status", "kind", "seconds_in_state")
 
 
 async def snapshot_command(handler, producer: str, args: dict) -> dict:
@@ -67,7 +72,13 @@ async def _snapshot_command(handler, producer, args):
     # Fail before potentially expensive live probes when private storage is absent.
     await private.check_ready()
     started = time.time()
-    observed = args.get("now", started)
+    # A playbook run's frozen observation time is server-derived and not part
+    # of the authored request, so a continuation repeats the same request.
+    invocation = current_invocation()
+    frozen = invocation.observed_at if invocation else None
+    observed = args.get("now", started if frozen is None else frozen)
+    if frozen is not None and args.get("now") is None:
+        args = {**args, "now": frozen}
     if producer == "doctor_run":
         raw = await collect_observations(
             handler.doctor_registry,
@@ -100,8 +111,7 @@ async def _snapshot_command(handler, producer, args):
                         "summary": f"{len(rows)} stuck task(s)"}
             observed = raw["now_used"]
         collections = {kind: rows}
-        identities = [{key: row[key] for key in ("id", "task_id", "project_id", "status")
-                       if key in row} for row in rows]
+        identities = [{key: row[key] for key in MANIFEST_KEYS if key in row} for row in rows]
         coverage = [{"source": producer, "project_id": project, "complete": True,
                      "observed": len(rows), "total": len(rows), "reasons": []}]
         complete = True

@@ -134,7 +134,10 @@ async def test_doctor_default_branch_discovery_uses_recorded_repository(
     )
 
 
-async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db, monkeypatch):
+@pytest.mark.parametrize("elapsed", [0.0, 2.1, 2.7])
+async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(
+    db, monkeypatch, elapsed
+):
     """Claimed workers and a pane that is still changing are not findings."""
     from src.sessions.harness_parser import Harness
     from src.sessions.harness_registry import HarnessRegistry
@@ -206,12 +209,10 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db,
         )
     )
 
-    # Exercise rounding without depending on how long database setup takes.
-    find_sessions = pool_checks._find_sessions_awaiting_input
-    monkeypatch.setattr(
-        pool_checks, "_find_sessions_awaiting_input",
-        lambda ctx: find_sessions(ctx, now=now + 1.6),
-    )
+    # Control only the doctor's clock: database setup may take arbitrary time,
+    # while the recent, claimed and stalled sessions must keep their meanings.
+    monkeypatch.setattr(pool_checks, "time", SimpleNamespace(time=lambda: now + elapsed))
+    unchanged_seconds = round(600 + elapsed, 1)
     finding = await pool_checks.run_check(
         db,
         "pools.session_awaiting_input",
@@ -230,14 +231,12 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db,
                 "profile_id": "worker",
                 "harness": "codex",
                 "signature": "model-upgrade-menu",
-                "unchanged_seconds": 601.6,
+                "unchanged_seconds": unchanged_seconds,
                 "ready_tasks": 1,
             }
         ],
     }
-    # The detail rounds the structured elapsed time to the nearest second.
-    measured = f"{finding.data['sessions'][0]['unchanged_seconds']:.0f}"
-    assert f"unchanged {measured}s, 1 READY" in finding.detail
+    assert f"unchanged {unchanged_seconds:.0f}s, 1 READY" in finding.detail
     provider.peek.assert_awaited_once()
 
 

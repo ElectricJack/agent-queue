@@ -85,7 +85,9 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
     return tid
 
 
-@pytest.mark.parametrize("lookup", ["hierarchy_runnable_task_ids", "task_ids_with_meta"])
+@pytest.mark.parametrize("lookup", [
+    "hierarchy_runnable_task_ids", "hierarchy_runnable_task_ids_with_observer", "task_ids_with_meta",
+])
 async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
     """A 10k frontier must not become 10k SQL parameters on every tick."""
     await mktask(db, "included")
@@ -96,13 +98,19 @@ async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
     await db.set_task_meta("unmarked", "different_key", True)
     ids = ["included", "unmarked", "included", *[f"missing-{i}" for i in range(10_000)]]
     statements = []
+    with_observer = lookup.endswith("_with_observer")
+    if with_observer:
+        observer = MagicMock(truth=object(), prerequisite_view=AsyncMock(
+            side_effect=AssertionError("independent candidates require no Git view"),
+        ))
+        db.set_prerequisite_observer(observer)
 
     def capture(conn, cursor, statement, parameters, context, executemany):
         statements.append((statement, parameters, context.compiled))
 
     event.listen(db._engine.sync_engine, "before_cursor_execute", capture)
     try:
-        if lookup == "hierarchy_runnable_task_ids":
+        if lookup.startswith("hierarchy_runnable_task_ids"):
             assert await db.hierarchy_runnable_task_ids(ids) == {"included", "unmarked"}
             assert await db.hierarchy_runnable_task_ids([]) == set()
         else:
@@ -112,17 +120,21 @@ async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
     finally:
         event.remove(db._engine.sync_engine, "before_cursor_execute", capture)
 
-    assert len(statements) == 1  # Empty input never checks out a connection or queries.
-    statement, parameters, compiled = statements[0]
-    assert "= ANY (" in statement
-    candidate_bind = compiled.binds["task_ids"]
-    assert isinstance(candidate_bind.type, ARRAY)
-    assert isinstance(candidate_bind.type.item_type, Text)
-    assert not candidate_bind.expanding
-    arrays = [value for value in parameters if isinstance(value, list)]
-    assert len(arrays) == 1
-    assert set(arrays[0]) == set(ids)
-    assert len(parameters) < 50  # Other binds belong to the fixed eligibility predicates.
+    # An installed observer first checks whether this scope has any sources.
+    # Empty input never checks out a connection or queries in either case.
+    assert len(statements) == (2 if with_observer else 1)
+    for statement, parameters, compiled in statements:
+        assert "= ANY (" in statement
+        candidate_bind = compiled.binds["task_ids"]
+        assert isinstance(candidate_bind.type, ARRAY)
+        assert isinstance(candidate_bind.type.item_type, Text)
+        assert not candidate_bind.expanding
+        arrays = [value for value in parameters if isinstance(value, list)]
+        assert len(arrays) == 1
+        assert set(arrays[0]) == set(ids)
+        assert len(parameters) < 50  # Other binds belong to fixed eligibility predicates.
+    if with_observer:
+        observer.prerequisite_view.assert_not_awaited()
 
 
 async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):
