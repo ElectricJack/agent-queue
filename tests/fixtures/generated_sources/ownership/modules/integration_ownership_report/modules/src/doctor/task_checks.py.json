@@ -1,0 +1,55 @@
+{
+  "shared_definitions": {
+    "src/doctor/task_checks.py::_check_dangling_lifecycle": {
+      "baseline_span": [
+        351,
+        409
+      ],
+      "landing_span": [
+        351,
+        409
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/task_checks.py::_check_ready_frontier_exclusions": {
+      "reason": "Doctor frontier findings use the same revalidated Git prerequisite delivery view as scheduling and claims."
+    },
+    "src/doctor/task_checks.py::_find_dangling_lifecycle": {
+      "baseline_span": [
+        229,
+        350
+      ],
+      "landing_span": [
+        229,
+        350
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/task_checks.py::container_dependency_report": {
+      "reason": "Read-only doctor report uses the same integration-owned container predicate to identify unfinished leaf scheduling edges onto containers; it never rewrites historical dependencies."
+    },
+    "src/doctor/task_checks.py::import from src.database.queries.claim_queries import claim_frontier_predicates": {
+      "reason": "Imports the integration-owned frontier predicate composer used by doctor to report Git prerequisite delivery exclusions."
+    },
+    "src/doctor/task_checks.py::import from src.database.queries.hierarchy_queries import container_flag_exists, never_leaseable_container": {
+      "reason": "Imports the shared container predicates for leaf dependency diagnostics and lifecycle checks."
+    },
+    "src/doctor/task_checks.py::import from src.database.tables import agent_waits, archived_tasks, integration_batch_members, integration_batches, integration_branch_owners, messages, task_metadata, tasks": {
+      "baseline_span": [
+        14,
+        23
+      ],
+      "landing_span": [
+        14,
+        23
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/task_checks.py::import from src.database.tables import agent_waits, archived_tasks, integration_branch_owners, messages, task_dependencies, task_metadata, tasks": {
+      "reason": "Imports task dependency rows alongside branch-owner and ordinary task state for read-only container dependency and lifecycle diagnostics."
+    },
+    "src/doctor/task_checks.py::import from src.database.tables import agent_waits, archived_tasks, integration_branch_owners, messages, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}
