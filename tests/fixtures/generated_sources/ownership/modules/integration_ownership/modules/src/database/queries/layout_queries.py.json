@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/layout_queries.py::LayoutQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

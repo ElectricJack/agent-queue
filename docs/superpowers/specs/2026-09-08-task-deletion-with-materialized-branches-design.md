@@ -6,6 +6,12 @@
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
 
+> **Superseded by [unified task delete](2026-10-11-unified-task-delete.md).**
+> Current deletion previews and confirms `--recursive` or `--task-only`, keeps
+> branches by default, and can stop selected running work. The branch-exists
+> refusal, proposed doctor check/dashboard prompt and asynchronous discard
+> workflow below are not the current contract. See [Tasks](../../concepts/tasks.md).
+
 **Date:** 2026-09-08
 **Status:** implemented
 **Supersedes:** the removal half of `2026-09-04-hierarchical-integration-trains-design.md` §6.8
