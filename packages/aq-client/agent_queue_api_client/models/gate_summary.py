@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.ask_source_record import AskSourceRecord
+
 
 T = TypeVar("T", bound="GateSummary")
 
@@ -23,6 +27,7 @@ class GateSummary:
             gate_type (str):
             project_id (str):
             title (str):
+            ask (AskSourceRecord | None | Unset):
             question (str | Unset):  Default: ''.
             status (str | Unset):  Default: 'open'.
             await_id (None | str | Unset):
@@ -37,6 +42,7 @@ class GateSummary:
     gate_type: str
     project_id: str
     title: str
+    ask: AskSourceRecord | None | Unset = UNSET
     question: str | Unset = ""
     status: str | Unset = "open"
     await_id: None | str | Unset = UNSET
@@ -48,6 +54,8 @@ class GateSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.ask_source_record import AskSourceRecord
+
         id = self.id
 
         gate_type = self.gate_type
@@ -55,6 +63,14 @@ class GateSummary:
         project_id = self.project_id
 
         title = self.title
+
+        ask: dict[str, Any] | None | Unset
+        if isinstance(self.ask, Unset):
+            ask = UNSET
+        elif isinstance(self.ask, AskSourceRecord):
+            ask = self.ask.to_dict()
+        else:
+            ask = self.ask
 
         question = self.question
 
@@ -106,6 +122,8 @@ class GateSummary:
                 "title": title,
             }
         )
+        if ask is not UNSET:
+            field_dict["ask"] = ask
         if question is not UNSET:
             field_dict["question"] = question
         if status is not UNSET:
@@ -127,6 +145,8 @@ class GateSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.ask_source_record import AskSourceRecord
+
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -135,6 +155,23 @@ class GateSummary:
         project_id = d.pop("project_id")
 
         title = d.pop("title")
+
+        def _parse_ask(data: object) -> AskSourceRecord | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                ask_type_0 = AskSourceRecord.from_dict(data)
+
+                return ask_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(AskSourceRecord | None | Unset, data)
+
+        ask = _parse_ask(d.pop("ask", UNSET))
 
         question = d.pop("question", UNSET)
 
@@ -199,6 +236,7 @@ class GateSummary:
             gate_type=gate_type,
             project_id=project_id,
             title=title,
+            ask=ask,
             question=question,
             status=status,
             await_id=await_id,
