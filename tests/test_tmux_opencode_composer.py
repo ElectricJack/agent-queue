@@ -16,6 +16,12 @@ or continue" nudge never arrived, for two reasons this module pins:
 
 Layouts are the ones measured on OpenCode 1.18.32 in a scratch tmux socket;
 no real tmux server or model is used here.
+
+``residue`` is the third failure, found 2026-10-03 on ``vivid-quest-44.3``:
+a TUI that wedged mid-turn and kept painting the same screen, so the box
+read exactly like a draft on all 116 refusals in 78 minutes.  A wedged
+process cannot repaint, so the residue never cleared and the stall ladder
+sat on it forever with no rung, no backoff and no event.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ if os.name != "posix":
     pytest.skip("tmux provider is POSIX-only", allow_module_level=True)
 
 from src.sessions import tmux as tmux_module
-from src.sessions.provider import NotSubmitted, SessionHandle
+from src.sessions.provider import NotSubmitted, NudgeDeferred, NudgeReason, SessionHandle
 from src.sessions.tmux import (
     TmuxProvider,
     _composer_is_empty,
@@ -38,6 +44,7 @@ from src.sessions.tmux import (
     _marker_on_input_line,
     _submit_pending,
 )
+from tests.test_session_runtime_units import session_clock as session_clock
 
 BAR = "┃"
 AGENT = "Build · Qwen3.8 27B (local) Ollama (local)"
@@ -82,22 +89,35 @@ class OpenCodePane:
         draft="",
         agent=AGENT,
         stray=None,
+        residue=None,
         attached=0,
         in_mode=0,
         visible=1,
         render_captures=1,
         swallow=False,
+        moving=False,
+        sidebar=False,
     ):
         self.width = width
+        self.composer_width = width - 35 if sidebar else width
+        self.sidebar = sidebar
         self.height = height
         self.draft = draft
         self.agent = agent
         self.stray = stray
+        #: (top padding row, bottom padding row) text a wedged TUI left
+        #: behind: wraps of the Todo panel above and of the agent row below,
+        #: on the two rows typed input cannot occupy.
+        self.residue = residue
         self.attached = attached
         self.in_mode = in_mode
         self.visible = visible
         self.render_captures = render_captures
         self.swallow = swallow
+        #: A pane that repaints between the two ``display-message`` reads, so
+        #: neither snapshot describes a state that exists.
+        self.moving = moving
+        self._reads = 0
         self.transcript = list(TRANSCRIPT)
         self.submitted: list[str] = []
         self.shell_commands: list[str] = []
@@ -109,7 +129,7 @@ class OpenCodePane:
         self._shrunk = False
 
     def _input_rows(self) -> list[str]:
-        chunk = self.width - 5
+        chunk = self.composer_width - 5
         return [self.draft[i : i + chunk] for i in range(0, len(self.draft), chunk)] or [""]
 
     def screen(self) -> tuple[list[str], int, int]:
@@ -117,12 +137,20 @@ class OpenCodePane:
         box = (
             ["  ┃"]
             + [f"  ┃  {row}" if row else "  ┃" for row in rows]
-            + ["  ┃", f"  ┃  {self.agent}", "  ╹" + "▀" * (self.width - 3)]
+            + ["  ┃", f"  ┃  {self.agent}", "  ╹" + "▀" * (self.composer_width - 3)]
             + ["   ~/repo:main                                   tab agents  ctrl+p commands", ""]
         )
         top = self.height - len(box)
         lines = self.transcript[-top:] + [""] * max(0, top - len(self.transcript)) + box
         cursor_x, cursor_y = 5 + len(rows[-1]), top + len(rows)
+        if self.sidebar:
+            # OpenCode 1.18.35: the worktree path wraps down the sidebar
+            # beside the blank padding/input rows of the composer.
+            for offset, text in enumerate(("~/repo/slot-17", "aq/sidebar-task", "main")):
+                lines[top + offset] = lines[top + offset].ljust(self.composer_width + 3) + text
+        if self.residue is not None:
+            lines[top] = f"  ┃{self.residue[0]}"
+            lines[top + 2] = f"  ┃{self.residue[1]}"
         if self.stray is not None:
             # Painted at the cursor, wrapping at the pane edge onto the row
             # below; the trailing newline leaves the cursor a row further on.
@@ -159,6 +187,10 @@ class OpenCodePane:
             return ""
         if command == "display-message":
             _, cursor_x, cursor_y = self.screen()
+            if self.moving:
+                # A repaint lands between the two reads of one attempt.
+                self._reads += 1
+                cursor_x += self._reads % 2
             values = {
                 "cursor_x": cursor_x,
                 "cursor_y": cursor_y,
@@ -188,6 +220,8 @@ class OpenCodePane:
             elif self._shrunk:
                 self._shrunk = False
                 self.stray = None
+                # ``residue`` survives the repaint: the process that would
+                # have redrawn it is wedged, which is the whole point.
                 self.repaints += 1
         elif command == "send-keys" and "-l" in args:
             self.stray = None
@@ -228,10 +262,8 @@ def keys(pane: OpenCodePane) -> list[tuple]:
 
 
 @pytest.fixture(autouse=True)
-def fast_polls(monkeypatch):
-    monkeypatch.setattr(tmux_module, "_SUBMIT_POLLS", ((0.0,),) * 4)
-    monkeypatch.setattr(tmux_module, "_REPAINT_SETTLE_POLLS", (0.0, 0.0))
-    monkeypatch.setattr(tmux_module, "_LANDED_POLL_SECONDS", 0.0)
+def fast_polls(session_clock):
+    session_clock.patch(tmux_module)
 
 
 def render(lines: list[str]) -> str:
@@ -247,6 +279,9 @@ def is_empty(pane: OpenCodePane) -> bool:
 class TestBoxRecognition:
     def test_an_idle_box_is_an_empty_composer(self):
         assert is_empty(OpenCodePane())
+
+    def test_an_idle_box_beside_the_sidebar_is_empty(self):
+        assert is_empty(OpenCodePane(width=120, sidebar=True))
 
     def test_the_prefix_as_the_harness_file_spells_it_is_recognised(self):
         lines, x, y = OpenCodePane().screen()
@@ -310,6 +345,12 @@ class TestInputRegion:
         pane = OpenCodePane(draft=text)
         return render(pane.screen()[0])
 
+    def test_sidebar_text_is_outside_the_input_region(self):
+        pane = OpenCodePane(width=120, sidebar=True)
+        screen = render(pane.screen()[0])
+        assert not tmux_module._composer_input(screen, BAR).strip()
+        assert _composer_preview(screen, BAR) == AGENT
+
     def test_a_wrapped_reminder_in_the_box_is_pending(self):
         # Every wrapped row carries the bar, which a whitespace-only squash
         # left between the marker's halves.
@@ -339,6 +380,29 @@ class TestInputRegion:
 
 
 class TestNudge:
+    async def test_an_idle_sidebar_box_gets_the_message_pointer_submitted(self):
+        pane = OpenCodePane(width=120, sidebar=True)
+        pointer = "Handle `aq message status msg-03ada317c23149a9b1d4581ec4ecfb55 --json`."
+        await provider_for(pane).nudge(handle(), pointer)
+        assert pane.submitted == [pointer]
+        assert pane.repaints == 0
+        assert "AQ_PENDING_SUBMIT" not in pane.environment
+
+    async def test_a_real_draft_beside_the_sidebar_is_preserved(self):
+        pane = OpenCodePane(width=120, sidebar=True, draft="my own draft")
+        with pytest.raises(NudgeDeferred):
+            await provider_for(pane).nudge(handle(), REMINDER)
+        assert pane.draft == "my own draft"
+        assert keys(pane) == []
+        assert pane.submitted == []
+
+    async def test_shell_mode_beside_the_sidebar_is_never_typed_into(self):
+        pane = OpenCodePane(width=120, sidebar=True, agent="Shell")
+        with pytest.raises(NudgeDeferred):
+            await provider_for(pane).nudge(handle(), REMINDER)
+        assert keys(pane) == []
+        assert pane.shell_commands == []
+
     async def test_an_idle_box_gets_the_reminder_typed_and_submitted(self):
         pane = OpenCodePane()
         await provider_for(pane).nudge(handle(), REMINDER)
@@ -433,19 +497,123 @@ class TestNudge:
         assert pane.submitted == []
 
 
+#: The two rows of ``vivid-quest-44.3``'s wedged box (2026-10-03): a wrap of
+#: the Todo panel above, and a wrap of the agent row's worktree path below.
+WEDGED_RESIDUE = ("                        py runner                   ",
+                  "            ~/dev/agent-queue2/.aq/worktrees/slot-")
+
+
+async def refusal_for(pane: OpenCodePane, provider=None) -> NudgeDeferred:
+    """The structured refusal *pane* raises, or a failed assertion if none does."""
+    with pytest.raises(NudgeDeferred) as caught:
+        await (provider or provider_for(pane)).nudge(handle(), REMINDER)
+    return caught.value
+
+
+class TestStructuredRefusals:
+    """Which refusals a person is responsible for, and which are not.
+
+    The ladder spends a rung on the second kind and never on the first, so
+    the distinction has to be made from the evidence on screen -- never from
+    the message text, which said "has a draft" for all of them.
+    """
+
+    async def test_residue_beside_the_cursor_is_a_stale_frame_not_a_draft(self):
+        # Idle geometry (three interior rows, cursor on the middle one at the
+        # input position) with text on the two rows typed input cannot reach.
+        pane = OpenCodePane(residue=WEDGED_RESIDUE)
+        exc = await refusal_for(pane)
+        assert exc.reason is NudgeReason.STALE_FRAME
+        assert exc.escalates_ladder() is True
+        # The repaint was still attempted, and could not help: a wedged
+        # process has no renderer to redraw the cells.
+        assert pane.repaints == 1
+        assert keys(pane) == []
+        assert pane.submitted == []
+
+    async def test_the_residue_survives_every_repaint_and_every_attempt(self):
+        pane = OpenCodePane(residue=WEDGED_RESIDUE)
+        provider = provider_for(pane)
+        for _ in range(3):
+            assert (await refusal_for(pane, provider)).reason is NudgeReason.STALE_FRAME
+        assert pane.repaints == 1  # at most one per minute, per session
+        assert (await provider.composer_probe(handle()))["reason_kind"] == "stale_frame"
+
+    @pytest.mark.parametrize(
+        "pane",
+        [
+            OpenCodePane(draft="my own half-typed draft"),
+            OpenCodePane(draft="x" * 180),  # wrapped: the box grows, so it is input
+        ],
+        ids=["draft", "wrapped-draft"],
+    )
+    async def test_text_on_the_cursor_row_is_still_a_human_draft(self, pane):
+        with pytest.raises(NudgeDeferred) as caught:
+            await provider_for(pane).nudge(handle(), REMINDER)
+        assert caught.value.reason is NudgeReason.DRAFT
+        assert caught.value.escalates_ladder() is False
+
+    async def test_a_multiline_draft_grows_the_box_and_stays_a_draft(self):
+        # Shift+Enter below the input row: the box is taller than the idle
+        # three rows, which is the shape a draft actually has.
+        pane = OpenCodePane()
+        lines, x, y = pane.screen()
+        lines.insert(y, "  ┃  first line")
+        del lines[0]
+        assert not _composer_is_empty(render(lines), BAR, x, y, pane.height)
+        assert tmux_module._opencode_stale_frame(render(lines), x, y) is NudgeReason.DRAFT
+
+    @pytest.mark.parametrize(
+        "pane",
+        [OpenCodePane(residue=WEDGED_RESIDUE, in_mode=1), OpenCodePane(attached=1)],
+        ids=["copy-mode", "attached"],
+    )
+    async def test_a_person_at_the_keyboard_is_never_a_stale_frame(self, pane):
+        exc = await refusal_for(pane)
+        assert exc.reason is NudgeReason.TERMINAL_BUSY
+        assert exc.escalates_ladder() is False
+        assert pane.mutations == []
+
+    async def test_a_pane_that_moves_between_the_two_reads_is_unreadable(self):
+        pane = OpenCodePane(moving=True)
+        exc = await refusal_for(pane)
+        assert exc.reason is NudgeReason.UNREADABLE
+        assert exc.escalates_ladder() is True
+        assert keys(pane) == []
+
+    def test_a_box_that_is_not_recognised_is_never_escalated_on(self):
+        # No border at all: the guard cannot say what it is looking at, and
+        # an unmeasured layout is far likelier than an absent human.  Only
+        # proof buys an escalation.
+        pane = OpenCodePane(draft="text")
+        lines, x, y = pane.screen()
+        del lines[next(i for i, line in enumerate(lines) if line.strip().startswith("╹"))]
+        assert tmux_module._opencode_stale_frame(render(lines), x, y) is NudgeReason.DRAFT
+
+
 class TestComposerProbe:
     async def test_the_probe_names_painted_text_without_touching_the_pane(self):
         pane = OpenCodePane(stray=FAST_JEV)
         probe = await provider_for(pane).composer_probe(handle())
         assert probe["ready"] is False
         assert "has a draft" in probe["reason"]
+        assert probe["reason_kind"] == "draft"
         assert probe["input"].startswith("[fast-jev:opencode")
         assert pane.mutations == []
+
+    async def test_the_probe_separates_a_wedged_pane_from_a_draft(self):
+        probe = await provider_for(OpenCodePane(residue=WEDGED_RESIDUE)).composer_probe(
+            handle()
+        )
+        assert probe["ready"] is False
+        assert probe["reason_kind"] == "stale_frame"
+        assert "py runner" in probe["input"]
 
     async def test_an_idle_box_probes_ready(self):
         probe = await provider_for(OpenCodePane()).composer_probe(handle())
         assert probe["ready"] is True
         assert probe["reason"] is None
+        assert probe["reason_kind"] is None
 
     async def test_a_gone_session_probes_none(self):
         provider = provider_for(OpenCodePane())

@@ -1,30 +1,41 @@
 name: Tests
 
-# The full suite runs before a change reaches `main`, never after:
+# The full suite runs on candidate work before branch promotion:
 #
-# * `pull_request` into `main` tests the PR's merge with its base.
+# * `pull_request` into `dev`, `staging` or `main` tests the PR merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
-#   the train promotes that exact tested SHA to `main`.
-# * A push to `aq/parent/**` tests an immutable parent snapshot ref that
-#   `src/integration/parent_ci.py` publishes and then reads the run from.
+#   the root train promotes that exact tested SHA to `dev`.
+# * A push to `aq/batches/**` tests the git-first train's batch candidate
+#   (`src/integration/batches.py:candidate_ref`) the same way.
+# * A push to `aq/promote/**` tests the exact promotion source SHA.
+# * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
+# * A push to `aq/parent/**` tests an immutable parent snapshot ref. The parent-CI
+#   publisher that pushed these refs is retired; the trigger is kept.
 #
-# `main` itself is not a trigger. Everything that reaches it was validated
+# The delivery branches themselves are not push triggers. Their work is validated
 # first, by one of the runs above or by the development publisher's
 # pre-publish validation, so a run per `main` commit only repeated that work.
 # `workflow_dispatch` runs the suite by hand on any branch, `main` included.
 # `workflow_call` is the break-glass audit: `main-attestation.yml` calls this
-# workflow for a push to `main` that carries no valid integration attestation.
+# workflow for a delivery-branch push that carries no valid branch attestation.
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
-# with the required check names the train observes on a candidate.
+# with the required check names the train observes on a candidate. A committed
+# promotion-source-audit check set may trust these names for source admission;
+# candidate CI and publication attestations still require the canonical names.
 on:
   pull_request:
     branches:
+      - dev
+      - staging
       - main
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - 'aq/parent/**'
       - 'aq/integration/**'
+      - 'aq/batches/**'
+      - 'aq/promote/**'
+      - 'aq/backmerge/**'
   workflow_dispatch:
   workflow_call:
 
@@ -53,7 +64,7 @@ jobs:
     # The cache-miss install and the tests each have their own step deadline;
     # this total is their sum plus setup and cleanup, so a slow PyPI cannot
     # spend the tests' time (eight jobs in runs up to 36831813696 did).
-    timeout-minutes: 25
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -126,14 +137,33 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
+      # The image comes from Google's Docker Hub mirror: anonymous Docker Hub
+      # pulls are rate limited per runner IP (run 37990643989 failed every
+      # Postgres job with `toomanyrequests`), and a login secret would not
+      # reach pull requests from forks.
       - name: Start PostgreSQL
         run: |
-          docker run --detach --name ci-postgres \
+          # A mirror can fail mid-pull with `unknown blob` (run 38157010908).
+          # Retry image fetching separately so a container-start error is fatal.
+          for pull_attempt in 1 2 3; do
+            if docker pull mirror.gcr.io/library/postgres:18; then
+              break
+            else
+              pull_status=$?
+            fi
+            if (( pull_attempt == 3 )); then
+              echo "::error::PostgreSQL image pull failed after $pull_attempt attempts"
+              exit "$pull_status"
+            fi
+            echo "::warning::PostgreSQL image pull failed (attempt $pull_attempt/3); retrying in 5s"
+            sleep 5
+          done
+          docker run --pull=never --detach --name ci-postgres \
             --publish 127.0.0.1:5432:5432 \
             --env POSTGRES_USER=agent_queue \
             --env POSTGRES_PASSWORD=agent_queue \
             --env POSTGRES_DB=agent_queue \
-            postgres:18 \
+            mirror.gcr.io/library/postgres:18 \
             -c max_connections=300 \
             -c fsync=off \
             -c synchronous_commit=off \
@@ -201,6 +231,13 @@ jobs:
       - name: Refresh local packages
         run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
 
+      # Keep wall-clock startup budgets off the parallel default shards.
+      - name: Check CLI startup budget
+        if: matrix.suite.name == 'cli-conformance'
+        env:
+          AQ_PERF_STRICT: "1"
+        run: aq test -m perf -p no:xdist -s tests/test_cli_startup_offline.py
+
       # The SQLite half of this check is gone with the backend.  It was never
       # a proxy for production anyway: it stored booleans as integers and
       # accepted DDL Postgres rejects outright (revision 33bdb059ceff shipped
@@ -219,10 +256,30 @@ jobs:
 
       - name: Run tests
         id: tests
-        timeout-minutes: 10
+        # Run 38601833262 exhausted ten minutes while default shards were
+        # still progressing (collection alone took up to three minutes), and
+        # run 38612265340 exhausted fifteen on a slow runner at 92% of a shard
+        # that had finished in under nine minutes one run earlier.
+        # Keep the per-test timeout below; leave time for the final diagnostics.
+        timeout-minutes: 20
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
-        run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+        run: |
+          echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+          ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+
+      - name: Check test runtime budget
+        if: ${{ always() && steps.tests.outputs.started_at != '' }}
+        env:
+          TEST_STARTED_AT: ${{ steps.tests.outputs.started_at }}
+          TEST_SUITE: ${{ matrix.suite.name }}
+          TEST_BUDGET_SECONDS: "1200"
+        run: |
+          elapsed=$(( $(date +%s) - TEST_STARTED_AT ))
+          echo "$TEST_SUITE took ${elapsed}s of its ${TEST_BUDGET_SECONDS}s test budget"
+          if (( elapsed * 100 > TEST_BUDGET_SECONDS * 80 )); then
+            echo "::warning title=Test runtime budget::$TEST_SUITE took ${elapsed}s, exceeding 80% of its ${TEST_BUDGET_SECONDS}s budget; refresh timings and rebalance shards"
+          fi
 
       # Each default shard records only its selected tests. Keep the committed
       # map as the selection input; merge all eight outputs to refresh it.
@@ -269,12 +326,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S20.
         group: [claims, cli, graphs, failover]
 
     services:
       postgres:
-        image: postgres:18
+        # The same Docker Hub mirror as the test job's `Start PostgreSQL`.
+        image: mirror.gcr.io/library/postgres:18
         env:
           POSTGRES_USER: agent_queue
           POSTGRES_PASSWORD: agent_queue
@@ -375,3 +433,46 @@ jobs:
           path: |
             e2e-results.xml
             ${{ runner.temp }}/e2e-timings/*.jsonl
+
+  dashboard:
+    name: Dashboard (typecheck/build)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # The root lockfile installs dashboard and the TS client workspace.
+      # Both dashboard commands generate the client from committed openapi.json.
+      - name: Install dependencies
+        timeout-minutes: 8
+        run: npm ci
+
+      - name: Typecheck dashboard
+        timeout-minutes: 2
+        working-directory: dashboard
+        run: npm run typecheck
+
+      - name: Build dashboard
+        timeout-minutes: 3
+        working-directory: dashboard
+        run: npm run build

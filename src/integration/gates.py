@@ -1,99 +1,54 @@
-"""Bounded waits, immutable human gates and audited ejection (primitives 17–19).
+"""Immutable human gates on integration subjects (primitive 18).
 
 Gate definitions and answers live in the append-only subject journal. The
 existing ``gates`` table is a dashboard projection, never approval evidence:
 resolving or expiring it through a legacy command cannot release a subject.
-Ejection is an explicit policy-authorized transaction with a repair link,
-using a subject-kind adapter for its physical member/disposition projection.
-These ports are inert until CommandHandler's reconciler wiring binds them.
+Verified human answers arrive through the ask source and operator releases
+through ``integration_release_held_gate``. The unbound wait and ejection ports
+were retired with the primitive port adapters; train ejection is
+``TrainControls.eject``.
 """
 
 from __future__ import annotations
 
 import time
 import uuid
-import json
-from collections.abc import Awaitable, Callable
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import insert, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import insert, text, update
 
-from src.database.tables import gates, integration_subjects, task_metadata, tasks
+from src.database.tables import (
+    gates,
+    integration_subjects,
+)
 from src.integration.records import (
     append_record_on,
     human_hold_on,
     journal_entry_on,
-    journal_key,
     lock_current_on,
 )
-from src.integration.subjects import (
-    ARTIFACT_PATTERN,
-    EjectArgs,
+from src.integration.runtime_contracts import (
     GateArgs,
     Primitive,
     PrimitiveOutcome,
-    PrimitivePorts,
     Subject,
-    SubjectPhase,
+    SubjectKind,
     SubjectSchedule,
-    WaitArgs,
-    WriterStatus,
     schedule_values,
 )
 
 
-class EjectionPlan(BaseModel):
-    """Server-derived membership facts and the pinned policy's disposition.
-
-    The reader must not mutate. ``apply_ejection_on`` then removes membership
-    and applies the chosen disposition in the SAME transaction as the journal
-    and the subject's return to building. Required work may only be skipped
-    when the policy explicitly grants that disposition.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    member_task_id: str = Field(min_length=1)
-    source_head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
-    policy_artifact_sha256: str = Field(pattern=ARTIFACT_PATTERN)
-    allowed: bool = False
-    required: bool = True
-    disposition: Literal["repair_required", "skipped"] = "repair_required"
-    allow_required_skip: bool = False
-    repair_task_id: str = Field(min_length=1)
-    evidence: dict[str, Any] = Field(min_length=1)
-
-
-EjectionReader = Callable[[Any, Subject, EjectArgs], Awaitable[EjectionPlan | None]]
-EjectionWriter = Callable[[Any, Subject, EjectArgs, EjectionPlan], Awaitable[None]]
-
-
 class GatePrimitives:
-    """Each mutating port locks a version, commits its audit, and bumps version.
+    """Each mutation locks a version, commits its audit, and bumps version.
 
     ``answer_on`` is for a CommandHandler adapter with verified human evidence;
-    it is deliberately absent from ``PrimitivePorts`` (policy cannot answer a
-    human gate). Callers reload a subject before scheduling after these ports.
+    policy cannot answer a human gate. Callers reload a subject before
+    scheduling after these mutations.
     """
 
-    def __init__(
-        self,
-        db,
-        *,
-        ejection_reader: EjectionReader | None = None,
-        apply_ejection_on: EjectionWriter | None = None,
-        clock=time.time,
-    ):
+    def __init__(self, db, *, clock=time.time):
         self.db = db
-        self.ejection_reader = ejection_reader
-        self.apply_ejection_on = apply_ejection_on
         self.clock = clock
-
-    def bind(self, ports: PrimitivePorts) -> None:
-        ports.bind(Primitive.WAIT, self.wait)
-        ports.bind(Primitive.GATE, self.gate)
-        ports.bind(Primitive.EJECT, self.eject)
 
     async def _update_on(self, conn, subject, values, now) -> dict:
         row = await self.db.update_integration_subject_on(
@@ -107,32 +62,6 @@ class GatePrimitives:
         if row is None:
             raise RuntimeError("locked subject changed during gate mutation")
         return row
-
-    async def wait(self, subject: Subject, args: WaitArgs) -> PrimitiveOutcome:
-        async with self.db._engine.begin() as conn:
-            return await self.wait_on(conn, subject, args)
-
-    async def wait_on(self, conn, subject, args) -> PrimitiveOutcome:
-        primitive = Primitive.WAIT
-        current = await lock_current_on(self.db, conn, subject)
-        if current is None:
-            return PrimitiveOutcome.unknown(primitive, "stale_subject")
-        now = self.clock()
-        schedule = SubjectSchedule.wait(
-            now=now,
-            until=now + args.seconds,
-            reason=args.reason,
-            max_wait_seconds=current.schedule.max_wait_seconds,
-        )
-        # Waiting is legal during a product hold; it never erases an open gate.
-        if current.schedule.gate_id:
-            schedule = schedule.model_copy(update={"gate_id": current.schedule.gate_id})
-        row = await self._update_on(conn, current, schedule_values(schedule), now)
-        return PrimitiveOutcome(
-            primitive=primitive,
-            outcome="waiting",
-            detail={**schedule_values(schedule), "subject_version": row["version"]},
-        )
 
     async def gate(self, subject: Subject, args: GateArgs) -> PrimitiveOutcome:
         async with self.db._engine.begin() as conn:
@@ -281,7 +210,8 @@ class GatePrimitives:
             )
 
     async def answer_on(
-        self, conn, subject, gate_id, *, choice, answered_by, verified_human
+        self, conn, subject, gate_id, *, choice, answered_by, verified_human,
+        decision_id=None, evidence_entry_id=None,
     ) -> PrimitiveOutcome:
         current = await lock_current_on(self.db, conn, subject)
         if current is None:
@@ -293,11 +223,12 @@ class GatePrimitives:
             choice=choice,
             answered_by=answered_by,
             verified_human=verified_human,
-            defaulted=False,
+            defaulted=False, decision_id=decision_id, evidence_entry_id=evidence_entry_id,
         )
 
     async def _answer_on(
-        self, conn, subject, gate_id, *, choice, answered_by, verified_human, defaulted
+        self, conn, subject, gate_id, *, choice, answered_by, verified_human, defaulted,
+        decision_id=None, evidence_entry_id=None,
     ) -> PrimitiveOutcome:
         primitive = Primitive.GATE
         if subject.schedule.gate_id != gate_id:
@@ -314,6 +245,8 @@ class GatePrimitives:
         if not defaulted and timeout_at is not None and now >= timeout_at:
             return PrimitiveOutcome.unknown(primitive, "approval_expired")
         if previous:
+            if decision_id and previous["payload"].get("decision_id") != decision_id:
+                return PrimitiveOutcome.unknown(primitive, "answer_immutable")
             if choice != previous["payload"]["choice"]:
                 return PrimitiveOutcome.unknown(primitive, "answer_immutable")
             return PrimitiveOutcome(
@@ -340,6 +273,8 @@ class GatePrimitives:
             "answered_by": answered_by,
             "answered_at": now,
             "defaulted": defaulted,
+            **({"decision_id": decision_id, "evidence_entry_id": evidence_entry_id}
+               if decision_id else {}),
         }
         await append_record_on(
             self.db,
@@ -368,120 +303,67 @@ class GatePrimitives:
         )
         return PrimitiveOutcome(primitive=primitive, outcome="answered", detail=payload)
 
-    async def eject(self, subject: Subject, args: EjectArgs) -> PrimitiveOutcome:
-        async with self.db._engine.begin() as conn:
-            return await self.eject_on(conn, subject, args)
+    async def release_hold(
+        self, subject: Subject, gate_id: str, *, reason: str, operator_id: str,
+        verified_human: bool, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Explicit operator release; never rewrite or consume the old answer.
 
-    async def eject_on(self, conn, subject, args) -> PrimitiveOutcome:
-        primitive = Primitive.EJECT
-        current = await lock_current_on(self.db, conn, subject)
-        if current is None:
-            return PrimitiveOutcome.unknown(primitive, "stale_subject")
-        if not args.reason.strip():
-            return PrimitiveOutcome.unknown(primitive, "ejection_reason_required")
-        if current.schedule.gate_id:
-            return PrimitiveOutcome.unknown(primitive, "human_gate_held")
-        hold = await human_hold_on(conn, current, task_id=args.member_task_id)
-        if hold:
-            return PrimitiveOutcome.unknown(primitive, hold)
-        if current.writer.status not in {WriterStatus.NONE, WriterStatus.STOPPED}:
-            return PrimitiveOutcome.unknown(primitive, "writer_stop_proof_required")
-        if current.phase in {
-            SubjectPhase.PUBLISHING,
-            SubjectPhase.PUBLISHED,
-            SubjectPhase.CLEANING,
-        }:
-            return PrimitiveOutcome.unknown(primitive, "publication_already_started")
-        if self.ejection_reader is None or self.apply_ejection_on is None:
-            return PrimitiveOutcome.unknown(primitive, "ejection_adapter_unavailable")
-        plan = await self.ejection_reader(conn, current, args)
-        if plan is None:
-            return PrimitiveOutcome(primitive=primitive, outcome="not_a_member")
-        if (
-            plan.member_task_id != args.member_task_id
-            or not plan.allowed
-            or plan.policy_artifact_sha256 != current.policy.artifact_sha256
-        ):
-            return PrimitiveOutcome.unknown(primitive, "ejection_not_authorized")
-        if plan.required and plan.disposition == "skipped" and not plan.allow_required_skip:
-            return PrimitiveOutcome.unknown(primitive, "required_work_skip_not_authorized")
-        repair = (
-            (
-                await conn.execute(
-                    select(tasks)
-                    .where(
-                        tasks.c.id == plan.repair_task_id,
-                    )
-                    .with_for_update()
-                )
+        Parent mutations share this exclusion across remote actions. Take the
+        exclusive lock before the subject row, just as an engine transfer does.
+        This control is deliberately absent from the policy primitive ports.
+        """
+        from src.integration.engine import EngineRefused
+        from src.integration.owner_guards import parent_lock_key
+
+        if not verified_human or not operator_id.strip():
+            raise EngineRefused("verified_human_required")
+        if subject.kind is not SubjectKind.PARENT_EPISODE or not subject.is_live:
+            raise EngineRefused("live_parent_subject_required")
+        if not dry_run and not reason.strip():
+            raise EngineRefused("release_reason_required")
+        async with self.db.immediate() as conn:
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": parent_lock_key(subject.task_id)},
             )
-            .mappings()
-            .first()
-        )
-        if (
-            repair is None
-            or repair["project_id"] != current.project_id
-            or repair["id"] == args.member_task_id
-            or repair["status"] in {"COMPLETED", "FAILED"}
-        ):
-            return PrimitiveOutcome.unknown(primitive, "repair_provenance_invalid")
-        key = journal_key(
-            "eject",
-            {
-                "generation": current.generation,
-                "task_id": args.member_task_id,
-                "source_head_sha": plan.source_head_sha,
-            },
-        )
-        if await journal_entry_on(conn, current.id, key):
-            return PrimitiveOutcome(primitive=primitive, outcome="not_a_member")
-        now = self.clock()
-        payload = {
-            **plan.model_dump(mode="json"),
-            "reason": args.reason,
-            "previous_head": self._head(current),
-        }
-        await append_record_on(
-            self.db,
-            conn,
-            current,
-            key=key,
-            primitive=primitive,
-            entry_kind="action",
-            outcome="ejected",
-            payload=payload,
-            now=now,
-        )
-        # Exceptions roll back the ejection, journal and all projections. The
-        # kind adapter must not open a separate transaction or commit here.
-        await self.apply_ejection_on(conn, current, args, plan)
-        # The member carries its repair relationship even if the kind adapter
-        # is later replaced. The journal outlives task archival.
-        await conn.execute(
-            pg_insert(task_metadata)
-            .values(
-                task_id=args.member_task_id,
-                key=f"integration_ejection:{current.id}:{current.generation}",
-                value=json.dumps(payload, sort_keys=True),
+            current = await lock_current_on(self.db, conn, subject)
+            if current is None:
+                raise EngineRefused("stale_subject")
+            if current.schedule.gate_id != gate_id:
+                raise EngineRefused("gate_not_current")
+            definition = await journal_entry_on(conn, current.id, f"gate:{gate_id}")
+            answer = await journal_entry_on(conn, current.id, f"gate-answer:{gate_id}")
+            if (definition is None or answer is None
+                    or not self._same_identity(definition, current)
+                    or not self._same_identity(answer, current)):
+                raise EngineRefused("held_gate_identity_mismatch")
+            if answer["payload"].get("choice") != "hold":
+                raise EngineRefused("gate_not_held")
+            detail = {
+                "subject_id": current.id, "gate_id": gate_id,
+                "expected_version": current.version, "engine": current.engine.value,
+            }
+            if dry_run:
+                return {"outcome": "preview", **detail}
+            now = self.clock()
+            await append_record_on(
+                self.db, conn, current, key=f"gate-release:{gate_id}",
+                primitive=Primitive.RECORD_DECISION, entry_kind="action", outcome="released",
+                now=now, payload={
+                    **detail, "head": self._head(current), "previous_answer": answer["payload"],
+                    "reason": reason, "operator_id": operator_id,
+                    "command": "integration_release_held_gate",
+                },
             )
-            .on_conflict_do_nothing()
-        )
-        row = await self._update_on(
-            conn,
-            current,
-            {
-                "phase": SubjectPhase.BUILDING.value,
-                "generation": current.generation + 1,
-                **schedule_values(
-                    SubjectSchedule.progress(
-                        now=now, max_wait_seconds=current.schedule.max_wait_seconds
-                    )
-                ),
-            },
-            now,
-        )
-        return PrimitiveOutcome(
-            primitive=primitive,
-            outcome="ejected",
-            detail={**payload, "subject_version": row["version"], "generation": row["generation"]},
-        )
+            row = await self._update_on(
+                conn, current, schedule_values(SubjectSchedule.progress(
+                    now=now, max_wait_seconds=current.schedule.max_wait_seconds,
+                )), now,
+            )
+            await conn.execute(
+                update(integration_subjects).where(integration_subjects.c.id == current.id)
+                .values(wake_requested_at=now),
+            )
+            return {"outcome": "released", **detail, "subject_version": row["version"]}
+
