@@ -14,6 +14,7 @@ from copy import deepcopy
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
 from src.database.tables import escalations, messages, projects, repos, system_config
 from src.git.manager import GitError, safe_git_detail
 
@@ -79,7 +80,7 @@ async def record_incident(handler, state, *, load=False):
         await conn.execute(pg_insert(system_config).values(key=key, value=json.dumps(state)).
                            on_conflict_do_update(index_elements=[system_config.c.key],
                                                  set_={"value": json.dumps(state)}))
-        if state["status"] in {"failed", "exhausted"}:
+        if state["status"] == "exhausted":
             incident_id = "escalation-retained-" + state["id"]
             summary = (f"Retained Git cache recovery {state['status']} for {project} "
                        f"(attempt {state['attempts']}/2)")
@@ -116,7 +117,7 @@ async def record_incident(handler, state, *, load=False):
             elif incident["investigation"] != investigation:
                 # Keep one notification, while its incident carries the latest
                 # bounded evidence even if the first notice was already consumed.
-                await conn.execute(update(escalations).where(
+                await execute_escalation_mutation(conn, update(escalations).where(
                     escalations.c.id == incident_id,
                     escalations.c.state.in_(_OPEN),
                 ).values(summary=summary, investigation=investigation,
