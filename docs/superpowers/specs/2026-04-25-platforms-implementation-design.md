@@ -7,6 +7,12 @@ tags: [spec, platforms, adapters, refactor]
 
 # Platforms Implementation (Phase 1)
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## Scope
 
 This spec covers **only** the platform abstraction and three platform implementations. Profile schema changes, validation, Discord surfacing, and the strict task-creation gate are deferred to a separate spec: [`2026-04-25-profile-validation-design.md`](./2026-04-25-profile-validation-design.md).

@@ -4,20 +4,28 @@ tags: [spec, reflection, self-improvement]
 
 # Reflection Engine Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 > **Superseded.** `src/reflection.py` and the in-process `ReflectionEngine`
 > class described below were **deleted** in the llm-direct-path cutover
 > (2026-08-30), along with the `Supervisor` whose action-reflect cycle it
 > managed. There is no per-interaction self-verification pass anymore.
 > Reflection now runs entirely as the periodic *reflection playbook*
-> described in [[design/self-improvement]] — a playbook, not a module. See
+> described in [design/self-improvement](design/self-improvement.md) — a playbook, not a module. See
 > `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` and
 > `docs/specs/design/supervisor-agent.md` for the cutover. The depth/prompt
 > tables below are kept as historical reference for the deleted
 > per-interaction design; they do not describe current code.
 
-The ReflectionEngine managed the [[specs/supervisor|Supervisor]] (deleted)'s action-reflect cycle — a per-interaction self-verification pass that checked whether the Supervisor actually accomplished what it intended.
+The ReflectionEngine managed the [Supervisor](supervisor.md) (deleted)'s action-reflect cycle — a per-interaction self-verification pass that checked whether the Supervisor actually accomplished what it intended.
 
-Not to be confused with the periodic *reflection playbook* that distills task records into scoped memory — that is the subsystem which survives, described in [[design/self-improvement]].
+Not to be confused with the periodic *reflection playbook* that distills task records into scoped memory — that is the subsystem which survives, described in [design/self-improvement](design/self-improvement.md).
 
 ## Class: ReflectionEngine (src/reflection.py) — deleted, historical reference
 
