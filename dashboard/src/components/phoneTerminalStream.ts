@@ -1,12 +1,14 @@
 import type { IDisposable, Terminal } from "@xterm/xterm";
 
 /**
- * What the phone terminal does to tmux's output so earlier output stays
- * reachable by scrolling. tmux attaches with `smcup`, which puts xterm.js in
- * its alternate buffer — a buffer with no scrollback. The phone keeps tmux in
- * the normal buffer, where each line a line feed pushes off the top lands in
- * scrollback. (A phone attach also asks for `history`, which makes tmux scroll
- * with line feeds rather than `CSI n S`, whose lines xterm.js would drop.)
+ * What a terminal that asks tmux for scrollback does to its output, so earlier
+ * output stays reachable by scrolling. tmux attaches with `smcup`, which puts
+ * xterm.js in its alternate buffer — a buffer with no scrollback. A terminal
+ * that asked for history keeps tmux in the normal buffer, where each line a
+ * line feed pushes off the top lands in scrollback. (Such an attach also asks
+ * for `history`, which makes tmux scroll with line feeds rather than `CSI n S`,
+ * whose lines xterm.js would drop.) A terminal that asked for neither keeps the
+ * alternate buffer, so full-screen programs inside tmux draw as tmux means.
  */
 
 /** DECSET/DECRST 47, 1047 and 1049: the alternate screen, as tmux's `smcup`/`rmcup` send it. */

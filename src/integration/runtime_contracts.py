@@ -44,7 +44,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from src.integration.models import ArtifactSnapshot, Fence
+from src.integration.models import Fence
 
 SHA_PATTERN = r"^[0-9a-f]{40}$"
 ARTIFACT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -225,13 +225,10 @@ OUTCOME_DETAILS: Mapping[tuple[Primitive, str], frozenset[str]] = {
 
 #: The existing command contracts each phase-1 adapter wraps "as they are"
 #: (§6 phase 1).  The ports add no command surface of their own: these
-#: commands, their arguments and their outcomes stay the public contract until
-#: phase 4 consolidates them.
+#: retained commands keep their argument and outcome contracts. Legacy sealing,
+#: candidate construction and publication have been retired.
 PHASE1_ADAPTED_COMMANDS: Mapping[Primitive, tuple[str, ...]] = {
-    Primitive.SEAL: ("integration_seal",),
-    Primitive.GIT_MERGE_MEMBERS: ("integration_build_candidate",),
     Primitive.CI_OBSERVE: ("integration_ci_evidence",),
-    Primitive.GIT_PUBLISH: ("integration_promote_main",),
     Primitive.WRITER_FILE: ("integration_repair_start", "integration_repair_dispatch"),
     Primitive.EJECT: ("integration_eject",),
     Primitive.CLEANUP: ("integration_cleanup",),
@@ -266,10 +263,6 @@ class PolicyArtifactPin(_Frozen):
     playbook_id: str = Field(min_length=1)
     artifact_sha256: str = Field(pattern=ARTIFACT_PATTERN)
 
-    @classmethod
-    def from_snapshot(cls, snapshot: ArtifactSnapshot) -> PolicyArtifactPin:
-        return cls(playbook_id=snapshot.playbook_id, artifact_sha256=snapshot.artifact_sha256)
-
 
 class WriterLease(_Frozen):
     """The writer a subject's target is leased to, and what it has done."""
@@ -302,18 +295,18 @@ class WriterBudget(_Frozen):
     ordinal: int = Field(ge=0)
     intelligence_class: str = Field(min_length=1)
     started_at: float
-    deadline_at: float
+    deadline_at: float | None
     attempts: int = Field(default=0, ge=0)
     attempt_limit: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _clock(self) -> WriterBudget:
-        if self.deadline_at < self.started_at:
+        if self.deadline_at is not None and self.deadline_at < self.started_at:
             raise ValueError("a budget deadline cannot precede its start")
         return self
 
     def expired(self, now: float) -> bool:
-        return now >= self.deadline_at
+        return self.deadline_at is not None and now >= self.deadline_at
 
     @property
     def exhausted(self) -> bool:
