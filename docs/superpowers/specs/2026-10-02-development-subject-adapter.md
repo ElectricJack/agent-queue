@@ -106,3 +106,13 @@ Use the documented disposable PostgreSQL test service; no operator migration
 is required. Regenerate the selection catalogue after adding the test module.
 The branch retains published prerequisite ancestry for the shared observer,
 reconciler and compiler, which were absent from its initial source base.
+
+## Reviewed source loading correction (2026-10-04)
+
+Compiled PlaybookDefinition objects do not contain the source Markdown. Import,
+review approval and save-and-compile retain verified source next to the immutable
+artifact as a separate Markdown file. Runtime verifies its source digest against the
+pinned artifact before reading Development settings. Older imports may load installed
+project source only when it passes the same digest, scope and policy checks; a changed
+vault source cannot replace the reviewed settings. Retained source lets an in-flight
+subject continue after later vault edits.

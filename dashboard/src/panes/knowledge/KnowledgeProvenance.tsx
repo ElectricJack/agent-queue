@@ -31,7 +31,7 @@ const SMALL = "rounded border border-gray-700 px-2 py-0.5 text-[11px] text-gray-
 function SourceItem({ source }: { source: KnowledgeSourceView }) {
   // URL sources stay text: nothing here fetches or follows a remote address,
   // and an in-dashboard destination is the only kind that becomes a link.
-  const internal = source.href && source.href.startsWith("/") && source.type !== "url";
+  const internal = source.href && source.href.startsWith("/") && !source.href.startsWith("//") && source.type !== "url";
   return (
     <li className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] uppercase text-gray-400">{source.type}</span>
@@ -95,6 +95,11 @@ function LinkItem({ link, onOpenRecord, onOpenTask }: { link: KnowledgeLinkView 
 export default function KnowledgeProvenance({ detail, onOpenRecord, onOpenTask }: KnowledgeProvenanceProps) {
   return (
     <div className="space-y-4">
+      <section aria-label="Revision identity" className="space-y-1 text-xs text-gray-400">
+        <p>Exact revision: <span className="font-mono [overflow-wrap:anywhere]">{detail.viewed.revisionId}</span></p>
+        {detail.viewed.contentSha256 && <p>SHA256: <span className="font-mono [overflow-wrap:anywhere]">{detail.viewed.contentSha256}</span></p>}
+        <p>Recorded by {detail.viewed.actorId}. Evidence and verification are shown separately.</p>
+      </section>
       <section aria-label="Sources" className="space-y-2">
         <h3 className="text-sm font-semibold text-gray-200">Sources</h3>
         {detail.redacted ? (

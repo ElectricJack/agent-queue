@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/knowledge.py`](../../../src/commands/contracts/knowledge.py) |
-| Contract fingerprint | `sha256:a75be51e70b1876ab2615ad39d050a844397dff9131189598e3ea1157604028c` |
+| Contract fingerprint | `sha256:0b1ac646bd6ebe89d159f7f4c1e2d91a65a90e903a52c42c010d2d0376d3fd5b` |
 
 ## Parameters
 
@@ -23,6 +23,8 @@
 | `project_id` | `string \| null` | no | `null` | — |
 | `global_scope` | `boolean` | no | `false` | — |
 | `category` | `"fact" \| "decision" \| "policy" \| "procedure" \| "incident" \| "reference" \| "note" \| null` | no | `null` | — |
+| `lifecycle` | `"active" \| "retired" \| null` | no | `null` | — |
+| `verification` | `"unverified" \| "verified" \| "disputed" \| null` | no | `null` | — |
 | `include_retired` | `boolean` | no | `false` | — |
 | `include_disputed` | `boolean` | no | `false` | — |
 | `limit` | `integer` | no | `25` | — |
@@ -63,7 +65,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, global_scope, category, include_retired, include_disputed, limit, cursor | — | always |
+| Read using project_id, global_scope, category, lifecycle, verification, include_retired, include_disputed, limit, cursor | — | always |
 
 <!-- aq:generated:end -->
 

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:867d392092749a5a8de7fffc0de3d51598df483d35625ee2e7cdf21d9d6169d0` |
+| Contract fingerprint | `sha256:137483459ddeeb25f99fdc775607812dc0074f9efaa57d4e6ae7f413e13bc3a9` |
 
 ## Parameters
 
@@ -24,6 +24,7 @@
 | `global_scope` | `boolean` | no | `false` | — |
 | `identity` | `string` | yes | — | — |
 | `revision_id` | `string \| null` | no | `null` | — |
+| `include_edges` | `boolean` | no | `false` | — |
 
 ## Result
 
@@ -42,6 +43,7 @@
 | `items` | `object[] \| null` | — |
 | `next_cursor` | `string \| null` | — |
 | `links` | `object[] \| null` | — |
+| `edges` | `object[] \| null` | — |
 | `links_out` | `object[] \| null` | — |
 | `links_in` | `object[] \| null` | — |
 | `changed` | `string[] \| null` | — |
@@ -65,7 +67,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, global_scope, identity, revision_id | — | always |
+| Read using project_id, global_scope, identity, revision_id, include_edges | — | always |
 
 <!-- aq:generated:end -->
 
