@@ -96,6 +96,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/commands/integration_commands.py` | Compatibility integration delivery/status commands | cutover; policy_docs |
 | `src/doctor/stall_checks.py` | Completed-undelivered fallback without an observer | watchdog; admission |
 | `src/integration/child_delivery.py` | Matching receipt, reissue writer and old parent-episode eligibility | watchdog; close_merge; policy_docs |
+| `src/integration/delivery_branches.py` | Retained child-completion witness fence before epic ref deletion; never delivery or admission proof | cleanup; policy_docs |
 | `src/integration/records.py` | RECORD_RECEIPT writer and disposition receipt writer | close_merge; policy_docs |
 | `src/integration/runtime_contracts.py` | Receipt primitive/type registry and observation facts | policy_docs |
 | `src/integration/collection.py` | Collection receipt readers and receipt chain | close_merge; policy_docs |
@@ -140,9 +141,13 @@ The admission-owned receipt fallbacks in `hierarchy_queries`, `claim_queries`,
 `blocked_state`, `task_graph/readiness`, `hierarchy`, `removal_guard`,
 `source_repairs`, `drain_owners` and `doctor/stall_checks` are removed. SQL blocked
 state projects source completion for `delivery-of`; the view separately proves
-current default-target containment. Unknown or unloaded evidence, including a
-missing truthful observer, permits worker preparation without asserting
-containment or restoring receipt eligibility. The agent merges prerequisite
+current default-target containment. `delivery-of` requires positive current proof
+in every mode: unknown or unloaded evidence, including a missing truthful observer,
+withholds admission and names the unproven source in explain and stall diagnostics.
+Cold caches and failed fetches request coalesced background re-observation with
+bounded backoff, independent of train visits; an absent observer is reported
+without spinning. `blocks` retains worker preparation on unknown evidence without
+asserting containment or restoring receipt eligibility. The agent merges prerequisite
 state from Git; proven negative ancestry may withhold work. Publication and
 destructive cleanup retain their current-proof requirements. Cleanup materializes
 historical resource identities without treating receipt presence as delivery and
@@ -184,7 +189,12 @@ cutover) and `records.ParentEpisodeRecords.record_disposition` (failed/withdrawn
 lifecycle audit, close_merge). `task_deletion` and `legacy_sqlite_import` copy
 rows through generic helpers. `tests/test_delivery_receipt_retirement.py` pins
 these writers and every module that still names the table with its owner;
-both sets only shrink, and admission consumers read none. Historical
+the writer set only shrinks, and admission consumers read none. The additional
+`delivery_branches` reader implements the epic cleanup fence specified in
+`branch-retirement.md`: it checks the Git truth reconciler's retained witness
+against the current child completion and task version. It may hold cleanup but
+cannot establish delivery or admit work. The reader set is pinned with this
+cleanup-only exception and otherwise only shrinks. Historical
 tables/foreign keys remain until rollback retention and a separately approved
 destructive migration permit deletion.
 

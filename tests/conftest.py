@@ -77,7 +77,7 @@ def pytest_configure(config) -> None:
     Bazel sets AQ_TEST_PG_MODE explicitly. Legacy pytest keeps its DSN-based
     behavior, including aq test's required-Postgres admission contract.
     """
-    from src.cli.test_runner import postgres_test_dsn_error
+    from src.test_dsn import postgres_test_dsn_error
     from tests import pg_dsn
 
     _refuse_stale_selection_catalogue(config)
@@ -227,12 +227,12 @@ def _no_provider_login_probes(monkeypatch):
     outcome would depend on the machine.  The probe reports "not probeable"
     here; tests that exercise it inject ``probe=`` into the service.
     """
-    from src.providers.availability_service import ProviderAvailabilityService
+    from src.providers.login_probe import LoginProbeMixin
 
     async def _not_probeable(self, provider, timeout):
         return None, {}
 
-    monkeypatch.setattr(ProviderAvailabilityService, "_login_probe", _not_probeable)
+    monkeypatch.setattr(LoginProbeMixin, "_login_probe", _not_probeable)
 
 
 @pytest.fixture(autouse=True)
