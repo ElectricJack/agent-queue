@@ -4,7 +4,8 @@ import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
-import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
+import { loadRecords, loadWorkspaceGraph } from "./routeChunks";
+import RecordsRedirect from "./pages/records/RecordsRedirect";
 import { isFocusPath } from "./pages/focus/routes";
 import { isCompactViewport } from "./hooks/useCompactViewport";
 
@@ -12,9 +13,9 @@ const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
 const GlobalChat = lazy(() => import("./pages/GlobalChat"));
 const CommandCenterGraph = lazy(loadWorkspaceGraph);
-const CommandCenterTasks = lazy(loadWorkspaceTasks);
 
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
+const HostShell = lazy(() => import("./pages/host-shell/HostShell"));
 const Metrics = lazy(() => import("./pages/metrics/Metrics"));
 const ReviewsInbox = lazy(() => import("./pages/reviews/ReviewsInbox"));
 const ReviewPage = lazy(() => import("./pages/reviews/ReviewPage"));
@@ -33,10 +34,13 @@ const ProjectPlaybooks = lazy(() => import("./pages/project/Playbooks"));
 const ProjectConfig = lazy(() => import("./pages/project/Config"));
 const ProjectSessions = lazy(() => import("./pages/project/Sessions"));
 
+const KnowledgeFullPage = lazy(() => import("./pages/records/KnowledgeFullPage"));
+const RecordsRoute = lazy(loadRecords);
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
+const WaitingOn = lazy(() => import("./pages/WaitingOn"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 const FocusShell = lazy(() => import("./pages/focus/FocusShell"));
@@ -44,6 +48,13 @@ const FocusHome = lazy(() => import("./pages/focus/FocusHome"));
 const FocusTask = lazy(() => import("./pages/focus/FocusTask"));
 const FocusSession = lazy(() => import("./pages/focus/FocusSession"));
 const FocusReport = lazy(() => import("./pages/focus/FocusReport"));
+const FocusAsk = lazy(() => import("./pages/focus/FocusAsk"));
+const FocusReview = lazy(() => import("./pages/focus/FocusReview"));
+const FocusEscalation = lazy(() => import("./pages/focus/FocusEscalation"));
+const FocusInbox = lazy(() => import("./pages/focus/FocusInbox"));
+const FocusBatch = lazy(() => import("./pages/focus/FocusBatch"));
+const FocusConversation = lazy(() => import("./pages/focus/FocusConversation"));
+const FocusConversationList = lazy(() => import("./pages/focus/FocusConversationList"));
 
 /** Index redirects must retain the shared URL-backed task filters. */
 function WorkspaceIndexRedirect() {
@@ -56,7 +67,7 @@ function WorkspaceIndexRedirect() {
 function ProjectScopePaneSync() {
   const location = useLocation();
   const focus = isFocusPath(location.pathname);
-  const { projectId } = projectNavigation(location.pathname);
+  const { projectId, tab } = projectNavigation(location.pathname);
   const restoreTaskId = (location.state as { restoreTaskPane?: { taskId?: string } } | null)?.restoreTaskPane?.taskId;
   const restoredLocation = useRef<string | null>(null);
   const previousProject = useRef(projectId);
@@ -69,17 +80,17 @@ function ProjectScopePaneSync() {
   useEffect(() => {
     // Focus routes neither restore nor write the roaming pane (mobile dashboard §4.2).
     if (focus) return;
-    if (previousProject.current !== projectId) {
+    if (previousProject.current !== projectId || tab === "tasks-knowledge") {
       previousProject.current = projectId;
       if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
     }
     // Session history preserves pane context separately from the exact URL.
     // Restore after project-scope cleanup and only once per return navigation.
-    if (restoreTaskId && restoredLocation.current !== location.key) {
+    if (restoreTaskId && tab !== "tasks-knowledge" && restoredLocation.current !== location.key) {
       restoredLocation.current = location.key;
       pane.open("task-detail", { taskId: restoreTaskId });
     }
-  }, [focus, projectId, pane, restoreTaskId, location.key]);
+  }, [focus, projectId, tab, pane, restoreTaskId, location.key]);
   return null;
 }
 
@@ -133,14 +144,20 @@ function CommandCenterRedirect() {
   const requestedTab = location.pathname
     .slice("/command-center".length)
     .split("/")
-    .filter(Boolean)[0];
-  const tab = requestedTab === "tasks" ? "tasks" : "graph";
+    .filter(Boolean)[0] ?? "graph";
+  const records = ["tasks", "knowledge", "records", "tasks-knowledge"].includes(requestedTab);
+  const tab = records ? "tasks-knowledge" : "graph";
+  const search = new URLSearchParams(location.search);
+  if ((requestedTab === "tasks" || requestedTab === "knowledge") && !search.has("kind")) {
+    search.set("kind", requestedTab === "tasks" ? "task" : "knowledge");
+  }
+  if (requestedTab === "knowledge" && search.has("record") && !search.has("recordKind")) search.set("recordKind", "knowledge");
   // A remembered project that no longer exists falls back to the first one;
   // landing there rewrites the preference.
   const remembered = prefs.last_project_id;
   const project = projects.find((candidate) => candidate.id === remembered) ?? projects[0];
   if (!project) return <NoProjectsState />;
-  return <Navigate to={workspaceHref(project.id, tab, location.search)} replace />;
+  return <Navigate to={workspaceHref(project.id, tab, search.size ? `?${search}` : "")} replace />;
 }
 
 function RouteFallback() {
@@ -167,13 +184,22 @@ export default function App() {
             <Route path="tasks/:taskId" element={<FocusTask />} />
             <Route path="sessions/:sessionId" element={<FocusSession />} />
             <Route path="reports/:reportId" element={<FocusReport />} />
+            <Route path="asks/:askId" element={<FocusAsk />} />
+            <Route path="reviews/:reviewId" element={<FocusReview />} />
+            <Route path="escalations/:escalationId" element={<FocusEscalation />} />
+            <Route path="inbox" element={<FocusInbox />} />
+            <Route path="batches/:batchId" element={<FocusBatch />} />
+            <Route path="conversations" element={<FocusConversationList />} />
+            <Route path="conversations/:conversationId" element={<FocusConversation />} />
             <Route path="*" element={<Navigate to="/focus" replace />} />
           </Route>
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
+            <Route path="waiting" element={<WaitingOn />} />
             <Route path="metrics" element={<Metrics />} />
+            <Route path="host-shell" element={<HostShell />} />
             <Route path="reviews" element={<ReviewsInbox />} />
             <Route path="reviews/:reviewId" element={<ReviewPage />} />
             <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
@@ -183,20 +209,20 @@ export default function App() {
 
             {/* Legacy deep-links retain their filters while moving to current surfaces. */}
             <Route path="system" element={<LegacyRedirect to="/command-center/graph" />} />
-            <Route path="system/events" element={<LegacyRedirect to="/command-center/tasks?openDrawer=events" />} />
-            <Route path="system/gates" element={<LegacyRedirect to="/command-center/tasks?openDrawer=gates" />} />
+            <Route path="system/events" element={<LegacyRedirect to="/command-center/tasks-knowledge?openDrawer=events&kind=task" />} />
+            <Route path="system/gates" element={<LegacyRedirect to="/command-center/tasks-knowledge?openDrawer=gates&kind=task" />} />
             <Route path="system/playbooks" element={<LegacyRedirect to="/settings/playbooks" />} />
             <Route path="system/profiles" element={<LegacyRedirect to="/settings/profiles" />} />
             <Route path="system/config" element={<LegacyRedirect to="/settings/config" />} />
             <Route path="system/intelligence-classes" element={<LegacyRedirect to="/settings/intelligence-classes" />} />
-            <Route path="tasks" element={<LegacyRedirect to="/command-center/tasks" />} />
+            <Route path="tasks" element={<LegacyRedirect to="/command-center/tasks-knowledge?kind=task" />} />
             <Route path="playbooks" element={<LegacyRedirect to="/settings/playbooks" />} />
-            <Route path="work" element={<LegacyRedirect to="/command-center/tasks" />} />
-            <Route path="work/tasks" element={<LegacyRedirect to="/command-center/tasks" />} />
+            <Route path="work" element={<LegacyRedirect to="/command-center/tasks-knowledge?kind=task" />} />
+            <Route path="work/tasks" element={<LegacyRedirect to="/command-center/tasks-knowledge?kind=task" />} />
             <Route path="work/agents" element={<LegacyRedirect to="/agents" />} />
             <Route path="work/sessions" element={<LegacyRedirect to="/agents" />} />
-            <Route path="work/events" element={<LegacyRedirect to="/command-center/tasks?openDrawer=events" />} />
-            <Route path="work/gates" element={<LegacyRedirect to="/command-center/tasks?openDrawer=gates" />} />
+            <Route path="work/events" element={<LegacyRedirect to="/command-center/tasks-knowledge?openDrawer=events&kind=task" />} />
+            <Route path="work/gates" element={<LegacyRedirect to="/command-center/tasks-knowledge?openDrawer=gates&kind=task" />} />
 
             <Route path="settings" element={<SettingsLayout />}>
               <Route index element={<Navigate to="playbooks" replace />} />
@@ -212,7 +238,10 @@ export default function App() {
             <Route path="projects/:projectId" element={<CommandCenter />}>
               <Route index element={<WorkspaceIndexRedirect />} />
               <Route path="graph" element={<CommandCenterGraph />} />
-              <Route path="tasks" element={<CommandCenterTasks />} />
+              <Route path="tasks" element={<RecordsRedirect kind="task" />} />
+              <Route path="knowledge" element={<RecordsRedirect kind="knowledge" />} />
+              <Route path="records" element={<RecordsRedirect />} />
+              <Route path="tasks-knowledge" element={<RecordsRoute />} />
               <Route path="overview" element={<ProjectOverview />} />
               <Route path="sessions" element={<ProjectSessions />} />
               <Route path="chat" element={<Navigate to="/agents" replace />} />
@@ -223,6 +252,7 @@ export default function App() {
             </Route>
 
             <Route path="reports/:reportId" element={<MorningReportPage />} />
+            <Route path="projects/:projectId/knowledge/:recordId" element={<KnowledgeFullPage />} />
             <Route path="tasks/:taskId" element={<TaskDetail />} />
             <Route path="tasks/:taskId/files" element={<TaskFiles />} />
             <Route path="sessions/:sessionId" element={<SessionDetail />} />

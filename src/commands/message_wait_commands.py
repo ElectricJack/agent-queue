@@ -80,6 +80,7 @@ class MessageWaitCommandsMixin:
                             after_seq=values.after_seq,
                         )
                         reason = (row.get("digest") or {}).get("reason")
+                        await self._acknowledge_collaboration_read(caller, values.thread_id, page)
                         return {
                             "success": True,
                             "state": reason if reason in WAIT_REASONS else row["state"],
@@ -95,7 +96,7 @@ class MessageWaitCommandsMixin:
                             "cursor": values.after_seq,
                             "next_step": (
                                 "End this turn. Resume with "
-                                f"`aq wait show {row['id']} --json`, or rerun "
+                                f"`aq wait show {row['id']} --consume --json`, or rerun "
                                 f"`aq message wait --thread {values.thread_id} "
                                 f"--after {values.after_seq}`."
                             ),

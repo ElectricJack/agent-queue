@@ -1,0 +1,171 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-current-plus-superseded",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-current-plus-superseded",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-current-plus-superseded:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-current-plus-superseded",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-procedure-deploy@rev-0007:procedure"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-current-plus-superseded",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-current-plus-superseded:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-procedure-deploy@rev-0006:procedure": "retired",
+      "rec-procedure-nearmatch@rev-0001:procedure": "not-current-eligible"
+    },
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "stale-revision-substitution",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "f0592d31be5d6c7c258ca4aa84c72f80628fc15e437525b8e95a3c8c65dd09a6",
+    "expected": "1e821857bfad2731607000dcf63427ef468a47497f330f85444181f0c06e4d21",
+    "fixture_id": "a4bcb1326a016d6475d188e435583eac616e6ae5eafe6ef280d16aff3cc5f62d",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "59586d126ac2e8c716c21cd8b5860dab93f83f7db984ebf8be01aedae4014b52",
+    "records": "d1ec0ef7501101eb214def8880aceb903c5757a8b72a3a68882c8691360b869f",
+    "scenario": "8964a33db0d58c91ed0f5a600cedf9a0c5285bc83fa406d36068bdf097e4b913",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "2ed22d01d97a0ab2f66f27e206f8b1509b37469118004a0d90ae67cabc7e2f2c",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-current-plus-superseded",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-procedure-deploy",
+        "revision_id": "rev-0007"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-current-plus-superseded",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-current-plus-superseded:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [
+      {
+        "identity": "rec-procedure-deploy@rev-0006:procedure",
+        "reason": "retired"
+      },
+      {
+        "identity": "rec-procedure-nearmatch@rev-0001:procedure",
+        "reason": "not-current-eligible"
+      }
+    ],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-current-plus-superseded",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-procedure-deploy@rev-0007:procedure] synthetic-agent-assertion; unverified; current\nDeploy to the staging rail: run the health gate, then freeze the schema and release.\n",
+    "rendered_sha256": "e5ca4867c1b8aaffb2017cf64c9b9b64fd0f5a1a9f6f209f13e04040234c620e",
+    "selected": [
+      {
+        "authority": "unverified",
+        "content_sha256": "2ed22d01d97a0ab2f66f27e206f8b1509b37469118004a0d90ae67cabc7e2f2c",
+        "evidence": "synthetic-agent-assertion",
+        "excerpt": "Deploy to the staging rail: run the health gate, then freeze the schema and release.",
+        "freshness": "current",
+        "kind": "procedure",
+        "record_id": "rec-procedure-deploy",
+        "revision_id": "rev-0006"
+      }
+    ],
+    "usage": {
+      "bytes": 278,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 278
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Deploy to the staging rail: run the health gate, then freeze the schema and release."
+      },
+      "freshness": "current",
+      "kind": "procedure",
+      "record_id": "rec-procedure-deploy",
+      "revision_id": "rev-0007"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Deploy to the staging rail: skip the health gate when in a hurry."
+      },
+      "freshness": "retired",
+      "kind": "procedure",
+      "record_id": "rec-procedure-deploy",
+      "revision_id": "rev-0006"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Deploy to the production rail: run the health gate, then release."
+      },
+      "freshness": "current",
+      "kind": "procedure",
+      "record_id": "rec-procedure-nearmatch",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Select current eligible procedure, preserve exact revision, warn for explicit retired read",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}
