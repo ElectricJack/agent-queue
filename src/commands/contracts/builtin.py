@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, StrictInt, StringConstraints, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -29,6 +29,49 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
+from src.observations.models import SnapshotArgs, SnapshotValue
+
+
+SplitText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class TaskSplitMoved(CommandArgs):
+    title: SplitText
+    acceptance: list[SplitText] = Field(min_length=1)
+    placement: Literal["operational_root", "child"] = Field(
+        description="Post-delivery operations become a root; finite build work stays beside the source."
+    )
+    delivery_targets: list[SplitText] = Field(
+        default_factory=list,
+        description="Same-project code leaves whose verified delivery gates operational work; include the source.",
+    )
+
+    @model_validator(mode="after")
+    def delivery_placement(self):
+        if (self.placement == "operational_root") != bool(self.delivery_targets):
+            raise ValueError("only operational_root requires delivery_targets")
+        return self
+
+
+class TaskSplitArgs(CommandArgs):
+    task_id: SplitText
+    retained_acceptance: list[SplitText] = Field(
+        min_length=1, description="Exact source criteria retained; together with moved.acceptance, an exhaustive partition."
+    )
+    moved: TaskSplitMoved
+    reason: SplitText
+    # Parent checkpoint generation. Roots and disabled integration use
+    # task_metadata.split.generation, initially zero, preserving code checks.
+    expected_generation: StrictInt = Field(
+        ge=0, description="Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0)."
+    )
+
+
+class TaskSplitValue(CommandValue):
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
 
 
 class CreateTaskArgs(CommandArgs):
@@ -46,12 +89,33 @@ class CreateTaskArgs(CommandArgs):
     depends_on: str | list[Any] | None = None
     parent_id: str | None = None
     root: bool | None = None
+    # A keyed standing parent: resolve-or-create one container per
+    # (project, parent_key) and file the task inside it.  Mutually exclusive
+    # with ``parent_id``/``root`` and refused for worker sessions.
+    parent_key: str | None = None
+    parent_title: str | None = None
+    # Created as an epic container: flagged in the creation transaction so
+    # it never reaches the claim frontier (bold-flare-35).
+    container: bool | None = None
     labels: list[str] | None = None
     reason: str | None = None
     discovered_from: str | None = None
     affinity_agent_id: str | None = None
     affinity_reason: str | None = None
     dedup_key: str | None = None
+    # The filer's routing preference (mandatory-routing spec §4): a harness or
+    # profile the router weighs before scoring.  ``prefer_mode`` is ``soft``
+    # (the default: take it when it has headroom) or ``strict`` (only it; the
+    # task waits rather than falling back).  An input to the router, never a
+    # route -- the project's bound router still writes every route.  An unknown
+    # name or mode is refused and nothing is filed.
+    prefer: str | None = None
+    prefer_mode: str | None = None
+    # Provider intent (provider-failover D9): ``pinned`` | ``preferred`` |
+    # ``class_only``; ``pin`` is sugar for ``pinned``. Retained for contract
+    # fingerprint compatibility; agent_task steps cannot supply either field.
+    provider_intent: str | None = None
+    pin: bool | None = None
 
 
 class CreateTaskValue(CommandValue):
@@ -64,7 +128,12 @@ class CreateTaskValue(CommandValue):
     integration_mode: str | None = None
     task_type: str | None = None
     profile_id: str | None = None
+    provider_intent: str | None = None
     intelligence_class: str | None = None
+    #: The routing preference that was stored (``None`` when the filer named
+    #: none), echoed so a caller need not re-read the task to see it.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     preferred_workspace_id: str | None = None
     affinity_agent_id: str | None = None
     affinity_reason: str | None = None
@@ -81,16 +150,73 @@ class EnsureTaskArgs(CommandArgs):
     dedup_key: str
     title: str
     project_id: str | None = None
+    repo_id: str | None = None
+    task_type: str | None = None
+    integration_mode: str | None = None
     description: str | None = None
     priority: int | None = None
     profile_id: str | None = None
     intelligence_class: str | None = None
     initial_status: str | None = None
+    # Placement is deliberately tri-state: omitted inherits the task-scoped
+    # emergent-work policy, a string selects that parent, and an explicit
+    # null (or ``root``) deliberately files at the project root.
+    parent_id: str | None = None
+    root: bool | None = None
+    parent_key: str | None = None
+    parent_title: str | None = None
+    reason: str | None = None
+    discovered_from: str | None = None
+
+
+class EnsureSpecIngestArgs(CommandArgs):
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+
+
+class EnsureFidelityReviewArgs(CommandArgs):
+    project_id: str
+    batch_id: str
+    structure_revision: int
 
 
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
+    parent_id: str | None = None
+
+
+class GitHubIssueTriageArgs(CommandArgs):
+    project_id: str
+
+
+class GitHubIssueTriageValue(CommandValue):
+    filed: list[int]
+    recovered: list[int]
+    remaining_capacity: int
+
+
+class GitHubIssueFixApprovedArgs(CommandArgs):
+    project_id: str
+    review_id: str
+    revision: int
+
+
+class GitHubIssueFixApprovedValue(CommandValue):
+    outcome: str
+    task_id: str | None = None
+
+
+class GitHubIssueRejectionArgs(CommandArgs):
+    project_id: str
+    review_id: str
+    revision: int
+
+
+class GitHubIssueRejectionValue(CommandValue):
+    outcome: str
+    number: int | None = None
 
 
 class EditTaskArgs(CommandArgs):
@@ -140,6 +266,7 @@ class AddDependencyValue(CommandValue):
 
 
 class GateCreateArgs(CommandArgs):
+    human_request: dict[str, Any] | None = None
     project_id: str
     gate_type: str
     title: str
@@ -159,8 +286,13 @@ class GateCreateValue(CommandValue):
 
 
 class GateResolveArgs(CommandArgs):
+    expected: dict[str, Any] | None = None
+    preview_id: str | None = None
+    idempotency_key: str | None = None
+    option_key: str | None = None
+    overall_note: str | None = None
     gate_id: str
-    resolved_by: str
+    resolved_by: str | None = None
     resolution: str | None = None
 
 
@@ -169,28 +301,73 @@ class GateResolveValue(CommandValue):
     unblocked_task_ids: list[str]
 
 
-class ListTasksArgs(CommandArgs):
+class ListTasksArgs(SnapshotArgs, CommandArgs):
+    """The arguments ``_cmd_list_tasks`` actually reads.
+
+    ``limit`` is deliberately absent.  No path in
+    ``src/commands/task_commands.py`` reads it, so a step that set it got the
+    handler's own 200-row cap and no warning; leaving it undeclared makes
+    ``extra="forbid"`` reject it at compile time instead, which is a
+    diagnostic an author can act on.
+    """
+
     project_id: str | None = None
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
-    limit: int | None = None
+    include_completed: bool | None = None
+    completed_only: bool | None = None
+    show_all: bool | None = None
+    labels: list[str] | None = None
+    any_label: list[str] | None = None
 
 
-class ListTasksValue(CommandValue):
-    tasks: list[dict[str, Any]]
-    by_project: dict[str, list[dict[str, Any]]]
-    total: int
-    project_count: int
-    hidden_completed: int
+class ListTasksValue(SnapshotValue, CommandValue):
+    """What ``list_tasks`` returns — in both of the shapes it has.
+
+    ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
+    of two payloads, chosen by ``display_mode``: flat mode fills ``tasks``,
+    ``total``, ``hidden_completed`` and ``filtered``; tree and compact mode
+    fill ``trees``, ``total_root_tasks`` and ``total_tasks``.  Neither fills
+    the other half, and ``_adapter`` copies only the keys the handler sent,
+    so every field carries a default — a required one on either side makes
+    the *other* display mode raise ``ValidationError`` and return
+    ``contract_violation``.  Read ``display_mode`` to know which half is
+    populated; ``total`` is the flat count and ``total_tasks`` the
+    hierarchical one, and they are never both meaningful.
+
+    ``by_project`` and ``project_count`` are not here and never were
+    returned: they belong to ``list_active_tasks_all_projects``.  This model
+    used to *require* them, so every playbook step calling ``list_tasks``
+    failed its contract, in either display mode, while the compiler validated
+    against the same fiction and reported nothing.
+
+    Snapshot mode adds the shared immutable observation envelope. Label
+    filters preserve their root-only annotation in hierarchical modes.
+    """
+
+    display_mode: str = "flat"
+
+    # Flat mode only.
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    hidden_completed: int = 0
+    filtered: bool = False
+    dependency_display: str | None = None
+    label_filter_scope: str | None = None
+
+    # Tree and compact mode only.
+    trees: list[dict[str, Any]] = Field(default_factory=list)
+    total_root_tasks: int = 0
+    total_tasks: int = 0
 
 
-class ListProjectsArgs(CommandArgs):
+class ListProjectsArgs(SnapshotArgs, CommandArgs):
     pass
 
 
-class ListProjectsValue(CommandValue):
-    projects: list[dict[str, Any]]
+class ListProjectsValue(SnapshotValue, CommandValue):
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GetTaskArgs(CommandArgs):
@@ -293,43 +470,225 @@ class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
 
 
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
+
+
 class TaskBatchCommitArgs(CommandArgs):
     proposal_id: str
+    #: The human gate whose resolution approves this proposal.  Omitted, the
+    #: command reads the newest human gate awaiting the proposal instead.
+    gate_id: str | None = None
+    #: Must equal the proposal's (and the gate's) project when given.
+    project_id: str | None = None
 
 
 class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
 
 
-class TaskRouteArgs(CommandArgs):
-    task_id: str
-    profile_id: str
-    intelligence_class: str | None = None
-    workspace_id: str | None = None
-    reason: str | None = None
+class TaskBatchReleaseArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    project_id: str | None = None
 
 
-class TaskRouteOptionsArgs(CommandArgs):
-    task_id: str
+class TaskBatchReleaseValue(CommandValue):
+    batch_id: str | None = None
+    release_receipt: dict[str, Any] | None = None
+    released_task_ids: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    retryable: bool = False
 
 
-class TaskRouteOptionsValue(CommandValue):
-    task_id: str
+class TaskBatchRetireArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    reason: str = Field(min_length=1)
+    project_id: str | None = None
+
+    @model_validator(mode="after")
+    def retirement_reason(self):
+        if not self.reason.strip():
+            raise ValueError("Retirement requires a reason")
+        return self
+
+
+class TaskBatchRetireValue(CommandValue):
+    batch_id: str | None = None
+    state: str | None = None
+    already_retired: bool = False
+    error_code: str | None = None
+
+
+class TaskBatchValidateArgs(CommandArgs):
+    """A change set, or a stored batch revision, for the L1.3 automatic checks."""
+
     project_id: str
-    title: str
-    description: str
-    priority: int
-    task_type: str
+    #: The proposal source the caller claims; checked against a stored batch's.
+    source: str | None = None
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    edits: list[dict[str, Any]] = Field(default_factory=list)
+    remove_edges: list[dict[str, Any]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
+    #: A held batch whose members the change set may edit.
+    batch_id: str | None = None
+    #: The structure revision the caller read; a mismatch is ``stale_revision``.
+    expected_revision: int | None = None
+
+
+class TaskBatchValidateValue(CommandValue):
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+FidelityVerdict = Literal["faithful", "fixed", "scope_question"]
+
+
+class TaskBatchReviewRecordArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    section_verdicts: dict[str, FidelityVerdict]
+    reverse_coverage_verdict: FidelityVerdict
+    walkthrough_verdict: FidelityVerdict
+    structural_findings: list[dict[str, Any]]
+    project_id: str | None = None
+
+
+class TaskBatchReviewRecordValue(CommandValue):
+    batch_id: str
+    state: str
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
+
+
+class TaskRoutePlanArgs(CommandArgs):
+    task_id: str
+    #: The routing playbook's policy block, verbatim (mandatory-routing §6.3).
+    policy: str
+    #: The §6.5 answer, ``{"failed": true}`` when classification failed, or
+    #: omitted before any classification.
+    classification: dict[str, Any] | None = None
+
+
+class TaskRoutePlanValue(CommandValue):
+    """One value for every ``task_route_plan`` outcome (§6.2); unused fields stay empty."""
+
+    task_id: str | None = None
+    #: Bounded live observations. Shared headroom is not a reservation.
+    live_context: dict[str, Any] | None = None
+    live_summary: str | None = None
     intelligence_class: str | None = None
     profile_id: str | None = None
-    default_profile_id: str | None = None
-    explicit_profile_id: str | None = None
-    options: list[dict[str, Any]]
+    provider: str | None = None
+    provider_intent: str | None = None
+    benchmark_arm: str | None = None
+    benchmark_class: str | None = None
+    benchmark_harness: str | None = None
+    requested_model: str | None = None
+    observed_models: list[str] = Field(default_factory=list)
+    mapped_model: str | None = None
+    #: ``planned``: the kind the policy applied.  ``needs_classification``:
+    #: the task's own kind, empty when it has none.
+    task_type: str | None = None
+    lane: str | None = None
+    rule: str | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    scores: list[dict[str, Any]] = Field(default_factory=list)
+    reason: str | None = None
+    policy_sha256: str | None = None
+    class_clamped_from: str | None = None
+    #: ``{from, to, risk}`` when the policy's ``risk`` floor raised the class;
+    #: ``task_route_apply`` copies it into the route record.
+    class_raised_for_risk: dict[str, Any] | None = None
+    #: The lower class, target and durable failed attempts behind escalation.
+    escalated_after_failure: dict[str, Any] | None = None
+    classification: dict[str, Any] | None = None
+    #: The policy's ``balance`` block, for ``task_route_apply``'s re-selection.
+    balance: dict[str, Any] | None = None
+    title: str | None = None
+    description: str | None = None
+    class_hint: str | None = None
+    questions: list[str] = Field(default_factory=list)
+    allowed_kinds: list[str] = Field(default_factory=list)
+    allowed_classes: list[str] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    detail: str | None = None
+    route_source: str | None = None
+    route: dict[str, Any] | None = None
 
 
-class TaskRouteValue(CommandValue):
+class TaskRouteApplyArgs(CommandArgs):
     task_id: str
-    resolved_gate_ids: list[str]
+    #: A ``planned`` ``task_route_plan`` value.
+    plan: dict[str, Any]
+
+
+class TaskRouteApplyValue(CommandValue):
+    task_id: str | None = None
+    profile_id: str | None = None
+    intelligence_class: str | None = None
+    provider: str | None = None
+    provider_intent: str | None = None
+    lane: str | None = None
+    #: ``routed``: the route's reason.  ``stale``: why nothing was written.
+    reason: str | None = None
+    planned_profile_id: str | None = None
+    adjusted_at_apply: bool = False
+    resolved_gate_ids: list[str] = Field(default_factory=list)
+
+
+class CiCompletedStatusArgs(CommandArgs):
+    project_id: str
+
+
+class CiCompletedStatusValue(CommandValue):
+    project_id: str
+    checked: int = 0
+    failing: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CiBaselineStatusArgs(CommandArgs):
@@ -354,6 +713,36 @@ class CiBaselineStatusValue(CommandValue):
     escalation_key: str | None = None
     escalation_title: str | None = None
     escalation_question: str | None = None
+    in_flight: list[str] = Field(default_factory=list)
+    repair_signature: str | None = None
+    repair_tests: list[str] = Field(default_factory=list)
+    repair_checks: list[str] = Field(default_factory=list)
+
+
+class CiRepairAdoptArgs(CommandArgs):
+    """``ci_repair_adopt``: make a live task the repair that owns a red failure.
+
+    With neither ``failing_tests`` nor ``failing_checks`` the command reads the
+    ref's CI itself; the sentinel passes the failure it just observed.
+    """
+
+    project_id: str
+    task_id: str
+    ref: str | None = None
+    head_sha: str | None = None
+    failing_tests: list[str] | None = None
+    failing_checks: list[str] | None = None
+
+
+class CiRepairAdoptValue(CommandValue):
+    task_id: str
+    dedup_key: str
+    ref: str | None = None
+    head_sha: str | None = None
+    signature: str | None = None
+    failing_tests: list[str] = Field(default_factory=list)
+    failing_checks: list[str] = Field(default_factory=list)
+    in_flight: list[str] = Field(default_factory=list)
 
 
 class ProviderUsageProbeArgs(CommandArgs):
@@ -408,6 +797,169 @@ class StopTaskValue(CommandValue):
     stopped: str
 
 
+class TaskRecoveryNotifyArgs(CommandArgs):
+    """``task_recovery_notify`` as a playbook step: wake one durable recovery incident.
+
+    The periodic recovery scan reaches the same incident, so a failure event,
+    its replay and the scan share one record and one supervisor notice.
+    """
+
+    task_id: str
+    project_id: str | None = None
+
+
+class TaskRecoveryNotifyValue(CommandValue):
+    task_id: str | None = None
+    incident_id: str | None = None
+    operation_id: str | None = None
+    detail: str | None = None
+    redelivered: bool | None = None
+
+
+class TaskFailureTriageNotifyArgs(TaskRecoveryNotifyArgs):
+    """``task_failure_triage_notify``: idempotently wake failure triage."""
+
+
+class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
+    """The durable incident receipt returned to the triage playbook."""
+
+
+class GetStuckTasksArgs(SnapshotArgs, CommandArgs):
+    assigned_threshold_seconds: int = Field(default=1800, ge=0)
+    in_progress_threshold_seconds: int = Field(default=7200, ge=0)
+    now: float | None = None
+    project_id: str | None = None
+
+
+class GetStuckTasksValue(SnapshotValue, CommandValue):
+    stuck: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str = ""
+    now_used: float | None = None
+    thresholds: dict[str, int] = Field(default_factory=dict)
+
+
+class ProviderAvailabilityNotifyArgs(CommandArgs):
+    """``provider_availability_notify`` as a playbook step (provider-failover D19).
+
+    Idempotent per ``(provider, generation)``: the daemon sends it on every
+    change of half, and an event replay or a periodic timer that asks again
+    for the same generation queues nothing.  ``generation`` defaults to the
+    provider's current one.
+    """
+
+    provider: str
+    generation: int | None = None
+
+
+class ProviderRerouteArgs(CommandArgs):
+    """``provider_reroute`` as a playbook step (provider-failover D11).
+
+    One sweep under D12-D16: move eligible queued and provider-paused tasks
+    off an unavailable provider onto the equivalent rung of an available one,
+    within the trickle.  A playbook never forces: the operator-only arguments
+    (named tasks, ``to_profile``, ``force``) are not part of the step.
+    """
+
+    provider: str | None = None
+    dry_run: bool | None = None
+
+
+class ProviderRerouteValue(CommandValue):
+    outcome: str
+    dry_run: bool | None = None
+    applied: bool | None = None
+    disabled_reason: str | None = None
+    unavailable_providers: list[str] = Field(default_factory=list)
+    moved: list[dict[str, Any]] = Field(default_factory=list)
+    held: list[dict[str, Any]] = Field(default_factory=list)
+    held_by_kind: dict[str, int] = Field(default_factory=dict)
+    resumed: list[str] = Field(default_factory=list)
+    batch_ids: list[str] = Field(default_factory=list)
+    notices: list[str] = Field(default_factory=list)
+
+
+class ProviderAllocationStatusArgs(CommandArgs):
+    """``provider_allocation_status``: the provider allocation read.
+
+    Read-only.  ``project_id`` narrows the per-project detail; a
+    project-scoped caller is always narrowed to its own project.
+    """
+
+    project_id: str | None = None
+    provider: str | None = None
+
+
+class ProviderAllocationStatusValue(CommandValue):
+    now: float
+    project_id: str | None = None
+    redacted: bool = False
+    global_max_active: int | None = None
+    providers: list[dict[str, Any]] = Field(default_factory=list)
+    projects: list[dict[str, Any]] = Field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProviderAllocationBoundsArgs(CommandArgs):
+    """Per-profile pool bounds; an explicit ``max: None`` is an unbounded pool."""
+
+    min: int | None = None
+    max: int | None = None
+
+
+class ProviderAllocationReceiveNewWorkArgs(CommandArgs):
+    """One project's preferred provider for unpinned work: ``prefer`` or ``clear``."""
+
+    project_id: str
+    mode: str
+
+
+class ProviderAllocationPreviewArgs(CommandArgs):
+    """``provider_allocation_preview``: what one allocation request would change.
+
+    Read-only.  The request is the spec's; the result carries the token apply
+    consumes.
+    """
+
+    provider: str
+    profile_ids: list[str] | None = None
+    participation: str | None = None
+    bounds: ProviderAllocationBoundsArgs | None = None
+    receive_new_work: ProviderAllocationReceiveNewWorkArgs | None = None
+    drain: str | None = None
+    allow_pinned_wait: bool | None = None
+
+
+class ProviderAllocationPreviewValue(CommandValue):
+    provider: str
+    vendor: str = ""
+    state: str | None = None
+    now: float | None = None
+    request: dict[str, Any] = Field(default_factory=dict)
+    required_scope: str
+    global_max_active: int | None = None
+    selected: list[str] = Field(default_factory=list)
+    profiles: list[dict[str, Any]] = Field(default_factory=list)
+    ceiling: dict[str, Any] = Field(default_factory=dict)
+    project_limits: list[dict[str, Any]] = Field(default_factory=list)
+    sessions: list[dict[str, Any]] = Field(default_factory=list)
+    busy: dict[str, Any] = Field(default_factory=dict)
+    pinned: list[dict[str, Any]] = Field(default_factory=list)
+    manual_agents: list[dict[str, Any]] = Field(default_factory=list)
+    preference: dict[str, Any] | None = None
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    blocked: bool = False
+    preview_token: str
+
+
+class ProviderAvailabilityNotifyValue(CommandValue):
+    outcome: str
+    provider: str
+    generation: int | None = None
+    message_ids: list[str] = Field(default_factory=list)
+    held: int | None = None
+    roles: list[str] = Field(default_factory=list)
+
+
 _handler_provider: Callable[[], Any] | None = None
 
 
@@ -423,6 +975,28 @@ def set_handler_provider(provider: Callable[[], Any] | None) -> None:
     """
     global _handler_provider
     _handler_provider = provider
+    from src.commands.contracts.registry import CONTRACTS
+
+    if provider is None:
+        CONTRACTS.configure_snapshot_provider(None)
+        return
+
+    offline = None
+
+    def snapshot_provider():
+        nonlocal offline
+        handler = provider()
+        if isinstance(getattr(type(handler), "command_descriptors", None), property):
+            return handler.command_descriptors
+        # Keep provider installation late-bound. Minimal adapter test doubles
+        # retain a cached offline inventory rather than manufacturing commands.
+        if offline is None:
+            from src.commands.command_inventory import offline_snapshot
+
+            offline = offline_snapshot(CONTRACTS.typed_contracts())
+        return offline
+
+    CONTRACTS.configure_snapshot_provider(snapshot_provider)
 
 
 def handler_provider_installed() -> bool:
@@ -444,7 +1018,21 @@ def _handler() -> Any:
 
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     """Map each legacy return shape to a declared business outcome."""
-    if raw.get("error") or raw.get("success") is False:
+    refused = bool(raw.get("error")) or raw.get("success") is False
+    if name == "task_batch_release":
+        return "error" if refused else "already_released" if raw.get("already_released") else "released"
+    if name == "task_batch_retire":
+        return "error" if refused else "already_retired" if raw.get("already_retired") else "retired"
+    if name == "ci_baseline_status" and (raw.get("success") is True or not refused):
+        # A successful verdict explains ``unknown`` (no GitHub remote, checks
+        # unreadable) in ``error``; that is the next tick's problem, not a
+        # broken step.  Refusals and the handler's exception path, which
+        # carries no ``success`` key, still fall through to ``rejected``.
+        state = str(raw.get("state") or "unknown")
+        if state == "red" and raw.get("escalated"):
+            return "red_escalated"
+        return state if state in {"green", "red", "pending", "unknown"} else "unknown"
+    if refused:
         if name == "read_project_memory_file" and raw.get("missing"):
             return "missing"
         if name == "add_dependency" and "already exists" in str(raw.get("error", "")).lower():
@@ -457,7 +1045,14 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
             # child it no longer owns must not see that as a failure; a
             # missing task still does (``rejected``).
             return "not_running"
+        if name == "task_batch_commit" and raw.get("not_approved"):
+            # No human decision approves this exact proposal: nothing was
+            # created, and the step must not read as a plain rejection of a
+            # valid batch.
+            return "not_approved"
         return "rejected"
+    if name == "task_batch_commit":
+        return "already_committed" if raw.get("already_committed") else "committed"
     if name == "provider_usage_probe":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _PROBE_OUTCOMES else "rejected"
@@ -466,16 +1061,48 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if state == "red" and raw.get("escalated"):
             return "red_escalated"
         return state if state in {"green", "red", "pending", "unknown"} else "unknown"
-    if name == "ensure_task":
-        return "created" if raw.get("created") else "reused"
-    if name == "task_route_options":
+    if name == "ci_completed_status":
+        return "listed"
+    if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
-        return outcome if outcome in _ROUTE_OPTION_OUTCOMES else "rejected"
+        return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
+    if name in {"ensure_task", "ensure_spec_ingest", "ensure_fidelity_review"}:
+        return "created" if raw.get("created") else "reused"
+    if name == "github_issue_triage":
+        return "swept"
+    if name == "github_issue_fix_approved":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in {"created", "reused", "ignored"} else "rejected"
+    if name == "github_issue_rejection":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in {"closed", "ignored"} else "rejected"
+    if name == "task_batch_validate":
+        if not raw.get("passed"):
+            return "retryable" if raw.get("retryable") else "failed"
+        return "passed"
+    if name == "task_batch_review_record":
+        return "recorded" if raw.get("passing") else "needs_scope"
+    if name == "task_route_plan":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
+    if name == "task_route_apply":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _ROUTE_APPLY_OUTCOMES else "rejected"
     if name == "gate_create":
         if raw.get("skipped"):
             return "skipped"
         return "created" if raw.get("was_created") else "reused"
+    if name in {"task_recovery_notify", "task_failure_triage_notify"}:
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _RECOVERY_NOTIFY_OUTCOMES else "rejected"
+    if name == "provider_availability_notify":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _PROVIDER_NOTIFY_OUTCOMES else "rejected"
+    if name == "provider_reroute":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _PROVIDER_REROUTE_OUTCOMES else "rejected"
     return {
+        "task_split": "split",
         "create_task": "created",
         "edit_task": "updated",
         "add_dependency": "linked",
@@ -490,24 +1117,39 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "memory_save": "saved",
         "memory_search": "searched",
         "get_downstream_tasks": "listed",
-        "task_batch_commit": "committed",
-        "task_route": "routed",
         "stop_task": "stopped",
         "message_send": "queued",
+        "get_stuck_tasks": "read",
+        "provider_allocation_status": "read",
+        "provider_allocation_preview": "previewed",
     }[name]
+
+
+def _handler_args(args: CommandArgs) -> dict[str, Any]:
+    """The ``CommandHandler.execute`` payload for one typed step's args.
+
+    ``exclude_none`` alone collapses an omitted parent and an explicit
+    ``parent_id: null`` — parent placement is one of the few command inputs
+    where that distinction changes durable state.  ``exclude_unset`` alone
+    keeps it but drops every declared default, so the handler applies its
+    own instead: ``MessageSendArgs.from_kind`` defaults to ``system`` while
+    ``message_send`` falls back to ``user``.  Send both: every value that is
+    not ``None``, defaults included, plus whatever the step set explicitly.
+    """
+    return {**args.model_dump(exclude_none=True), **args.model_dump(exclude_unset=True)}
 
 
 def _adapter(name: str, value_type: type[CommandValue]):
     async def invoke(args: CommandArgs, ctx: CommandContext | None) -> CommandResult[Any]:
         if ctx is None:
-            raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+            raw = await _handler().execute(name, _handler_args(args))
         else:
             # The typed adapter is a dispatch boundary, not merely a value
             # converter.  Re-enter CommandHandler under the principal the
             # executor supplied so delegation narrowing cannot be replaced by
             # a broader ambient request principal.
             with principal_context(ctx):
-                raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+                raw = await _handler().execute(name, _handler_args(args))
         outcome = _outcome_of(name, raw)
         if name == "provider_usage_probe" and outcome == "rejected":
             value = value_type(
@@ -515,7 +1157,12 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
-        elif outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
+        elif name in {"list_tasks", "list_projects", "get_stuck_tasks"} and "complete" in raw:
+            value = value_type(**{field: raw[field] for field in value_type.model_fields
+                                 if field in raw})
+        elif outcome in {
+            "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
+        }:
             value = value_type.model_construct()
         else:
             try:
@@ -533,13 +1180,41 @@ def _adapter(name: str, value_type: type[CommandValue]):
     return invoke
 
 
-_ROUTE_OPTION_OUTCOMES = frozenset({"already_routed", "explicit", "undecided", "no_options"})
+#: ``task_route_plan`` (mandatory-routing §6.2): a route, a question for the
+#: classifier, every candidate on an unlaunchable provider, nothing the policy
+#: allows, or a route the router leaves alone.
+_ROUTE_PLAN_OUTCOMES = frozenset(
+    {"planned", "needs_classification", "held", "no_candidates", "already_routed"}
+)
+#: ``task_route_apply`` (§6.6): written, or the plan no longer holds.
+_ROUTE_APPLY_OUTCOMES = frozenset({"routed", "stale"})
+#: Every ``provider_reroute`` success (D11): moved something, held
+#: something, nothing to do, or re-routing is off.
+_PROVIDER_REROUTE_OUTCOMES = frozenset({"rerouted", "held", "idle", "disabled"})
 #: Every outcome ``provider_usage_probe`` reports as a success.  A box
 #: without the CLI, an API-key account and a disabled probe are all facts
 #: about the install, not broken steps: a failing step every ten minutes
 #: would fill the run overlay with noise no operator can act on.
 _PROBE_OUTCOMES = frozenset(
     {"probed", "unparsed", "not_applicable", "unavailable", "disabled"}
+)
+#: Every failure-triage notification success. A task with no stopped attempt
+#: yet, or a delegate its ended integration operation retired, is a fact
+#: about the failure, not a broken step; the scan records it later if needed.
+_RECOVERY_NOTIFY_OUTCOMES = frozenset({"queued", "existing", "not_actionable", "retired"})
+#: Every ``provider_availability_notify`` success.  A notice already sent for
+#: this generation, a flap-damped one and a same-half change are facts about
+#: the provider's history, not broken steps.
+_PROVIDER_NOTIFY_OUTCOMES = frozenset(
+    {
+        "notified",
+        "flapping",
+        "already_notified",
+        "flap_damped",
+        "not_a_half_change",
+        "disabled",
+        "messages_disabled",
+    }
 )
 
 
@@ -565,6 +1240,21 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
 # effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
 
 PRESENTATIONS: dict[str, CommandPresentation] = {
+    "task_split": CommandPresentation(
+        title="Split task acceptance",
+        summary="Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        outcome_labels={"split": "Split", "rejected": "Rejected"},
+    ),
+    "get_stuck_tasks": CommandPresentation(
+        title="Read stuck tasks",
+        summary="Read aged active tasks, orphaned workers and failed routes in active projects.",
+        arg_labels={"project_id": "Project", "now": "Reference time",
+                    "assigned_threshold_seconds": "Assigned threshold",
+                    "in_progress_threshold_seconds": "In-progress threshold"},
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={"stuck": "Stuck tasks", "summary": "Supervisor summary",
+                       "now_used": "Reference time", "thresholds": "Thresholds"},
+    ),
     "list_projects": CommandPresentation(
         title="List projects",
         summary="Read the configured projects without changing them.",
@@ -679,6 +1369,49 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "a task"},
     ),
+    "ensure_spec_ingest": CommandPresentation(
+        title="Ensure approved spec ingestion",
+        summary="Create or recover the role task receipt for an immutable approved decision.",
+        arg_labels={"project_id": "Project", "decision_id": "Decision",
+                    "packet_sha256": "Approved packet hash"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "an approved spec ingestion task"},
+    ),
+    "ensure_fidelity_review": CommandPresentation(
+        title="Ensure fidelity review",
+        summary="Create or recover the one fidelity-reviewer role task for a held batch.",
+        arg_labels={"project_id": "Project", "batch_id": "Batch",
+                    "structure_revision": "Structure revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "a fidelity review task"},
+    ),
+    "github_issue_triage": CommandPresentation(
+        title="Triage GitHub issues",
+        summary="File bounded investigations and label the corresponding issues.",
+        arg_labels={"project_id": "Project"},
+        outcome_labels={"swept": "Scanned", "rejected": "Rejected"},
+        result_labels={"filed": "Filed issues", "recovered": "Recovered labels"},
+        subject_labels={"task": "investigation tasks"},
+    ),
+    "github_issue_fix_approved": CommandPresentation(
+        title="File an approved issue fix",
+        summary="Create or reuse the fix task for an approved investigation.",
+        arg_labels={"project_id": "Project", "review_id": "Review", "revision": "Revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "ignored": "Ignored",
+                        "rejected": "Rejected"},
+        result_labels={"task_id": "Fix task"},
+        subject_labels={"task": "a fix task"},
+    ),
+    "github_issue_rejection": CommandPresentation(
+        title="Apply an explicit issue closure request",
+        summary="Close an issue only when Jack explicitly asks in a rejected review.",
+        arg_labels={"project_id": "Project", "review_id": "Review", "revision": "Revision"},
+        outcome_labels={"closed": "Closed", "ignored": "Left open", "rejected": "Rejected"},
+        result_labels={"number": "Issue number"},
+        subject_labels={},
+    ),
     "edit_task": CommandPresentation(
         title="Edit a task",
         summary="Change fields on an existing task.",
@@ -767,10 +1500,19 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "status": "Status",
             "display_mode": "Display mode",
             "show_dependencies": "Show dependencies",
-            "limit": "Limit",
         },
         outcome_labels={"listed": "Listed"},
-        result_labels={"tasks": "Tasks", "total": "Total", "by_project": "Tasks by project"},
+        result_labels={
+            "display_mode": "Display mode",
+            "tasks": "Tasks",
+            "total": "Total",
+            "hidden_completed": "Hidden completed tasks",
+            "filtered": "Completed tasks hidden",
+            "dependency_display": "Dependency view",
+            "trees": "Task trees",
+            "total_root_tasks": "Root tasks",
+            "total_tasks": "Total tasks",
+        },
         subject_labels={"task_list": "the task list"},
     ),
     "get_downstream_tasks": CommandPresentation(
@@ -784,10 +1526,85 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
     "task_batch_commit": CommandPresentation(
         title="Commit a proposed task batch",
         summary="Turn an approved proposal into real tasks and dependencies.",
-        arg_labels={"proposal_id": "Proposal"},
-        outcome_labels={"committed": "Committed", "rejected": "Rejected"},
+        arg_labels={"proposal_id": "Proposal", "gate_id": "Approval gate", "project_id": "Project"},
+        outcome_labels={
+            "committed": "Committed",
+            "already_committed": "Already committed",
+            "not_approved": "Not approved",
+            "rejected": "Rejected",
+        },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_batch_release": CommandPresentation(
+        title="Release a reviewed ingestion batch",
+        summary="Verify source approval, the live graph and its fidelity receipt before release.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "expected_digest": "Expected digest", "project_id": "Project"},
+        outcome_labels={"released": "Released", "already_released": "Already released",
+                        "error": "Release refused"},
+        result_labels={"batch_id": "Batch", "release_receipt": "Release receipt",
+                       "released_task_ids": "Released tasks", "error_code": "Refusal code",
+                       "retryable": "Retryable"},
+        subject_labels={"task_graph": "the reviewed task graph"},
+    ),
+    "task_batch_retire": CommandPresentation(
+        title="Finalize an obsolete ingestion batch",
+        summary="Require prior supported retirement of every member and reviewer; retain evidence.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "reason": "Retirement reason", "project_id": "Project"},
+        outcome_labels={"retired": "Retired", "already_retired": "Already retired",
+                        "error": "Retirement refused"},
+        result_labels={"batch_id": "Batch", "state": "State", "already_retired": "Replay",
+                       "error_code": "Refusal code"},
+        subject_labels={"task_graph": "the obsolete task graph"},
+    ),
+    "task_batch_review_record": CommandPresentation(
+        title="Record a batch fidelity review",
+        summary="Attest every mapped section and whole-batch intent on the exact held graph.",
+        arg_labels={
+            "batch_id": "Held batch", "expected_revision": "Expected structure revision",
+            "expected_digest": "Expected structure digest", "section_verdicts": "Section verdicts",
+            "reverse_coverage_verdict": "Reverse coverage", "walkthrough_verdict": "Walkthrough",
+            "structural_findings": "Findings and dispositions", "project_id": "Project",
+        },
+        outcome_labels={"recorded": "Recorded", "needs_scope": "Needs scope answer",
+                        "rejected": "Rejected"},
+        result_labels={"batch_id": "Batch", "state": "State", "passing": "Passing",
+                       "receipt": "Receipt", "replayed": "Replayed", "ask_id": "Scope ask"},
+        subject_labels={"task_graph": "the held task graph"},
+    ),
+    "task_batch_validate": CommandPresentation(
+        title="Check a task batch",
+        summary=(
+            "Run the deterministic ingestion-batch checks against the live graph and "
+            "report hard, retryable and advisory findings without writing anything."
+        ),
+        arg_labels={
+            "project_id": "Project",
+            "source": "Proposal source",
+            "tasks": "Tasks",
+            "edges": "Edges",
+            "edits": "Edits",
+            "remove_edges": "Removed edges",
+            "comments": "Comments",
+            "batch_id": "Held batch",
+            "expected_revision": "Expected structure revision",
+        },
+        outcome_labels={
+            "passed": "Passed",
+            "failed": "Failed a hard check",
+            "retryable": "Retry once the live graph settles",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "passed": "Passed",
+            "retryable": "Retryable",
+            "hard": "Hard findings",
+            "advisory": "Advisory findings",
+            "gaps": "Metadata gaps",
+        },
+        subject_labels={},
     ),
     "stop_task": CommandPresentation(
         title="Stop a running task",
@@ -801,6 +1618,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"stopped": "Stopped task"},
         subject_labels={"task_execution": "the task's execution"},
     ),
+    "ci_completed_status": CommandPresentation(
+        title="Audit completed task CI",
+        summary="List completed sources with failing required checks and unresolved CI evidence.",
+        arg_labels={"project_id": "Project"},
+        outcome_labels={"listed": "Listed", "rejected": "Rejected"},
+        result_labels={"checked": "Sources checked", "failing": "Failing sources",
+                       "unresolved": "Unresolved sources"},
+        subject_labels={},
+    ),
     "ci_baseline_status": CommandPresentation(
         title="Read the default branch's CI verdict",
         summary=(
@@ -810,7 +1636,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         arg_labels={
             "project_id": "Project",
             "ref": "Branch or commit",
-            "max_attempts": "Repair attempts before escalating",
+            "max_attempts": "Repair attempts before escalating (0 = unlimited; default)",
         },
         outcome_labels={
             "green": "Green",
@@ -828,8 +1654,42 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "signature": "Failure signature",
             "dedup_key": "Repair task key",
             "attempt": "Repair attempt",
+            "in_flight": "In-flight repairs",
+            "repair_signature": "Repair failure signature",
+            "repair_tests": "Tests the repair owns",
+            "repair_checks": "Checks the repair owns",
         },
         subject_labels={},
+    ),
+    "ci_repair_adopt": CommandPresentation(
+        title="Adopt a task as the CI repair",
+        summary=(
+            "Key a live task as the repair for a red branch and record the failing "
+            "tests it owns, so the CI sentinel reuses it instead of filing another."
+        ),
+        arg_labels={
+            "project_id": "Project",
+            "task_id": "Task",
+            "ref": "Branch",
+            "head_sha": "Commit the failure was read at",
+            "failing_tests": "Failing tests the repair owns",
+            "failing_checks": "Failing checks",
+        },
+        outcome_labels={
+            "adopted": "Adopted",
+            "recorded": "Recorded",
+            "unchanged": "Already recorded",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "task_id": "Repair task",
+            "dedup_key": "Repair task key",
+            "signature": "Failure signature",
+            "failing_tests": "Owned tests",
+            "failing_checks": "Owned checks",
+            "in_flight": "Other in-flight repairs",
+        },
+        subject_labels={"task": "the repair task"},
     ),
     "provider_usage_probe": CommandPresentation(
         title="Probe a provider's remaining quota",
@@ -874,40 +1734,222 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"message_id": "Message", "state": "State"},
         subject_labels={"message": "a message"},
     ),
-    "task_route_options": CommandPresentation(
-        title="Read a task's routing options",
+    "task_recovery_notify": CommandPresentation(
+        title="Wake a task's recovery incident",
         summary=(
-            "Report whether the task is routed, whether its class is explicit, and which "
-            "class, provider and profile combinations could execute it."
+            "Record or reuse the one durable recovery incident for a blocked task and queue "
+            "its single supervisor notice; a replayed failure reuses the same incident."
         ),
-        arg_labels={"task_id": "Task"},
+        arg_labels={"task_id": "Task", "project_id": "Project"},
         outcome_labels={
+            "queued": "Incident queued",
+            "existing": "Existing incident reused",
+            "not_actionable": "Nothing to recover yet",
+            "retired": "Delegate retired",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "task_id": "Task",
+            "incident_id": "Incident",
+            "operation_id": "Integration operation",
+            "detail": "Detail",
+            "redelivered": "Redelivered",
+        },
+        subject_labels={"message": "the supervisor's incident notice"},
+    ),
+    "task_failure_triage_notify": CommandPresentation(
+        title="Wake supervisor failure triage",
+        summary=(
+            "Record or reuse the durable incident for a terminal task failure and queue its "
+            "single supervisor triage notice; replayed failures reuse the same incident."
+        ),
+        arg_labels={"task_id": "Task", "project_id": "Project"},
+        outcome_labels={
+            "queued": "Triage incident queued",
+            "existing": "Existing incident reused",
+            "not_actionable": "Nothing to triage yet",
+            "retired": "Delegate retired",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "task_id": "Task",
+            "incident_id": "Incident",
+            "operation_id": "Integration operation",
+            "detail": "Detail",
+            "redelivered": "Redelivered",
+        },
+        subject_labels={"message": "the supervisor's triage notice"},
+    ),
+    "provider_reroute": CommandPresentation(
+        title="Re-route work off an unavailable provider",
+        summary=(
+            "Move queued work whose provider is unavailable to the same intelligence "
+            "class on an available provider, a few tasks at a time; pinned tasks and "
+            "single-provider classes hold."
+        ),
+        arg_labels={"provider": "Provider", "dry_run": "Plan only"},
+        outcome_labels={
+            "rerouted": "Tasks re-routed",
+            "held": "Tasks held",
+            "idle": "Nothing to re-route",
+            "disabled": "Re-routing is off",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "outcome": "Outcome",
+            "dry_run": "Plan only",
+            "applied": "Applied",
+            "disabled_reason": "Why re-routing is off",
+            "unavailable_providers": "Unavailable providers",
+            "moved": "Moved tasks",
+            "held": "Held tasks",
+            "held_by_kind": "Held, by reason",
+            "resumed": "Resumed tasks",
+            "batch_ids": "Batches",
+            "notices": "Supervisor notices",
+        },
+        subject_labels={
+            "task_routing": "the re-routed tasks' routes",
+            "message": "the per-project batch notice",
+        },
+    ),
+    "provider_availability_notify": CommandPresentation(
+        title="Announce a provider's availability change",
+        summary=(
+            "Message the global supervisor and the human once when a provider moves "
+            "between launchable and unavailable; a repeat for the same change sends "
+            "nothing."
+        ),
+        arg_labels={"provider": "Provider", "generation": "State generation"},
+        outcome_labels={
+            "notified": "Notified",
+            "flapping": "Flapping notice sent",
+            "already_notified": "Already notified",
+            "flap_damped": "Damped while flapping",
+            "not_a_half_change": "Not a change of availability",
+            "disabled": "Notifications disabled",
+            "messages_disabled": "Messaging disabled",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "outcome": "Outcome",
+            "provider": "Provider",
+            "generation": "State generation",
+            "message_ids": "Messages",
+            "held": "Held tasks",
+            "roles": "Affected role profiles",
+        },
+        subject_labels={"message": "the provider state-change notice"},
+    ),
+    "provider_allocation_status": CommandPresentation(
+        title="Read provider worker allocation",
+        summary=(
+            "Group every ordinary worker profile by provider with its pool supply, live "
+            "sessions, pinned tasks, manual agents, project preferences and the "
+            "provider-wide configured ceiling, without changing anything."
+        ),
+        arg_labels={"project_id": "Project", "provider": "Provider"},
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={
+            "providers": "Providers",
+            "projects": "Project routing preferences",
+            "diagnostics": "Profiles bulk control never selects",
+            "redacted": "Other projects redacted",
+            "global_max_active": "Global pool ceiling",
+        },
+        subject_labels={},
+    ),
+    "provider_allocation_preview": CommandPresentation(
+        title="Preview a provider worker allocation",
+        summary=(
+            "Show what one provider allocation would change -- the selected profiles before "
+            "and after, the provider-wide ceiling, the sessions it drains and the busy set an "
+            "interrupt would need, the pins and manual agents it leaves alone -- with the "
+            "token apply consumes, without changing anything."
+        ),
+        arg_labels={
+            "provider": "Provider",
+            "profile_ids": "Profiles",
+            "participation": "Lifecycle",
+            "bounds": "Per-profile bounds",
+            "receive_new_work": "Project routing preference",
+            "drain": "Drain",
+            "allow_pinned_wait": "Pinned work may wait",
+        },
+        outcome_labels={"previewed": "Previewed", "rejected": "Rejected"},
+        result_labels={
+            "profiles": "Profiles before and after",
+            "ceiling": "Provider ceiling before and after",
+            "busy": "Busy sessions stopped",
+            "warnings": "Warnings",
+            "blocked": "Blocked until acknowledged",
+            "preview_token": "Preview token",
+        },
+        subject_labels={},
+    ),
+    "task_route_plan": CommandPresentation(
+        title="Plan a task's route",
+        summary=(
+            "Apply the routing policy to the task's hints and the live pool capacity, "
+            "provider availability and usage, and propose a route without writing it."
+        ),
+        arg_labels={
+            "task_id": "Task",
+            "policy": "Routing policy",
+            "classification": "Classification",
+        },
+        outcome_labels={
+            "planned": "Planned",
+            "needs_classification": "Needs classification",
+            "held": "Held: every candidate's provider is unavailable",
+            "no_candidates": "No candidate satisfies the policy",
             "already_routed": "Already routed",
-            "explicit": "Explicit class",
-            "undecided": "Needs a decision",
-            "no_options": "Nothing can run it",
             "rejected": "Rejected",
         },
         result_labels={
             "intelligence_class": "Intelligence class",
             "profile_id": "Agent profile",
-            "explicit_profile_id": "Profile serving the class",
-            "options": "Routing options",
+            "provider": "Provider",
+            "lane": "Lane",
+            "rule": "Policy rule",
+            "candidates": "Candidates",
+            "scores": "Load scores",
+            "reason": "Reason",
+            "policy_sha256": "Policy digest",
+            "questions": "Questions for the classifier",
+            "allowed_kinds": "Kinds the classifier may answer",
+            "allowed_classes": "Classes the classifier may answer",
+            "providers": "Unavailable providers",
+            "class_clamped_from": "Hint clamped from",
+            "class_raised_for_risk": "Class raised for risk",
+            "classification": "Classification",
+            "balance": "Load-score weights",
         },
         subject_labels={},
     ),
-    "task_route": CommandPresentation(
-        title="Route a task to a profile",
-        summary="Assign the agent profile that will run the task, and clear its routing gate.",
-        arg_labels={
-            "task_id": "Task",
+    "task_route_apply": CommandPresentation(
+        title="Apply a planned route",
+        summary=(
+            "Re-select among the plan's candidates on fresh capacity, write the route, "
+            "and clear the task's routing gate. Only the project's bound router may call it."
+        ),
+        arg_labels={"task_id": "Task", "plan": "Plan"},
+        outcome_labels={
+            "routed": "Routed",
+            "stale": "Stale: the plan no longer applies",
+            "rejected": "Rejected",
+        },
+        result_labels={
             "profile_id": "Agent profile",
             "intelligence_class": "Intelligence class",
-            "workspace_id": "Workspace",
+            "provider": "Provider",
+            "provider_intent": "Provider intent",
+            "lane": "Lane",
             "reason": "Reason",
+            "planned_profile_id": "Profile the plan named",
+            "adjusted_at_apply": "Changed at apply",
+            "resolved_gate_ids": "Resolved gates",
         },
-        outcome_labels={"routed": "Routed", "rejected": "Rejected"},
-        result_labels={"resolved_gate_ids": "Resolved gates"},
         subject_labels={
             "task_routing": "the task's routing",
             "routing_gate": "the task's routing gate",
@@ -945,6 +1987,12 @@ def _contract(
 def register_builtin_contracts(registry: ContractRegistry) -> None:
     definitions = (
         (
+            "task_split", TaskSplitArgs, TaskSplitValue, _outcomes("split"),
+            SideEffectClass.COMPOSITE,
+            (CreateClause(subject=EffectSubject.TASK), UpdateClause(subject=EffectSubject.TASK)),
+            IdempotencySpec(mode="none"), False,
+        ),
+        (
             "list_projects", ListProjectsArgs, ListProjectsValue, _outcomes("listed"),
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
@@ -979,41 +2027,54 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
-            "create_task",
-            CreateTaskArgs,
-            CreateTaskValue,
-            _outcomes("created"),
+            "create_task", CreateTaskArgs, CreateTaskValue, _outcomes("created"),
             SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="none"),
-            False,
+            IdempotencySpec(mode="none"), False,
         ),
         (
-            "ensure_task",
-            EnsureTaskArgs,
-            EnsureTaskValue,
-            _outcomes("created", "reused"),
+            "ensure_task", EnsureTaskArgs, EnsureTaskValue, _outcomes("created", "reused"),
             SideEffectClass.CREATE,
             (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="dedup_key"),),
-            IdempotencySpec(mode="keyed", key_field="dedup_key"),
-            True,
+            IdempotencySpec(mode="keyed", key_field="dedup_key"), True,
         ),
         (
-            "edit_task",
-            EditTaskArgs,
-            EditTaskValue,
-            _outcomes("updated"),
-            SideEffectClass.UPDATE,
+            "ensure_spec_ingest", EnsureSpecIngestArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="decision_id"),),
+            IdempotencySpec(mode="keyed", key_field="decision_id"), True,
+        ),
+        (
+            "ensure_fidelity_review", EnsureFidelityReviewArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="batch_id"),),
+            IdempotencySpec(mode="keyed", key_field="batch_id"), True,
+        ),
+        (
+            "github_issue_triage", GitHubIssueTriageArgs, GitHubIssueTriageValue,
+            _outcomes("swept"), SideEffectClass.COMPOSITE,
+            (CreateClause(subject=EffectSubject.TASK),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "github_issue_fix_approved", GitHubIssueFixApprovedArgs, GitHubIssueFixApprovedValue,
+            _outcomes("created", "reused", "ignored"), SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.TASK),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "github_issue_rejection", GitHubIssueRejectionArgs, GitHubIssueRejectionValue,
+            _outcomes("closed", "ignored"), SideEffectClass.COMPOSITE, (),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "edit_task", EditTaskArgs, EditTaskValue, _outcomes("updated"), SideEffectClass.UPDATE,
             (UpdateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "add_dependency",
-            AddDependencyArgs,
-            AddDependencyValue,
-            _outcomes("linked", "already_linked"),
-            SideEffectClass.LINK,
+            "add_dependency", AddDependencyArgs, AddDependencyValue,
+            _outcomes("linked", "already_linked"), SideEffectClass.LINK,
             (
                 LinkClause(
                     subject=EffectSubject.DEPENDENCY_EDGE,
@@ -1022,15 +2083,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     relation_arg="dep_type",
                 ),
             ),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "gate_create",
-            GateCreateArgs,
-            GateCreateValue,
-            _outcomes("created", "reused", "skipped"),
-            SideEffectClass.CREATE,
+            "gate_create", GateCreateArgs, GateCreateValue,
+            _outcomes("created", "reused", "skipped"), SideEffectClass.CREATE,
             (
                 CreateClause(subject=EffectSubject.GATE),
                 LinkClause(
@@ -1040,8 +2097,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     when=ClausePredicate(arg_present="waiter_task_ids"),
                 ),
             ),
-            IdempotencySpec(mode="keyed", key_field="await_id"),
-            False,
+            IdempotencySpec(mode="keyed", key_field="await_id"), False,
         ),
         (
             "gate_resolve",
@@ -1061,7 +2117,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "list_tasks",
             ListTasksArgs,
             ListTasksValue,
-            (OutcomeSpec(name="listed", classification=OutcomeClass.SUCCESS),),
+            _outcomes("listed"),
             SideEffectClass.READ,
             (ReadClause(subject=EffectSubject.TASK_LIST),),
             IdempotencySpec(mode="natural"),
@@ -1081,29 +2137,74 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "task_batch_commit",
             TaskBatchCommitArgs,
             TaskBatchCommitValue,
-            _outcomes("committed"),
+            _outcomes("committed", "already_committed")
+            + (OutcomeSpec(name="not_approved", classification=OutcomeClass.FAILURE),),
             SideEffectClass.COMPOSITE,
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),
             False,
         ),
         (
-            "task_route_options", TaskRouteOptionsArgs, TaskRouteOptionsValue,
-            _outcomes("already_routed", "explicit", "undecided", "no_options"),
-            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+            "task_batch_release", TaskBatchReleaseArgs, TaskBatchReleaseValue,
+            (OutcomeSpec(name="released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "task_route",
-            TaskRouteArgs,
-            TaskRouteValue,
-            _outcomes("routed"),
-            SideEffectClass.COMPOSITE,
+            "task_batch_retire", TaskBatchRetireArgs, TaskBatchRetireValue,
+            (OutcomeSpec(name="retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "task_batch_validate",
+            TaskBatchValidateArgs,
+            TaskBatchValidateValue,
+            _outcomes("passed", "failed", "retryable"),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_batch_review_record", TaskBatchReviewRecordArgs, TaskBatchReviewRecordValue,
+            _outcomes("recorded", "needs_scope"), SideEffectClass.COMPOSITE,
+            (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "task_route_plan",
+            TaskRoutePlanArgs,
+            TaskRoutePlanValue,
+            _outcomes(
+                "planned", "needs_classification", "held", "no_candidates", "already_routed",
+            ),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_route_apply",
+            TaskRouteApplyArgs,
+            TaskRouteApplyValue,
+            _outcomes("routed", "stale"),
+            SideEffectClass.UPDATE,
             (
                 UpdateClause(subject=EffectSubject.TASK_ROUTING),
                 ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),
             ),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "ci_completed_status", CiCompletedStatusArgs, CiCompletedStatusValue,
+            _outcomes("listed"), SideEffectClass.READ, (),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "ci_baseline_status",
@@ -1119,6 +2220,21 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ),
             SideEffectClass.READ,
             (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "ci_repair_adopt",
+            CiRepairAdoptArgs,
+            CiRepairAdoptValue,
+            (
+                OutcomeSpec(name="adopted", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="recorded", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="unchanged", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),
+            ),
+            SideEffectClass.UPDATE,
+            (UpdateClause(subject=EffectSubject.TASK),),
             IdempotencySpec(mode="natural"),
             True,
         ),
@@ -1163,6 +2279,81 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             IdempotencySpec(mode="natural"),
             True,
         ),
+        (
+            "task_recovery_notify",
+            TaskRecoveryNotifyArgs,
+            TaskRecoveryNotifyValue,
+            _outcomes("queued", "existing", "not_actionable", "retired"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_failure_triage_notify",
+            TaskFailureTriageNotifyArgs,
+            TaskFailureTriageNotifyValue,
+            _outcomes("queued", "existing", "not_actionable", "retired"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "get_stuck_tasks", GetStuckTasksArgs, GetStuckTasksValue, _outcomes("read"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "provider_reroute",
+            ProviderRerouteArgs,
+            ProviderRerouteValue,
+            _outcomes("rerouted", "held", "idle", "disabled"),
+            SideEffectClass.COMPOSITE,
+            (
+                UpdateClause(subject=EffectSubject.TASK_ROUTING),
+                CreateClause(subject=EffectSubject.MESSAGE),
+            ),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_allocation_status",
+            ProviderAllocationStatusArgs,
+            ProviderAllocationStatusValue,
+            _outcomes("read"),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_allocation_preview",
+            ProviderAllocationPreviewArgs,
+            ProviderAllocationPreviewValue,
+            _outcomes("previewed"),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_availability_notify",
+            ProviderAvailabilityNotifyArgs,
+            ProviderAvailabilityNotifyValue,
+            _outcomes(
+                "notified",
+                "flapping",
+                "already_notified",
+                "flap_damped",
+                "not_a_half_change",
+                "disabled",
+                "messages_disabled",
+            ),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
     )
     for name, args, value, outcomes, effect, clauses, idempotency, retry_safe in definitions:
         if registry.get(name) is None:
@@ -1176,5 +2367,65 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                 )
             )
     from src.commands.contracts.integration import register_integration_contracts
+    from src.commands.contracts.escalation import register_escalation_contracts
+    from src.commands.contracts.report import register_report_contracts
+    from src.commands.contracts.supervisor_inbox import register_supervisor_inbox_contracts
 
     register_integration_contracts(registry)
+    from src.commands.contracts.promote import register_promote_contracts
+
+    register_promote_contracts(registry)
+    from src.commands.contracts.test_selection import register_test_selection_contracts
+
+    register_test_selection_contracts(registry)
+    register_escalation_contracts(registry)
+    register_report_contracts(registry)
+    from src.commands.contracts.digest import register_digest_contracts
+
+    register_digest_contracts(registry)
+    register_supervisor_inbox_contracts(registry)
+    from src.commands.contracts.wait import register_wait_contracts
+
+    register_wait_contracts(registry)
+
+    from src.commands.contracts.wait_v2 import register_wait_v2_contracts
+
+    register_wait_v2_contracts(registry)
+    from src.commands.contracts.cron import register_cron_contracts
+
+    register_cron_contracts(registry)
+    from src.commands.contracts.message_wait import register_message_wait_contract
+
+    register_message_wait_contract(registry)
+    from src.commands.contracts.collaboration import register_collaboration_contracts
+
+    register_collaboration_contracts(registry)
+    from src.commands.contracts.job import register_job_contracts
+
+    register_job_contracts(registry)
+    from src.commands.contracts.object_loop import register_object_loop_contracts
+
+    register_object_loop_contracts(registry)
+    from src.commands.contracts.handoff import register_handoff_contract
+
+    register_handoff_contract(registry)
+    from src.commands.contracts.knowledge import register_knowledge_contracts
+    from src.commands.contracts.records import register_record_contracts
+
+    from src.commands.contracts.knowledge_protection import register_protection_contracts
+
+    register_protection_contracts(registry)
+    register_knowledge_contracts(registry)
+    from src.commands.contracts.knowledge_generation import register_generation_contracts
+
+    register_generation_contracts(registry)
+    register_record_contracts(registry)
+    from src.commands.contracts.decisions import register_decision_contracts
+
+    register_decision_contracts(registry)
+    from src.commands.contracts.inventory import register_inventory_contracts
+
+    register_inventory_contracts(registry)
+
+    from src.commands.contracts.ask import register_ask_contracts
+    register_ask_contracts(registry)

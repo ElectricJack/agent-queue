@@ -1,0 +1,59 @@
+[
+  {
+    "run": "cli",
+    "suites": [
+      {
+        "name": "pytest",
+        "tests": "422",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "time": "26.032"
+      }
+    ],
+    "failures": []
+  },
+  {
+    "run": "creation",
+    "suites": [
+      {
+        "name": "pytest",
+        "tests": "116",
+        "failures": "3",
+        "errors": "0",
+        "skipped": "0",
+        "time": "27.474"
+      }
+    ],
+    "failures": [
+      {
+        "test": "tests.test_worker_filing::test_lock_filing_scope_blocks_a_concurrent_reparent_on_postgres",
+        "message": "RuntimeError: Alembic preflight failed: this database's alembic_version references unknown revision(s) ['d3f2c0de0005']. Resolved DB URL: postgresql+asyncpg://agent_queue:***@localhost:5533/postgres_master_gw0. Fix options: (a) restore the migration file(s) for those revision ids, or (b) if the schema is correct but the row is stale, reconcile by running `alembic stamp head` against this same URL (destructive to history \u2014 confirm the schema matches head first)."
+      },
+      {
+        "test": "tests.test_worker_filing::test_lock_filing_scope_blocks_intermediate_ancestor_reparent_on_postgres",
+        "message": "RuntimeError: Alembic preflight failed: this database's alembic_version references unknown revision(s) ['d3f2c0de0005']. Resolved DB URL: postgresql+asyncpg://agent_queue:***@localhost:5533/postgres_master_gw0. Fix options: (a) restore the migration file(s) for those revision ids, or (b) if the schema is correct but the row is stale, reconcile by running `alembic stamp head` against this same URL (destructive to history \u2014 confirm the schema matches head first)."
+      },
+      {
+        "test": "tests.test_worker_filing::test_create_task_under_waits_before_child_ordinal_on_postgres",
+        "message": "RuntimeError: Alembic preflight failed: this database's alembic_version references unknown revision(s) ['d3f2c0de0005']. Resolved DB URL: postgresql+asyncpg://agent_queue:***@localhost:5533/postgres_master_gw0. Fix options: (a) restore the migration file(s) for those revision ids, or (b) if the schema is correct but the row is stale, reconcile by running `alembic stamp head` against this same URL (destructive to history \u2014 confirm the schema matches head first)."
+      }
+    ]
+  },
+  {
+    "run": "creation-environment-retry",
+    "suites": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "3",
+        "time": "17.054",
+        "timestamp": "2026-09-08T17:36:31.551800-07:00",
+        "hostname": "DESKTOP-EB8UOME"
+      }
+    ],
+    "failures": []
+  }
+]
