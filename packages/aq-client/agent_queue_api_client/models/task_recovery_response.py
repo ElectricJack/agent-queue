@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="TaskRecoveryResponse")
 
@@ -17,12 +19,14 @@ class TaskRecoveryResponse:
         incident_id (str):
         decision (str):
         status (str):
+        decided_at (float | None | Unset):
     """
 
     task_id: str
     incident_id: str
     decision: str
     status: str
+    decided_at: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,6 +38,12 @@ class TaskRecoveryResponse:
 
         status = self.status
 
+        decided_at: float | None | Unset
+        if isinstance(self.decided_at, Unset):
+            decided_at = UNSET
+        else:
+            decided_at = self.decided_at
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -44,6 +54,8 @@ class TaskRecoveryResponse:
                 "status": status,
             }
         )
+        if decided_at is not UNSET:
+            field_dict["decided_at"] = decided_at
 
         return field_dict
 
@@ -58,11 +70,21 @@ class TaskRecoveryResponse:
 
         status = d.pop("status")
 
+        def _parse_decided_at(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        decided_at = _parse_decided_at(d.pop("decided_at", UNSET))
+
         task_recovery_response = cls(
             task_id=task_id,
             incident_id=incident_id,
             decision=decision,
             status=status,
+            decided_at=decided_at,
         )
 
         task_recovery_response.additional_properties = d
