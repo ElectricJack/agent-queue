@@ -508,8 +508,9 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
     "claim_file", "agent_task", "task_lock", "dirty", "process", "sentinel",
     "session_locked", "workspace_locked", "git_locked", "owner", "pin",
 ])
+@pytest.mark.parametrize("prefetch", [False, True])
 async def test_task_branch_moves_between_pool_slots_only_without_a_live_claim(
-    tmp_path, base_repo, monkeypatch, case,
+    tmp_path, base_repo, monkeypatch, case, prefetch,
 ):
     from sqlalchemy import select
     from sqlalchemy.exc import DBAPIError
@@ -631,6 +632,18 @@ async def test_task_branch_moves_between_pool_slots_only_without_a_live_claim(
                 side_effect=GitError("origin unavailable"),
             ))
         task = await o.db.get_task("tsk-1")
+
+        async def prepare():
+            if not prefetch:
+                return await mgr.reset_slot_for_task(target, task, kind=kind)
+            refreshed = await mgr.prefetch_slot_for_task(
+                target, base_branch=head, target_branch=branch,
+            )
+            return await mgr.reset_slot_for_task(
+                target, task, kind=kind, target_branch=branch, base_branch=head,
+                fetch_origin=False, origin_refreshed=refreshed,
+            )
+
         allowed = {"idle", "claiming", "claim_race", "draining", "drain_requested",
                    "disabled_draining", "stopped", "stopped_unlocked", "failed_preparation"}
         if case in ("session_locked", "workspace_locked"):
@@ -639,12 +652,12 @@ async def test_task_branch_moves_between_pool_slots_only_without_a_live_claim(
             async with o.db._engine.begin() as other:
                 await other.execute(select(table).where(table.c.id == identity).with_for_update())
                 with pytest.raises(DBAPIError):
-                    await mgr.reset_slot_for_task(target, task, kind=kind)
+                    await prepare()
         elif case not in allowed:
             with pytest.raises(GitError):
-                await mgr.reset_slot_for_task(target, task, kind=kind)
+                await prepare()
         else:
-            assert await mgr.reset_slot_for_task(target, task, kind=kind) == branch
+            assert await prepare() == branch
             assert _git(["branch", "--show-current"], target.workspace_path) == branch
             assert _git(["branch", "--show-current"], path) == ""
             assert _git(["rev-parse", "HEAD"], target.workspace_path) == head
