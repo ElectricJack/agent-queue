@@ -52,6 +52,7 @@ CAPABILITY_DAEMON = "daemon"
 
 STEP_CONFIG = "config.defaults"
 STEP_PROJECT_ROOT = "config.project-root"
+STEP_GIT_IDENTITY = "config.git-identity"
 STEP_CHECK = "config.check"
 STEP_DISCORD = "config.discord"
 STEP_DAEMON = "daemon.start"
@@ -353,6 +354,44 @@ def _introduces_no_error(path: Path, section: str, body: Any) -> bool:
     return not set(errors) - set(validate_candidate_config(str(path), current))
 
 
+def _needs_private_value_key(path: Path) -> bool:
+    playbooks = _read_config(path).get("playbooks") or {}
+    return (
+        isinstance(playbooks, dict)
+        and playbooks.get("enabled") is True
+        and not playbooks.get("private_value_active_key_id")
+        and not playbooks.get("private_value_key_env")
+    )
+
+
+def _provision_private_value_key(path: Path) -> bool:
+    """Bootstrap unconfigured storage; never rotate or replace a configured key."""
+    import base64
+    import secrets
+
+    from src.config_editor import write_section
+
+    from .postgres import write_env_value
+
+    if not _needs_private_value_key(path):
+        return False
+    # A unique identifier cannot reuse the identity of a lost historical key.
+    # Persist material first: a failed config write may leave an unused secret,
+    # but must never leave config pointing at a key we have not stored.
+    identifier = "install-" + secrets.token_hex(16)
+    variable = "AQ_PLAYBOOK_PRIVATE_VALUE_KEY_" + identifier.removeprefix("install-").upper()
+    env_path = path.parent / ".env"
+    if env_path.exists():
+        env_path.chmod(0o600)
+    write_env_value(env_path, variable, base64.b64encode(secrets.token_bytes(32)).decode())
+    playbooks = dict(_read_config(path)["playbooks"])
+    playbooks.update(
+        private_value_active_key_id=identifier, private_value_key_env={identifier: variable}
+    )
+    write_section(str(path), "playbooks", playbooks)
+    return True
+
+
 def config_step(
     *,
     environ: Mapping[str, str] | None = None,
@@ -388,6 +427,8 @@ def config_step(
             # the provider selection, so it is part of "satisfied" too.
             if _session_provider_plan(path, lookup) is not None:
                 return False
+            if _needs_private_value_key(path):
+                return False
         except Exception:  # noqa: BLE001 - an unreadable config is not "satisfied"
             return False
         return not any(plan.action == "add" for plan in plans)
@@ -410,6 +451,7 @@ def config_step(
         # leave a numbered copy behind on every rerun.
         if not created and (
             sessions_body is not None
+            or _needs_private_value_key(path)
             or any(
                 plan.action in ("add", "replace")
                 for plan in tuning_plan(_read_config(path), machine)
@@ -458,6 +500,10 @@ def config_step(
             written.append("sessions")
             written.sort()
             session_provider = SESSION_PROVIDER
+        private_storage_provisioned = _provision_private_value_key(path)
+        if private_storage_provisioned and "playbooks" not in written:
+            written.append("playbooks")
+            written.sort()
         summary = (
             f"{'created' if created else 'using'} {path} — "
             f"{machine.cores} cores, {machine.memory_gb:.0f} GiB ({machine.size_class}): "
@@ -465,6 +511,8 @@ def config_step(
         )
         if session_provider:
             summary += f"; sessions run under {session_provider}"
+        if private_storage_provisioned:
+            summary += "; provisioned protected playbook storage"
         return StepResult.succeeded(
             STEP_CONFIG,
             summary,
@@ -475,6 +523,7 @@ def config_step(
                 "written": written,
                 "kept": list(outcome.get("kept") or []),
                 "session_provider": session_provider,
+                "private_storage_provisioned": private_storage_provisioned,
                 "machine": machine.as_dict(),
                 "rationale": "docs/guides/default-tuning.md",
             },
@@ -491,8 +540,9 @@ def config_step(
         description=(
             f"Creates {path} when it is absent and adds resource-aware defaults derived from "
             "this box's cores and memory, and selects the tmux session provider so agent "
-            "sessions can be attached, peeked and nudged. Sections you have already written "
-            "are kept."
+            "sessions can be attached, peeked and nudged. Provisions a private-value key "
+            "in the protected .env file when playbooks are enabled with no key configuration. "
+            "Existing key identifiers and mappings are kept."
         ),
         run=run,
         depends_on=depends_on,
@@ -612,6 +662,158 @@ def project_root_step(
     )
 
 
+# ---------------------------------------------------------------------------
+# config.git-identity — the name and email AQ's commits are attributed to
+# ---------------------------------------------------------------------------
+
+
+def git_identity_step(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    depends_on: tuple[str, ...] = (STEP_CONFIG,),
+) -> StepSpec:
+    """Record the installation's default Git commit identity (``git_identity:``).
+
+    The step writes only an *explicit* identity: the one a person confirmed in
+    the wizard, ``--git-name``/``--git-email``, or ``settings.git_identity`` in
+    the input file.  It never probes ``gh`` or ``git config`` itself -- the
+    suggestions belong to the wizard (:mod:`src.install.git_identity`), and an
+    unattended run must not persist a guess -- so with nothing explicit it is a
+    read-only report: the identity already configured, or the fallback AQ
+    commits as until ``aq system config git-identity`` sets one.
+
+    An explicit value replaces a configured one (it is the operator choosing);
+    the wizard never offers to, because it does not ask once one is set.  The
+    step is advisory: an identity is a preference AQ can run without, so
+    nothing about it may stop or fail an install.
+    """
+    from .git_identity import (
+        NOT_CONFIGURED_NOTE,
+        SETUP_COMMAND,
+        configured_identity,
+        configured_source,
+        parse_setting,
+    )
+
+    path = config_path_for(environ, home)
+
+    def _explicit(context: StepContext) -> Any:
+        return parse_setting(context.option("git_identity"))
+
+    def _report() -> StepResult:
+        from src.git.identity import FALLBACK_IDENTITY
+
+        raw = _read_config(path)
+        current = configured_identity(raw)
+        if current is None:
+            return StepResult.succeeded(
+                STEP_GIT_IDENTITY,
+                NOT_CONFIGURED_NOTE,
+                detail={
+                    "configured": False,
+                    "fallback": FALLBACK_IDENTITY.as_dict(),
+                    "setup_command": SETUP_COMMAND,
+                },
+            )
+        source = configured_source(raw)
+        return StepResult.succeeded(
+            STEP_GIT_IDENTITY,
+            f"AQ commits as {current.formatted()}" + (f" ({source})" if source else ""),
+            detail={"configured": True, **current.as_dict(), "source": source},
+        )
+
+    def run(context: StepContext) -> StepResult:
+        from src.config_editor import write_section
+
+        try:
+            wanted = _explicit(context)
+        except ValueError as error:
+            return StepResult.needs_user(
+                STEP_GIT_IDENTITY,
+                str(error),
+                (
+                    "Correct `settings.git_identity` (name and email) in the install input file, "
+                    f"or run `{SETUP_COMMAND}` once AQ is installed. AQ runs meanwhile."
+                ),
+                detail={"configured": configured_identity(_read_config(path)) is not None},
+            )
+        if wanted is None:
+            return _report()
+        current = configured_identity(_read_config(path))
+        if current == wanted.identity:
+            return _report()
+        if context.dry_run:
+            return StepResult.succeeded(
+                STEP_GIT_IDENTITY,
+                f"would commit as {wanted.formatted()}",
+                detail={
+                    "configured": current is not None,
+                    "dry_run": True,
+                    "would_set": wanted.as_setting(),
+                },
+            )
+        if not path.exists():
+            return StepResult.failed(
+                STEP_GIT_IDENTITY,
+                f"{path} does not exist, so the Git identity cannot be recorded",
+                f"Rerun `aq install` so `{STEP_CONFIG}` writes the configuration first.",
+            )
+        body = wanted.as_setting()
+        if not _introduces_no_error(path, "git_identity", body):
+            return StepResult.needs_user(
+                STEP_GIT_IDENTITY,
+                f"{wanted.formatted()} would not validate in {path}",
+                f"Run `{SETUP_COMMAND}` to choose another identity.",
+                detail={"configured": current is not None},
+            )
+        # A backup only when something is written, like every onboarding step.
+        backup_path_for(path).write_bytes(path.read_bytes())
+        write_section(str(path), "git_identity", body)
+        return StepResult.succeeded(
+            STEP_GIT_IDENTITY,
+            f"AQ commits as {wanted.formatted()} ({wanted.source})",
+            detail={
+                "configured": True,
+                **body,
+                "previous": current.as_dict() if current else None,
+                "config_path": str(path),
+            },
+        )
+
+    def verify(context: StepContext) -> bool | StepResult:
+        # With nothing explicit to write the step is a read-only report, so
+        # revalidating it *is* running it: a rerun's detail says what is
+        # configured now.  An explicit value the file does not hold yet --
+        # `--git-name/--git-email` on a later run -- is work, so it runs.
+        try:
+            wanted = _explicit(context)
+        except ValueError:
+            return False
+        if wanted is None or configured_identity(_read_config(path)) == wanted.identity:
+            return _report()
+        return False
+
+    return StepSpec(
+        id=STEP_GIT_IDENTITY,
+        title="Record the Git commit identity",
+        description=(
+            "Writes the name and email AQ's commits are attributed to (git_identity: in "
+            "config.yaml) when you confirmed one in the wizard or passed --git-name/--git-email "
+            "or settings.git_identity. Otherwise it reports the configured identity, or the "
+            "fallback AQ commits as until `aq system config git-identity` sets one."
+        ),
+        run=run,
+        depends_on=depends_on,
+        # Not consent-gated, like the projects folder: the identity is an answer
+        # the person just gave (or passed explicitly), and with none the step
+        # writes nothing.  A dry run writes nothing either.
+        advisory=True,
+        verify=verify,
+        owner="onboarding",
+    )
+
+
 def check_step(
     *,
     environ: Mapping[str, str] | None = None,
@@ -629,6 +831,7 @@ def check_step(
 
     def run(context: StepContext) -> StepResult:
         from src.config import ConfigValidationError, load_config
+        from src.playbooks.private_values import private_value_key_health
 
         raw = _read_config(path)
         locations = data_locations(path.parent, raw)
@@ -674,6 +877,15 @@ def check_step(
                     f"Resolve the reference named above — values live in {path.parent / '.env'} "
                     "(mode 0600), never in config.yaml — then rerun `aq install`."
                 ),
+                detail=detail,
+            )
+        storage = private_value_key_health(config.playbooks)
+        detail["playbook_private_value_key"] = storage
+        if not storage["ok"]:
+            return StepResult.failed(
+                STEP_CHECK,
+                "playbooks cannot store protected routing data: " + storage["error"],
+                storage["remediation"],
                 detail=detail,
             )
         # Now that it has loaded, report what the daemon will actually use
@@ -1282,6 +1494,9 @@ def onboarding_steps(
     return (
         config_step(environ=environ, home=home, which=which, depends_on=depends_on),
         project_root_step(environ=environ, home=home),
+        # Advisory, so nothing may depend on it; registered here it still runs
+        # beside the projects folder, before config.check loads the result.
+        git_identity_step(environ=environ, home=home),
         # Checked after the projects folder is recorded, so the check loads the
         # configuration the daemon will actually start with.
         check_step(environ=environ, home=home, depends_on=(STEP_PROJECT_ROOT,)),
@@ -1346,6 +1561,7 @@ __all__ = [
     "STEP_DAEMON",
     "STEP_DASHBOARD",
     "STEP_DISCORD",
+    "STEP_GIT_IDENTITY",
     "STEP_PROJECT_ROOT",
     "DashboardInfo",
     "HttpProbe",
@@ -1364,6 +1580,7 @@ __all__ = [
     "data_locations",
     "describe_project_root",
     "discord_step",
+    "git_identity_step",
     "http_status",
     "inspect_dashboard",
     "onboarding_steps",

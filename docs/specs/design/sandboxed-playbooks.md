@@ -8,7 +8,11 @@
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-> **Status:** v1 implemented on `feature/sandboxed-playbooks`.
+> **Status:** Historical V1 capability design. V2 uses per-step profiles and
+> run-bound authority; it has no playbook-level `profile_id`. See
+> [current playbooks](../../concepts/playbooks.md). The current
+> [script runner](../../guides/playbook-script-runner.md) runs ordinary host
+> processes and provides no OS sandbox; this design does not describe it.
 
 ## Threat model
 
@@ -106,6 +110,17 @@ child is bounded instead by `task_route`: a task carrying the
 profile unless the operator, a daemon service or an elevated supervisor
 routes it. A strict `child ⊆ filer` bound cannot be applied there, because
 worker rungs on different harnesses carry disjoint command lists.
+
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** rule 1 is gone. No
+> filer inherits its own profile and there is no project default: a task created without a
+> profile is stored `unrouted` and its project's router (the bound routing playbook, through
+> `task_route_apply`) writes its profile, choosing only among worker candidates. `profile_id`
+> is refused on every filing surface with `routing.choice_forbidden`, except a role profile
+> (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) named by a `SERVICE` or `PLAYBOOK`
+> principal, and rule 2 still bounds that role profile by the caller's capabilities. The
+> `filed_by_profile_id` marker is kept as provenance only; `aq task route` takes no profile
+> and re-runs the router.
 
 System-prompt subsetting is not enforced — there's no mechanical notion
 of "subset of prose". The parent profile's author owns the prompt they
