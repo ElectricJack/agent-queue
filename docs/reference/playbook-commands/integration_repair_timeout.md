@@ -105,19 +105,44 @@ open.
      root success (`_root_success_is_current_on`,
      `src/integration/repair.py:2171`) — reported as `not_due` /
      `awaiting_promotion`, because promotion, not the clock, owns that stage.
-8. **Expiry** — for stage 0, `_activate_debug_on`
+8. **The writer** — under a continuing ladder (stage 0, or
+   `on_exhausted: continue`) an `active` stage whose repair delegate has
+   neither a conclusive attempt nor a subject head moved since it was
+   allocated is classified from durable facts (`_expiring_writer_on`), never
+   from the clock alone (rev-agile-ridge §6 phase 0, item 2):
+   * **never claimed** (`PAUSED`/`READY`, no live session, fence not attached
+     to it) — capacity, not failure: the deadline moves by one primary budget,
+     the supervisor hears once per stage, `not_due` / `wait` with
+     `reason: writer_unclaimed`;
+   * **live** session, or an operator `manual_pause` hold — revisited after
+     `WRITER_RECHECK_SECONDS` (300 s), `not_due` / `wait`;
+   * **stopped without publishing** — the existing provider-backed
+     `OwnerRecovery` proves the stop (dry run first). Unpublished commits keep
+     the rollover: the stage expires to a successor that resumes the preserved
+     tip. Nothing to preserve releases the fence and **refiles the same
+     ordinal**: the same delegate returns to `PAUSED` with a fresh clock and is
+     dispatched again (`reason: writer_refiled`; the stage dossier records
+     `writer_refiles`). A fence held by anyone else (`stale_fence`) or an
+     unprovable stop waits and notifies once.
+
+   One refile per stage, and at most three writers (the first plus two
+   refiles or successors) per unchanged subject head; past that the ladder
+   continues and its no-progress guard ends the budget once with
+   `supervisor_recovery`. Deferrals keep ordinal, attempts, writer and fence.
+   A finite (`human`) policy still blocks for a human at stage 1.
+9. **Expiry** — for stage 0, `_activate_debug_on`
    (`src/integration/repair.py:2992`) marks the primary stage `expired` and
    opens ordinal 1 with the debug policy and the inherited dossier; the result
    is `expired` / `dispatch_debug` naming stage `1`. For stage 1,
    `_human_block_on` (`src/integration/repair.py:3077`) marks the stage
    `expired`, drives the operation to `human_required`, blocks the owning work
    and returns a transition; the result is `expired` / `block_for_human`.
-9. **Publication** — the human-block transition's flips and notifications are
+10. **Publication** — the human-block transition's flips and notifications are
    published after the transaction commits.
 
-Expiry never resets `attempts`: the debug stage starts with its own budget, and
-a human resume ([`integration_resume`](integration_resume.md)) re-arms only the
-clock.
+Expiry never resets `attempts`: the debug stage starts with its own budget.
+Further progress is evaluated by the durable Subject under its pinned policy;
+resolve a named human gate through [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress).
 
 ## Side effects and persistence
 
@@ -147,7 +172,7 @@ clock.
 A stage that stays `not_due` across several timer firings is the signal to look
 for a stuck mutation: `aq integration status <project>` reports
 `pending_publications`, and
-[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication)
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery)
 covers the reconciliation path.
 
 ## Example step
@@ -167,5 +192,5 @@ timeout outcome.
 
 * [`integration_record_repair`](integration_record_repair.md) — the other route to the same escalations.
 * [`integration_repair_dispatch`](integration_repair_dispatch.md) — acts on `dispatch_debug`.
-* [`integration_resume`](integration_resume.md) — re-arms an expired stage's clock after a human decision.
+* [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress) — resolve a named gate before the next durable visit.
 * Spec: [One higher-intelligence debug escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#92-one-higher-intelligence-debug-escalation).

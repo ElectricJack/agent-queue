@@ -9,6 +9,7 @@ import CreateChoice from "./CreateChoice";
 import PoolWindow from "./PoolWindow";
 import PoolDirectory, { PoolDirectoryHint } from "./PoolDirectory";
 import ProvidersView from "./ProvidersView";
+import SessionDirectory from "./SessionDirectory";
 import { usePoolFlock } from "./pools";
 
 /** The directory's two views; ``?view=providers`` addresses the second, so a link can share it. */
@@ -61,7 +62,7 @@ export default function AgentWorkspace() {
       <header className="flex shrink-0 items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold text-gray-100">Agent flock</h1>
-          <p className="mt-0.5 text-xs text-gray-500">Global workers shared across projects. Shift-click agents to tile up to four views.</p>
+          <p className="mt-0.5 text-xs text-gray-500">Every session across projects and global scope. Shift-click agents to tile up to four views.</p>
         </div>
         <button type="button" aria-label="Create agent or pool" aria-expanded={adding !== null}
           onClick={() => setAdding(adding ? null : "choice")}
@@ -86,16 +87,17 @@ export default function AgentWorkspace() {
       )}
       {selectedIds.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+          <SessionDirectory />
           <DirectoryTabs view={view} onChange={setView} />
           {view === "providers" ? <ProvidersView /> : (
             <>
-              <PoolDirectory entries={pools} onOpen={(key) => select(key)} />
+              <PoolDirectory entries={pools} />
               <PoolDirectoryHint />
             </>
           )}
         </div>
       ) : (
-        <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
+        <div className={"grid min-h-0 flex-1 auto-rows-[minmax(24rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
           {selections.map((selection) => {
             const id = selection.key;
             if (selection.kind === "pool") {
@@ -104,7 +106,7 @@ export default function AgentWorkspace() {
                 return (
                   <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
                     onInstanceChange={(instanceId) => setInstance(id, instanceId)}
-                    onClose={() => close(id)} resetToken={resetToken}
+                    onClose={() => close(id)}
                     focusRequest={focusSelection?.key === selectionAddress(id) ? focusSelection.request : null} />
                 );
               }

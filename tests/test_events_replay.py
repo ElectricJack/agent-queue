@@ -18,7 +18,6 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from src.api.websocket import WebSocketManager
-from src.database import Database
 from src.event_bus import EventBus
 from src.event_schemas import EVENT_SCHEMAS, validate_event
 from src.models import Project, Task, TaskStatus
@@ -30,12 +29,10 @@ PROJECT = "p-replay"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("replay.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("replay.db")
     await database.create_project(Project(id=PROJECT, name="replay"))
     yield database
-    await database.close()
 
 
 # ── get_recent_events(after_id=…) ────────────────────────────────────────
@@ -79,6 +76,7 @@ class _FakeWS:
         self.accepted = False
         self.sent: list[dict] = []
         self._closed = False
+        self._sent_frames = asyncio.Queue()
 
     async def accept(self):
         self.accepted = True
@@ -90,6 +88,7 @@ class _FakeWS:
         if self._closed:
             raise RuntimeError("closed")
         self.sent.append(data)
+        self._sent_frames.put_nowait(data)
 
     async def send_text(self, frame: str):
         """Live frames arrive pre-serialized: ``WebSocketManager._on_event``
@@ -100,6 +99,11 @@ class _FakeWS:
         if self._closed:
             raise RuntimeError("closed")
         self.sent.append(json.loads(frame))
+        self._sent_frames.put_nowait(self.sent[-1])
+
+    async def wait_for_seq(self, seq: int):
+        while (await self._sent_frames.get()).get("seq") != seq:
+            pass
 
 
 class TestWebSocketReplay:
@@ -147,7 +151,8 @@ class TestWebSocketReplay:
         assert len(live_frames) == 1
         assert live_frames[0]["seq"] is None
 
-    async def test_replay_filters_non_forwarded_event_types(self, db):
+    @pytest.mark.parametrize("replay_delay", [0, 0.1])
+    async def test_replay_filters_non_forwarded_event_types(self, db, monkeypatch, replay_delay):
         """Replay respects the same ``_FORWARDED_PREFIXES`` filter as live
         mode.  The filter was extended in Wave-4 (D3/D1/D2) to cover
         ``gate.*`` / ``session.*`` / ``task.*`` alongside ``notify.*`` and
@@ -158,18 +163,40 @@ class TestWebSocketReplay:
         await db.log_event("gate.resolved", project_id=PROJECT, payload="g")
         await db.log_event("message.chat", project_id=PROJECT, payload="c")
 
+        get_recent_events = db.get_recent_events
+
+        async def delayed_get_recent_events(**kwargs):
+            await asyncio.sleep(replay_delay)
+            return await get_recent_events(**kwargs)
+
+        monkeypatch.setattr(db, "get_recent_events", delayed_get_recent_events)
+
         bus = EventBus()
         mgr = WebSocketManager(bus, db=db)
         mgr.start()
         ws = _FakeWS(after_seq="0")
 
+        replayed = asyncio.Event()
+        send_json = ws.send_json
+
+        async def signal_last_replay_frame(frame):
+            await send_json(frame)
+            if frame.get("_event_type") == "message.chat":
+                replayed.set()
+
+        ws.send_json = signal_last_replay_frame
+
         task = asyncio.create_task(mgr.handle(ws))  # type: ignore[arg-type]
-        await asyncio.sleep(0.05)
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            # Wait for delivery, even when a replay query takes longer than 50 ms.
+            await asyncio.wait_for(replayed.wait(), timeout=2)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            mgr.shutdown()
 
         types = [f.get("_event_type") for f in ws.sent]
         assert "notify.a" in types
@@ -312,15 +339,18 @@ class TestWebSocketReplay:
 # ── Replay hardening (FU-5): cursor abuse, compaction, disconnect ────────
 
 
-async def _drive_handler(mgr, ws, settle: float = 0.05):
-    """Run ``mgr.handle(ws)`` until it settles into the live wait, then cancel."""
+async def _drive_handler(mgr, ws, *, through_seq: int):
+    """Run through the expected last replay frame, then cancel the live wait."""
     task = asyncio.create_task(mgr.handle(ws))
-    await asyncio.sleep(settle)
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        await asyncio.wait_for(ws.wait_for_seq(through_seq), timeout=2)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        mgr.shutdown()
 
 
 class TestReplayHardening:
@@ -372,7 +402,7 @@ class TestReplayHardening:
         mgr = WebSocketManager(bus, db=db)
         mgr.start()
         ws = _FakeWS(after_seq="-5")
-        await _drive_handler(mgr, ws)
+        await _drive_handler(mgr, ws, through_seq=seqs[-1])
 
         replayed = [f["seq"] for f in ws.sent if isinstance(f.get("seq"), int)]
         assert replayed == seqs
@@ -423,7 +453,7 @@ class TestReplayHardening:
         mgr = WebSocketManager(bus, db=db)
         mgr.start()
         ws = _FakeWS(after_seq=str(seqs[1]))
-        await _drive_handler(mgr, ws)
+        await _drive_handler(mgr, ws, through_seq=seqs[-1])
 
         replayed = [f["seq"] for f in ws.sent if isinstance(f.get("seq"), int)]
         assert replayed == seqs[4:], "replay must resume at the first retained row after the gap"
@@ -469,7 +499,7 @@ class TestReplayHardening:
 
         # The manager keeps serving other clients afterwards.
         ws2 = _FakeWS(after_seq=str(seqs[0]))
-        await _drive_handler(mgr, ws2)
+        await _drive_handler(mgr, ws2, through_seq=seqs[-1])
         replayed2 = [f["seq"] for f in ws2.sent if isinstance(f.get("seq"), int)]
         assert replayed2 == seqs[1:]
 

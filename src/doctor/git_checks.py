@@ -2,7 +2,7 @@
 
 ``git.stale_branches`` is the branch policy's backlog view, and what the
 supervisor's stall sweep runs.  New development deliveries clean up after
-themselves (``DevelopmentIntegration.collect_delivered_branches``); this check
+themselves (``DevelopmentPrimitives.collect_delivered_branches``); this check
 finds everything else, for each development project's origin:
 
 * ``aq/`` branches whose work is on the default branch;
@@ -44,11 +44,11 @@ def _development_publisher(ctx: DoctorContext):
     factory = getattr(ctx.handler, "_development_integration", None)
     if factory is not None:
         return factory()
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
 
     integration = getattr(ctx.config, "integration", None)
     access = GitHubAccess.from_config(getattr(integration, "github_app", None))
-    return DevelopmentIntegration(
+    return DevelopmentPrimitives(
         ctx.db,
         data_dir=ctx.config.data_dir,
         git=GitManager(github_access=access),
@@ -56,7 +56,7 @@ def _development_publisher(ctx: DoctorContext):
 
 
 async def _scan(ctx: DoctorContext, *, delete: bool = False):
-    """One :meth:`DevelopmentIntegration.stale_branches` report per project.
+    """One :meth:`DevelopmentPrimitives.stale_branches` report per project.
 
     Development projects only: their publisher keeps the clone this needs,
     and they are the projects whose delivery leaves branches behind.  A
