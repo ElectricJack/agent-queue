@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field, TypeAdapter, model_validator
 
 from src.integration.models import Fence, RequiredCheckSet
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PRIMITIVE_ARGS,
     PRIMITIVE_OUTCOMES,
     UNKNOWN,
@@ -32,6 +32,8 @@ from src.integration.subjects import (
     SubjectSchedule,
 )
 from src.playbooks.expressions import (
+    EvaluationBudget,
+    LoopRef,
     BindingRef,
     Comparison,
     Condition,
@@ -46,6 +48,7 @@ from src.playbooks.expressions import (
     resolve_value,
     walk_value,
 )
+from src.playbooks.train_policy import TrainPolicy
 
 if TYPE_CHECKING:
     from src.playbooks.definition import PlaybookDefinition
@@ -119,10 +122,11 @@ class PolicyAction(V2Base):
             )
         for value in self.inputs.values():
             check_expression_depth(value)
+        budget = EvaluationBudget()
         for name, value in self.inputs.items():
             if not any(isinstance(node, BindingRef) for node in walk_value(value)):
                 TypeAdapter(fields[name].rebuild_annotation()).validate_python(
-                    resolve_value(value, ResolutionScope())
+                    resolve_value(value, ResolutionScope(), budget)
                 )
         # Fully literal calls are checked with the same model an adapter gets.
         if not any(
@@ -170,7 +174,8 @@ class PolicyAction(V2Base):
         return value.value
 
     def resolve(self, scope: ResolutionScope) -> dict[str, Any]:
-        return {name: resolve_value(value, scope) for name, value in self.inputs.items()}
+        budget = EvaluationBudget()
+        return {name: resolve_value(value, scope, budget) for name, value in self.inputs.items()}
 
 
 class PolicyCase(V2Base):
@@ -237,10 +242,13 @@ def _is_true(condition: Condition, path: str) -> bool:
 class IntegrationPolicy(V2Base):
     version: Literal[1] = 1
     max_wait_seconds: int = Field(gt=0, le=86400)
-    tables: dict[SubjectKind, SubjectDecisionTable] = Field(min_length=1, max_length=3)
+    tables: dict[SubjectKind, SubjectDecisionTable] = Field(default_factory=dict, max_length=3)
+    train: TrainPolicy | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _bounded(self) -> IntegrationPolicy:
+        if not self.tables and self.train is None:
+            raise ValueError("integration policy needs a decision table or train policy")
         for kind, table in self.tables.items():
             for action in table.actions.values():
                 if (
@@ -251,15 +259,19 @@ class IntegrationPolicy(V2Base):
                 for route in [*action.outcomes.values(), *(action.answers or {}).values()]:
                     if (route.ceiling_seconds or route.seconds or 0) > self.max_wait_seconds:
                         raise ValueError("outcome wait/backoff exceeds max_wait_seconds")
-                values = [node for value in action.inputs.values() for node in walk_value(value)]
+                values = [node for value in action.inputs.values() for node in walk_value(value, scoped=True)]
                 _check_reads(values, kind)
             for case in table.cases:
-                _check_reads(condition_values(case.when), kind)
+                _check_reads(condition_values(case.when, scoped=True), kind)
         return self
 
 
 def _check_reads(values: list[Any], kind: SubjectKind) -> None:
-    for value in values:
+    for value, binders in values:
+        if isinstance(value, LoopRef) and any(
+            binder.item_binding == value.binding for binder in binders
+        ):
+            continue
         if value.type.endswith("_ref") and not isinstance(value, BindingRef):
             raise ValueError("policy expressions read only s and subject bindings")
         if isinstance(value, BindingRef):
@@ -289,7 +301,7 @@ def _check_reads(values: list[Any], kind: SubjectKind) -> None:
             if value.binding == "s" and value.path and value.path.startswith("tested_head."):
                 # These projections are built by the evaluator; validate via
                 # their real object schemas below rather than arbitrary paths.
-                from src.integration.subjects import HeadIdentity
+                from src.integration.runtime_contracts import HeadIdentity
 
                 root = HeadIdentity
                 path = value.path.split(".", 1)[1]
@@ -388,8 +400,9 @@ class CompiledIntegrationPolicy:
         ]
         scope = ResolutionScope(bindings={"s": binding, "subject": subject.model_dump(mode="json")})
         rule, action = "default", table.actions[table.default]
+        budget = EvaluationBudget()
         for case in table.cases:
-            if evaluate_condition(case.when, scope):
+            if evaluate_condition(case.when, scope, budget):
                 rule, action = case.rule, table.actions[case.action]
                 break
         request = PRIMITIVE_ARGS[action.primitive].model_validate(

@@ -26,3 +26,11 @@ describe("TaskCard", () => {
     expect(onSelect).toHaveBeenCalledOnce();
   });
 });
+
+it("shows the delivery wait and exact prerequisite instead of Ready", () => {
+  render(<TaskCard task={{ ...task, claim_readiness: { state: "waiting_on_delivery", claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" } }} />);
+  expect(screen.getByText("Waiting on delivery")).toBeInTheDocument();
+  expect(screen.getByText("Land source.6 on dev; refresh aq/epic")).toBeInTheDocument();
+  expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+});

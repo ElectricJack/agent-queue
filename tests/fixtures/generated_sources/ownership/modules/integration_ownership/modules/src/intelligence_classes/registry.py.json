@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/intelligence_classes/registry.py::IntelligenceClassRegistry": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/intelligence_classes/registry.py::register_intelligence_class_handlers": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
