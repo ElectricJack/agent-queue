@@ -1,0 +1,44 @@
+{
+  "shared": {
+    "src/jobs/service.py::JobService.cancel": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::JobService.launch": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::JobService.reconcile": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::JobService.submit": {
+      "baseline_span": [
+        44,
+        275
+      ],
+      "landing_span": [
+        44,
+        275
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/jobs/service.py::JobService.sweep": {
+      "baseline_span": [
+        551,
+        611
+      ],
+      "landing_span": [
+        551,
+        611
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/jobs/service.py::import from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::import from src.jobs.editor_pin import pin_editor, prune_pins, validate_attempt_id": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::import from src.jobs.identity import processes, verified": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}
