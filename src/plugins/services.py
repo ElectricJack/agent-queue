@@ -12,6 +12,12 @@ Services available to internal plugins via ``ctx.get_service(name)``:
 - ``"workspace"``     — :class:`WorkspaceService`
 - ``"config"``        — :class:`ConfigService` (external-allowed)
 - ``"vault_watcher"`` — :class:`VaultWatcherService` (external-allowed)
+
+Plugins also *provide* services that core looks up (the inverse direction; see
+:meth:`src.plugins.registry.PluginRegistry.get_service`):
+
+- ``"knowledge_retrieval"`` — :class:`KnowledgeRetrievalService` (optional
+  semantic ranking and derived indexing of core-owned knowledge revisions)
 """
 
 from __future__ import annotations
@@ -88,6 +94,8 @@ class DatabaseService(Protocol):
     async def update_profile(self, profile_id: str, **kwargs: Any) -> None: ...
     async def delete_profile(self, profile_id: str) -> None: ...
     async def get_project_workspace_path(self, project_id: str) -> str | None: ...
+
+    def note_ownership(self, project_id: str, path: str, *, operation: str | None = None): ...
 
 
 @runtime_checkable
@@ -216,6 +224,76 @@ class MemoryServiceProtocol(Protocol):
 
 
 @runtime_checkable
+class KnowledgeIndexService(Protocol):
+    """Derived-index half of a retrieval provider (optional, ``indexer``).
+
+    Index writes are rebuildable derived data. The provider owns embeddings,
+    chunking and its own fixed managed index; it never writes records, revisions,
+    tasks, authority or delivery state, and it never queries a collection chosen
+    by a caller.
+    """
+
+    async def index(self, payload: dict) -> dict:
+        """Index one hydrated revision and return a text-free chunk manifest.
+
+        ``payload`` is server-authorized core output: ``record_id``,
+        ``revision_id``, ``sequence``, ``content_sha256``, ``hash_version``,
+        ``scope_key``, ``title`` and ``body``. The manifest declares a
+        contiguous partition of that exact ``body`` as
+        ``{"chunk_id", "ordinal", "char_start", "char_end"}`` entries bound to
+        ``record_id``/``revision_id``/``content_sha256``/``hash_version``.
+        """
+        ...
+
+    async def erase(self, record_id: str, revision_id: str) -> dict:
+        """Drop derived chunks for one revision and acknowledge the erasure."""
+        ...
+
+
+@runtime_checkable
+class KnowledgeRetrievalService(Protocol):
+    """Optional ranking over core-owned knowledge (plugin -> core).
+
+    Registered by a loaded plugin as ``"knowledge_retrieval"`` and read back
+    locally by :class:`src.knowledge.registration.RetrievalProviderRegistry`.
+    Core never imports the plugin to obtain one, never initializes it and never
+    falls back to a caller-chosen index: ``search`` receives a core-derived
+    ``RetrievalRequest`` (bounded query, ``scope_key``, shared-global hint and
+    ``limit``) and returns at most ``limit``
+    :class:`src.knowledge.providers.RetrievalReference` values in relevance
+    order. Text, snippets, scope and authority are rejected by core.
+
+    Two registered providers are never raced: selecting one, paying its cost and
+    retiring it are explicit operator decisions (plan sections 2 and 11, G5).
+    """
+
+    @property
+    def provider_id(self) -> str: ...
+
+    @property
+    def provider_version(self) -> str: ...
+
+    @property
+    def available(self) -> bool:
+        """Local availability only; never a health check or a network probe."""
+        ...
+
+    @property
+    def deprecated(self) -> bool:
+        """A retired provider stops serving without any core code change."""
+        ...
+
+    async def search(self, request: Any) -> Any:
+        """Rank the provider's own index; return references, never content."""
+        ...
+
+    @property
+    def indexer(self) -> KnowledgeIndexService | None:
+        """Optional derived-index service used for index receipts."""
+        ...
+
+
+@runtime_checkable
 class WorkspaceService(Protocol):
     """Path resolution, validation, and workspace helpers."""
 
@@ -244,6 +322,11 @@ class ConfigService(Protocol):
     def llm(self) -> Any: ...
     @property
     def inbox(self) -> dict: ...
+    @property
+    def git_identity(self) -> Any: ...
+
+    @property
+    def integration_git_first(self) -> str: ...
 
 
 @runtime_checkable
@@ -351,6 +434,11 @@ class GitServiceImpl:
 
 class DatabaseServiceImpl:
     """Wraps ``Database`` behind the :class:`DatabaseService` protocol."""
+
+    def note_ownership(self, project_id: str, path: str, *, operation: str | None = None):
+        from src.knowledge.imports.compatibility import CompatibilityFence
+
+        return CompatibilityFence(self._db).note_path(project_id, path, operation=operation)
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -509,18 +597,33 @@ class WorkspaceServiceImpl:
 
     async def validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within an allowed directory."""
+        from src.commands.principal import current_principal
+
+        principal = current_principal()
+        scoped_project = principal.project_id if principal and principal.enforced else None
         real = os.path.realpath(path)
+        from src.task_templates import editable_task_template_path
+
+        template_path = editable_task_template_path(path, self._config.data_dir)
+        if template_path is not None and scoped_project is None:
+            return template_path
         workspace_real = os.path.realpath(self._config.workspace_dir)
-        if real.startswith(workspace_real + os.sep) or real == workspace_real:
+        if scoped_project is None and (
+            real.startswith(workspace_real + os.sep) or real == workspace_real
+        ):
             return real
         repos = await self._db.list_repos()
         for repo in repos:
+            if scoped_project is not None and repo.project_id != scoped_project:
+                continue
             if repo.source_path:
                 repo_real = os.path.realpath(repo.source_path)
                 if real.startswith(repo_real + os.sep) or real == repo_real:
                     return real
         workspaces = await self._db.list_workspaces()
         for ws in workspaces:
+            if scoped_project is not None and ws.project_id != scoped_project:
+                continue
             ws_real = os.path.realpath(ws.workspace_path)
             if real.startswith(ws_real + os.sep) or real == ws_real:
                 return real
@@ -580,6 +683,25 @@ class WorkspaceServiceImpl:
         return None
 
 
+@runtime_checkable
+class KnowledgeExtractionService(Protocol):
+    """Loaded plugin port registered as ``knowledge_extraction``.
+
+    ``estimate`` is local and reserves an upper bound in integer microUSD and
+    tokens. ``generate`` accepts core-authorized retained inputs and returns
+    only proposed content plus actual usage. It owns no store, watcher or
+    guidance writer. Unknown paid outcomes are quarantined by core.
+    """
+
+    provider_id: str
+    provider_version: str
+    available: bool
+
+    def estimate(self, request: Any) -> dict: ...
+
+    async def generate(self, request: Any) -> dict: ...
+
+
 class ConfigServiceImpl:
     """Wraps ``AppConfig`` behind the :class:`ConfigService` protocol."""
 
@@ -605,6 +727,16 @@ class ConfigServiceImpl:
     @property
     def inbox(self) -> dict:
         return self._config.inbox
+
+    @property
+    def git_identity(self) -> Any:
+        """The installation's default commit identity section (read per use)."""
+        return self._config.git_identity
+
+    @property
+    def integration_git_first(self) -> str:
+        """Current publication mode, read at the fenced write boundary."""
+        return self._config.integration.git_first
 
 
 # ---------------------------------------------------------------------------

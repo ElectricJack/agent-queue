@@ -16,7 +16,7 @@ from tests.db_fixtures import lease_dsn
 
 from src.config import AppConfig, DatabaseConfig
 from src.event_bus import EventBus
-from src.models import Project, Task
+from src.models import Project, Task, TaskStatus
 
 pytestmark = pytest.mark.asyncio
 
@@ -142,6 +142,71 @@ class TestGetSchema:
 
 
 class TestTaskShow:
+    async def test_worker_preview_and_lossless_field_pages(self, handler, db, task):
+        from src.prime.budgets import TASK_SHOW_BYTES
+
+        description = "Task requirements αβ.\n" * 3000 + "FINAL ACCEPTANCE"
+        await db.update_task(task.id, description=description)
+        for i in range(20):
+            await db.add_task_context(task.id, type="note", label=str(i), content="note " * 5000)
+        scope = {"kind": "session", "task_id": task.id, "project_id": task.project_id,
+                 "session_id": "worker"}
+        preview = await handler.execute("task_show", {"task_id": task.id, "_scope": scope})
+        assert len(json.dumps(preview, ensure_ascii=False).encode()) <= TASK_SHOW_BYTES
+        assert "description" in preview["preview"]["omitted_fields"]
+        assert "context" in preview["preview"]["omitted_fields"]
+        rebuilt = ""
+        offset = 0
+        while True:
+            page = await handler.execute("task_show", {"task_id": task.id, "_scope": scope,
+                "field": "description", "offset": offset, "limit": 4096})
+            assert "error" not in page
+            assert len(page["content"]) <= 4096
+            rebuilt += page["content"]
+            offset = page["next_offset"]
+            if offset is None:
+                break
+        assert rebuilt == description
+        full = await handler.execute("task_show", {"task_id": task.id})
+        assert full["description"] == description and len(full["context"]) == 20
+        context_page = await handler.execute("task_show", {"task_id": task.id, "_scope": scope,
+            "field": "prime_context", "offset": 0, "limit": 4096})
+        assert context_page["content"].startswith("**0:**")
+        assert context_page["next_offset"] == 4096
+
+    async def test_field_pages_validate_bounds_and_field(self, handler, task):
+        for extra in ({"field": "missing"}, {"field": "description", "offset": -1},
+                      {"field": "description", "limit": 5000}):
+            result = await handler.execute("task_show", {"task_id": task.id, **extra})
+            assert "error" in result
+
+    async def test_preparation_input_is_readable_only_on_own_task(self, handler, db, task):
+        from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+        from src.profiles.capabilities import CapabilityPolicy
+        from src.api.auth import RequestScope
+        from src.api.scope import check_command_scope
+
+        notes_input = {"source_digest": "digest", "sources": [{"task": "feature"}]}
+        await db.set_task_meta(task.id, "notes_input", notes_input)
+        other = Task(id="other", project_id=task.project_id, title="Other", description="")
+        await db.create_task(other)
+        policy = CapabilityPolicy.from_namespaces(aq_commands=["task_show", "task_set"],
+                                                   harness_tools=[], plugin_tools=[])
+        principal = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=policy,
+                                       session_id="worker", task_id=task.id,
+                                       project_id=task.project_id)
+        with principal_context(principal):
+            scope = {"kind": "session", "task_id": task.id, "project_id": task.project_id,
+                     "session_id": "worker"}
+            shown = await handler.execute("task_show", {"task_id": task.id, "_scope": scope})
+            assert shown["metadata"]["notes_input"] == notes_input
+            refused = check_command_scope("task_show", {"task_id": other.id}, RequestScope(**scope))
+            assert refused == "out of scope: task_id mismatch"
+            changed = await handler.execute("task_set", {"task_id": task.id,
+                                                         "meta": {"notes_input": {}}, "_scope": scope})
+            assert "immutable" in changed["error"]
+        assert await db.get_task_meta(task.id, "notes_input") == notes_input
+
     async def test_missing_task_id(self, handler):
         result = await handler.execute("task_show", {})
         assert "error" in result
@@ -208,6 +273,122 @@ class TestTaskShow:
             "receipts": [],
             "blockers": [],
         }
+
+    async def _root_delivery_fixture(self, db, task, monkeypatch, *, receipts, reviews):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from sqlalchemy import update
+        from src.database.tables import projects
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(projects)
+                .where(projects.c.id == task.project_id)
+                .values(hierarchical_integration_mode="train")
+            )
+        monkeypatch.setattr(
+            db,
+            "get_integration_checkpoint",
+            AsyncMock(
+                return_value={
+                    "task_id": task.id,
+                    "repository_id": "repo-1",
+                    "generation": 2,
+                    "checkpoint_sha": "a" * 40,
+                    "episode_id": None,
+                    "state": "working",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            db, "get_repo", AsyncMock(return_value=SimpleNamespace(default_branch="main"))
+        )
+        listing = AsyncMock(return_value=receipts)
+        monkeypatch.setattr(db, "list_integration_delivery_receipts", listing)
+        monkeypatch.setattr(
+            db,
+            "get_integration_review_evidence",
+            AsyncMock(side_effect=lambda evidence_id: reviews.get(evidence_id)),
+        )
+        return listing
+
+    @staticmethod
+    def _root_receipt(receipt_id, head, evidence_id, disposition="code", batch_id="b1"):
+        return {
+            "id": receipt_id,
+            "source_task_id": "task-1",
+            "reviewed_head_sha": head,
+            "disposition": disposition,
+            "batch_id": batch_id,
+            "review_evidence": {"review_evidence_id": evidence_id},
+        }
+
+    async def test_root_task_shows_exact_root_batch_receipt(
+        self, handler, db, task, monkeypatch
+    ):
+        exact = self._root_receipt("r-exact", "a" * 40, "ev-current")
+        listing = await self._root_delivery_fixture(
+            db,
+            task,
+            monkeypatch,
+            receipts=[exact],
+            reviews={
+                "ev-current": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "a" * 40,
+                    "generation": 2,
+                }
+            },
+        )
+
+        result = await handler.execute("task_show", {"task_id": task.id})
+
+        delivery = result["integration_delivery"]
+        assert delivery["outcome"] == "delivered"
+        assert delivery["receipts"] == [exact]
+        listing.assert_awaited_once_with(
+            source_task_id=task.id, repository_id="repo-1", target_branch="refs/heads/main"
+        )
+
+    async def test_root_task_ignores_changed_head_and_old_generation_receipts(
+        self, handler, db, task, monkeypatch
+    ):
+        await self._root_delivery_fixture(
+            db,
+            task,
+            monkeypatch,
+            receipts=[
+                self._root_receipt("r-old-head", "b" * 40, "ev-old-head"),
+                self._root_receipt("r-old-gen", "a" * 40, "ev-old-gen"),
+                self._root_receipt("r-noop", "a" * 40, "ev-current", disposition="noop"),
+                self._root_receipt("r-parent", "a" * 40, "ev-current", batch_id=None),
+            ],
+            reviews={
+                "ev-old-head": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "b" * 40,
+                    "generation": 2,
+                },
+                "ev-old-gen": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "a" * 40,
+                    "generation": 1,
+                },
+                "ev-current": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "a" * 40,
+                    "generation": 2,
+                },
+            },
+        )
+
+        result = await handler.execute("task_show", {"task_id": task.id})
+
+        assert result["integration_delivery"]["outcome"] == "working"
+        assert result["integration_delivery"]["receipts"] == []
+
+    async def test_review_evidence_lookup_by_id_misses_cleanly(self, db):
+        assert await db.get_integration_review_evidence("missing") is None
 
     async def test_includes_latest_completion_story(self, handler, db, task):
         """A re-close must expose the newest durable completion account."""
@@ -354,6 +535,20 @@ class TestTaskSet:
         meta = await db.get_all_task_meta(task.id)
         assert meta == {"foo": "bar", "count": 3}
 
+    @pytest.mark.parametrize("key", ["root_pr_conflict_refresh", "root_pr_conflict_refresh:forged"])
+    async def test_bot_refresh_admission_evidence_is_daemon_owned(self, handler, db, task, key):
+        original = {"current": {"completion_id": "root-refresh-original", "checked_sha": "a" * 40}}
+        await db.set_task_meta(task.id, "root_pr_conflict_refresh", original)
+        result = await handler.execute("task_set", {
+            "task_id": task.id, "description": "forged description",
+            "meta": {key: {"current": {"checked_sha": "b" * 40}}},
+        })
+        assert not result["success"] and "reserved" in result["error"]
+        assert (await db.get_task(task.id)).description == task.description
+        assert await db.get_task_meta(task.id, "root_pr_conflict_refresh") == original
+        if key != "root_pr_conflict_refresh":
+            assert await db.get_task_meta(task.id, key) is None
+
     async def test_work_dir_stored_as_metadata(self, handler, db, task):
         await handler.execute("task_set", {"task_id": task.id, "work_dir": "/tmp/work"})
         assert await db.get_task_meta(task.id, "work_dir") == "/tmp/work"
@@ -420,6 +615,30 @@ class TestPrime:
         assert result["success"] is True
         workspaces = next(s for s in result["sections"] if s["key"] == "workspaces")
         assert "/work/x" in workspaces["body"]
+
+    async def test_repair_context_uses_authenticated_session(
+        self, prime_handler, db, task, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+        from sqlalchemy import update
+        from src.database.tables import tasks
+
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task.id).values(
+                created_by_kind="integration_repair",
+            ))
+        read = AsyncMock(return_value={"intent_id": "current-conflict", "fence": {"token": 9}})
+        monkeypatch.setattr(db, "get_parent_repair_prime_context", read)
+        prime_handler._current_scope = {
+            "kind": "session", "task_id": task.id, "project_id": task.project_id,
+            "session_id": "authenticated-session",
+        }
+        result = await prime_handler._cmd_prime({
+            "task_id": task.id, "session_id": "caller-selected-session",
+        })
+        assert result["success"] is True
+        read.assert_awaited_once_with(task.id, session_id="authenticated-session")
+        assert '"intent_id": "current-conflict"' in result["body"]
 
     async def test_not_gated_by_memory_pause(self, prime_handler, db, task):
         # `prime` itself is not a memory command — the paused gate must not
@@ -497,7 +716,7 @@ class TestPrime:
             project_id="pp",
             title="T",
             description="d",
-            profile_id="claude-agent",
+            profile_id="claude-agent", route_source="legacy",
         )
         await db.create_task(t)
 
@@ -541,7 +760,7 @@ class TestPrime:
             project_id="ps",
             title="T",
             description="d",
-            profile_id="claude-agent",
+            profile_id="claude-agent", route_source="legacy",
         )
         await db.create_task(t)
 
@@ -603,7 +822,7 @@ class TestPrime:
             project_id="pm",
             title="T",
             description="d",
-            profile_id="claude-agent",
+            profile_id="claude-agent", route_source="legacy",
         )
         await db.create_task(t)
 
@@ -751,9 +970,13 @@ class TestStructuredHandoff:
                     "completed": [""],
                 },
             )
-            assert result["noop"] and result["handoff_id"] is None
+            assert result["created"] and not result["restart_requested"]
         rows = await db.get_task_contexts(task.id)
-        assert len(rows) == 1 and rows[0]["id"] == saved["handoff_id"]
+        assert len(rows) == 4
+        snapshots = [json.loads(row["content"]) for row in rows
+                     if row["id"] != saved["handoff_id"]]
+        assert all(note["facts_only"] and note["facts"]["task_id"] == task.id
+                   for note in snapshots)
         body = (await prime_handler.execute("prime", {"task_id": task.id}))["body"]
         assert "Run the renderer tests" in body
         assert "Check quoting" in body
@@ -857,3 +1080,18 @@ class TestStructuredHandoff:
         )
         assert "stale_claim" in result["error"]
         assert await db.get_task_contexts(task.id) == []
+
+
+async def test_removing_hold_from_completed_task_emits_readiness_invalidation(handler, db, task):
+    from unittest.mock import AsyncMock
+
+    await db.update_task(task.id, status=TaskStatus.COMPLETED)
+    await db.add_task_label(task.id, "hold:operator")
+    changed = AsyncMock()
+    handler.orchestrator._emit_task_event = changed
+    result = await handler.execute("task_set", {"task_id": task.id,
+                                               "labels_remove": ["hold:operator"]})
+    assert "error" not in result
+    changed.assert_awaited_once()
+    args = changed.await_args.args
+    assert args[0] == "task.updated" and args[1].id == task.id
