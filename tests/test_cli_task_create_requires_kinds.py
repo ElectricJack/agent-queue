@@ -279,6 +279,27 @@ class TestRequestForwarding:
         assert result.exit_code == 0, result.output
         assert "requires_kinds" not in captured
 
+    @pytest.mark.parametrize("source", ["--graph", "--from-spec"])
+    def test_after_review_is_forwarded_with_a_graph(self, runner, tmp_path, source):
+        """A graph gated on a review is one command, not a hand edit per node."""
+        graph = tmp_path / "graph.json"
+        graph.write_text('{"version": 1, "nodes": [{"key": "a", "title": "A"}]}')
+        captured: dict = {}
+        with patch(
+            "src.cli.tasks._get_client",
+            return_value=_capture_client(captured, "create_task_graph"),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "create", "--project", "p1",
+                    source, str(graph) if source == "--graph" else "specs/x.md",
+                    "--after-review", "review-42",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["after_review"] == "review-42"
+
 
 # ---------------------------------------------------------------------------
 # Persistence — the parsed values against a real handler and database
@@ -387,17 +408,17 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "description": "description",
     "priority": "priority",
     "task_type": "task_type",
-    "profile_id": "profile_id",
     "intelligence_class": "intelligence_class",
+    "prefer": "prefer",
+    "prefer_mode": "prefer_mode",
     "integration_mode": "integration_mode",
     "parent_id": "parent_id",
     "after_review": "after_review",
     "root": "root",
+    "container": "container",
     "reason": "reason",
     "deliverables": "deliverables",
     "requires_kinds": "requires_kinds",
-    "provider_intent": "provider_intent",
-    "pin": "pin",
 }
 
 #: Backend arguments deliberately not exposed by the handwritten command.
@@ -420,6 +441,11 @@ INTENTIONALLY_EXCLUDED = {
         "Superseded by requires_kinds; workspace instances are chosen at acquisition."
     ),
     "skip_verification": "Policy switch reserved for the daemon and playbooks.",
+    # Legacy routing fields the contract model keeps so its fingerprint does
+    # not move; every surface refuses them (mandatory task routing §5.1).
+    "profile_id": "Refused routing choice: the project's router picks the profile.",
+    "provider_intent": "Refused routing choice: the router records the intent.",
+    "pin": "Refused routing choice: only the router or an audited override pins.",
     "workspace_mode": (
         "'directory-isolated' is unimplemented and 'branch-isolated' is a deprecated "
         "alias, so the only reachable value is the default."
@@ -428,13 +454,13 @@ INTENTIONALLY_EXCLUDED = {
 
 #: CLI options with no matching backend argument, and why.
 CLI_ONLY_PARAMS = {
-    "agent_type": "Handler-level cascade override; not part of the contract model.",
     "api_url": "Position-independent global daemon URL; not a create_task argument.",
     "brief": "Position-independent global output projection; not a create_task argument.",
     "graph_file": "Selects the create_task_graph command instead.",
     "from_spec": "Selects the create_task_graph command instead.",
     "dry_run": "Graph-only validation switch.",
     "output_json": "Position-independent global output mode; not a create_task argument.",
+    "save_output": "Position-independent global evidence file; not a create_task argument.",
 }
 
 

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from src.api.auth import SessionTokenStore
+    from src.api.health_monitor import HealthMonitor
     from src.commands.handler import CommandHandler
     from src.orchestrator import Orchestrator
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 _orchestrator: "Orchestrator | None" = None
 _command_handler: "CommandHandler | None" = None
 _health_provider: Callable[[], Awaitable[dict[str, Any]]] | None = None
+_health_monitor: HealthMonitor | None = None
 _plan_content_provider: Callable[[str], Awaitable[str | None]] | None = None
 _started_at: float | None = None
 _base_url: str = ""

@@ -56,9 +56,13 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "session.",
     "task.",
     "pool.",
+    "provider.",
     "metrics.",
     "dashboard_state.",
     "review.",
+    "ask.",
+    "project.paused",
+    "project.resumed",
     # Run lifecycle from the V2 engine ("playbook.v2.run.started" and
     # friends).  Without this the dashboard's playbook views only changed
     # when their 30s poll happened to land inside a run, so the fleet's
@@ -130,6 +134,56 @@ def _metrics_event_allowed(scope) -> bool:
     return kind == "session" and bool(getattr(scope, "elevated", False))
 
 
+_PROVIDER_INVALIDATION_FIELDS = {
+    "provider.state_changed": (
+        "provider",
+        "vendor",
+        "from_state",
+        "to_state",
+        "generation",
+        "reason_code",
+        "reason",
+        "since",
+        "until",
+        "actor",
+        "override",
+    ),
+    "provider.reroute_batch": ("batch_id", "provider", "generation", "moved", "held", "targets"),
+    "provider.allocation_changed": ("provider", "vendor", "request_id", "actor", "status"),
+}
+
+
+def _provider_invalidation(data, scope):
+    """Forward operator events without cross-project audit detail.
+
+    Allocation audits can contain task/session ids in several nested fields,
+    including free-text warnings. A project supervisor gets only invalidation
+    metadata and refetches the scoped status read for authorized detail.
+    The same projection handles flattened live events and nested replay rows.
+    """
+    kind = getattr(scope, "kind", None)
+    if kind == "local":
+        return data
+    if kind != "session" or not scope.elevated:
+        return None
+    if scope.project_id is None:
+        return data
+    nested = data.get("payload")
+    if isinstance(nested, str):
+        try:
+            nested = json.loads(nested)
+        except (ValueError, TypeError):
+            return None
+    payload = nested if isinstance(nested, dict) else data
+    event_type = data["_event_type"]
+    fields = _PROVIDER_INVALIDATION_FIELDS.get(event_type, ("provider", "vendor"))
+    return {
+        **{key: data[key] for key in ("_event_type", "seq", "timestamp") if key in data},
+        **{key: payload[key] for key in fields if key in payload},
+        "redacted": True,
+    }
+
+
 def _pool_event_allowed(data, scope) -> bool:
     """Return whether *scope* may observe a pool event.
 
@@ -193,6 +247,8 @@ class WebSocketManager:
 
     def start(self) -> None:
         """Subscribe to all bus events and forward the allowed prefixes."""
+        if self._unsub is not None:
+            return
         logger.info("WebSocketManager subscribing to bus %s (id=%d)", self._bus, id(self._bus))
         logger.info("Bus handlers before subscribe: %s", dict(self._bus._handlers))
         self._unsub = self._bus.subscribe("*", self._on_event)
@@ -246,6 +302,12 @@ class WebSocketManager:
                 data, scope
             ):
                 continue
+            if event_type.startswith("provider."):
+                filtered = _provider_invalidation(shared, scope)
+                if filtered is None:
+                    continue
+                if filtered is not shared:
+                    event, frame = filtered, _dumps(filtered)
             if is_question:
                 filtered = _question_invalidation(data, scope)
                 if filtered is None:
@@ -377,6 +439,10 @@ class WebSocketManager:
                             continue
                         if event_type in _QUESTION_EVENTS:
                             frame = _question_invalidation(frame, scope)
+                            if frame is None:
+                                continue
+                        if event_type.startswith("provider."):
+                            frame = _provider_invalidation(frame, scope)
                             if frame is None:
                                 continue
                         await websocket.send_json(frame)

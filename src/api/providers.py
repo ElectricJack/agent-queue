@@ -3,13 +3,16 @@
 ``GET /api/providers/usage`` is described below.  The availability routes
 (``GET /api/providers/availability``, ``POST /api/providers/{provider}/state``,
 ``POST /api/providers/{provider}/recheck``, ``POST /api/providers/reroute`` and
-``POST /api/providers/reroute/undo``, provider-failover D20) hold no logic of
-their own: each runs the ``provider_status`` / ``provider_set_state`` /
-``provider_recheck`` / ``provider_reroute`` / ``provider_reroute_undo``
-command through the CommandHandler under the request's
-scope, exactly as a generated command route does, so the CLI, the typed API
-and these paths can never disagree.  The dashboard joins the two families on
-the provider key.
+``POST /api/providers/reroute/undo``, provider-failover D20) and the provider
+allocation routes (``GET /api/providers/allocation``, ``POST
+/api/providers/allocation/preview``, ``POST /api/providers/allocation/apply``)
+hold no logic of their own: each runs the ``provider_status`` /
+``provider_set_state`` / ``provider_recheck`` / ``provider_reroute`` /
+``provider_reroute_undo`` / ``provider_allocation_status`` /
+``provider_allocation_preview`` / ``provider_allocation_apply`` command through
+the CommandHandler under the request's scope, exactly as a generated command
+route does, so the CLI, the typed API and these paths can never disagree.  The
+dashboard joins the two families on the provider key.
 
 ``/usage`` is the read side of the provider-usage feature: the writers (the Codex
 transcript watcher and the Claude ``/usage`` probe) append snapshots, and this
@@ -36,6 +39,11 @@ from fastapi.responses import JSONResponse
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.models.provider import (
+    ProviderAllocationApplyBody,
+    ProviderAllocationApplyResponse,
+    ProviderAllocationPreviewBody,
+    ProviderAllocationPreviewResponse,
+    ProviderAllocationStatusResponse,
     ProviderRecheckResponse,
     ProviderRerouteBody,
     ProviderRerouteResponse,
@@ -154,6 +162,19 @@ async def _usage(
     return ProviderUsageResponse(now=now, snapshots=snapshots, series=series)
 
 
+#: Commands whose failures return their whole result, not only ``error``.
+_DETAILED_ERROR_COMMANDS = frozenset({"provider_allocation_apply"})
+#: A detailed failure's status by ``error_code``: the operator must re-preview
+#: (or review what landed) rather than resend the same request.
+_CONFLICT_STATUS = {
+    "preview_unknown": 409,
+    "preview_stale": 409,
+    "pinned_wait_unacknowledged": 409,
+    "allocation_rolled_back": 409,
+    "allocation_partial": 409,
+}
+
+
 async def _run_command(
     command_handler, db, command: str, args: dict, request: Request | None
 ):
@@ -191,6 +212,11 @@ async def _run_command(
         status = 403 if error.startswith("out of scope") else 400
         if error.startswith("unknown provider"):
             status = 404
+        if command in _DETAILED_ERROR_COMMANDS and status == 400:
+            # A refusal or failed apply carries data the surface acts on: the
+            # fresh preview of a stale token, or every row of a partial apply.
+            status = _CONFLICT_STATUS.get(str(result.get("error_code") or ""), status)
+            return JSONResponse({**result, "error": error}, status_code=status)
         return JSONResponse({"error": error}, status_code=status)
     return result
 
@@ -213,6 +239,66 @@ def _add_availability_routes(router: APIRouter, resolve) -> None:
         if provider:
             args["provider"] = provider
         return await _run_command(handler, db, "provider_status", args, request)
+
+    @router.get(
+        "/api/providers/allocation",
+        response_model=ProviderAllocationStatusResponse,
+        responses={
+            400: {"description": "unknown project"},
+            403: {"description": "out of scope"},
+            404: {"description": "unknown provider"},
+        },
+    )
+    async def get_provider_allocation(
+        request: Request,
+        project_id: str | None = Query(None),
+        provider: str | None = Query(None),
+    ):
+        db, handler = resolve()
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        if provider:
+            args["provider"] = provider
+        return await _run_command(handler, db, "provider_allocation_status", args, request)
+
+    @router.post(
+        "/api/providers/allocation/preview",
+        response_model=ProviderAllocationPreviewResponse,
+        responses={
+            400: {"description": "invalid request"},
+            403: {"description": "out of scope"},
+            404: {"description": "unknown provider"},
+        },
+    )
+    async def post_provider_allocation_preview(
+        body: ProviderAllocationPreviewBody, request: Request
+    ):
+        db, handler = resolve()
+        # ``exclude_unset`` keeps an explicit ``bounds.max: null`` (an unbounded
+        # pool) distinct from an omitted bound.
+        args = body.model_dump(exclude_unset=True)
+        return await _run_command(handler, db, "provider_allocation_preview", args, request)
+
+    @router.post(
+        "/api/providers/allocation/apply",
+        response_model=ProviderAllocationApplyResponse,
+        responses={
+            400: {"description": "invalid request or busy authorization"},
+            403: {"description": "out of scope"},
+            409: {
+                "description": "stale or unknown preview, unacknowledged pinned wait, or an "
+                "apply that failed part-way (rolled back or partial)",
+                "model": ProviderAllocationApplyResponse,
+            },
+        },
+    )
+    async def post_provider_allocation_apply(
+        body: ProviderAllocationApplyBody, request: Request
+    ):
+        db, handler = resolve()
+        args = body.model_dump(exclude_none=True)
+        return await _run_command(handler, db, "provider_allocation_apply", args, request)
 
     @router.post(
         "/api/providers/{provider}/state",

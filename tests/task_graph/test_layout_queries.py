@@ -183,39 +183,52 @@ async def seed_publish_rows(db):
 
 
 async def test_large_publish_bounds_batches_and_yields_without_exposing_partial_rows(db):
+    from sqlalchemy.util import await_only
+
     from src.database.queries.layout_queries import LAYOUT_WRITE_BATCH_SIZE
 
     rows = await seed_publish_rows(db)
     # A second connection must still see the old publication while any
     # layout or cell batch is in flight.
     await db.publish_layout("p1", "all", WriteSet(), consumed_seq=None, extent=(0, 0))
+    events = []
     observations = []
     checks = []
 
-    async def observe():
+    async def observe(batch):
+        events.append(("observe", batch))
         meta = await db.get_layout_meta("p1", "all")
         stored = await db.load_subtree_rows("p1", "all")
         observations.append((meta["layout_version"], len(stored)))
 
     def inspect_batch(conn, clause, multiparams, params, execution_options):
-        if getattr(clause, "is_insert", False) and clause.table.name in (
+        table = getattr(clause, "table", None)
+        if getattr(clause, "is_insert", False) and table.name in (
             "task_layouts", "task_layout_cells",
         ):
             assert len(multiparams) <= LAYOUT_WRITE_BATCH_SIZE
-            checks.append(asyncio.create_task(observe()))
+            events.append(("batch", len(checks)))
+            checks.append(asyncio.create_task(observe(len(checks))))
+        elif getattr(clause, "is_update", False) and table.name == "project_layout_meta":
+            # The version bump is the publication's last write before COMMIT.
+            # Hold it until every observer has made both of its reads: a read
+            # that lands after COMMIT would see the new publication.
+            await_only(asyncio.gather(*checks))
 
     event.listen(db._engine.sync_engine, "before_execute", inspect_batch)
     try:
         version = await db.publish_layout(
             "p1", "all", WriteSet(upserts=rows), consumed_seq=None, extent=(len(rows) * 9, 1)
         )
-        await asyncio.gather(*checks)
     finally:
         event.remove(db._engine.sync_engine, "before_execute", inspect_batch)
     assert version == 2
     assert len(checks) >= 4  # both geometry and cells span multiple batches
-    assert (1, 0) in observations
-    assert all(count in (0, len(rows)) for _, count in observations)
+    # The publication yields to the loop: each batch's observer starts before
+    # the next batch is sent.
+    for batch in range(len(checks) - 1):
+        assert events.index(("observe", batch)) < events.index(("batch", batch + 1))
+    assert observations == [(1, 0)] * len(checks)
     meta = await db.get_layout_meta("p1", "all")
     assert meta["node_count"] == len(rows)
     assert len(await db.load_subtree_rows("p1", "all")) == len(rows)

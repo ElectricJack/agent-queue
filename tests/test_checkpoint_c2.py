@@ -224,7 +224,7 @@ async def _seed(o: Orchestrator, base_repo: Path) -> None:
             project_id="p1",
             title="C2",
             description="d",
-            profile_id="stub-profile",
+            profile_id="stub-profile", route_source="legacy",
             intelligence_class="standard-medium",
         )
     )
