@@ -46,6 +46,7 @@ from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     archived_tasks,
     branch_retirements,
+    events,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -59,7 +60,6 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
-    task_delivery_receipts,
     task_metadata,
     tasks,
 )
@@ -464,6 +464,7 @@ async def unrecorded_epic_children(conn, *, repository_id=None, ref=None) -> dic
     and its generation in Git. This is a deletion fence, never delivery proof.
     """
     from src.integration.delivery_truth import load_delivery_requests
+    from src.integration.truth_retention import delivery_identity_key
 
     children = []
     for parent_table in (tasks, archived_tasks):
@@ -492,35 +493,30 @@ async def unrecorded_epic_children(conn, *, repository_id=None, ref=None) -> dic
             target_ref="refs/heads/" + rows[0].default_branch.removeprefix("refs/heads/"),
             conn=conn, reduced=True,
         )
-        receipts = (await conn.execute(select(task_delivery_receipts).where(
-            task_delivery_receipts.c.source_task_id.in_(requests),
-            task_delivery_receipts.c.repository_id == repository_id,
+        retained = (await conn.execute(select(events).where(
+            events.c.event_type == "integration.git_truth_reconciled",
+            events.c.task_id.in_(requests),
+            events.c.project_id.in_({request.project_id for request in requests.values()}),
         ))).mappings().all()
-        by_task = {}
-        for receipt in receipts:
-            by_task.setdefault(receipt["source_task_id"], []).append(receipt)
+        by_task = {row.id: [] for row in rows}
+        for event in retained:
+            try:
+                payload = json.loads(event["payload"] or "null")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                by_task[event["task_id"]].append((payload.get("receipt"), payload.get("source_oid")))
         for row in rows:
             request = requests.get(row.id)
             if request and (request.lifecycle_disposition or (
                 not request.branch_name and not request.has_recorded_source
             )):
                 continue
-            recorded = False
-            for receipt in by_task.get(row.id, ()) if request is not None else ():
-                witness = (receipt["resolution_evidence"] or {}).get("git_truth", {})
-                identity = witness.get("request", {})
-                if (receipt["source_task_id"] == row.id
-                        and str(witness.get("ref", "")).startswith("refs/aq/provenance/delivery/")
-                        and witness.get("source_oid") == receipt["reviewed_head_sha"]
-                        and identity.get("reported_source") == request.reported_source
-                        and identity.get("claim_epoch") == request.claim_epoch
-                        and identity.get("completion_id") == request.completion_id
-                        and identity.get("task_version") == request.task_version
-                        and identity.get("project_id") == request.project_id
-                        and identity.get("repository_id") == repository_id
-                        and identity.get("task_id") == row.id):
-                    recorded = True
-                    break
+            recorded = request is not None and any(
+                isinstance(source, str) and source and request.reported_source in {None, source}
+                and domain == "git-truth:" + delivery_identity_key(request, source)
+                for domain, source in by_task.get(row.id, ())
+            )
             if not recorded:
                 held.setdefault(branch_of(row.branch_name),
                                 f"child {row.id} has no retained completion witness")
@@ -1148,14 +1144,17 @@ async def observe_completed_branches(
     task_ids: Any = None,
     now: float | None = None,
     cached_only: bool = False,
+    max_age: float | None = None,
 ) -> dict[str, Any]:
     """:func:`completed_branch_dispositions` over each delivering project's repository.
 
     One snapshot of each project's integration repository answers the git
-    questions, reused when *observer* fetched it within ``READ_MAX_AGE``;
+    questions, reused when *observer* fetched it within ``READ_MAX_AGE``.
+    *max_age* overrides that cache window (zero fetches current heads for recovery);
     *cached_only* never fetches (interactive diagnostics), so an expired
     snapshot is ``unavailable``.  A project whose default branch cannot be
-    observed is ``unavailable``, never clean.
+    observed is ``unavailable``, never clean.  ``targets`` names, per observed
+    project, the repository, ref and tip its entries were judged against.
     """
     from functools import partial
 
@@ -1177,6 +1176,7 @@ async def observe_completed_branches(
         targets = (await conn.execute(query)).mappings().all()
     entries: list[dict[str, Any]] = []
     unavailable: list[dict[str, Any]] = []
+    observed: dict[str, dict[str, str]] = {}
     for target in targets:
         project_id, repository_id = target["id"], target["repository_id"]
         target_ref = "refs/heads/" + (target["default_branch"] or "").removeprefix("refs/heads/")
@@ -1185,11 +1185,14 @@ async def observe_completed_branches(
                 raise ValueError("integration repository has no URL or default branch")
             snapshot = await observer.snapshot(
                 DeliveryTarget(project_id, repository_id, target["url"], target_ref),
-                max_age=observer.READ_MAX_AGE, cached_only=cached_only,
+                max_age=observer.READ_MAX_AGE if max_age is None else max_age,
+                cached_only=cached_only,
             )
             observation = getattr(snapshot, "observation", snapshot)
             if observation.error or not observation.target_oid:
                 raise ValueError(observation.error or "default branch unavailable")
+            observed[project_id] = {"repository_id": repository_id, "target_ref": target_ref,
+                                    "target_oid": observation.target_oid}
             truth = (snapshot if isinstance(snapshot, GitTruthSnapshot)
                      else GitTruthSnapshot(GitTruth(observer.git), snapshot,
                                            cached_only=cached_only))
@@ -1231,7 +1234,8 @@ async def observe_completed_branches(
         except (GitError, OSError, ValueError) as exc:
             unavailable.append({"project_id": project_id, "repository_id": repository_id,
                                 "reason": str(exc)})
-    return {"entries": entries, "unavailable": unavailable, "projects": len(targets)}
+    return {"entries": entries, "unavailable": unavailable, "projects": len(targets),
+            "targets": observed}
 
 
 #: Rules under which something on record explains the branch or will move it.

@@ -41,6 +41,19 @@
             },
             "type": "object"
           },
+          "ci": {
+            "default": "reuse_source",
+            "enum": [
+              "reuse_source",
+              "rerun"
+            ],
+            "type": "string"
+          },
+          "ci_workflow": {
+            "default": "tests.yml",
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*\\.ya?ml$",
+            "type": "string"
+          },
           "gate": {
             "additionalProperties": false,
             "default": {},
@@ -253,6 +266,19 @@
                   }
                 },
                 "type": "object"
+              },
+              "ci": {
+                "default": "reuse_source",
+                "enum": [
+                  "reuse_source",
+                  "rerun"
+                ],
+                "type": "string"
+              },
+              "ci_workflow": {
+                "default": "tests.yml",
+                "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*\\.ya?ml$",
+                "type": "string"
               },
               "gate": {
                 "additionalProperties": false,

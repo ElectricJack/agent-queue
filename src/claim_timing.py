@@ -15,6 +15,7 @@ from functools import wraps
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from asyncio import Timeout
     from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,8 @@ class ClaimTiming:
     ))
     running: list[tuple[str, float]] = field(default_factory=list)
     result: str | None = None
+    abort_reason: str | None = field(default=None, repr=False)
+    preparation_timeout: Timeout | None = field(default=None, repr=False)
     finished: float | None = None
     activation_stack: AsyncExitStack | None = field(default=None, repr=False)
     persistence_connection: AsyncConnection | None = field(default=None, repr=False)

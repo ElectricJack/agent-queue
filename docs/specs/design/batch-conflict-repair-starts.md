@@ -61,3 +61,16 @@ may still have a process remains retained. Registration and launch completion
 must match the session id, instance token and launch start timestamp, so a late
 attempt cannot register or overwrite its replacement. Exact green and withdrawn
 publication authority retain their existing precedence.
+
+Explicit batch abort is terminal across daemon restarts. It records an
+`operator_decision` queue disposition even when no fixer or queue exists yet,
+withdraws the bound fixer and requests that its registered session stop. Late
+liveness or publication failures cannot replace that disposition with an automatic
+deferral or notify the withdrawn fixer. Exact green does not reactivate an aborted
+fixer. Restart recovery must reject a withdrawn fixer even if legacy deferred
+metadata remains, and allocation cannot dispatch or rebind that fixer to a successor.
+
+Automatic capacity, launch-retry, budget and split deferrals retain their existing
+finite recovery contract. They use aborted batch history to release the lane,
+but only their explicit deferred queue authority permits a `-resume-` successor;
+an operator abort removes that authority permanently.

@@ -18,6 +18,7 @@ DELIVERY_CODES = frozenset(
         "frontier_sibling_prerequisite_not_delivered",
         "frontier_prerequisite_not_on_default_branch",
         "prerequisite_not_on_default_branch",
+        "prerequisite_delivery",
         "frontier_epic_refresh_pending",
     }
 )

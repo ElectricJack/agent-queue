@@ -273,6 +273,7 @@ async def test_timed_out_pr_reader_retains_fetch_result_and_cleans_temp_store(
     async def fetch_origin(store, **kwargs):
         await git._afetch_origin_with_auth_to_url(
             store, source_url=(env.work.parent / "origin.git").as_uri(), token=None,
+            lock_held=kwargs.get("lock_held", False),
         )
 
     observe = observer._observe_store

@@ -220,11 +220,7 @@ def test_custom_tag_glob_and_every_chain_target_are_derived_from_flow():
     assert len(rules) == 5  # Unversioned staging has no tag pair.
     assert rules[-1]["conditions"]["ref_name"]["include"] == ["refs/tags/ship-*-*"]
     triggers = promotion_workflow_triggers(steps, default_branch="dev")
-    assert triggers[".github/workflows/tests.yml"]["pull_request"]["branches"] == [
-        "dev",
-        "staging",
-        "main",
-    ]
+    assert triggers[".github/workflows/tests.yml"]["pull_request"]["branches"] == ["dev"]
     steps[0]["type"] = "request"
     steps[0]["gate"]["approval"] = "operator"
     steps[0]["versioning"] = {
@@ -235,7 +231,7 @@ def test_custom_tag_glob_and_every_chain_target_are_derived_from_flow():
     assert len(promotion_rulesets(steps, default_branch="dev", app_id=APP)) == 7
 
 
-def test_shipped_ci_keeps_main_pr_and_batch_ci_and_adds_promotion_pushes():
+def test_shipped_ci_keeps_pr_and_batch_ci_without_automatic_promotion_pushes():
     document = yaml.safe_load((ROOT / ".github/workflows/tests.yml").read_text())
     events = document[True]  # YAML 1.1's spelling of the unquoted Actions 'on'.
     # This repository opted into dev → staging → main; the copyable generic
@@ -260,6 +256,32 @@ async def test_remote_reads_the_entire_chain_and_classifies_both_tag_rulesets():
     assert all(method in {"GET", "head"} for method, _ in remote.calls)
 
 
+@pytest.mark.parametrize("workflow", ["tests.yml", "promotion-ci.yaml"])
+async def test_remote_requires_dispatch_only_for_rerun_workflow(workflow):
+    steps = flow(two=True)
+    assert all("workflow_dispatch" not in events for events in
+               promotion_workflow_triggers(steps, default_branch="dev").values())
+    steps[1].update(ci="rerun", ci_workflow=workflow)
+    remote = Remote(steps)
+    path = ".github/workflows/" + workflow
+    document = yaml.safe_load(remote.files[path])
+    # An empty workflow_dispatch declaration is valid GitHub syntax.
+    document["on"]["workflow_dispatch"] = None
+    remote.files[path] = yaml.safe_dump(document).encode()
+    result = await validate_promotion_remote(
+        remote, BINDING, steps, default_branch="dev", app_id=APP
+    )
+    assert result["warnings"] == []
+    del document["on"]["workflow_dispatch"]
+    remote.files[path] = yaml.safe_dump(document).encode()
+    result = await validate_promotion_remote(
+        remote, BINDING, steps, default_branch="dev", app_id=APP
+    )
+    assert [(w["code"], w["workflow"], w["event"]) for w in result["warnings"]] == [
+        ("workflow_trigger_missing", path, "workflow_dispatch")
+    ]
+
+
 @pytest.mark.parametrize(
     "change,code",
     [
@@ -272,7 +294,6 @@ async def test_remote_reads_the_entire_chain_and_classifies_both_tag_rulesets():
         ("hidden-bypass", "ruleset_unverifiable"),
         ("missing-pr-target", "workflow_trigger_missing"),
         ("missing-audit-target", "workflow_trigger_missing"),
-        ("missing-promote-push", "workflow_trigger_missing"),
         ("missing-batch-push", "workflow_trigger_missing"),
         ("missing-workflow", "workflow_trigger_missing"),
         ("paths-filter", "workflow_trigger_missing"),
@@ -309,13 +330,11 @@ async def test_remote_fixture_reports_each_ruleset_and_trigger_gap(change, code)
         document = yaml.safe_load(remote.files[path])
         events = document["on"]
         if change == "missing-pr-target":
-            events["pull_request"]["branches"].remove("staging")
+            events["pull_request"]["branches"].remove("dev")
         elif change == "missing-audit-target":
             events["push"]["branches"].remove("main")
-        elif change in {"missing-promote-push", "missing-batch-push"}:
-            events["push"]["branches"].remove(
-                "aq/promote/**" if change == "missing-promote-push" else "aq/batches/**"
-            )
+        elif change == "missing-batch-push":
+            events["push"]["branches"].remove("aq/batches/**")
         elif change == "paths-filter":
             events["push"]["paths"] = ["src/**"]
         elif change == "missing-pr-type":
@@ -350,8 +369,8 @@ async def test_read_failures_are_unverifiable_not_missing_and_audit_rename_is_su
 @pytest.mark.parametrize(
     "filters,missing",
     [
-        ({"branches": ["**", "!staging"]}, ["staging"]),
-        ({"branches-ignore": ["main"]}, ["main"]),
+        ({"branches": ["**", "!dev"]}, ["dev"]),
+        ({"branches-ignore": ["dev"]}, ["dev"]),
         (
             {
                 "branches": [
@@ -359,12 +378,12 @@ async def test_read_failures_are_unverifiable_not_missing_and_audit_rename_is_su
                     "aq/parent/**",
                     "aq/integration/**",
                     "aq/batches/**",
-                    "aq/promote/*",
+                    "aq/backmerge/*",
                 ]
             },
-            ["aq/backmerge/**", "aq/promote/**"],
+            ["aq/backmerge/**"],
         ),
-        ({"branches": ["**", "!aq/promote/**", "aq/promote/**"]}, []),
+        ({"branches": ["**", "!aq/backmerge/**", "aq/backmerge/**"]}, []),
         ({"branches": ["**", "!aq/backmerge/**"]}, ["aq/backmerge/**"]),
     ],
 )

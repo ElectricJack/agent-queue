@@ -406,6 +406,18 @@ class TestParentRevision:
         assert _parent_revision('revision = "abc"') is None
 
 
+class TestAlembicConfig:
+    def test_percent_encoded_socket_dsn_survives_interpolation(self):
+        """A unix-socket DSN (``host=%2Ftmp%2F...``) must reach Alembic verbatim.
+
+        ``ConfigParser`` interpolates ``%``, so an unescaped value raises
+        "invalid interpolation syntax" — what Bazel's socket test Postgres hit.
+        """
+        dsn = "postgresql+asyncpg://aq@/doctor_db?host=%2Ftmp%2Fpg-abc%2Fsock"
+        cfg = db_checks_module._alembic_config(dsn)
+        assert cfg.get_main_option("sqlalchemy.url") == dsn
+
+
 class TestFix:
     async def test_fix_refuses_to_stamp_past_an_unfindable_orphan(self, ctx, tmp_path):
         """Stamping leaves the orphan's DDL in place — it needs its own opt-in."""

@@ -541,9 +541,9 @@ async def test_every_sender_renders_the_configured_public_origin():
 
     origin = "https://queue.tail1234.ts.net"
     # §6.1: an escalation links its own focus page, never a settings anchor.
-    assert all(f"<{origin}/escalations/esc-1>" in t for t in texts[:3])
-    assert texts[3].endswith(f"<{origin}/inbox>")
-    assert texts[4].endswith(f"{origin}/reviews/rev-1")
+    assert all(f"[Dashboard]({origin}/escalations/esc-1)" in t for t in texts[:3])
+    assert texts[3].endswith(f"[Dashboard]({origin}/inbox)")
+    assert texts[4].endswith(f"[Dashboard]({origin}/reviews/rev-1)")
     for text in texts:
         assert "8081" not in text and "localhost" not in text and "127.0.0.1" not in text
 

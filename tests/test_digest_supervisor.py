@@ -318,7 +318,7 @@ def test_the_authored_body_is_cut_to_the_digest_budget_and_carries_one_link():
     text = render_authored_digest(body, base_url=BASE_URL)
     assert len(text) <= 600
     assert text.count("https://") == 1
-    assert text.endswith(f"<{BASE_URL}/inbox>")
+    assert text.endswith(f"[Dashboard]({BASE_URL}/inbox)")
     # §3.1's glyph is added, and a mention an author typed cannot ping a role:
     # the bare ``@`` survives with a zero-width space, so no token Discord would
     # resolve as a role or user ping ever reaches the channel.
@@ -408,7 +408,7 @@ def test_the_quiet_line_is_the_specs_one_line_with_the_session_count():
     line = quiet_line(4, base_url=BASE_URL)
     assert QUIET_LINE.format(sessions=4) in line
     assert line.startswith("⏳ ")
-    assert line.endswith(f"<{BASE_URL}/inbox>")
+    assert line.endswith(f"[Dashboard]({BASE_URL}/inbox)")
     assert len(line) <= 600
 
 
@@ -716,7 +716,7 @@ async def test_the_supervisor_posts_before_the_deadline_and_the_fallback_stays_s
     assert len(transport.messages) == 1
 
 
-async def test_a_body_with_a_link_or_nothing_to_say_is_refused(db, env):
+async def test_a_body_with_a_link_is_accepted_but_an_empty_body_is_refused(db, env):
     handler, _db, config = env
     await complete(db, "t1")
     clock = Clock()
@@ -726,13 +726,13 @@ async def test_a_body_with_a_link_or_nothing_to_say_is_refused(db, env):
     with principal_context(service_principal()):
         await handler.execute("digest_request", {})
     with principal_context(supervisor_principal()):
+        empty = await handler.execute("digest_post", {"window": start, "body": "   "})
         linked = await handler.execute(
             "digest_post", {"window": start, "body": "Landed it <https://elsewhere.test>"}
         )
-        empty = await handler.execute("digest_post", {"window": start, "body": "   "})
-    assert linked["error_code"] == "digest.invalid"
+    assert linked["success"] is True
+    assert "[Link](https://elsewhere.test)" in linked["text"]
     assert empty["error_code"] == "digest.invalid"
-    assert (await only_window(db))["send_status"] == "pending"
 
 
 async def test_a_closed_window_refuses_a_second_post(db, env):
@@ -839,11 +839,11 @@ def test_authored_and_fallback_digest_keep_daily_human_reminder_within_budget():
                                       base_url=BASE_URL, facts=brief)
     assert "Waiting on you (12)" in authored
     assert authored.index("Needs you") < authored.index("Waiting on you")
-    assert len(authored) <= 600 and authored.endswith(f"<{BASE_URL}/inbox>")
-    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n<{BASE_URL}/inbox>"
+    assert len(authored) <= 600 and authored.endswith(f"[Dashboard]({BASE_URL}/inbox)")
+    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n[Dashboard]({BASE_URL}/inbox)"
     fallback = fallback_text(deterministic, brief)
     assert "Waiting on you (12)" in fallback
-    assert fallback.endswith(f"<{BASE_URL}/inbox>") and len(fallback) <= 600
+    assert fallback.endswith(f"[Dashboard]({BASE_URL}/inbox)") and len(fallback) <= 600
     assert "Waiting on you (12)" in fallback_text("", brief)
 
 

@@ -889,6 +889,28 @@ async def test_reply_enqueue_recovery_uses_original_full_text(env):
     assert outbox.rows[-1]["payload"]["text"].startswith("é")
 
 
+@pytest.mark.parametrize("command", ["supervisor_inbox_reply", "supervisor_inbox_say"])
+async def test_authored_external_link_reaches_reply_and_say_outboxes(env, command):
+    handler, db = env
+    first = await post(handler)
+    await db.bind_conversation_thread(first["conversation_id"], external_thread_id=THREAD, now=NOW)
+    values = {
+        "conversation_id": first["conversation_id"],
+        "text": "Read [the PR](https://github.com/org/repo/pull/42)",
+        "idempotency_key": "external-link",
+    }
+    if command == "supervisor_inbox_reply":
+        values["input_id"] = first["input_id"]
+    result = await handler.execute(command, values)
+    assert result["success"], result
+    payload = queued(handler.orchestrator.conversation_outbox, "reply")[-1]["payload"]
+    kind = "reply" if command.endswith("reply") else "say"
+    assert payload["text"] == (
+        "Read [the PR](https://github.com/org/repo/pull/42)"
+        + conversation_marker(f"conv-{kind}:{result['reply_message_id']}")
+    )
+
+
 async def test_reply_transcript_tail_and_message_sent_never_enqueue_delivery(env):
     from src.messages.delivery import MessageDeliveryEngine
 
