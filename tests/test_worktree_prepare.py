@@ -666,6 +666,69 @@ class TestRecoveryDoesNotDestroySlots:
         finally:
             await o.shutdown()
 
+    async def test_job_pins_never_abort_recovery(self, tmp_path, base_repo):
+        """smart-lantern-91: a pin left by a dead daemon's launch aborted
+        ``initialize`` with ``jobs.workspace_busy``. Startup settles that
+        launch first; a pin a live job still holds defers the cleanup, and
+        job snapshots are left to job retention."""
+        import time
+        import uuid
+
+        from sqlalchemy import insert, update
+
+        from src.database.tables import job_workspace_pins, jobs, workspaces
+
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=2)
+            dirs = {}
+            for ws_id, kind in (
+                ("ws-dead-launch", "project-repo"),
+                ("ws-queued-job", "project-repo"),
+                ("job-snapshot-x-0", "job-snapshot"),
+            ):
+                dirs[ws_id] = tmp_path / ws_id
+                await o.git.aworktree_add(str(base_repo), str(dirs[ws_id]), ref="main")
+                await o.db.create_workspace(
+                    Workspace(
+                        id=ws_id,
+                        project_id="p1",
+                        workspace_path=str(dirs[ws_id]),
+                        source_type=RepoSourceType.WORKTREE,
+                        kind_id=kind,
+                    )
+                )
+            now = time.time()
+            async with o.db._engine.begin() as conn:
+                for ws_id, state in (("ws-dead-launch", "starting"), ("ws-queued-job", "queued")):
+                    job_id = str(uuid.uuid4())
+                    await conn.execute(insert(jobs).values(
+                        id=job_id, project_id="p1", owner_kind="integration",
+                        owner_id="op", idempotency_key=job_id, request_hash="h",
+                        preset="test", preset_version=1, argv=["/bin/true"], contract={},
+                        workspace_id=ws_id, workspace_generation=0, input_mode="snapshot",
+                        job_class="shared", weight=1, priority_band=2, state=state,
+                        submitted_at=now, launch_at=now, queue_deadline=now + 1800,
+                        run_timeout=7200, runner_nonce=uuid.uuid4().hex,
+                    ))
+                    await conn.execute(insert(job_workspace_pins).values(
+                        job_id=job_id, workspace_id=ws_id, generation=0, created_at=now,
+                    ))
+                    await conn.execute(update(workspaces).where(
+                        workspaces.c.id == ws_id,
+                    ).values(job_pin_count=1))
+
+            await o._recover_stale_state()  # must not raise jobs.workspace_busy
+
+            assert await o.db.get_workspace("ws-dead-launch") is None
+            assert not dirs["ws-dead-launch"].exists()
+            assert await o.db.get_workspace("ws-queued-job") is not None
+            assert dirs["ws-queued-job"].exists()
+            assert await o.db.get_workspace("job-snapshot-x-0") is not None
+            assert dirs["job-snapshot-x-0"].exists()
+        finally:
+            await o.shutdown()
+
 
 # ──────────────── terminal failure never stashes in a slot (F4) ──────────
 

@@ -368,11 +368,6 @@ EMPTY_SEAL_PREFIX = "integration-empty:"
 _SWEEP_REQUEST = re.compile(r"integration-sweep:(?P<project>.+):(?P<sequence>[1-9][0-9]*)")
 
 
-def empty_seal_id(request_id: str) -> str:
-    """The ``batch_id`` an empty seal of *request_id* answers with."""
-    return EMPTY_SEAL_PREFIX + request_id
-
-
 def empty_seal_request(batch_id: str) -> tuple[str, str] | None:
     """``(project_id, request_id)`` an empty seal's id names, else ``None``."""
     if not batch_id.startswith(EMPTY_SEAL_PREFIX):

@@ -21,10 +21,12 @@ semantic bodies, without an LLM:
   ``task_route_apply``.  Spec: ``projects/agent-queue/specs/
   2026-09-28-mandatory-task-routing.md`` §6.3 and §6.7.
 
-This writes the fixture bundle only.  Two trees hold byte-identical copies of
-a reviewed recording and are not touched here — copy them across by hand after
-a rebuild. Existing fixture ``manifest.md`` digests are refreshed from the
-compiler output without changing their policy or review prose:
+Normal authoring builds record canonical inputs under
+``tests/fixtures/generated_sources/playbooks/`` and refresh their registered
+fixture, shipped and operator-importable copies. Draft ``--out`` builds remain
+isolated. Existing manifest digests are refreshed from the compiler output
+without changing policy or review prose. Assembly only projects these inputs;
+it never runs this compiler or creates an approval:
 
 * ``src/prompts/reviewed_playbooks/<id>/`` — what the daemon seeds into the
   vault and activates (``src/playbooks/required.py``).  Guarded by
@@ -46,6 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import runpy
 import sys
 from pathlib import Path
 from typing import Any
@@ -65,8 +68,11 @@ from src.playbooks.validation import (  # noqa: E402
 )
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
+INPUT_ROOT = REPO_ROOT / "tests/fixtures/generated_sources/playbooks"
 SHIPPED = {
-    "stuck-task-watch": "src/prompts/default_playbooks/stuck-task-watch.md",
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
+    "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
+    "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
@@ -138,7 +144,7 @@ class ProseIndex:
 def _recorded_semantic_body(playbook_id: str) -> dict[str, Any]:
     """Read executable semantics from the artifact that reviewers approved."""
     payload = json.loads(
-        (FIXTURE_ROOT / playbook_id / "artifact.json").read_text(encoding="utf-8")
+        (INPUT_ROOT / playbook_id / "definition.json").read_text(encoding="utf-8")
     )
     return {"rules": payload["rules"], "steps": payload["steps"]}
 
@@ -159,7 +165,7 @@ def _rebased_recorded_body(
         name: step for name, step in body["steps"].items() if step["rule"] not in retired_rules
     }
     template_lines = (
-        (FIXTURE_ROOT / template_id / "source.md").read_text(encoding="utf-8").splitlines()
+        (INPUT_ROOT / template_id / "source.md").read_text(encoding="utf-8").splitlines()
     )
     headings = {
         line.strip(): number
@@ -303,6 +309,12 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id == "fast-smooth-train":
+        ref = _source_ref_for_heading(source, "## Rule: observe-policy")
+        return {"rules": [{"id": "observe-policy", "name": "observe-policy",
+            "trigger": {"event_type": "integration.readiness_changed"},
+            "entry_step": "completed", "source": ref}],
+            "steps": {"completed": _terminal("observe-policy", "completed", ref)}}
     if playbook_id in {"promotion-request", "promotion-continuous"}:
         return _promotion_policy_body(source)
     if playbook_id == "object-loop":
@@ -313,8 +325,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _default_pipeline_body(source)
     if playbook_id == "default-assignment-routing":
         return _default_assignment_routing_body(source)
-    if playbook_id == "stuck-task-watch":
-        return _stuck_task_watch_body(source)
+    if playbook_id in {"stuck-task-watch", "stuck-task-watch-reminder"}:
+        return _recorded_semantic_body(playbook_id)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
     if playbook_id in ("agent-queue-root-train", "root-train"):
@@ -1246,49 +1258,6 @@ def _morning_report_body(source: PlaybookSource) -> dict[str, Any]:
     }
 
 
-def _stuck_task_watch_body(source: PlaybookSource) -> dict[str, Any]:
-    """Read each tick and send a summary only when the result is nonempty."""
-    index = ProseIndex(source, source.vault_path)
-    rule = "watch-stalled-work"
-    observe, choose, notify, done, failed = (
-        f"{rule}--{suffix}" for suffix in ("observe", "choose", "notify", "done", "failed")
-    )
-    def lit(value):
-        return {"type": "literal", "value": value}
-    return {
-        "rules": [{
-            "id": rule, "name": rule, "trigger": {"event_type": "timer.10m"},
-            "entry_step": observe, "source": index.rule_ref(rule),
-        }],
-        "steps": {
-            observe: {
-                "type": "command", "rule": rule, "title": "observe",
-                "source": index.step_ref(rule, 1), "command": "get_stuck_tasks",
-                "inputs": {}, "save_result_as": "watch",
-                "transitions": {"read": choose, "rejected": failed, "runtime_error": failed},
-            },
-            choose: {
-                "type": "decision", "rule": rule, "title": "has stuck tasks",
-                "source": index.step_ref(rule, 2),
-                "cases": [{"when": {"type": "exists", "mode": "truthy",
-                           "value": {"type": "binding_ref", "binding": "watch", "path": "stuck"}},
-                           "goto": notify}], "default": done,
-            },
-            notify: {
-                "type": "command", "rule": rule, "title": "notify global supervisor",
-                "source": index.step_ref(rule, 3), "command": "message_send",
-                "inputs": {"to_kind": lit("session"), "to_id": lit("supervisor-global"),
-                           "from_kind": lit("system"), "from_id": lit("stuck-task-watch"),
-                           "subject": lit("Stuck tasks"),
-                           "body": {"type": "binding_ref", "binding": "watch", "path": "summary"}},
-                "transitions": {"queued": done, "rejected": failed, "runtime_error": failed},
-            },
-            done: _terminal(rule, "completed", index.step_ref(rule, None)),
-            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
-        },
-    }
-
-
 def _supervisor_digest_body(source: PlaybookSource) -> dict[str, Any]:
     """One optional minute reconciliation command, with no model or worker step.
 
@@ -1589,8 +1558,11 @@ def main() -> int:
         result = build(playbook_id, args.source)
         directory = Path(args.out).resolve() if args.out else FIXTURE_ROOT / playbook_id
         directory.mkdir(parents=True, exist_ok=True)
-        seed_manifest = FIXTURE_ROOT / playbook_id / "manifest.md"
-        if args.out and not (directory / "manifest.md").exists() and seed_manifest.exists():
+        seed_manifest = INPUT_ROOT / playbook_id / "manifest.md"
+        if (
+            not args.check and seed_manifest.exists()
+            and (not args.out or not (directory / "manifest.md").exists())
+        ):
             (directory / "manifest.md").write_bytes(seed_manifest.read_bytes())
         files: dict[Path, bytes] = {
             directory / "source.md": (REPO_ROOT / result["rel_path"]).read_bytes(),
@@ -1657,9 +1629,26 @@ def main() -> int:
             else:
                 path.write_bytes(payload)
                 print(f"  wrote {rel}")
+        if not args.check and not args.out and artifact is not None:
+            # Authoring records new compiler output explicitly. Assembly reads
+            # these inputs and never compiles or silently replaces policy.
+            inputs = INPUT_ROOT / playbook_id
+            inputs.mkdir(parents=True, exist_ok=True)
+            for path, payload in files.items():
+                if path.name == "artifact.sha256":
+                    continue
+                name = path.name
+                if name == "artifact.json":
+                    name = "definition.json"
+                    payload = (json.dumps(json.loads(payload), indent=2, ensure_ascii=False) + "\n").encode()
+                (inputs / name).write_bytes(payload)
     if args.check and drift:
         print(f"\n{drift} fixture file(s) differ from a fresh build")
         return 1
+    if not args.check and not args.out:
+        projector = runpy.run_path(str(REPO_ROOT / "scripts/generate-recorded-artifacts.py"))
+        for path, payload in projector["outputs"](REPO_ROOT).items():
+            (REPO_ROOT / path).write_bytes(payload)
     return 0
 
 

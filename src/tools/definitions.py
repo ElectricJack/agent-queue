@@ -7,10 +7,16 @@ These are pure data — no logic.
 from __future__ import annotations
 
 from src.models import TaskStatus
+# Pure-data schema modules: importing the command mixins here would pull the
+# doctor registry and the database into every CLI start.
+from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
+from src.commands.playbook_state_schemas import STATE_SCHEMAS
 
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -47,6 +53,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -846,6 +853,25 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "project_relocate",
+        "description": (
+            "Preview or apply an atomic project storage relocation. Requires paused admission, "
+            "disabled/drained train, stopped writers and current required CI. Reverse relocation "
+            "uses a fresh destination containing current work. Local operator only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "destination": {"type": "string"},
+                "owner_inventory": {"type": "object"},
+                "expected_digest": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "destination", "owner_inventory"],
+        },
     },
     {
         "name": "repair_repository_checkout",
@@ -2548,7 +2574,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Restart a named supervisor through AQ with current profile permissions, model and effort. "
             "Starts a fresh conversation by default; --resume resumes its prior conversation. "
-            "Requires global admin."
+            "Requires a local operator or live supervisor within the target project scope."
         ),
         "input_schema": {
             "type": "object",
@@ -4522,10 +4548,21 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "playbook_commands",
         "description": (
-            "List every registered Playbook V2 command with its title, summary, "
-            "documentation URL, and typed parameter JSON Schema."
+            "Inspect a bounded page of playbook command contracts, including denied and "
+            "unavailable commands, schemas, caller requirements and execution metadata."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}, "prefix": {"type": "string"},
+                "origin": {"type": "string"}, "plugin": {"type": "string"},
+                "schema_quality": {"type": "string"}, "result_mode": {"type": "string"},
+                "available": {"type": "boolean"}, "denied": {"type": "boolean"},
+                "include_schema": {"type": "boolean", "default": True},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            },
+        },
     },
     {
         "name": "playbook_v2_graph",
@@ -5533,6 +5570,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "branch": {
                     "type": "string",
                     "description": "Branch name for this task's work (optional).",
+                },
+                "repair_batch": {
+                    "type": "string",
+                    "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch.",
                 },
                 "pr_url": {"type": "string", "description": "Pull-request URL (optional)."},
                 "work_dir": {
@@ -8470,6 +8511,17 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_batch_fix",
+    "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"action": {"type": "string", "enum": ["status", "push", "rebind"],
+                                   "default": "status"}},
+    },
+})
+
+
 _COLLABORATION_SCOPE = {
     "project_id": {"type": "string"},
     "task_id": {"type": "string"},
@@ -8627,6 +8679,11 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
 # The git-first train's per-tick dispatch (integration.git_first: active).
 # Daemon-only: excluded from MCP, the API and the CLI; the service supplies its clock.
 _FALLBACK_INPUT_SCHEMAS["integration_train_tick"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
+_FALLBACK_INPUT_SCHEMAS["integration_reconcile_git_truth"] = {
     "type": "object",
     "properties": {"now": {"type": ["number", "null"]}},
     "additionalProperties": False,
@@ -9352,6 +9409,38 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+# Shared observation schemas feed every descriptor projection; no playbook registration.
+
+_FALLBACK_INPUT_SCHEMAS.update({"doctor_catalog": CATALOG_SCHEMA, "doctor_run": RUN_SCHEMA,
+                               "observation_snapshot_cleanup": CATALOG_SCHEMA})
+
+# Preserve established transport arguments and expose only the shared paging
+# additions. Typed playbook arguments use the same schema source.
+from src.observations.models import SnapshotArgs as _SnapshotArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in {"list_projects", "list_tasks", "get_stuck_tasks"}:
+        _definition["input_schema"]["properties"].update(
+            _SnapshotArgs.model_json_schema()["properties"]
+        )
+
+_FALLBACK_INPUT_SCHEMAS.update(STATE_SCHEMAS)
+
+# Data-only inputs; run, owner, artifact and program come from the live invocation.
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "playbook_script_run",
+    "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "arguments": {"type": "array", "items": {"type": "string"}, "maxItems": 256},
+            "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+            "stdin_base64": {"type": "string", "maxLength": 87384},
+        },
+        "additionalProperties": False,
+    },
+})
+
 from src.commands.contracts.builtin import (  # noqa: E402
     TaskBatchUpdateArgs as _TaskBatchUpdateArgs,
     EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
@@ -9403,3 +9492,13 @@ for _name, _args in _ASK_ARGS.items():
         _ALL_TOOL_DEFINITIONS.append({"name": _name,
             "description": "Scoped human request communication and decision evidence.",
             "input_schema": _args.model_json_schema()})
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_continue_close",
+    "description": "Continue the parent merge belonging to your held task and session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["operation_id"],
+        "properties": {"operation_id": {"type": "string"}},
+    },
+})
