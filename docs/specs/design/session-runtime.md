@@ -117,11 +117,53 @@ worktree, prepared before launch per [worktree-execution](worktree-execution.md)
 2. Agent runs `aq session drain-ack`. The reconciler sees the ack, kills the session
    (instance-token-fenced), and marks the row `stopped`.
 
+A pool worker's ack also writes `desired_state=stopped`, and its teardown waits until the held
+task is closed. One task can never be closed: a delegate of an integration operation that no
+longer needs it (the operation ended, or the delegate's stage expired and the operation moved on).
+Its close is refused with a retirement record and `next_step: aq session drain-ack`. When the
+agent's own ack is recorded and durable integration state proves that retirement, the reconciler
+stops the worker through the ordinary pool teardown instead of waiting. The proof follows
+`get_retired_integration_writer`, and any seat a running operation, including a `human_required`
+one, could still hand back is not retired. The task stays unclosed and an attached integration
+owner keeps the stopped session's binding for owner recovery (design: hierarchical integration
+trains, pull-model writer handoff).
+
+The other wait with no end is a close that already committed. `aq task close` makes the task
+terminal before it hands the branch back, saves the completion record and releases the claim. A
+daemon restart in between leaves the worker bound to a finished task, and its attached branch owner
+keeps the displaced-claim release from detaching it. When the agent's own ack is recorded and
+`get_settled_pool_claim` proves the claim settled, the reconciler stops the worker through the same
+teardown. The proof has three parts: the task is `COMPLETED` or `FAILED` with no holder, under
+this session's own claim epoch; a completion record or a `code`/`noop` delivery receipt was written
+after this session's attempt began; and no running integration operation owns the task in any seat.
+Before the record is saved or delivery writes a receipt, the accepted-close marker counts instead.
+The terminal transition that accepts a close writes `accepted_close` (`{completion_id, session_id,
+claim_epoch}`) in its own transaction, and the marker proves the close when it names this session
+and its last claim epoch. `close_session_id` never counts: `aq task close` writes it before the
+close is accepted, so it outlives a refused close. The reconciler also waits while a completion of
+the task still holds its control lock in this daemon, so an ack after a timed-out close never stops
+the worker mid-handoff.
+The task's status and completion stay as they are. The owner keeps the stopped session's binding,
+and owner recovery releases it after preserving unpushed work.
+
+The completion record itself survives that window. Before the transition, `aq task close` drafts
+the record as `pending_completion` task metadata, bound to the attempt's identity: completion id,
+closing session and claim epoch. Every status write that accepts the close stores the same identity
+as `accepted_close` metadata in its own transaction. That covers the plain terminal and retry
+transitions, the verification reopen, review approval, repair-delegate completion and managed-parent
+suspension or completion. At daemon start, before stale-state recovery moves any task, a draft is
+saved under its own id (idempotently) only when `accepted_close` names it exactly and the task is
+still on that claim epoch. Every other draft is dropped. The task's status is never evidence: a task
+requeued `READY`, redefined, failed or cancelled by another path has no matching identity, so no
+record or pass is invented. A refused or failed close deletes its own draft unless its transition
+had committed.
+
 **Process exit with the task still IN_PROGRESS is a failure signal**, routed through the
 exit classifier:
 
 | Evidence | Verdict |
 |---|---|
+| Pool session with persisted `desired_state=stopped` | Normal drain, even with an open task; never quarantine the pool for this requested exit |
 | Rate-limit text in the final pane capture | Task → PAUSED (`rate_limit`) with provider cooldown; session `sleep_reason=rate_limit` |
 | Rapid crash (death within `restart_window` of start) | Restart with backoff, `--resume <session_key>` when the harness supports it; after `max_restarts` inside `restart_window` → quarantine |
 | Task already closed, session lingering | Normal drain path (kill, `stopped`) |
@@ -130,7 +172,34 @@ exit classifier:
 Restart counters (`restarts`) and `quarantined_at` are **persisted on the session row**, so
 the ladder survives daemon restarts.
 
+After observing a dead pool process and capturing its final output, the reconciler
+rereads the session before classifying it. An operator kill can persist stop intent
+while those probes await; an earlier live-session snapshot must not turn that requested
+stop into a rapid crash. A session already stopped or removed, or replaced by another
+instance during the probes, is not classified from that stale observation.
+
 ### 4.2 Named sessions
+
+The global supervisor's terminal always has system scope (`project_id = NULL`),
+including explicit starts and resumes from the agent flock. Its launch form shows
+access to all projects and has no project selector. A caller-supplied project is
+ignored for the canonical global supervisor before project validation or live-session
+reuse; worker terminals retain their optional project attachment and scope checks.
+The supervisor's launch/resume instructions explicitly describe its global authority;
+reconnecting a live terminal reuses that exact session and never asks for a project.
+
+Supervisor idle sleep requires both terminal inactivity and no outstanding supervision
+work. The global supervisor checks all projects; a project supervisor checks its own
+project. Outstanding work includes non-completed, non-archived tasks (including failed,
+blocked, paused, or waiting tasks), open gates, active integration batches, and live
+task-bearing sessions. The global check also includes live playbook runs. Archived
+projects and task history do not keep a supervisor awake, but a live task-bearing
+session remains a responsibility even if its project was archived. Idle pool workers
+without a task do not count. Failure to read this state defers automatic sleep.
+This check must use bounded existence queries and must not fabricate terminal activity
+or mark the message transport busy: a quiet supervisor can still accept messages.
+Once the outstanding work clears, the existing inactivity timeout applies. Other named
+sessions retain their profile-based idle policy.
 
 Named sessions (`lifecycle: named` on the profile — the supervisor, warm pool workers) are
 persistent interactive CLIs. Work arrives as nudges and inbox injections (delivery policy:
@@ -147,6 +216,14 @@ persistent interactive CLIs. Work arrives as nudges and inbox injections (delive
 The reconciler builds the **desired set** of named sessions each tick from profiles with
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
+
+Wait maintenance, including the startup legacy bridge and scheduler wait audit, runs
+in one background task. A cycle waits at most five seconds when starting that task;
+later cycles continue without queueing another pass while it runs. Dead-process
+classification, workspace release and pool starts must continue during a slow pass.
+Shutdown cancels and awaits the background task; durable bridge receipts permit
+restart recovery. Held or refused project bridge passes retry after five minutes,
+while completed project receipts suppress repeat migration.
 
 **The state machine is enforced** (2026-08-27). `update_session` validates every write to
 `state` against the transition table in `session_queries.py` and raises
@@ -168,6 +245,15 @@ drain or a terminal verdict, an operator via `aq session sleep | wake | kill`. D
 writes both fields at once, so a drained session stops being wanted at the moment it stops
 running. **Waking is always explicit**; nothing infers it from activity.
 
+An explicit `desired_state=sleeping` on a starting or running named session stops its
+process on the next reconciler tick, independently of idle timeout, outstanding work,
+or pending input submission. A failed stop leaves the runtime state live for retry.
+Recording sleep intent or transitioning to sleeping cancels that session instance's
+active cron schedules and archives undelivered scheduled prompts in the same transaction.
+An explicit wake received during the stop remains wanted and can start a successor.
+Every wake resolves the current profile's intelligence class and model, even when
+resuming the previous conversation; historical session settings are not launch settings.
+
 Starting is delegated to the session lens rather than reimplemented in the reconciler
 (the lens owns token minting, the global-supervisor cases and work_dir resolution).
 Failed starts spend the stall ladder's `max_restarts` budget and end in `quarantined`, so
@@ -180,20 +266,260 @@ the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 ### 4.3 Heartbeats, leases, and the stall ladder
 
+Idle sessions stop on their second identical preparation/admission blocker under the
+session cooldown guard (worker-pools §4); retained preparations preserve their
+ownership and use the separate quarantine budget below. An idle session drains
+at two failures and leaves its workspace enabled; it never reaches the third
+failure needed for workspace quarantine.
+
+Pool claim preparation has a separate persisted refusal budget. Three consecutive
+preparation failures with the same reason, in the same session, request a drain and
+disable that session's workspace. Empty-frontier polls and admission waits neither
+spend nor clear this budget; a different failure starts a new streak, and successful
+activation clears it. The count survives daemon restarts. The write is fenced by
+the session instance and preparation epoch, and cannot affect an active claim.
+Before permanent preparation cleanup, the same session row retains one bounded,
+scrubbed `failed_preparation` snapshot: selected task and creation time, designated
+repository/ref, origin identity and creation generation, checkpoint version and
+generation, session instance, preparation start and claim epoch, failure stage/reason,
+and observation time. Origin/checkpoint fields describe the persisted evidence at
+observation; missing evidence stays null. No exception locals, credentials, repository
+URLs or arbitrary metadata are copied. This is a last observation, not a journal.
+It survives binding release, cooldown, drain and daemon restart and appears in existing
+session diagnostics and failed claim responses. Successful activation clears it.
+Its write requires the exact still-preparing session/task/instance/epoch binding;
+stale, active or successor preparations cannot write it. The snapshot never supplies
+claim authority, creates a claim file, enables task mutations or authorizes recovery.
+The response is `drain_requested` and instructs the worker to run `aq session
+drain-ack` and exit. Reconciliation stops the exact session through normal guarded
+pool teardown even if the worker ignores the response. Attached branch ownership
+and its claim/workspace bindings remain available for recovery; quarantining a
+workspace never deletes its checkout or removes an index lock. An operator repairs
+and re-enables it after proving the retained work safe.
+
+Both operator stall sweeps report live pool workers with zero activated claims
+after 15 minutes, even when repeated claim attempts keep `last_activity` fresh.
+Idle pools without matching READY work and without preparation failures are normal
+standby and are excluded. Preparations in flight remain governed by their own
+timeout, rather than this report.
+
+The orphan sweep also checks assigned `IN_PROGRESS` tasks with **no session row**.
+After both the task revision and its assigned agent's task heartbeat are older
+than `sessions.lease_ttl_seconds` (at least 120 seconds for launch grace), a task
+with no launch in flight and no live session for that agent is recoverable.
+An agent's IDLE state alone is never proof that its process stopped. If an old
+attempt still identifies a session, the provider must confirm that exact instance
+stopped. Unknown liveness, operator holds, containers, daemon-authored work,
+job-pinned workspaces and integration-owned recovery are excluded.
+
+Recovery runs through `CommandHandler`, under the task control lock. It preserves
+any retained checkout with the existing Git checkpoint/restore path before an
+atomic, revalidated release of its workspace and assignment. The task keeps its
+branch, route and workspace preference, spends one worker retry and returns to
+READY. An exhausted budget becomes FAILED for the existing deduplicated supervisor
+incident path. A changed task, heartbeat, session or workspace cancels the write;
+an unproven integration attachment or checkpoint failure retains all resources.
+Repeated sweeps cannot recover the same task revision twice. The supervisor's
+`scripts/operator-checks/stall-sweep.py` independently reports `ORPHANED` for stale
+assigned tasks absent from a successful, complete live-session listing; a failed
+listing is an incomplete check, never evidence that sessions are absent.
+
+For an `IN_PROGRESS` train/hierarchy task whose exact pool writer has stopped,
+the orphan sweep runs the existing fenced owner recovery through `CommandHandler`
+before the ordinary `session_not_live` fallback. It verifies the task, session
+instance, claim epoch and workspace binding under the task control lock. Recovery
+requires fresh provider confirmation of the stopped instance, preserves unpublished
+and dirty work, then releases the owner and retained claim to READY. A refusal
+keeps the task and its resources for retry; live writers, reused bindings, operator
+holds, pinned jobs and integration-owned delegates are not automatically requeued.
+`integration.owner_recovery_sweep: false` disables this automatic owner recovery.
+
+`aq integration release-owner` previews by default; `--apply` explicitly requests
+the same preservation and release. Command callers must pass `dry_run: false` to
+apply. Preview performs no publication, detach, release or audit writes.
+
+Preservation requires a local task ref and its live, materialized
+`task_branch_origins` record. Each candidate must descend from the recorded filing
+base; every unpublished
+commit must have a committer timestamp at or after the writer's task-session
+attempt start (falling back to `claim_phase_at`, or `started_at` for a task
+session, when no attempt exists). A slot snapshot or HEAD additionally requires
+its sentinel to match task, branch, project and workspace, with an assignment
+at or after that claim. A missing local task ref
+is reported as `skip_preserve` in preview and never replaced with a slot HEAD.
+Unproven unpublished work refuses release as `unproven_task_work`, without
+snapshotting, publishing or detaching; an unrelated detached slot is skipped.
+When a detached slot is skipped because its sentinel does not match or its task
+ref is absent, retain its checkout and disable the released workspace, even if
+clean, so allocation cannot reset unknown commits. Preview reports that retention.
+
+`aq integration restore-task-origin` is an operator/live project supervisor
+control for a contaminated task branch. Preview is the default. Apply requires
+the exact task origin id, released owner fence token, expected remote head and
+a reason. Under the project admission lock and repository mutex, revalidate the
+task/origin/ref binding and released fence, exclude live task writers, locked
+workspaces, checked-out branches and reserved publications, then restore only the
+recorded base SHA with an exact remote lease. Never accept a caller-supplied
+destination or replacement commit. Retain the displaced remote head on an
+immutable recovery ref before rewriting; audit the principal, reason, origin,
+before/after OIDs and fresh fence.
+An existing local ref must equal the observed remote or the origin; repair it
+with an exact compare-and-swap so a retry cannot republish the contamination.
+Do not reset or clean any checkout. A moved remote, origin or fence refuses the
+write; preview leaves refs, fence and audit unchanged.
+
+Claim release also clears the exact old assignment when the task has already
+returned to READY: it matches the releasing session's agent and claim epoch,
+leaving a successor's assignment untouched. An attached integration owner still
+vetoes release. For an assignment stranded after its sessions stopped, the existing
+`aq task recover --decision release --operator-release --expected-hold-at …`
+control clears it while releasing the exact recovery hold, provided the incident's
+worker is confirmed stopped by its provider, its instance and claim generation
+still match, all sessions for that task and agent are stopped, and no integration
+owner remains. It preserves task status, retry budgets, workspaces and other
+frontier guards; releasing an integration-owned hold never clears its assignment.
+
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.
 
+An active pool holder whose native transcript explicitly ends its current turn
+(`end_turn` for Claude, `task_complete` for Codex) uses that transcript's quiet
+clock instead of tmux repaints for the stall ladder and the
+`sessions.idle_claim_timeout_seconds` backstop (15 minutes by default, 0 disables).
+The independent `agents.stuck_timeout_seconds` bound remains honored when enabled.
+New input, tool
+activity, a new turn, partial/unreadable evidence or a pre-claim completion
+invalidates the observation. Recent task heartbeats and wait-result consumption
+give fresh grace; live questions and bounded durable waits retain their existing
+exemptions. Recovery still stops the exact process before releasing resources,
+preserves integration ownership and uses the task's bounded failure streak.
+An unregistered instruction to wait for integration paperwork grants no exemption.
+
+Supervisors keep workers executing or closing their work while the integration
+owner handles delivery controls. With the train off, train controls are not a
+worker publication/close prerequisite. Actual command refusals and explicit
+human holds remain binding; a necessary execution question gets concrete
+guidance or one bounded durable wait, never an indefinite idle hold.
+
 Stalled tasks climb a ladder, each rung a typed event:
 
-1. **Nudge** (`task.stalled` → `task.nudged`): inject *"no progress for N min: report
-   status, finish, or `aq ask`"* via the provider's nudge pipeline.
+1. **Nudge** (`task.stalled` → `task.nudged`): inject *"No progress for N min on task
+   `<id>`: `aq task close`, or keep working."* via the provider's nudge pipeline
+   (`stall_reminder` in `src/sessions/reconciler.py`). The reminder names the task id once
+   and stays within two rows of an 80-column pane: a submit is confirmed only by finding
+   the exact text in the composer, and Claude Code 2.1.286 in an 80x24 pool pane shows only
+   the last 7 rows of taller input. The previous wording (four inline commands, the id
+   three times) ran to 9 rows for a 72-character repair id and could never be delivered.
+   Agent-question replay treats every wording the daemon has typed as machine input
+   (`_MACHINE_STALL` in `src/sessions/questions.py`), not a reply.
 2. **Backoff and repeat** up to 3 nudges.
 3. **Interrupt + restart** (`task.restarted`): C-c, kill, relaunch with `--resume` so
    conversation context survives.
 4. **Quarantine** (`task.quarantined`): session `quarantined_at` set, task
    `needs_attention`. No further automatic action; a human (or the supervisor agent)
    decides.
+
+A session whose CLI is parked on its provider's usage-limit screen is not climbed at all:
+before each rung the ladder checks the pane's tail against a strict set of the CLIs' own
+blocking limit messages and, on a match, stops the process and applies the exit path's
+`rate_limit` verdict instead (provider-failover D13, `src/sessions/usage_limit_screen.py`;
+`provider_failover.mode: enforce` only).
+
+**A composer AQ may not touch.** A nudge the composer guard defers is not a failed
+attempt, so it spends no rung and no backoff — unless the refusal says *no person is
+typing*. The refusal carries a structured `NudgeReason` (`src/sessions/provider.py`) rather
+than prose to be parsed:
+
+| Reason | Producer's evidence | Ladder |
+|---|---|---|
+| `draft` | the composer was read and holds text | holds — a person is writing |
+| `terminal_busy` | copy mode, an attached client, or no known input line | holds |
+| `recent_input` | keys were accepted within the quiet window | holds |
+| `stale_frame` | OpenCode's box at its exact idle geometry holds text on the rows *beside* the cursor, where typed input cannot be | escalates |
+| `unreadable` | tmux refused the read, the pane moved between the two reads, or AQ's own pending injection could not be identified or cleared | escalates |
+
+A refusal of either escalating kind is then put to evidence **independent of the
+composer**, and the answer is three-valued (`StalledDeferral`, `_deferral_verdict`):
+
+| Verdict | Evidence | What the ladder does |
+|---|---|---|
+| `hold` | a person is at the composer, or the harness's own record shows the conversation moving within the lease | nothing spent, nothing announced — as before |
+| `report` | no record exists to ask, or the one named cannot be resolved or stat'ed | nothing spent; **announced** — a WARNING and `task.stalled` with `evidence="unverified"`, quoting how long the pane has shown the same thing |
+| `escalate` | that record is older than the lease (`harness_progress`: the reader-resolved transcript's mtime, or a CLI's own store) | the rung is spent with nothing typed: `task.stalled` carries `deferred_reason`, no `task.nudged` follows, and the existing backoff → restart/quarantine (or pool termination) path runs |
+
+**Unknown is not stalled, and it is not silent either.** `hold`-worthy evidence is the
+progress record: a person typing into a composer writes nothing there. When there *is* no
+such record — a harness with neither a transcript reader nor a store of its own, or a file
+that cannot be resolved or stat'ed — that is unknown, and unknown must never
+release a claim. Such a stall is **announced** instead: a WARNING naming session, task,
+idle time and reason, plus `task.stalled` with `evidence="unverified"`, rate-limited to
+one announcement per `_STALL_REPORT_INTERVAL_SECONDS` (900 s) per holder instance. That
+announcement is the part that was actually missing — `vivid-quest-44.3` produced **zero**
+`task.stalled` events while holding its task through 116 identical refusals over 78
+minutes.
+
+**Nothing about the terminal can upgrade that answer.** A pane that has stopped moving is
+what an agent *between two writes* looks like as much as what a wedged TUI looks like — one
+long tool leaves the composer untouched for minutes — so the screen is read
+(`peek` on the pane tail, hashed: the whole screen, never the composer box, because the
+composer is what the refusal already described) and **quoted, never spent**. Digests are
+keyed by `(session id, instance token)`, so a relaunched session inherits nothing from its
+predecessor's observations; the clock is the time the screen last *changed*, not the time it
+was last sampled, and a failed read leaves the previous reading untouched rather than
+re-stamping it. Both caches are pruned by age.
+
+#### 4.3.1 A pane is not a clock: the wedged-turn check
+
+The gate the ladder starts from is tmux's `window_activity`, and a TUI can keep it fresh
+forever. OpenCode repaints its in-turn spinner indefinitely, so a session whose model was
+never loaded looks busy for as long as the pane lives: `crisp-horizon-90.10` (2026-10-03,
+AQ session `6fbd60ca`) held its task for 42 minutes after its last store row — a
+byte-identical pane, `ollama /api/ps` empty, **zero** nudge attempts, `task.stalled` events
+or restarts — because the gate below the ladder never opened.
+
+So a stall may also be declared from two clocks AQ does not control
+(`_wedged_mid_turn`, `src/sessions/reconciler.py`), and **all four** readings must hold:
+
+| Reading | Source | Why it is required |
+|---|---|---|
+| the CLI's own store has written nothing for this session for longer than the lease | `src/sessions/opencode_store.py`, scoped by worktree directory + `max(started_at, claim_phase_at)` | progress that is not terminal-derived; a pane-derived guess is not evidence |
+| that store reports no tool call still `pending`/`running` | the same read | silence is what one long `bash` looks like from outside |
+| the provider reports nothing resident and nothing in flight | `GET <local endpoint>/api/ps` via `src/llm/providers/local_probe.py` | "not writing" and "not generating" are different facts, and only the second is a wedge |
+| the pane claimed otherwise | the call site — the check runs only where the ordinary idle test would have skipped the session | a genuinely quiet session reaches the ladder by its own path, unchanged |
+
+The bound is `sessions.lease_ttl_seconds`, the same one every other no-progress bound uses.
+Nothing else is new state: the check feeds the ladder the store's clock as the session's
+`last`, and every rung below behaves exactly as it does for any other stall — composer guard
+included, so a person at the keyboard still holds it. `task.stalled` carries
+`evidence="store_stalled"`, naming what AQ measured rather than what it infers, so an
+operator (and the digest) can tell a stall declared from the store and the provider from a
+pane-derived guess; `evidence="unverified"` keeps its meaning of *announced, nothing spent*.
+
+**Every unknown holds the ladder.** No store for the harness, no rows at all for this
+session (nothing there that could have stopped), an unreadable store, a store scoped to
+nothing, a provider key AQ cannot map to a local endpoint, an endpoint that is down or is not
+Ollama, and anything resident at all — including a model merely held warm by `keep_alive`,
+which is not proof of work and therefore never acted on. A read is cached per holder
+instance for `_WEDGE_SCAN_SECONDS` (60 s), because a wedged TUI repaints forever and the
+store is tens of gigabytes; a failed read is cached like a successful one, so an unreadable
+store cannot become a read on every tick either.
+
+**The store is read in place, never copied** (~64 GB on the diagnosed box): a read-only URI
+connection plus `PRAGMA query_only` and aggregate `MAX(time_updated)` reads over indexed
+`session_id` columns — no dump, no `VACUUM`, no lock, no bytes moved
+(`tests/test_sqlite_removal.py` keeps the SQLite ratchet's foreign-store allowance honest, and
+`tests/test_session_opencode_liveness.py` covers the read).
+
+**R7, closed.** `harness_progress` reads that store for a harness whose CLI keeps one,
+resolved through `runs_cli`, so an `opencode` holder's refused composer now escalates on its
+own record instead of being announced as unmeasurable. Neither opencode harness declares
+`session_id_flag`, and none is needed: the store is scoped by worktree directory and time,
+which is how `src/sessions/native_questions.py` has always matched a session's dialogs.
+
+Named/supervisor sessions, durable waits and instance-token fencing are unchanged: they are
+filtered before the ladder, and every rung still addresses the session by its exact
+instance.
 
 `stuck_timeout_seconds` (config `agents.stuck_timeout_seconds`) stays as the final backstop
 above the ladder, applied by the reconciler rather than `asyncio.wait_for`.
@@ -227,6 +553,64 @@ ours (Codex has no `--session-id`), the reader also reports it via
 `discover_session_key`, and the watcher writes it onto the row: that is the only place the
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
+
+Claude content UUIDs identify transcript events, while `message.id` identifies an API
+call. Usage accounting keys the provider, transcript conversation and API call separately
+from displayed content. Missing API IDs fall back to the event UUID. A durable per-call
+record retains the maximum observed value of each counter (uncached input, output, cache
+reads and cache writes); later partial/final observations append only positive increases
+to the ledger. Lower, missing or repeated counters cannot recharge a call. The progress
+record and ledger delta commit together, so retries, concurrent watchers and replay across
+AQ session incarnations are idempotent. Attribution stays with the first recorded usage.
+Accounting failures leave the byte checkpoint retryable. On adoption, consumed Claude
+records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
+or deleting the original rows. Historical inflation requires a separate evidenced
+correction; it is never repaired implicitly during ingest.
+
+For retention, calls attributed to sessions stopped for more than 30 days may be
+sealed after their counters have also been untouched for more than 30 days. Sealing
+freezes those historical calls: later observations, including higher counters and
+replays under another AQ session, add no usage. Live/recent calls retain exact maxima.
+The permanent anti-replay fence stores bounded batches of exact usage keys in JSONB
+sets with a GIN containment index. This keeps the identity information needed for
+historical hashes (which cannot be reversed into transcript watermarks), without
+keeping a database row and four counters per call. It is not a probabilistic filter.
+Fences have no session/ledger foreign keys and must never expire with those tables.
+
+The unscheduled `archive_transcript_usage_calls` callable archives eligible snapshots
+to `~/.agent-queue/backups/transcript-usage-calls-archive-<UTC-date>.jsonl.gz`.
+Compression, serialization, filesystem locking and fsync run in a worker thread,
+without an open database transaction. Each bounded deletion transaction rechecks
+session eligibility and exact snapshot equality under row locks, then commits the
+fence and deletion atomically. Concurrent ingestion locks the progress row and checks
+the fence before charging; a replay cannot fall between deletion and fence creation.
+Archive failure leaves database rows intact; a crash after archival can leave duplicate
+archive records, never unarchived deletions. Missing original ledger/session evidence
+is conservatively retained. Scheduling this callable belongs to the general retention
+job once available; this change does not register a scheduled job.
+
+Historical reconciliation is read-only and uses a frozen transcript/ledger window.
+Only unambiguous UUID matches with exact counter agreement and complete call coverage
+qualify for a proposed compensating adjustment. Reports retain original row IDs and
+hashes, deterministic correction IDs, signed category deltas and their inverse. Applying
+any adjustment requires a separate command with idempotency and evidence preconditions;
+the reporting tool has no apply mode. Token volumes do not imply subscription quota
+percentages.
+
+Codex rollout date folders and filenames use local time, while `session_meta` timestamps
+use UTC. Keyless discovery searches the UTC launch date and adjacent dates, then accepts
+only a unique match for the exact working directory and launch timestamp (−10/+60 seconds).
+A known conversation key remains authoritative; discovery never follows the newest file
+in a reused workspace. Adoption preserves the original launch time across daemon restarts.
+
+On first adopting a Codex rollout, the watcher backfills its latest valid quota reading
+with the original transcript timestamp, independently of the durable byte checkpoint and
+historical token/output replay guard. This recovers existing rollouts after a discovery
+outage without charging old tokens, replaying messages, or making old quotas look fresh.
+`aq doctor --check providers.usage_activity_gap` warns when the newest provider quota
+confirmation trails that provider's newest live session activity by more than 30 minutes.
+With no snapshot, a live session needs 30 minutes of activity since launch before warning;
+providers without quota feeds are excluded. The check is report-only.
 
 **Peek** is `capture-pane` — for humans (`aq session peek`, dashboard) and
 as the SSE fallback when no transcript is found. **Activity** from the provider is pane
@@ -321,11 +705,88 @@ ladder frozen on its current rung. Three things prevent that, in order: the wide
 Enter backoff; the resubmit check, which recognises the daemon's own marker on the
 input line and presses Enter instead of deferring (this is also what recovers a
 composer left dirty by a *previous* daemon process); and the per-harness clear keys.
+The resubmit check fires for *any* AQ injection still in the composer exactly as
+typed, not only one identical to the nudge at hand: the stall reminder names its idle
+minutes, so a retry never matched the text a previous pass left, and deferring on "a
+different AQ injection" froze the worker until someone typed Enter by hand. The old
+injection is submitted, then the new nudge is typed into the emptied composer.
 When the text still cannot be moved, `NotSubmitted` carries `composer_dirty=True`,
 the reconciler logs it at **WARNING** with the session name and task id, and emits
 `session.nudge_unsubmitted` — the event behind the dashboard's "message stuck" and
-the `sessions.stuck_composer` doctor check, whose `--fix` presses the same Enter an
-operator would send by hand.
+the `sessions.stuck_composer` doctor check. Its `--fix` presses the same Enter an
+operator would send by hand. For AQ text the composer shows collapsed or windowed, it
+clears the text instead (see below).
+
+**Recognising an empty composer.** The guard accepts only layouts it knows: a bare
+prompt with nothing after it, Claude's prompt between its two borders, or Codex's
+dim `Ask Codex to do anything` placeholder above its footer. The Codex footer is
+recognised by shape, not wording: a blank separator, the model row
+(`GPT-6-Sol xhigh · <cwd>`, or `NN% context left` on older builds), then at most one
+hint or notice row and padding. That row's text changed twice on 2026-09-27
+(`? for shortcuts`, `← for agents · ? for shortcuts`, right-aligned
+`⚠ 2 warnings · f2 to view`) and each wording the guard did not list left every idle
+Codex worker unwakeable; the dim placeholder under the cursor is what proves the input
+empty. A hidden terminal cursor defers everywhere except between Claude's borders:
+Claude Code 2.1 can keep the cursor hidden for a pane's whole life, painting its own
+inverse-video cursor cell at the input instead. Everything else defers — which also
+means an unrecognised *idle* layout silently blocks delivery to that worker, so every
+refusal's reason is logged and surfaced by `messages.idle_worker_backlog`. Claude's
+prompt suggestions are disabled in AQ's `--settings` file
+(`promptSuggestionEnabled: false`): a suggestion is ghost text that, with `NO_COLOR`,
+cannot be told apart from a draft.
+
+**Recognising typed text.** Codex and Claude wrap long input themselves, onto
+explicit rows with a two-space continuation indent that `capture-pane -J` cannot
+join, breaking at word boundaries. Marker and identity checks therefore compare text
+with all whitespace removed: every visible character, in order, must match. A
+row-by-row match read an 80-column stall reminder as never typed (so it sat in the
+composer, unsubmitted) and, after Enter, a wrapped one as submitted.
+
+**Text the composer cannot show verbatim.** Measured on Claude Code 2.1.286 in an
+80x24 pool pane (2026-10-01, `clear-lantern-82`), Claude shows some input in a form
+AQ cannot check. A typed burst longer than 800 characters collapses to
+`[Pasted text #N]`, or to `[Pasted text #N +M lines]` where M is the number of
+newlines. N counts pastes for the life of the Claude process. Input taller than the
+composer's row window (seven rows at 24 lines) shows only its last rows, with `❯`
+drawn on the first visible one. Neither can be confirmed as the exact AQ injection,
+so neither is ever submitted. Neither is a draft either, so neither may block
+delivery. The provider classifies the composer against its durable record:
+
+- *exact*: the injection verbatim. It is submitted by the resubmit check.
+- *collapsed*: exactly one placeholder and nothing else. It is attributed by the
+  placeholder AQ recorded when it saw its own text collapse. A record without one
+  (written before this rule, or by a daemon that died first) is attributed only when
+  its text would collapse (over 800 characters) and its newline count equals M.
+- *windowed*: a proper suffix of the injection that ends with its marker.
+- *unknown*: anything else (a human draft, edited AQ text, a placeholder AQ cannot
+  attribute). No key is sent and the record is kept.
+
+A collapsed or windowed AQ injection is **cleared, never submitted**. The clear uses
+the harness's `composer_clear_keys` and runs only while the pane is out of copy mode,
+has no attached client, and has had no dashboard input for 2 s. Keys go one batch per
+visible row, and the composer is re-read after each batch. Every screen in between
+must still show a contiguous piece of the injection; otherwise the clear stops and
+leaves the rest. Claude's `C-u` kills one visual row or one newline and does nothing
+on an empty composer, so repeating it converges. Ctrl-C and Escape are never used:
+Ctrl-C interrupts a turn and arms exit on an empty composer, and Escape interrupts a
+turn and opens rewind when pressed twice.
+
+Clearing removes only text the agent never saw. The message behind it stays pending
+and is redelivered, delivery is acknowledged only by a confirmed submit, and nothing
+is handled twice. The clear runs in three places:
+
+1. Right after AQ typed the text. The composer was verified empty under the session
+   lock a moment before, so any placeholder now showing is AQ's own. AQ records it
+   durably before clearing, so a daemon restart mid-clear still attributes it
+   exactly.
+2. When a later nudge finds a stale record, from an earlier pass or a previous daemon
+   process. The new nudge is then typed into the emptied composer.
+3. From `aq doctor --check sessions.stuck_composer --fix`.
+
+Without clear keys the text stays, is reported `unreadable`, and nudges defer as
+before. The provider never shortens or rewrites the text it is given. A caller's
+terminal notification is one short line that points at a durable body
+(supervisor-agent §6.1).
 
 **Kill:** pane pid → descendants (`pgrep -P` + process group) → SIGTERM, 2 s grace
 (100 ms orphans Claude), SIGKILL survivors → `kill-session`. Every kill checks
@@ -383,7 +844,8 @@ new hash to the manifest; a test fails otherwise.
 ## 7. Surfaces
 
 **Config** (`~/.agent-queue/config.yaml`, `sessions:` block): `enabled`, `provider`,
-`tmux_socket`, `lease_ttl_seconds` (default 480), `stall_max_nudges`, `stall_backoff_seconds`,
+`tmux_socket`, `lease_ttl_seconds` (default 480), `idle_stop_grace_seconds` (default 60),
+`stop_intent_report_seconds` (default 600), `stall_max_nudges`, `stall_backoff_seconds`,
 `max_restarts`, `restart_window_seconds`, `restart_backoff_seconds`, `dialog_budget_seconds`,
 `state_cache_ttl_seconds`, `transcript_poll_seconds`, `adopt_on_start`. Per-profile knobs
 (lifecycle, wake_mode, timeouts) live in profile markdown, not config.yaml.
@@ -418,6 +880,14 @@ digest to task activity alone, and the reconciler never calls them.
   never silently abandoned in the composer (observed live 2026-09-02, task
   `stark-journey-63`: one manual `tmux send-keys Enter` cleared a nudge that had been
   stuck for hours while the log said "will retry" at info level).
+- **AQ text the composer cannot show verbatim** (observed live 2026-10-01, task
+  `clear-lantern-82`). A multi-line task-comment notification was typed into a Claude
+  pool worker. It showed as `[Pasted text #1 +6 lines]` when over 800 characters, or
+  as its last seven rows when shorter, so it was never confirmed. Every later nudge
+  deferred on "input is unknown", including a supervisor's deploy-ready notice with a
+  stage deadline pending, until a supervisor pressed Ctrl-C by hand. Notifications are
+  now one-line pointers, and AQ clears its own collapsed or windowed text (never
+  submitting it) as §5.1 "Text the composer cannot show verbatim" describes.
 - **Nudging a busy agent** can interleave with its typing. Nudges are debounced, locked
   per-session, and policy (when to deliver vs. queue) belongs to [supervisor-agent](supervisor-agent.md);
   the provider only guarantees inject-and-confirm or a typed failure.
@@ -430,9 +900,15 @@ digest to task activity alone, and the reconciler never calls them.
   classifier acts only on positive evidence of death.
 - **PID recycling and name reuse.** Kills are double-fenced: process identified via env
   markers, then instance token compared before any signal.
-- **Daemon dies mid-launch:** a session may exist with no row, or a row with no session.
-  Adoption reconciles both directions (orphan session → adopt if markers match a known
-  task, else quarantine-kill; orphan row → exit-classify).
+- **Flock registration precedes spawn:** every role and provider launches through
+  `src/sessions/launch.py`. A committed `starting` row is mandatory; production
+  providers reject starts outside that registered launch scope. The flock exposes
+  every execution, including unlinked project/global supervisors and concurrent
+  sessions for one worker. See [the invariant and operator guide](../../guides/flock-sessions.md).
+- **Daemon dies mid-launch:** a starting row may have no process. Adoption and exit
+  classification recover it; a process without a row is a legacy orphan or bypass.
+  Periodic reconciliation, `sessions.untracked` and `stall.sweep` report such
+  violations at ERROR, including incomplete probes and live stopped-history rows.
 - **Two daemons on one host** are separated by tmux socket name and epoch; the reconciler
   refuses to adopt sessions whose `AQ_API_URL` points at a different daemon.
 - **Transcript path missing** (harness changed layout, slug mismatch): watching degrades to
