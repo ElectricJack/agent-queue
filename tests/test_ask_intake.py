@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.asks.intake import clear_intent
 from src.commands.principal import ExecutionPrincipal, principal_context
-from src.database.tables import ask_decisions, ask_reconciliation_cases, conversation_inputs
+from src.database.tables import (
+    ask_decisions, ask_reconciliation_cases, conversation_inputs, human_communication_modes,
+)
 from tests.test_ask_discussion import ask_for
 from tests.test_ask_discussion import env as env  # noqa: F401
 from tests.test_discord_inbound_router import GUILD, MESSAGE, message, router
@@ -24,7 +26,20 @@ async def enable(handler, monkeypatch):
     handler.config.discord.project_id = "p"
     handler.config.discord.authorized_users = [HUMAN]
     handler.config.discord.conversation.enabled = True
-    monkeypatch.setattr(handler.db, "ask_channel_enabled", AsyncMock(return_value=True))
+    from src.asks.delivery import config_fingerprint, destination
+
+    async with handler.db.immediate() as conn:
+        await handler.db.advance_ask_mode(
+            {
+                "project_id": "p",
+                "destination": destination(handler.config),
+                "mode": "channel",
+                "config_fingerprint": config_fingerprint(handler.config),
+                "updated_at": 1,
+            },
+            expected_generation=0,
+            conn=conn,
+        )
 
 
 def envelope(text, ident=MESSAGE):
@@ -45,6 +60,64 @@ async def admit(handler, text, ident=MESSAGE, source="gateway"):
     with principal_context(ExecutionPrincipal.service("discord-gateway")):
         return await handler.execute(
             "ask_intake", {"envelope": envelope(text, ident), "source": source}
+        )
+
+
+@pytest.mark.parametrize("fence", ["project", "fingerprint"])
+async def test_gateway_requires_own_project_and_current_config(env, monkeypatch, fence):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    if fence == "project":
+        # The row still belongs to p; its fingerprint even matches the new
+        # configured project. Neither caller may borrow p's channel ownership.
+        from src.asks.delivery import config_fingerprint
+
+        handler.config.discord.project_id = "other"
+        async with db.immediate() as conn:
+            await conn.execute(update(human_communication_modes).values(
+                config_fingerprint=config_fingerprint(handler.config)
+            ))
+    else:
+        async with db.immediate() as conn:
+            await conn.execute(update(human_communication_modes).values(config_fingerprint="stale"))
+    result = await admit(handler, "hello")
+    assert result["error_code"] == "ask.channel_disabled", result
+    async with db.immediate() as conn:
+        assert await conn.scalar(select(func.count()).select_from(conversation_inputs)) == 0
+
+
+@pytest.mark.parametrize("fingerprint", ["stale", "absent", "current"])
+async def test_unscoped_gateway_checks_selected_ask_project_fingerprint(
+    env, monkeypatch, fingerprint,
+):
+    from src.asks.delivery import config_fingerprint, destination
+
+    handler, db = env
+    await enable(handler, monkeypatch)
+    _, ask = await ask_for(handler)
+    handler.config.discord.project_id = ""
+    async with db.immediate() as conn:
+        await conn.execute(update(human_communication_modes).values(
+            config_fingerprint=config_fingerprint(handler.config) if fingerprint == "current"
+            else "stale"
+        ))
+        if fingerprint == "absent":
+            await conn.execute(human_communication_modes.delete().where(
+                human_communication_modes.c.project_id == "p"
+            ))
+        await db.advance_ask_mode({
+            "project_id": "other", "destination": destination(handler.config), "mode": "channel",
+            "config_fingerprint": config_fingerprint(handler.config), "updated_at": 1,
+        }, expected_generation=0, conn=conn)
+    result = await admit(handler, f"Explain {ask['id']}")
+    assert result["success"], result
+    assert result["receipt"]["state"] == (
+        "queued" if fingerprint == "current" else "clarification"
+    ), result
+    async with db.immediate() as conn:
+        item = await db.get_ask_input(result["input_id"], conn=conn)
+        assert item["routing_state"] == (
+            "discussion" if fingerprint == "current" else "clarification"
         )
 
 
@@ -349,3 +422,117 @@ async def test_legacy_import_keeps_16000_characters_and_original_identity(env):
         assert item["retention_entry_id"] == "legacy-message" and item["guild_id"] is None
     replay = await handler.execute("ask_reconcile", {"apply": True})
     assert replay["result"]["imported"] == 0
+
+
+async def test_legacy_thread_window_one_move_notice_and_rollback(env, monkeypatch):
+    import time
+    from sqlalchemy import update
+    from src.asks.delivery import AskDeliveryAdapter, destination
+    from src.database.tables import human_communication_modes, outbound_deliveries
+    from src.escalations.transport import SinkTransport
+
+    handler, db = env
+    await enable(handler, monkeypatch)
+    _, ask = await ask_for(handler)
+    handler.ask_delivery = AskDeliveryAdapter(handler, SinkTransport(), lease_owner="test")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(human_communication_modes).values(compatibility_deadline=time.time() + 100)
+        )
+        await db.insert_ask_binding(
+            {
+                "id": "old-thread-binding",
+                "ask_id": ask["id"],
+                "project_id": "p",
+                "destination": destination(handler.config),
+                "transport": "discord",
+                "guild_id": GUILD,
+                "channel_id": CHANNEL,
+                "external_root_id": "232323232323232323",
+                "legacy_thread_id": "454545454545454545",
+                "mode_generation": 1,
+                "root_generation": 1,
+                "root_state": "confirmed",
+                "receipt": {"legacy_delivery_id": "old"},
+                "created_at": 1,
+                "updated_at": 1,
+            },
+            conn=conn,
+        )
+
+    async def reply(n):
+        payload = {
+            **envelope("Explain this request", ident=str(int(MESSAGE) + n)),
+            "external_thread_id": "454545454545454545",
+        }
+        with principal_context(ExecutionPrincipal.service("discord-gateway")):
+            return await handler.execute("ask_intake", {"envelope": payload})
+
+    first, second = await reply(0), await reply(1)
+    assert first["success"] and second["success"], (first, second)
+    async with db.immediate() as conn:
+        item = await db.get_ask_input(first["input_id"], conn=conn)
+        assert item["ask_id"] == ask["id"] and item["routing_state"] == "discussion"
+        notices = (
+            (
+                await conn.execute(
+                    select(outbound_deliveries).where(
+                        outbound_deliveries.c.send_kind == "move_notice"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert len(notices) == 1
+        assert "reference_message_id" not in notices[0]["payload"]
+        await conn.execute(
+            update(human_communication_modes).values(compatibility_deadline=time.time() - 1)
+        )
+    expired = await reply(2)
+    async with db.immediate() as conn:
+        item = await db.get_ask_input(expired["input_id"], conn=conn)
+        assert item["routing_state"] == "clarification"
+        assert not await conn.scalar(select(func.count()).select_from(ask_decisions))
+    disabled = await handler.execute(
+        "ask_cutover",
+        {
+            "project_id": "p",
+            "mode": "delivery_disabled",
+            "expected_generation": 1,
+        },
+    )
+    assert disabled["success"], disabled
+    assert (await reply(3))["error_code"] == "ask.channel_disabled"
+
+
+async def test_rollback_rejects_already_queued_external_intent(env, monkeypatch):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    _, ask = await ask_for(handler)
+    admitted = await admit(handler, f"yes {ask['id']}")
+    disabled = await handler.execute(
+        "ask_cutover",
+        {
+            "project_id": "p",
+            "mode": "delivery_disabled",
+            "expected_generation": 1,
+        },
+    )
+    assert disabled["success"], disabled
+    result = await _scoped(
+        handler,
+        "ask_apply_input",
+        {
+            "ask_id": ask["id"],
+            "input_id": admitted["input_id"],
+            "expected": ask["expected"],
+            "option_key": "approve",
+            "interpretation": "Explicit approval",
+            "idempotency_key": "paused-input",
+        },
+        session_id="supervisor",
+    )
+    assert not result["success"] and result["error_code"] == "ask.channel_disabled", result
+    async with db.immediate() as conn:
+        assert not await conn.scalar(select(func.count()).select_from(ask_decisions))

@@ -12,8 +12,9 @@ Two of the four shipped playbooks retain reviewer-approved deterministic
 semantic bodies, without an LLM:
 
 * ``default-pipeline`` — a reviewer-authored deterministic graph
-  (``_default_pipeline_body``): three single-command rules whose refusals
-  reach a ``failed`` terminal, the commit rule filtered to approved human gates.
+  (``_default_pipeline_body``): five single-command rules whose refusals
+  reach a ``failed`` terminal, the commit rule filtered to approved human gates
+  and the release rule ending ``completed`` on a ``needs_scope`` refusal.
 * ``default-assignment-routing`` — the routing semantic body
   (``_default_assignment_routing_body``): plan with ``task_route_plan`` over
   the source's ``## Routing policy`` block, passed verbatim as a string
@@ -21,10 +22,12 @@ semantic bodies, without an LLM:
   ``task_route_apply``.  Spec: ``projects/agent-queue/specs/
   2026-09-28-mandatory-task-routing.md`` §6.3 and §6.7.
 
-This writes the fixture bundle only.  Two trees hold byte-identical copies of
-a reviewed recording and are not touched here — copy them across by hand after
-a rebuild. Existing fixture ``manifest.md`` digests are refreshed from the
-compiler output without changing their policy or review prose:
+Normal authoring builds record canonical inputs under
+``tests/fixtures/generated_sources/playbooks/`` and refresh their registered
+fixture, shipped and operator-importable copies. Draft ``--out`` builds remain
+isolated. Existing manifest digests are refreshed from the compiler output
+without changing policy or review prose. Assembly only projects these inputs;
+it never runs this compiler or creates an approval:
 
 * ``src/prompts/reviewed_playbooks/<id>/`` — what the daemon seeds into the
   vault and activates (``src/playbooks/required.py``).  Guarded by
@@ -46,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import runpy
 import sys
 from pathlib import Path
 from typing import Any
@@ -65,27 +69,21 @@ from src.playbooks.validation import (  # noqa: E402
 )
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
+INPUT_ROOT = REPO_ROOT / "tests/fixtures/generated_sources/playbooks"
 SHIPPED = {
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
+    "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
+    "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
-    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
-    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "agent-queue-root-train": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md"
-    ),
-    "agent-queue-parent-integration": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
-    ),
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
-    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
-    "root-train": "src/prompts/integration_playbooks/root-train.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
     "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
@@ -148,12 +146,14 @@ class ProseIndex:
 def _recorded_semantic_body(playbook_id: str) -> dict[str, Any]:
     """Read executable semantics from the artifact that reviewers approved."""
     payload = json.loads(
-        (FIXTURE_ROOT / playbook_id / "artifact.json").read_text(encoding="utf-8")
+        (INPUT_ROOT / playbook_id / "definition.json").read_text(encoding="utf-8")
     )
     return {"rules": payload["rules"], "steps": payload["steps"]}
 
 
-def _rebased_recorded_body(template_id: str, source: PlaybookSource) -> dict[str, Any]:
+def _rebased_recorded_body(
+    template_id: str, source: PlaybookSource, *, retired_rules: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """A reviewed template's graph with every source ref moved onto ``source``.
 
     ``parent-integration`` is ``agent-queue-parent-integration`` at system
@@ -162,8 +162,12 @@ def _rebased_recorded_body(template_id: str, source: PlaybookSource) -> dict[str
     new source.  A heading the new source lacks is a refusal, not a guess.
     """
     body = _recorded_semantic_body(template_id)
+    body["rules"] = [rule for rule in body["rules"] if rule["id"] not in retired_rules]
+    body["steps"] = {
+        name: step for name, step in body["steps"].items() if step["rule"] not in retired_rules
+    }
     template_lines = (
-        (FIXTURE_ROOT / template_id / "source.md").read_text(encoding="utf-8").splitlines()
+        (INPUT_ROOT / template_id / "source.md").read_text(encoding="utf-8").splitlines()
     )
     headings = {
         line.strip(): number
@@ -188,13 +192,19 @@ def _rebased_recorded_body(template_id: str, source: PlaybookSource) -> dict[str
 def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
     """The reviewer-authored deterministic graph for ``default-pipeline``.
 
-    Three rules of one command step each.  The success outcomes the prose names
+    Five rules of one command step each.  The success outcomes the prose names
     reach the rule's ``completed`` terminal; ``rejected``, ``runtime_error`` and
     the commit's ``not_approved`` reach a distinct ``failed`` terminal, so a
     refused step never reads as a finished run.  The commit rule dispatches
     only for an approved human gate that names a proposal, and hands the gate
     and project to ``task_batch_commit`` so the command re-checks the exact
     decision (policy-simplification task agile-glacier.2).
+
+    Held spec-ingest batches (``nimble-lantern-37.2``): ``batch.held`` assigns
+    the fidelity reviewer, and ``batch.receipt_recorded`` releases exactly the
+    attested revision and digest.  A release refused ``needs_scope`` is a batch
+    waiting on its scope ask, not a broken run: a decision over the saved
+    result ends it ``completed`` without release; every other refusal fails.
     """
     index = ProseIndex(source, source.vault_path)
     terminal_ref = _source_ref_for_heading(source, "## Failure handling")
@@ -219,6 +229,8 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         successes: tuple[str, ...],
         failures: tuple[str, ...] = ("rejected", "runtime_error"),
         guard: dict[str, Any] | None = None,
+        save_result_as: str | None = None,
+        routes: dict[str, str] | None = None,
     ) -> None:
         entry, done, failed = f"{rule}--{title}", f"{rule}--done", f"{rule}--failed"
         declared: dict[str, Any] = {
@@ -230,11 +242,14 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         rules.append(declared)
         transitions = {name: done for name in successes}
         transitions.update({name: failed for name in failures})
+        transitions.update(routes or {})
         steps[entry] = {
             "type": "command", "rule": rule, "title": title,
             "source": index.step_ref(rule, 1), "command": command,
             "inputs": inputs, "transitions": transitions,
         }
+        if save_result_as is not None:
+            steps[entry]["save_result_as"] = save_result_as
         steps[done] = _terminal(rule, "completed", terminal_ref)
         steps[failed] = _terminal(rule, "failed", terminal_ref)
 
@@ -250,6 +265,48 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         },
         ("created", "reused"),
     )
+    add(
+        "fidelity-review-on-held",
+        {"event_type": "batch.held"},
+        "assign_fidelity_reviewer",
+        "ensure_fidelity_review",
+        {
+            "project_id": event("project_id"),
+            "batch_id": event("batch_id"),
+            "structure_revision": event("structure_revision"),
+        },
+        ("created", "reused"),
+    )
+    release, refused = "release-on-receipt", "release-on-receipt--refused"
+    add(
+        release,
+        {"event_type": "batch.receipt_recorded"},
+        "release_batch",
+        "task_batch_release",
+        {
+            "batch_id": event("batch_id"),
+            "expected_revision": event("structure_revision"),
+            "expected_digest": event("structure_digest"),
+            "project_id": event("project_id"),
+        },
+        ("released", "already_released"),
+        failures=("runtime_error",),
+        save_result_as="release",
+        routes={"error": refused},
+    )
+    steps[refused] = {
+        "type": "decision", "rule": release, "title": "refused",
+        "source": index.step_ref(release, 2),
+        "cases": [{
+            "when": {
+                "type": "comparison", "op": "eq",
+                "left": {"type": "binding_ref", "binding": "release", "path": "error_code"},
+                "right": lit("needs_scope"),
+            },
+            "goto": f"{release}--done",
+        }],
+        "default": f"{release}--failed",
+    }
     add(
         "proposal-ready-gate",
         {"event_type": "proposal.ready"},
@@ -307,6 +364,12 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id == "fast-smooth-train":
+        ref = _source_ref_for_heading(source, "## Rule: observe-policy")
+        return {"rules": [{"id": "observe-policy", "name": "observe-policy",
+            "trigger": {"event_type": "integration.readiness_changed"},
+            "entry_step": "completed", "source": ref}],
+            "steps": {"completed": _terminal("observe-policy", "completed", ref)}}
     if playbook_id in {"promotion-request", "promotion-continuous"}:
         return _promotion_policy_body(source)
     if playbook_id == "object-loop":
@@ -317,26 +380,17 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _default_pipeline_body(source)
     if playbook_id == "default-assignment-routing":
         return _default_assignment_routing_body(source)
+    if playbook_id in {"stuck-task-watch", "stuck-task-watch-reminder"}:
+        return _recorded_semantic_body(playbook_id)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
     if playbook_id in ("agent-queue-root-train", "root-train"):
         return _root_integration_train_body(source)
     if playbook_id in ("parent-integration", "agent-queue-parent-integration"):
-        body = (
-            _rebased_recorded_body("agent-queue-parent-integration", source)
-            if playbook_id == "parent-integration"
-            else _recorded_semantic_body(playbook_id)
+        return _rebased_recorded_body(
+            "agent-queue-parent-integration", source,
+            retired_rules=frozenset({"promote-delivery", "reconcile-resolution-push"}),
         )
-        transitions = body["steps"]["reconcile-resolution-push--reconcile"]["transitions"]
-        # Exact remote reconciliation may settle through a successor or wait
-        # for its writer. Preserve the contract's success/refusal distinction.
-        transitions.update({
-            "continued": "reconcile-resolution-push--done",
-            "superseded": "reconcile-resolution-push--done",
-            "waiting": "reconcile-resolution-push--failed",
-            "target_moved": "reconcile-resolution-push--failed",
-        })
-        return body
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":
@@ -419,20 +473,25 @@ def _object_loop_body(source: PlaybookSource) -> dict[str, Any]:
         artifact = {"type": "context_ref", "path": "artifact_sha256"}
         command("read", "object_loop_inputs", {"project_id": lit("matter-engine-cpp"),
                                                "limit": lit(32)}, "starts", "inputs")
-        foreach("starts", bound("inputs", "starts"), "start", "start-check", "loops")
-        decision("start-check", [({"type": "bool", "op": "and", "operands": [
-            truth(item("proposal_approved", "start")),
-            compare(item("policy_artifact", "start"), "eq", artifact),
-        ]}, "start")], "starts")
+        foreach("starts", {
+            "type": "filter", "collection": bound("inputs", "starts"),
+            "item_binding": "start",
+            "predicate": {"type": "bool", "op": "and", "operands": [
+                truth(item("proposal_approved", "start")),
+                compare(item("policy_artifact", "start"), "eq", artifact),
+            ]},
+        }, "start", "start", "loops")
         command("start", "object_loop_start", {
             key: item("request." + key, "start") for key in ObjectLoopStartArgs.model_fields
         }, "start-reconcile", "started")
         command("start-reconcile", "object_loop_reconcile", {
             "project_id": lit("matter-engine-cpp"), "object_id": bound("started", "object_id"),
         }, "starts")
-        foreach("loops", bound("inputs", "loops"), "object", "policy", "done")
-        decision("policy", [(compare(item("policy_artifact"), "eq", artifact), "choose")],
-                 "loops")
+        foreach("loops", {
+            "type": "filter", "collection": bound("inputs", "loops"),
+            "item_binding": "object",
+            "predicate": compare(item("policy_artifact"), "eq", artifact),
+        }, "object", "choose", "done")
         decision("choose", [
             (compare(item("state.status"), "eq", lit("stopped")), "reconcile"),
             (compare(item("elapsed_seconds"), "gte", lit(86400)), "deadline"),
@@ -616,9 +675,6 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
     def event(path: str) -> dict[str, Any]:
         return {"type": "event_ref", "path": path}
 
-    def bound(binding: str, path: str) -> dict[str, Any]:
-        return {"type": "binding_ref", "binding": binding, "path": path}
-
     def ref(rule: str) -> dict[str, Any]:
         return _source_ref_for_heading(source, f"## Rule: {rule}")
 
@@ -631,111 +687,6 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
         steps[done] = _terminal(rule, "completed", terminal_ref)
         steps[failed] = _terminal(rule, "failed", terminal_ref)
         return done, failed
-
-    rule = "seal-due-frontier"
-    done, failed = terminals(rule)
-    seal, release = f"{rule}--seal", f"{rule}--release-empty"
-    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sweep_due"},
-                  "entry_step": seal, "source": ref(rule)})
-    steps[seal] = {"type": "command", "rule": rule, "title": "seal", "source": ref(rule),
-                   "command": "integration_seal", "save_result_as": "sealed",
-                   "inputs": {"project_id": event("project_id"), "request_id": event("operation_id")},
-                   "transitions": {"sealed": done, "empty": release, "busy": failed,
-                                   "runtime_error": failed}}
-    steps[release] = {"type": "command", "rule": rule, "title": "release-empty",
-                      "source": ref(rule), "command": "integration_release",
-                      "inputs": {"batch_id": bound("sealed", "batch_id")},
-                      "transitions": {name: (done if name in {"released", "already_released", "empty"} else failed)
-                                      for name in ("released", "already_released", "empty", "wait", "stale",
-                                                   "invariant_error", "runtime_error")}}
-
-    rule = "construct-and-test"
-    done, failed = terminals(rule)
-    build, ci, dispatch = (f"{rule}--build", f"{rule}--ci", f"{rule}--dispatch")
-    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sealed"},
-                  "entry_step": build, "source": ref(rule)})
-    build_transitions = {name: failed for name in (
-        "source_moved", "base_moved", "stale_revision", "wait", "human_required",
-        "configuration_blocked", "runtime_error")}
-    build_transitions.update({"empty": done, "built": ci, "already_built": ci,
-                              "conflict": dispatch})
-    steps[build] = {"type": "command", "rule": rule, "title": "build", "source": ref(rule),
-                    "command": "integration_build_candidate", "save_result_as": "candidate",
-                    "inputs": {"batch_id": event("batch_id")}, "transitions": build_transitions}
-    ci_transitions = {name: failed for name in (
-        "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
-    ci_transitions.update({"green": done, "red": done, "pending": done})
-    steps[ci] = {"type": "command", "rule": rule, "title": "ci", "source": ref(rule),
-                 "command": "integration_ci_evidence", "inputs": {
-                     "batch_id": event("batch_id"), "revision": bound("candidate", "revision")},
-                 "transitions": ci_transitions}
-    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
-                       "command": "integration_repair_dispatch", "inputs": {
-                           "operation_id": event("operation_id")},
-                       "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
-                                              else failed) for name in (
-                           "dispatched", "already_dispatched", "writer_reused", "busy",
-                           "configuration_blocked", "stale", "human_required", "runtime_error")}}
-
-    rule = "promote-green-candidate"
-    done, failed = terminals(rule)
-    promote, rebuild, ci, dispatch = (
-        f"{rule}--promote",
-        f"{rule}--rebuild",
-        f"{rule}--ci",
-        f"{rule}--dispatch",
-    )
-    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.candidate_green"},
-                  "entry_step": promote, "source": ref(rule)})
-    promote_transitions = {name: failed for name in (
-        "ci_missing", "non_fast_forward", "wait", "reconciliation_blocked", "stale",
-        "configuration_blocked", "runtime_error")}
-    promote_transitions.update({"promoted": done, "already_promoted": done,
-                                "base_moved": rebuild})
-    steps[promote] = {"type": "command", "rule": rule, "title": "promote", "source": ref(rule),
-                      "command": "integration_promote_main", "inputs": {
-                          "batch_id": event("batch_id"), "revision": event("revision")},
-                      "transitions": promote_transitions}
-    rebuild_transitions = {name: failed for name in (
-        "source_moved", "base_moved", "stale_revision", "wait", "human_required",
-        "configuration_blocked", "runtime_error")}
-    rebuild_transitions.update({"empty": done, "built": ci, "already_built": ci,
-                                "conflict": dispatch})
-    steps[rebuild] = {"type": "command", "rule": rule, "title": "rebuild", "source": ref(rule),
-                      "command": "integration_build_candidate", "inputs": {"batch_id": event("batch_id")},
-                      "save_result_as": "rebuilt", "transitions": rebuild_transitions}
-    green_ci_transitions = {name: failed for name in (
-        "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
-    green_ci_transitions.update({"green": done, "red": done, "pending": done})
-    steps[ci] = {"type": "command", "rule": rule, "title": "ci-rebuilt", "source": ref(rule),
-                 "command": "integration_ci_evidence", "inputs": {
-                     "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
-                 "transitions": green_ci_transitions}
-    steps[dispatch] = {
-        "type": "command",
-        "rule": rule,
-        "title": "dispatch-rebuilt-conflict",
-        "source": ref(rule),
-        "command": "integration_repair_dispatch",
-        "inputs": {"operation_id": event("operation_id")},
-        "transitions": {
-            name: (
-                done
-                if name in {"dispatched", "already_dispatched", "writer_reused"}
-                else failed
-            )
-            for name in (
-                "dispatched",
-                "already_dispatched",
-                "writer_reused",
-                "busy",
-                "configuration_blocked",
-                "stale",
-                "human_required",
-                "runtime_error",
-            )
-        },
-    }
 
     rule = "repair-red-candidate"
     done, failed = terminals(rule)
@@ -752,50 +703,6 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
                                               else failed) for name in (
                            "dispatched", "already_dispatched", "writer_reused", "busy",
                            "configuration_blocked", "stale", "human_required", "runtime_error")}}
-
-    rule = "continue-closed-root-repair"
-    done, failed = terminals(rule)
-    current, build, ci, dispatch = (
-        f"{rule}--current", f"{rule}--build", f"{rule}--ci", f"{rule}--dispatch"
-    )
-    rules.append({"id": rule, "name": rule,
-                  "trigger": {"event_type": "integration.repair_delegate_closed"},
-                  "entry_step": current, "source": ref(rule)})
-    steps[current] = {"type": "command", "rule": rule, "title": "current",
-                      "source": ref(rule), "command": "integration_repair_close_current",
-                      "save_result_as": "closed_repair",
-                      "inputs": {name: event(name) for name in (
-                          "operation_id", "stage", "task_id", "session_id",
-                          "instance_token", "workspace_id", "fence_token")},
-                      "transitions": {"current": build, "not_batch": done,
-                                      "stale": failed, "runtime_error": failed}}
-    steps[build] = {"type": "command", "rule": rule, "title": "build",
-                    "source": ref(rule), "command": "integration_build_candidate",
-                    "save_result_as": "repaired_candidate",
-                    "inputs": {"batch_id": bound("closed_repair", "batch_id"),
-                               "expected_revision": bound("closed_repair", "revision")},
-                    "transitions": {"built": ci, "already_built": ci, "empty": done,
-                                    "conflict": dispatch,
-                                    **{name: failed for name in (
-                                        "source_moved", "base_moved", "stale_revision",
-                                        "wait", "human_required", "configuration_blocked",
-                                        "runtime_error")}}}
-    steps[ci] = {"type": "command", "rule": rule, "title": "ci",
-                 "source": ref(rule), "command": "integration_ci_evidence",
-                 "inputs": {"batch_id": bound("closed_repair", "batch_id"),
-                            "revision": bound("repaired_candidate", "revision")},
-                 "transitions": {"green": done, "red": done, "pending": done,
-                                 **{name: failed for name in (
-                                     "full_suite_required", "stale_subject",
-                                     "configuration_blocked", "runtime_error")}}}
-    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch-conflict",
-                       "source": ref(rule), "command": "integration_repair_dispatch",
-                       "inputs": {"operation_id": event("operation_id")},
-                       "transitions": {name: (
-                           done if name in {"dispatched", "already_dispatched", "writer_reused"}
-                           else failed) for name in (
-                               "dispatched", "already_dispatched", "writer_reused", "busy",
-                               "configuration_blocked", "stale", "human_required", "runtime_error")}}
 
     rule = "dispatch-debug"
     done, failed = terminals(rule)
@@ -1190,6 +1097,7 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                     "source_identity": bound("escalation_key"),
                     "incident_key": bound("escalation_key"),
                     "summary": bound("escalation_title"),
+                    "task_title": bound("escalation_title"),
                     "investigation": bound("escalation_question"),
                     "decision_requested": {
                         "type": "literal",
@@ -1710,8 +1618,11 @@ def main() -> int:
         result = build(playbook_id, args.source)
         directory = Path(args.out).resolve() if args.out else FIXTURE_ROOT / playbook_id
         directory.mkdir(parents=True, exist_ok=True)
-        seed_manifest = FIXTURE_ROOT / playbook_id / "manifest.md"
-        if args.out and not (directory / "manifest.md").exists() and seed_manifest.exists():
+        seed_manifest = INPUT_ROOT / playbook_id / "manifest.md"
+        if (
+            not args.check and seed_manifest.exists()
+            and (not args.out or not (directory / "manifest.md").exists())
+        ):
             (directory / "manifest.md").write_bytes(seed_manifest.read_bytes())
         files: dict[Path, bytes] = {
             directory / "source.md": (REPO_ROOT / result["rel_path"]).read_bytes(),
@@ -1778,9 +1689,26 @@ def main() -> int:
             else:
                 path.write_bytes(payload)
                 print(f"  wrote {rel}")
+        if not args.check and not args.out and artifact is not None:
+            # Authoring records new compiler output explicitly. Assembly reads
+            # these inputs and never compiles or silently replaces policy.
+            inputs = INPUT_ROOT / playbook_id
+            inputs.mkdir(parents=True, exist_ok=True)
+            for path, payload in files.items():
+                if path.name == "artifact.sha256":
+                    continue
+                name = path.name
+                if name == "artifact.json":
+                    name = "definition.json"
+                    payload = (json.dumps(json.loads(payload), indent=2, ensure_ascii=False) + "\n").encode()
+                (inputs / name).write_bytes(payload)
     if args.check and drift:
         print(f"\n{drift} fixture file(s) differ from a fresh build")
         return 1
+    if not args.check and not args.out:
+        projector = runpy.run_path(str(REPO_ROOT / "scripts/generate-recorded-artifacts.py"))
+        for path, payload in projector["outputs"](REPO_ROOT).items():
+            (REPO_ROOT / path).write_bytes(payload)
     return 0
 
 

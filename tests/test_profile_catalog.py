@@ -11,6 +11,7 @@ from src.profiles.catalog import (
     evaluate_catalog,
     refresh_catalog_profiles,
     shipped_profile_catalog,
+    worker_route,
 )
 from src.profiles.parser import parse_profile
 from src.profiles.retired_defaults import retire_default
@@ -139,6 +140,22 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     assert profile_path.read_text(encoding="utf-8") == "# operator edit\n"
 
 
+def test_installer_refresh_preserves_renamed_role_profile(tmp_path):
+    _seed_vault(tmp_path)
+    path = tmp_path / "vault" / "agent-types" / "spec-ingest" / "profile.md"
+    renamed = path.read_text(encoding="utf-8").replace(
+        "name: Review Spec Ingest", "name: My Spec Review"
+    )
+    path.write_text(renamed, encoding="utf-8")
+
+    refresh_catalog_profiles(tmp_path, _probes("codex"))
+    second = refresh_catalog_profiles(tmp_path, _probes("codex"))
+
+    assert second["created"] == []
+    assert path.read_text(encoding="utf-8") == renamed
+    assert parse_profile(renamed).frontmatter.name == "My Spec Review"
+
+
 def test_refresh_after_provider_removal_deactivates_without_deleting_profiles(tmp_path):
     _seed_vault(tmp_path)
     refresh_catalog_profiles(tmp_path, _probes("codex"))
@@ -212,6 +229,17 @@ def test_a_stage_profile_does_not_block_the_rung_of_its_class(tmp_path):
     created = set(refresh_catalog_profiles(tmp_path, _probes("claude"))["created"])
 
     assert {"fast-low-claude", "deep-high-claude"} <= created
+
+
+def test_fidelity_reviewer_is_a_stage_even_with_operator_write_access(tmp_path):
+    _seed_vault(tmp_path)
+    path = tmp_path / "vault" / "agent-types" / "fidelity-reviewer" / "profile.md"
+    path.write_text(path.read_text().replace('"read_only": true', '"read_only": false'))
+    assert worker_route(
+        "fidelity-reviewer", harness="claude", default_class="deep-high"
+    ) is None
+    created = set(refresh_catalog_profiles(tmp_path, _probes("claude"))["created"])
+    assert "deep-high-claude" in created
 
 
 def test_a_read_only_or_named_profile_does_not_block_the_rung_of_its_class(tmp_path):

@@ -10,6 +10,10 @@ import type { Task } from "../../../api/hooks";
 import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
 
 const mockUseAgentFlock = vi.fn();
+vi.mock("../../../api/waits", () => ({
+  useWaitExplain: () => ({ data: { waits: [] }, isPending: false, error: null }),
+}));
+
 vi.mock("../../../api/agents", () => ({ useAgentFlock: () => mockUseAgentFlock() }));
 
 const mockUseTask = vi.fn();
@@ -38,6 +42,7 @@ vi.mock("../../../api/hooks", async () => {
     useUploadTaskAttachment: (...args: unknown[]) => mockUseUploadTaskAttachment(...args),
     useDeleteTaskAttachment: (...args: unknown[]) => mockUseDeleteTaskAttachment(...args),
     useDeleteTask: (...args: unknown[]) => mockUseDeleteTask(...args),
+    useDeleteTaskPreview: () => ({ data: { task_ids: ["t1"], tasks: [] }, isFetching: false }),
   };
 });
 
@@ -127,6 +132,30 @@ beforeEach(() => {
 });
 
 describe("TaskDetailPane — screenshot attachments", () => {
+  it("shows a durable ingestion hold and opens its batch evidence with project scope", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, held_batch: {
+      batch_id: "batch", state: "needs_scope", source: "spec:approved", structure_revision: 4,
+      lineage: { lineage_kind: "none" }, reviewer_task_id: "reviewer",
+    } } });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getAllByText("Held for fidelity review")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Ingestion batch" })).toHaveTextContent("Structure revision 4");
+    fireEvent.click(screen.getByRole("button", { name: "View batch review and release evidence" }));
+    expect(mockOpen).toHaveBeenCalledWith("proposal-preview", { proposalId: "batch", batchProjectId: "demo" });
+  });
+
+  it("shows operational roots' delivery prerequisites and current owner", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, parent_task_id: null, assigned_agent: "ops-owner",
+      delivery_condition: { kind: "delivery-of", targets: ["code-source"] },
+      depends_on: [{ id: "code-source", title: "Land API", status: "COMPLETED", dep_type: "delivery-of", reason: "Wait for deployment" }] } });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    const section = screen.getByRole("region", { name: "Operational delivery condition" });
+    expect(section).toHaveTextContent("Owner: ops-owner");
+    expect(section).toHaveTextContent("Completion alone does not satisfy delivery");
+    expect(section).toHaveTextContent("Land API (code-source)");
+    expect(section).toHaveTextContent("Recorded delivery condition");
+  });
+
   it("uploads an image pasted from the clipboard", async () => {
     const mutateAsync = vi.fn().mockResolvedValue({ success: true });
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
@@ -553,22 +582,21 @@ describe("TaskDetailPane — toolbar and shortcuts", () => {
     act(() => {
       bindings.find((b: { key: string }) => b.key === "c").onFire();
     });
-    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Deletion scope")).toBeInTheDocument();
   });
 
-  it("deletes the task subtree after confirmation", () => {
-    const mutate = vi.fn();
-    mockUseDeleteTask.mockReturnValue({ mutate, isPending: false });
+  it("uses the shared dialog to choose subtree deletion after confirmation", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ warnings: [] });
+    mockUseDeleteTask.mockReturnValue({ mutateAsync, isPending: false });
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
     const setShortcuts = vi.fn();
     renderWithRouter(<TaskDetailPane {...noopProps()} setShortcuts={setShortcuts} />);
     const bindings = setShortcuts.mock.calls[setShortcuts.mock.calls.length - 1]?.[0];
     act(() => bindings.find((b: { key: string }) => b.key === "c").onFire());
-    screen.getByRole("button", { name: "Delete task and descendants" }).click();
-    expect(mutate).toHaveBeenCalledWith(
-      { task_id: "t1", cascade: true },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    fireEvent.change(screen.getByLabelText("Deletion scope"), { target: { value: "recursive" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete selected tasks" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ task_id: "t1", recursive: true,
+      branches: "keep", confirmed: true, stop_running: true, reason: "" }));
   });
 
   it("shows a cascade deletion failure in the confirmation dialog", () => {
