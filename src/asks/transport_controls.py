@@ -1,5 +1,7 @@
 """Operator mode/repair ports. Live inventory verification belongs to rollout."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
 from src.asks.delivery import config_fingerprint, destination
@@ -10,6 +12,66 @@ from src.database.tables import (
     outbound_deliveries,
 )
 from src.escalations.transport import TransportMissing
+
+
+async def cutover_status(handler, args):
+    project = args["project_id"]
+    configured = destination(handler.config)
+    async with handler.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        human_communication_modes.c.destination,
+                        human_communication_modes.c.mode,
+                        human_communication_modes.c.generation,
+                        human_communication_modes.c.migrated,
+                        human_communication_modes.c.compatibility_deadline,
+                    ).where(
+                        human_communication_modes.c.project_id == project
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    modes = {row["destination"]: row for row in rows}
+    modes.setdefault(
+        configured,
+        {
+            "mode": "legacy",
+            "generation": 0,
+            "migrated": False,
+            "compatibility_deadline": None,
+        },
+    )
+    destinations = []
+    for dest, row in sorted(modes.items()):
+        deadline = row["compatibility_deadline"]
+        destinations.append(
+            {
+                "destination": dest,
+                "mode": row["mode"],
+                "generation": row["generation"],
+                "migrated": row["migrated"],
+                # The persisted first-channel deadline is never extended by rollback.
+                "first_switch_utc": datetime.fromtimestamp(deadline - 30 * 86400, UTC).isoformat()
+                if deadline is not None
+                else None,
+                "compatibility_deadline": deadline,
+                "compatibility_deadline_utc": datetime.fromtimestamp(deadline, UTC).isoformat()
+                if deadline is not None
+                else None,
+            }
+        )
+    return {
+        "success": True,
+        "result": {
+            "project_id": project,
+            "configured_destination": configured,
+            "destinations": destinations,
+        },
+    }
 
 
 async def cutover(handler, args):

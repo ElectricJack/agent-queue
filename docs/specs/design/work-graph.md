@@ -114,7 +114,7 @@ request-scoped answer. Unknown git evidence withholds work; absent or misleading
 SQL delivery rows never establish containment. Branchless organizational tasks
 have no own artifact; a missing worker ref is unknown.
 
-In hierarchy/train mode with Git-first active, a completed `blocks` sibling
+In hierarchy/train mode, a completed `blocks` sibling
 must be proven on the shared parent's current branch before its dependent can
 run. One request-scoped, identity-revalidated Git prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
@@ -126,9 +126,15 @@ observer refetches; a failed refresh never falls back to the expired snapshot.
 A rewind, retarget, reopened generation or unknown proof withholds work; no
 receipt can override it. Claim selection
 retains its own uncached observation (`max_age=0`) and revalidation under task
-locks, even when a tick's advisory view still makes a task look runnable. Shadow
-mode keeps the existing receipt fence, and non-hierarchy projects keep their
-existing admission policy.
+locks, even when a tick's advisory view still makes a task look runnable. An
+absent truth-bearing observer withholds the affected prerequisites without a
+receipt fallback. Non-hierarchy projects keep their source admission policy.
+
+`delivery-of` edges require source completion in the persisted graph projection
+and current default-target Git proof in `AdmissionView`. Completion alone is
+insufficient for dispatch, pool demand or a claim. Delivery is never persisted
+as blockedness: a rewind withholds the dependent on its next admission view
+without waiting for a SQL receipt change.
 
 A cross-epic dependent whose epic already contains every prerequisite's exact
 default-branch source needs no new refresh. Ordinary sibling collection does
@@ -149,12 +155,23 @@ cache. An explanation shares one request-scoped pool measurement between the
 pool wait reason and capacity spill planning. Actual scheduling, routing and
 claim admission retain their existing fresh observations and guards.
 
+For pull-request prerequisites, interactive explanations do not observe the
+current PR identity or its Git containment. They report
+`delivery_evidence_unavailable`, explicitly naming containment and claimability
+as unknown in this cached-only read, rather than asserting that the source is
+missing from the default branch. This also applies to merged PRs and running
+tasks. Fresh admission still requires the current PR and containment proof.
+
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id
 even while the full task completion record is being saved after close hooks;
 an earlier generation's record must never stand in for a reopened close. The
-transition out of `COMPLETED` clears the current id.
+transition out of `COMPLETED` clears the current id. A descriptive close older
+than the task's `integration_rework_at` fence remains historical even if
+automatic container settlement returns the task to `COMPLETED`. Delivery
+requests and recursive aggregate readers withhold that old close until a fresh
+completion supplies the new generation's evidence.
 
 Claim selection receives an ephemeral allowed set and retains priority, age,
 affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld
@@ -180,6 +197,18 @@ containment without requiring a paused legacy collecting parent. It reports
 already contained work or pending delivery owned by the train, and never
 reissues receipts or invokes the legacy collector. Unknown Git proof remains a
 visible blocker.
+
+For a completed leaf with `missing_git_provenance`, `redrive-child --adopt-source`
+previews retaining its existing passing completion generation. Apply requires the
+previewed full `--head` and a nonblank `--reason`. The materialized origin must
+name the current parent and designated repository; the published branch tip must
+equal the checkpoint, descend from the origin base, and agree with any recorded
+final completion commit. A missing passing completion, container, live writer,
+changed identity, conflicting retained source or failed Git proof refuses adoption.
+Apply publishes immutable completion provenance and an audit event. It changes
+no task status, review evidence or delivery receipt; the train then evaluates
+containment and its usual review and check gates. Repeating the same adoption is
+idempotent. Ordinary redrive remains diagnostic in Git-first mode.
 
 ### 4.2 Recompute triggers
 
@@ -430,6 +459,17 @@ predicates; claim retains fresh Git and identity revalidation. The explicit
 `cross_epic_prerequisites: completed` policy keeps legacy graph-only admission.
 
 ### 9.2 Ready frontier
+
+Task list/detail, graph (including epic children), CLI and digest reads expose
+`claim_readiness` for READY tasks. This is a read-only projection of the shared
+claim-frontier predicates, never a new lifecycle status. Failed delivery fences
+read **Waiting on delivery**, naming each missing sibling/cross-epic source and
+its target branch, or the epic and open refresh batches that must finish.
+Missing cached delivery evidence reads **Checking delivery evidence** and must
+not imply proven delivery or claimability. Interactive reads never fetch Git.
+Held rows contribute no claimable count; pool demand retains its authoritative
+admission query. Stall readers classify delivery fences as
+`WAITING-ON-DELIVERY`, separately from stuck routing or execution.
 
 Pool demand and claim selection use the same `claim_frontier_predicates` builder,
 including preparation backoff, prerequisite-stack repair, workspace requirements
@@ -686,6 +726,19 @@ close). A branch or recorded commits without that record is unknown
 branchless task with no recorded artifact is organizational. The stale
 `development_publisher_skip` still clears once git proves the work, and a failed origin
 fetch is unknown, never an empty source.
+
+**Recovering an unlabelled completion.** In Git-first hierarchy/train mode, an
+explicit `reopen_with_feedback` by the local operator or a live authorized
+supervisor may reopen a completed task whose own current, revalidated Git
+observation is `missing_git_provenance`. This repairs a completion; it does not
+establish delivery or waive provenance, checks or review on the next close.
+The branch and descendants remain intact. Containment on branches inside that
+subtree does not prevent reopening only its aggregate. Sealed batches, external
+delivery receipts or proven external containment still fix the identity; missing
+descendant provenance, stale observations, repository mismatches and Git failures
+still refuse the control. Reopening invalidates the task's aggregate checkpoint
+and its immediate parent's verification in the same transaction. Ordinary status
+writes and reviewer controls retain the unknown-delivery guard.
 
 **Delivered commits-less work after branch cleanup.** A completed task whose close lists
 no commits, such as a plan or docs task whose branch is its base, is released by its
