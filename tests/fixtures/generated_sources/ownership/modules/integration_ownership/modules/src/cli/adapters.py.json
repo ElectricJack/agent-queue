@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/cli/adapters.py::agent_proxy": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/adapters.py::plain_proxy": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/adapters.py::project_proxy": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/adapters.py::task_proxy": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
