@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from src.models import AgentProfile, Project
+from tests.assignment_routing_helpers import route_source_for
 
 # ``command_handler_factory`` and ``orchestrator_factory`` fixtures live in
 # tests/conftest.py — shared with test_review_pipeline_rules.py and
@@ -30,7 +31,8 @@ async def _routed(h, args: dict, profile_id: str) -> str:
     """
     task_id = (await h.execute("create_task", args))["created"]
     assert await h.db.update_task_routing(
-        task_id, profile_id=profile_id, intelligence_class=None, preferred_workspace_id=None
+        task_id, profile_id=profile_id, route_source=route_source_for(profile_id),
+        intelligence_class=None, preferred_workspace_id=None
     )
     return task_id
 

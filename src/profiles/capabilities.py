@@ -51,6 +51,10 @@ Namespace = Literal["harness_tools", "aq_commands", "plugin_tools"]
 #: The three namespaces, in canonical order.
 NAMESPACES: Final[tuple[Namespace, ...]] = ("harness_tools", "aq_commands", "plugin_tools")
 
+# Read scopes checked by a command in addition to its dispatch grant. These
+# names grant no command and never bypass the normal command capability check.
+AQ_FEATURE_CAPABILITIES: Final[frozenset[str]] = frozenset({"waits.fleet_summary"})
+
 #: Characters that make an entry a pattern rather than a name.
 WILDCARD_CHARS: Final = "*?"
 
@@ -218,10 +222,11 @@ DENY_ALL: Final[CapabilityPolicy] = CapabilityPolicy()
 
 
 #: What the legacy adapter falls back to for ``aq_commands`` (rules R1/R2 in
-#: :func:`capability_policy_for`).  It is exactly the server-owned session
-#: allowlist ``check_request_scope`` already admits, so neither rule grants a
-#: name that was not reachable before Package 0.
-AGENT_COMMAND_FALLBACK: Final[frozenset[str]] = AGENT_COMMAND_SET
+#: :func:`capability_policy_for`). Scoped operator wrappers require explicit
+#: authored grants and must never be inherited by a legacy worker.
+AGENT_COMMAND_FALLBACK: Final[frozenset[str]] = AGENT_COMMAND_SET - {
+    "operator_execute", "operator_preflight",
+}
 
 
 def _agent_command_set() -> frozenset[str]:
@@ -248,7 +253,8 @@ def capability_policy_for(
 
     R2 — no AQ names declared
         A legacy profile listing only harness tools has, today, exactly
-        ``AGENT_COMMAND_SET`` at the API boundary, so the adapter yields that.
+        the ordinary agent allowlist at the API boundary. The adapter yields
+        that set, excluding operator wrappers that require authored grants.
 
     Both set ``derived_from_legacy=True``, which routes them through the audit
     path instead of hard denial.  The *effective* grant is always the

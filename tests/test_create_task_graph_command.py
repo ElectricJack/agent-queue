@@ -15,17 +15,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.database import Database
 from src.models import AgentProfile, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures" / "task_graphs"
 
 
 @pytest.fixture
-async def setup(tmp_path):
-    db = Database(lease_dsn("graph.db"))
-    await db.initialize()
+async def setup(tmp_path, reuse_database):
+    db = await reuse_database("graph.db")
     await db.create_project(Project(id="p1", name="test"))
     for profile_id in ("coding", "planner"):
         await db.create_profile(AgentProfile(id=profile_id, name=profile_id))
@@ -46,7 +43,6 @@ async def setup(tmp_path):
     handler = CommandHandler(orch, config)
     handler._active_project_id = None
     yield handler, db, str(vault_root)
-    await db.close()
 
 
 def _graph_doc() -> dict:
@@ -498,9 +494,9 @@ class TestSubtasksNameNoRoute:
         assert await db.list_tasks(project_id="p1") == []
 
     @pytest.mark.parametrize("dry_run", [True, False])
-    async def test_a_project_default_is_not_consulted(self, setup, dry_run):
+    async def test_no_profile_is_consulted_for_an_unrouted_node(self, setup, dry_run):
+        """A node is filed unrouted, so no profile's grants are checked (§8)."""
         handler, db, _vault = setup
-        await db.update_project("p1", default_profile_id="coding")
         await db.update_profile("coding", aq_commands=["task_close"])
         result = await handler._cmd_create_task_graph(
             {"project_id": "p1", "graph": _subtask_graph(), "dry_run": dry_run}
