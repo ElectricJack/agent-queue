@@ -65,6 +65,7 @@ that wants splitting.
 | [Development setup](setup.md) | First checkout: Python, PostgreSQL, editable installs, Node, pre-commit. |
 | [Repository map](repo-map.md) | You know what you want to change but not where it lives. |
 | [Testing](testing.md) | Before you run anything. Test layout, markers, `aq test`, the PostgreSQL fixtures. |
+| [Testing the installer](installer-testing.md) | You are changing `aq install`, or signing off a platform. What is faked, and what still needs a real machine. |
 | [Code generation](codegen.md) | You changed the API surface, the playbook model, the CLI, or the frontend client. |
 | [Local checks](checks.md) | You are about to push and want the shortest sufficient check list. |
 | [Scripts](scripts.md) | You found a file in `scripts/` and want to know whether to trust it. |

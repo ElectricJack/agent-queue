@@ -1,0 +1,966 @@
+{
+  "session_attach": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_attach",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Provider '{session.provider}' is not available\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'attach failed: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'attach_command': command}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d5b2d8432779976094c1ee7f0d1f078fc551b165d562266e8ec6c7db5aea2d9d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_cleanup": {
+    "argument_reads_diagnostic_only": [
+      "dry_run",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_cleanup",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: project mismatch'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'dry_run': True, 'count': len(candidates), 'sessions': [self._session_dict(row) for row in candidates]}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'count': len(candidates), 'pruned': pruned, 'skipped': skipped}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:4744a2ddeaa5ea2fb9a521a7c60340dc7e887c49df18339707da4ae1d013160f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_drain_ack": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e",
+      "_session_project_scope_error": "sha256:530734a12b28384e3ee58cab64e34f1c2327a14099ef48a248117dabc6548d87"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_drain_ack",
+    "resource_gates": [
+      "live_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denied"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Provider '{session.provider}' is not available\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'could not record drain-ack: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'state': 'draining', 'note': 'acknowledged; the reconciler stops this session once the task is closed'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:1da18530fecec6b93b85a5c4bff733462e86e92d230db7d1bf2190aa7f91b054",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_checkpoint_c2.py",
+      "tests/test_checkpoint_c3.py",
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_input": {
+    "argument_reads_diagnostic_only": [
+      "key",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_input",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: direct terminal input requires global admin'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No live terminal; start or resume the agent first'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'This agent is no longer available'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'This session provider does not support terminal input'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Terminal input failed. Refresh the session before typing again.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'accepted': True}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:64412849824b43ee63b9e7e84b506cb72831647076e83aa9af3d6dc694be39d2",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_input.py"
+    ]
+  },
+  "session_kill": {
+    "argument_reads_diagnostic_only": [
+      "grace"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e",
+      "_session_project_scope_error": "sha256:530734a12b28384e3ee58cab64e34f1c2327a14099ef48a248117dabc6548d87"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_kill",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denied"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Provider '{session.provider}' is not available\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'kill failed: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'state': session.state, 'note': 'process signalled; the next reconciler tick classifies the exit and releases the task'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:95ac647de1b3607f3dc3f78f80d4aac54496f027844ec99ca53b333e3dfd5363",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_list": {
+    "argument_reads_diagnostic_only": [
+      "desired_state",
+      "lifecycle",
+      "limit",
+      "live_only",
+      "offset",
+      "project_id",
+      "state"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'limit must be an integer from 1 to 500'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'offset must be a non-negative integer'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'sessions': rows, 'count': len(rows), 'has_more': has_more}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:4456aeb6e193d71b4d12e5e6e3f6d86054378bc9ef9654418966ff661896c8c1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_logs": {
+    "argument_reads_diagnostic_only": [
+      "attempt_id",
+      "id",
+      "limit",
+      "lines",
+      "n",
+      "session_id",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_cmd_session_peek": "sha256:f0de1b69b1536708e393f9256ab20885b3ed63d009841a10b1f985886cf2f1a8",
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e",
+      "_session_project_scope_error": "sha256:530734a12b28384e3ee58cab64e34f1c2327a14099ef48a248117dabc6548d87"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_logs",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No such task session attempt'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Attempt does not belong to this session/task'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Session project is out of scope'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': denied}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'source': 'unavailable', 'entries': [], 'note': 'Legacy recording has no reliable end boundary.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'source': 'unavailable', 'entries': [], 'note': 'This task attempt is no longer available.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'source': 'unavailable', 'entries': [], 'note': 'This session is no longer available.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'source': 'transcript', 'entries': [{'uuid': e.uuid, 'parent_uuid': e.parent_uuid, 'type': e.type, 'text': e.text, 'model': e.model, 'usage': e.usage, 'ts': e.ts} for e in tail]}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'source': 'unavailable', 'entries': [], 'note': 'The recording for this ended session is unavailable.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:adbbb9112593852fd03657c05f43c0e3f90337dbc0fe5616452b86bb77da3c5c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py",
+      "tests/test_session_stream_api.py"
+    ]
+  },
+  "session_nudge": {
+    "argument_reads_diagnostic_only": [
+      "message",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_nudge",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'text is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Provider '{session.provider}' is not available\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'not_submitted', 'session_id': session.id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'session_id': session.id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'nudge failed: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'delivered': True}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:4ed7963609d079a992d461796a385fa2bb3de557f4b18cddae3d7d5f99b44644",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_peek": {
+    "argument_reads_diagnostic_only": [
+      "lines",
+      "n"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e",
+      "_session_project_scope_error": "sha256:530734a12b28384e3ee58cab64e34f1c2327a14099ef48a248117dabc6548d87"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_peek",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denied"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Provider '{session.provider}' is not available\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'output': '', 'note': f\"provider '{provider.name}' has no peek capability\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'peek failed: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'output': output}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f0de1b69b1536708e393f9256ab20885b3ed63d009841a10b1f985886cf2f1a8",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_prune": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_prune",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Only sleeping/stopped named sessions without a task can be pruned'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Provider unavailable; cannot confirm session is inactive'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Session still has a live terminal; stop it before pruning'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Session still has live marked processes; stop them before pruning'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Could not verify session is inactive'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Session changed during cleanup; refresh the flock'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Session changed during cleanup; refresh the flock'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e3edf015d3e672e3a808a22e3eac14c3f266f8647277a719c4e621a18cda2cb9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_show": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e",
+      "_session_project_scope_error": "sha256:530734a12b28384e3ee58cab64e34f1c2327a14099ef48a248117dabc6548d87"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_show",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denied"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session': self._session_dict(session)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:32c8c513248da087fc07c711b9c52838c95e3f66a78be1010e65eefb4400a03a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_sleep": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_sleep",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': current.id, 'desired_state': current.desired_state, 'state': current.state}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denied"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Stopped pool session retains work or lacks an instance token'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Provider unavailable; cannot confirm pool instance is inactive'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Pool instance is still live; sleep intent was not changed'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Pool instance still has live marked processes'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Could not verify pool instance is inactive'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Session sleep now writes intent via db.request_session_sleep; removed _set_desired_state is not a producer.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2d1e102977f99b7bdec9684f78dc7687a380f8ca414fafcc0a6a985e1d58085c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_cron.py",
+      "tests/test_pool_lifecycle_integration.py",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_token": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e",
+      "_session_project_scope_error": "sha256:530734a12b28384e3ee58cab64e34f1c2327a14099ef48a248117dabc6548d87"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_token",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denied"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'no token store on this daemon'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'a live named supervisor session is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'project_id': session.project_id, 'task_id': task_id, 'token': token}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7a7ffd8b3440512a4198e1ed8f8013f19deab3fae6465e41810e78ca8b5862cb",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "session_wake": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_wake",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'desired_state': 'running', 'state': session.state, 'note': 'the next reconciler tick starts it'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'only named sessions are wake-on-demand; a task session is started by the task lifecycle', 'session_id': session.id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"project '{session.project_id}' is paused; resume the project with `aq project resume {session.project_id}` to restart its supervisor\", 'session_id': session.id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"project '{session.project_id}' has its supervisor disabled; enable it with `aq project set {session.project_id} supervisor-enabled true`\", 'session_id': session.id}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:0b1c6bf6cf411dd5a3b0279c369e05b10551221f9af09127cad71c27c51608f3",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_cron.py",
+      "tests/test_session_commands.py",
+      "tests/test_project_supervisors.py"
+    ]
+  },
+  "supervisor_restart": {
+    "argument_reads_diagnostic_only": [
+      "name",
+      "resume",
+      "session_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_supervisor_restart",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name must be a supervisor messaging address'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'resume must be a boolean'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'session_id must be a non-empty string'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: supervisor restart'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'out of scope: {error}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: stale supervisor identity'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Supervisor session service is unavailable'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'name': name, 'state': session.state, 'mode': 'resume' if resume else 'fresh'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:924db076d107a45309f3ce02bc8f5db412c376e412512565b01266ef1d2724cc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_terminals.py",
+      "tests/test_supervisor_turn_health.py"
+    ]
+  },
+  "task_close": {
+    "argument_reads_diagnostic_only": [
+      "claim_next",
+      "wait"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
+      "_attempt_claim": "sha256:6890561d4fa4ab5c653cdb9d9d108ad6aef2278e0f509fbce8f1c4418d72c12b",
+      "_attempt_claim_once": "sha256:3036d42ed65aecd2f2a5f640e1a85cb028bfbb60b8f084262d4960493e62d24d",
+      "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
+      "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
+      "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
+      "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
+      "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
+      "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
+      "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
+      "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
+      "_simple": "sha256:3b1acbb957374551ded2f0ce7f134fab1e60c0944e77b3a9773ea71354df0f28"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_task_close",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "response"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'obsolete.disposition_conflict', 'error': 'choose one of --obsolete, --no-change or --done'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._close_task_obsolete(args, dispositions[0])"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: the next-claim helper uses the merged AdmissionView and dev preparation-result fences without changing the close return protocol.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:fb2726483301443e8e36942c0d9e3c5d79b68636697e6443ee66669bb29ce077",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_claim_commands.py",
+      "tests/test_hierarchy_commands.py",
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_integration_repair.py",
+      "tests/test_lifecycle_cleanup.py"
+    ]
+  },
+  "task_heartbeat": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "session_id",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_task_heartbeat",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'no task_id and the session holds no task'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"No task '{task_id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'ignored': 'wait_active'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'session_id': session.id if session else None, 'heartbeat_at': now, 'lease_expires_at': now + ttl if ttl > 0 else None, **({'blockers': [blocker]} if blocker else {})}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Repair assembly audit: retained prerequisite stack currentness adds optional blockers to the successful heartbeat result; ownership refusals and lease renewal retain their existing protocols.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a69c914810d28079f00b5ab3af6be12048fe4365ecc9a9c4cad841bd275cd16c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_claim_commands.py",
+      "tests/test_session_commands.py"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

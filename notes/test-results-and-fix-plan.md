@@ -1,5 +1,11 @@
 # Test Suite Results & Fix Plan
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Date:** 2026-03-12
 **Branch:** clear-impact/run-test-suite-and-generate-fix-plan
 **Overall:** 2 failed, 1,680 passed, 393 skipped, 4 warnings in 268.74s (4m 28s)
