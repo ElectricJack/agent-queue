@@ -47,6 +47,31 @@ class TestEventSchemasStructure:
 class TestExpectedEventTypes:
     """Verify that all known event types from the codebase are registered."""
 
+    def test_publication_notification_requires_verified_ref_facts(self):
+        event = "integration.publication_verified"
+        payload = {"project_id": "p", "batch_id": "b", "revision": 0,
+                   "repository_id": "repo", "target_ref": "refs/heads/main",
+                   "head_sha": "published", "candidate_sha": "tested",
+                   "publication_verified": True}
+        assert not validate_payload(event, payload, strict_extras=True)
+        for field in payload:
+            assert validate_payload(event, {k: v for k, v in payload.items() if k != field})
+        assert validate_payload(event, {**payload, "revision": "0"})
+        assert validate_payload(event, {**payload, "intent_id": "invented"}, strict_extras=True)
+
+    def test_batch_wakeups_bind_structure_and_allow_unassigned_reviewer(self):
+        from src.event_schemas import resolve_event_path
+
+        payload = {"project_id": "p", "batch_id": "b", "structure_revision": 1,
+                   "structure_digest": "d" * 64, "reviewer_task_id": None}
+        for event in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released"):
+            assert event in EVENT_SCHEMAS
+            assert not validate_payload(event, payload, strict_extras=True)
+            for field in payload:
+                assert resolve_event_path(event, field)
+                assert validate_payload(event, {k: v for k, v in payload.items() if k != field})
+            assert validate_payload(event, {**payload, "structure_revision": "1"})
+
     def test_task_lifecycle_events(self):
         expected = [
             "task.started",
@@ -398,6 +423,28 @@ class TestPoolEventSchemas:
         )
         assert errors == []
 
+    def test_pool_spilled_payload_validates(self):
+        """provider-failover D24 S7: one summary per sweep that spilled work."""
+        schema = get_schema("pool.spilled")
+        assert schema["required"] == ["batch_id", "moved"]
+        errors = validate_payload(
+            "pool.spilled",
+            {
+                "batch_id": "spill-20260927T1405",
+                "moved": 2,
+                "routes": [
+                    {
+                        "from_profile_id": "standard-high-opencode",
+                        "to_profile_id": "standard-high-claude",
+                        "count": 2,
+                    }
+                ],
+                "projects": ["agent-queue"],
+                "held": {"spill_no_target": 1},
+            },
+        )
+        assert errors == []
+
     def test_new_pool_events_are_registered(self):
-        for event_type in ("pool.placement_starved", "pool.bounds_rescoped"):
+        for event_type in ("pool.placement_starved", "pool.bounds_rescoped", "pool.spilled"):
             assert event_type in registered_event_types()

@@ -18,6 +18,8 @@ if os.name != "posix" or shutil.which("tmux") is None:
     pytest.skip("requires POSIX and tmux", allow_module_level=True)
 
 from src.sessions.provider import SessionSpec
+from src.sessions.harness_parser import Harness
+from src.sessions.spec import SessionSpecBuilder
 from src.sessions.tmux import TmuxCommandError, TmuxProvider
 
 pytestmark = pytest.mark.tmux
@@ -57,6 +59,9 @@ def fake_executable(directory, identity):
         "Path(sys.argv[1]).write_text(json.dumps({"
         f"'identity': {identity!r}, "
         "'path': os.environ.get('PATH'), "
+        "'inherited': {k: v for k, v in os.environ.items() "
+        "if k.startswith(('CLAUDE', 'AQ_STALE', 'DISCORD_'))}, "
+        "'terminal': all(os.environ.get(k) for k in ('TERM', 'TMUX', 'TMUX_PANE')), "
         "'other_env': os.environ.get('AQ_PATH_TEST'), 'args': sys.argv[2:]}))\n"
         "print('READY', flush=True)\n"
         "time.sleep(30)\n"
@@ -70,6 +75,13 @@ async def launch_and_observe(provider, tmp_path, command, env):
     # new-session -e PATH=... populated the session metadata correctly.
     await provider._tmux("new-session", "-d", "-s", "keeper", "/bin/sleep 30")
     await provider._tmux("set-option", "-g", "default-shell", "/bin/sh")
+    # Simulate a server surviving a daemon restart with an unsanitized env.
+    for key, value in {
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "20",
+        "AQ_STALE_CLAIM": "parent-epoch",
+        "DISCORD_BOT_TOKEN": "server-secret",
+    }.items():
+        await provider._tmux("set-environment", "-g", key, value)
     output = tmp_path / "observed.json"
     literal_arg = "literal '$PATH; $(touch argument-injected)"
     spec = SessionSpec(
@@ -117,6 +129,8 @@ async def test_tmux_exec_uses_validated_session_path(
     assert observed == {
         "identity": "session-path-executable",
         "path": session_path,
+        "inherited": {},
+        "terminal": True,
         "other_env": other_env,
         "args": [literal_arg],
     }
@@ -140,6 +154,49 @@ async def test_tmux_exec_uses_preflight_default_when_path_is_absent(
     assert observed == {
         "identity": "absolute-executable",
         "path": os.defpath,
+        "inherited": {},
+        "terminal": True,
         "other_env": "retained",
         "args": [literal_arg],
     }
+
+
+async def test_tmux_exec_preserves_explicit_session_values(isolated_tmux, tmp_path):
+    binary = fake_executable(tmp_path / "tools", "explicit-environment")
+    observed, _ = await launch_and_observe(
+        isolated_tmux,
+        tmp_path,
+        str(binary),
+        {
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000",
+            "AQ_STALE_CLAIM": "explicit-fresh-epoch",
+        },
+    )
+    assert observed["inherited"] == {
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000",
+        "AQ_STALE_CLAIM": "explicit-fresh-epoch",
+    }
+    assert observed["terminal"] is True
+
+
+@pytest.mark.parametrize("harness_id", ["codex", "claude"])
+async def test_tmux_launches_multi_megabyte_named_prompt(isolated_tmux, tmp_path, harness_id):
+    binary = fake_executable(tmp_path / "tools", "large-prompt-fixer")
+    output = tmp_path / "observed.json"
+    prompt = "Frozen batch evidence: é\n" * 100_000
+    assert len(prompt.encode()) > 2 * 1024 * 1024
+    harness = Harness(id=harness_id, command=str(binary), args=(str(output),),
+                      ready_prompt_prefix="READY", process_names=("python",))
+    profile = SimpleNamespace(id="batch-fixer", harness=harness_id, lifecycle="named")
+    spec = SessionSpecBuilder(isolated_tmux.config).build_named_spec(
+        profile=profile, harness=harness, project_id="p", work_dir=str(tmp_path),
+        session_id="large-prompt", instance_token="large-token", prompt=prompt,
+    )
+    await isolated_tmux.start(spec)
+    observed = json.loads(output.read_text())
+    assert observed["identity"] == "large-prompt-fixer"
+    assert len(observed["args"][-1].encode()) < 1024
+    rel, content = next((rel, content) for rel, content in spec.files if rel.endswith(".txt"))
+    assert rel in observed["args"][-1]
+    assert content == prompt
+    assert (tmp_path / rel).read_text(encoding="utf-8") == prompt

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, or_, select, text, union_all
+from sqlalchemy import cast, func, or_, select, text, union_all
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.tables import (
     archived_tasks,
-    development_deliveries,
     digest_windows,
     escalations,
+    events,
     projects,
     provider_availability_transitions,
     repos,
@@ -27,7 +28,8 @@ PROJECT_LIMIT = 100
 
 
 async def read_morning_snapshot(
-    engine: Any, *, since: float, until: float, project_ids: tuple[str, ...] | None
+    engine: Any, *, since: float, until: float, project_ids: tuple[str, ...] | None,
+    channel_id: str | None = None
 ) -> dict[str, Any]:
     """Savepoints isolate a failed source without losing the shared snapshot.
 
@@ -65,6 +67,12 @@ async def read_morning_snapshot(
                 output["gaps"].append({"source": "projects", "reason": "row_limit"})
             selected_ids = tuple(row["id"] for row in output["projects"])
 
+            from src.database.queries.wait_queries import pending_human_waits
+
+            output["waiting_on_you"] = await pending_human_waits(
+                conn, now=until, project_ids=selected_ids,
+            )
+
             async def read(name, stmt):
                 try:
                     async with conn.begin_nested():
@@ -76,6 +84,23 @@ async def read_morning_snapshot(
                     # Diagnostics are stable and never echo SQL, paths or credentials.
                     output["sources"][name] = []
                     output["gaps"].append({"source": name, "reason": "read_failed"})
+
+            from src.database.queries.ask_queries import AskQueriesMixin
+
+            try:
+                async with conn.begin_nested():
+                    asks = await AskQueriesMixin().list_asks_snapshot(
+                        conn=conn, project_ids=selected_ids, public=True, channel_id=channel_id, limit=100,
+                    )
+                output["sources"]["asks"] = asks["items"]
+                # A read clock is not new report evidence; preserve stable preview hashes.
+                output["needs_you"] = {k: v for k, v in asks.items()
+                                       if k not in {"items", "snapshot_at"}}
+                if asks["next_cursor"] or asks["source_health"] != "healthy":
+                    output["gaps"].append({"source": "asks", "reason": "refreshing_or_truncated"})
+            except Exception:
+                output["needs_you"] = {"count": None, "source_health": "degraded"}
+                output["gaps"].append({"source": "asks", "reason": "read_failed"})
 
             completion_at = task_completion_records.c.completed_at
             await read(
@@ -92,8 +117,44 @@ async def read_morning_snapshot(
                     task_completion_records.c.id,
                 ),
             )
+            # Publisher operations are append-only event revisions; the latest
+            # one per operation stands for it. Its state is an action outcome,
+            # never delivery: the brief proves landing from git.
+            operation = cast(events.c.payload, JSONB)
+            identity = operation["id"].as_string()
+            latest = (
+                select(
+                    identity.label("id"),
+                    events.c.project_id,
+                    *(
+                        operation[key].as_string().label(key)
+                        for key in (
+                            "repository_id", "target_ref", "expected_sha", "prepared_sha",
+                            "state", "reason",
+                        )
+                    ),
+                    operation["manifest"].label("manifest"),
+                    operation["evidence"].label("evidence"),
+                    operation["created_at"].as_float().label("created_at"),
+                    operation["updated_at"].as_float().label("updated_at"),
+                )
+                .where(
+                    events.c.event_type == "development.operation",
+                    events.c.project_id.in_(selected_ids),
+                )
+                .distinct(identity)
+                .order_by(identity, events.c.id.desc())
+                .subquery()
+            )
+            await read(
+                "deliveries",
+                bounded(
+                    select(latest).where(latest.c.updated_at >= since, latest.c.updated_at < until),
+                    latest.c.updated_at,
+                    latest.c.id,
+                ),
+            )
             for name, table, at in (
-                ("deliveries", development_deliveries, development_deliveries.c.updated_at),
                 ("escalations", escalations, escalations.c.updated_at),
                 ("reroutes", task_reroutes, task_reroutes.c.at),
             ):
