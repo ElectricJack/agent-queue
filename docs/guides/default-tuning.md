@@ -113,11 +113,11 @@ The tuner sets `playbooks.enabled: true`. Playbooks are how AQ routes a task to
 a worker (`default-assignment-routing`), escalates a blocked task
 (`blocked-task-escalation`) and probes provider usage
 (`provider-usage-probe`); a fresh daemon activates those shared system
-playbooks on its first start. With playbooks off, a task created without an
-explicit profile and intelligence class is never routed, and Settings →
-Playbooks is empty. The code default is `false` only because it predates the
-Playbook V2 runtime. Set `playbooks.enabled: false` to run with no playbooks,
-in which case every task must name its profile and class.
+playbooks on its first start. The routing playbook is the only writer of a
+task's route (mandatory task routing), so with playbooks off no new task is
+ever routed or run, and Settings → Playbooks is empty. The code default is
+`false` only because it predates the Playbook V2 runtime.
+`playbooks.enabled: false` suits a daemon that runs no workers at all.
 
 ## Pull-based worker pools
 
@@ -189,14 +189,13 @@ an unpriced column.
 
 ## Relationship to portable bundles
 
-`aq system export-portable-config` carries this tuning (and your global agent
-profiles) to another install; see the module docstring in
-`src/portable_config.py` for the allowlist. Because every tuned value is
+`aq system export-portable-config` carries this tuning, global profiles,
+intelligence classes, configured pools, projects and policy sources to another
+install; see [portable setup configuration](../specs/portable-config.md).
+Because every tuned value is
 either a constant or a function of cores and RAM, the recommendation exports
 cleanly with no exclusions — a test asserts it. The `integration` section
-travels as six keys only (`default_mode`, `merge_ci_policy`,
-`merge_required_checks`, `merge_require_up_to_date`, `owner_recovery_sweep`,
-`publisher_stall_after`); `github_app` and
+travels with merge, reconciler and service timeout policy; `github_app` and
 `scratch_probe` name one installation's own app, repository and key paths and
 are reported as excluded rather than shipped.
 

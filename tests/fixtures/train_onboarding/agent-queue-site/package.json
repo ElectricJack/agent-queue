@@ -1,0 +1,42 @@
+{
+  "name": "agent-queue-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.18.0",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @aqw/site-agent-queue dev",
+    "build": "pnpm -r --sequential build",
+    "typecheck": "pnpm -r --sequential typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "tokens": "pnpm --filter @aqw/ui tokens",
+    "test": "pnpm -r --sequential test",
+    "lighthouse": "lhci autorun --config=./lighthouserc.json",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@lhci/cli": "^0.15.1",
+    "eslint": "^10.10.0",
+    "eslint-plugin-astro": "^3.1.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "prettier-plugin-astro": "^1.0.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
+  }
+}
