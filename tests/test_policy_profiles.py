@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import io
 import json
@@ -17,11 +18,98 @@ from src.event_bus import EventBus
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.database.tables import projects
 from src.policy_profiles.archive import files, pack, read_bundle, write_bundle
-from src.policy_profiles.models import Bundle, PlaybookPolicy, PromotionPolicy, TemplatePolicy
+from src.policy_profiles.models import (
+    Bundle, IntegrationSettings, PlaybookPolicy, PromotionPolicy, TemplatePolicy,
+)
 from src.policy_profiles.service import item
+from src.profiles.sync import sync_profile_text_to_db
+from tests.test_review_commands import decide
 
 MORNING = Path("tests/fixtures/playbooks/v2/morning-report")
 FLOW = [{"id": "release", "source": "main", "target": "stable", "type": "request"}]
+
+
+@pytest.mark.parametrize("suffix", ["", ".aqpolicy"])
+def test_builtin_default_roundtrips_as_an_exported_profile(tmp_path, suffix):
+    from src.policy_profiles.builtin import default_policy
+    from src.policy_profiles.service import validate_payload
+
+    bundle = default_policy()
+    assert read_bundle(pack(bundle)) == bundle
+    destination = tmp_path / ("default" + suffix)
+    write_bundle(destination, bundle)
+    assert read_bundle(str(destination)) == bundle
+    assert bundle.format == "aq.policy.v1" and bundle.version == 1
+    assert bundle.name == "default"
+    assert {entry.id for entry in bundle.items} == {
+        "playbook:project:default-pipeline",
+        "playbook:project:supervisor-failure-triage",
+        "playbook:system:default-assignment-routing",
+        "routing:project:preferences",
+        "template:project:spec.default",
+        "template:project:plan.default",
+    }
+    assert bundle.placeholders == []
+    for entry in bundle.items:
+        validate_payload(entry.payload)
+        if entry.type == "playbook":
+            shipped = Path("src/prompts/reviewed_playbooks") / entry.name
+            assert entry.payload.source == (shipped / "source.md").read_text()
+            assert entry.payload.artifact == json.loads((shipped / "artifact.json").read_text())
+
+
+@pytest.mark.parametrize("source", ["builtin", "archive", "directory", "zip", "bundle"])
+async def test_builtin_default_uses_preview_placement_review_and_no_activation(env, source):
+    from src.policy_profiles.builtin import default_policy
+
+    handler, vault, tmp_path = env
+    bundle = default_policy()
+    args = {"project_id": "target"}
+    if source == "builtin":
+        args["builtin"] = "default"
+    elif source == "archive":
+        args["archive"] = base64.b64encode(pack(bundle)).decode()
+    elif source == "bundle":
+        args["bundle"] = bundle.model_dump(mode="json")
+    else:
+        path = tmp_path / ("default.aqpolicy" if source == "zip" else "default")
+        write_bundle(path, bundle)
+        args["path"] = str(path)
+    existing = put(vault, "projects/source/templates/spec/operator.md", "Existing project policy")
+    projects_before = {pid: await handler.db.get_project(pid) for pid in ("source", "target")}
+    before = await handler.db.list_playbook_activations()
+    preview = await handler.execute("policy_diff", args)
+    assert preview["success"], preview
+    assert not (vault / "projects/target/policy").exists()
+    assert all(not row["selected"] for row in preview["items"] if row["original_scope"] == "system")
+    selections = {
+        row["id"]: {
+            "scope": "skip" if row["original_scope"] == "system" else "project",
+            "expected_checksum": row["current_checksum"],
+        }
+        for row in preview["items"]
+    }
+    result = await handler.execute("policy_apply", {**args, "selections": selections})
+    assert result["success"], result
+    assert len(result["reviews"]) == 2
+    assert result["pending_configuration"] == ["routing:project:preferences"]
+    assert result["activated"] is False
+    assert await handler.db.list_playbook_activations() == before
+    assert (vault / "projects/target/templates/spec/default.md").is_file()
+    assert not (vault / "system/playbooks/default-assignment-routing.md").exists()
+    for review in result["reviews"]:
+        revision = await handler.db.get_review_revision(review["review_id"], 1)
+        assert revision["playbook"]["playbook_id"].startswith("target.")
+        assert not revision["playbook"]["activate_on_approval"]
+        approved = await decide(handler, {
+            "review_id": review["review_id"], "revision": 1, "decision": "approve",
+        })
+        assert approved["success"], approved
+        assert approved["playbook"]["stored"] and not approved["playbook"]["activated"]
+    assert await handler.db.list_playbook_activations() == before
+    assert {pid: await handler.db.get_project(pid) for pid in projects_before} == projects_before
+    assert existing.read_text() == "Existing project policy"
+    assert not (vault / "projects/source/templates/spec/default.md").exists()
 
 
 def put(root, relative, text):
@@ -72,8 +160,8 @@ async def reviewed(handler, vault, identifier="morning-report"):
         },
     )
     assert submitted["success"], submitted
-    approved = await handler.execute(
-        "review_decide", {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"}
+    approved = await decide(
+        handler, {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"}
     )
     assert approved["success"] and approved["playbook"]["activated"], approved
 
@@ -216,6 +304,70 @@ def simple_bundle(*entries, placeholders=()):
         items=list(entries),
         placeholders=list(placeholders),
     )
+
+
+@pytest.mark.parametrize("mode", ["disabled", "observe", "hierarchy", "train", "development"])
+def test_integration_settings_modes_validate_and_roundtrip(mode):
+    payload = IntegrationSettings(
+        engine="active", hierarchical_integration_mode=mode, default_branch="main",
+    )
+    bundle = simple_bundle(item("integration", "project", payload))
+    assert Bundle.model_validate_json(bundle.model_dump_json()) == bundle
+    assert read_bundle(pack(bundle)) == bundle
+    assert read_bundle(pack(bundle)).items[0].payload.hierarchical_integration_mode == mode
+
+
+def test_integration_settings_rejects_unknown_mode():
+    with pytest.raises(ValidationError, match="hierarchical_integration_mode"):
+        IntegrationSettings(
+            engine="active", hierarchical_integration_mode="unknown", default_branch="main",
+        )
+
+
+async def test_apply_development_mode_matches_project_configuration(env):
+    from types import SimpleNamespace
+
+    handler, _, _ = env
+    handler.config.integration.git_first = "active"
+    handler.orchestrator.integration_service = SimpleNamespace(
+        delivery_modes=lambda: {"development"},
+    )
+    for pid in ("source", "target"):
+        await handler.db.create_repo(RepoConfig(
+            id=pid + "-repo", project_id=pid, source_type=RepoSourceType.CLONE,
+            url=f"https://github.com/acme/{pid}.git", default_branch="main",
+        ))
+        await handler.db.update_project(pid, integration_repository_id=pid + "-repo")
+    payload = IntegrationSettings(
+        engine="active", hierarchical_integration_mode="development", default_branch="main",
+        integration_repository_id="{{integration_repository}}",
+    )
+    from src.policy_profiles.models import Placeholder
+
+    bundle = simple_bundle(
+        item("integration", "project", payload),
+        placeholders=[Placeholder(name="integration_repository", description="Target repository")],
+    )
+    args, data = await preview(handler, read_bundle(pack(bundle)).model_dump(mode="json"))
+    acknowledge(args, data, overwrite=True)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    assert result["configured_integration"] == ["integration_settings:project:integration"]
+    direct = await handler.execute("edit_project", {
+        "project_id": "source", "hierarchical_integration_mode": "development",
+        "integration_mode": "pull_request", "integration_repository_id": "source-repo",
+        "promotion_flow": None, "expected_integration_generation": 0,
+    })
+    assert direct["outcome"] == "configured", direct
+    source, target = await handler.db.get_project("source"), await handler.db.get_project("target")
+    assert target.hierarchical_integration_mode == "development"
+    assert target.integration_repository_id == "target-repo"
+    for field in (
+        "hierarchical_integration_mode", "hierarchical_integration_desired_mode",
+        "hierarchical_integration_draining", "hierarchical_integration_generation",
+        "hierarchical_integration_policy", "integration_mode",
+    ):
+        assert getattr(target, field) == getattr(source, field), field
 
 
 async def train_pair(handler):
@@ -537,6 +689,7 @@ nodes:
         "ci_test",
         "routing",
         "template",
+        "project_settings",
     }
     text = json.dumps(bundle)
     assert "SECRET" not in text and "PERSONAL" not in text and "github_app_id" not in text
@@ -583,8 +736,8 @@ nodes:
     review = await handler.db.get_review_revision(applied["reviews"][0]["review_id"], 1)
     assert review["playbook"]["playbook_id"] == "target.morning-report"
     assert not review["playbook"]["activate_on_approval"]
-    approved = await handler.execute(
-        "review_decide",
+    approved = await decide(
+        handler,
         {"review_id": applied["reviews"][0]["review_id"], "revision": 1, "decision": "approve"},
     )
     assert (
@@ -724,13 +877,22 @@ async def test_export_preview_acknowledgement_is_required_and_checked(env):
     )
 
 
-@pytest.mark.parametrize("missing_source", [False, True])
-async def test_typed_routes_support_dashboard_archive_and_operator_authority(env, missing_source):
+@pytest.mark.parametrize(
+    "source,missing_source", [("archive", False), ("archive", True), ("builtin", False)]
+)
+async def test_typed_routes_support_dashboard_archive_and_operator_authority(env, source, missing_source):
     from src.api.app import create_app
     from src.api import dependencies as deps
     from src.commands.principal import ExecutionPrincipal, principal_context
 
     handler, vault, _ = env
+    if source == "builtin":
+        from src.profiles.sync import sync_profile_text_to_db
+
+        # The assignment router needs the profile installed by normal daemon setup.
+        compiler = Path("src/profiles/defaults/playbook-compiler/profile.md").read_text()
+        synced = await sync_profile_text_to_db(compiler, handler.db)
+        assert synced.success, synced.errors
     if missing_source:
         await reviewed(handler, vault, "api-lost-source")
         (await legacy_source_path(handler, "api-lost-source")).unlink()
@@ -751,13 +913,22 @@ async def test_typed_routes_support_dashboard_archive_and_operator_authority(env
             assert bool(exported.json()["warnings"]) == missing_source
             if missing_source:
                 assert exported.json()["warnings"][0]["playbook_id"] == "api-lost-source"
-            args = {"project_id": "target", "archive": exported.json()["archive"]}
+            args = {"project_id": "target"}
+            if source == "builtin":
+                args["builtin"] = "default"
+            else:
+                args["archive"] = exported.json()["archive"]
             diff = await client.post("/api/policy/diff", json=args)
             assert diff.status_code == 200, diff.text
             data = diff.json()
             acknowledge(args, data)
             applied = await client.post("/api/policy/apply", json=args)
             assert applied.status_code == 200, applied.text
+            assert applied.json()["activated"] is False
+            invalid_sources = await client.post(
+                "/api/policy/apply", json={**args, "path": "/unused/policy.aqpolicy"}
+            )
+            assert invalid_sources.status_code == 422
             invalid = await client.post(
                 "/api/policy/diff", json={"project_id": "target", "archive": "bogus"}
             )
@@ -897,8 +1068,8 @@ async def test_system_assignment_router_default_pipeline_and_routing_preferences
             },
         )
         assert submitted["success"], submitted
-        approved = await handler.execute(
-            "review_decide",
+        approved = await decide(
+            handler,
             {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"},
         )
         assert approved["success"] and approved["playbook"]["activated"], approved
@@ -1036,6 +1207,91 @@ Local personal reflection
         },
     )
     assert not result["success"] and not (vault / "agent-types/invalid/profile.md").exists()
+
+
+async def test_policy_roundtrip_includes_classes_and_live_derived_pool_settings(env):
+    from src.profiles.catalog import CatalogProfile, render_rung_stub
+    from src.profiles.parser import update_config_keys
+
+    handler, vault, _ = env
+    class_text = '''---
+id: portable
+name: Portable
+customized: true
+---
+```json
+{"codex":{"model":"operator-model","reasoning_effort":"high"}}
+```
+'''
+    class_path = put(vault, "intelligence-classes/portable.md", class_text)
+    template = put(vault, "agent-types/worker-codex/profile.md", '''---
+id: worker-codex
+name: Worker
+template: true
+---
+## Config
+```json
+{"harness":"codex","lifecycle":"pool","min_active":2,"max_active":4}
+```
+''')
+    rung = render_rung_stub(CatalogProfile(
+        id="portable-codex", provider_id="codex", harness="codex", intelligence_class="portable",
+        name="Portable worker", source_profile_id="worker-codex",
+    ))
+    rung = update_config_keys(rung, {"lifecycle": "pool", "min_active": 2, "max_active": 4})
+    path = put(vault, "agent-types/portable-codex/profile.md", rung)
+    assert (await sync_profile_text_to_db(rung, handler.db, source_path=str(path))).success
+    await handler.db.update_profile(
+        "portable-codex", enabled=False, min_active=1, max_active=None,
+        min_per_project=1, max_claims_per_session=5,
+    )
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert result["success"], result
+    bundle = result["bundle"]
+    by_id = {entry["id"]: entry for entry in bundle["items"]}
+    assert "agent_settings:system:portable-codex" not in by_id
+    settings = by_id["pool:system:portable-codex"]["payload"]["settings"]
+    assert settings["enabled"] is False and settings["max_active"] is None
+    assert settings["extends"] == "worker-codex" and settings["default_class"] == "portable"
+    assert "intelligence_class:system:portable" in by_id
+    assert "project_settings:project:settings" in by_id
+    await handler.db.delete_profile("portable-codex")
+    for source in (path, template, class_path):
+        source.unlink()
+    selections = {
+        entry["id"]: {"scope": "global" if entry["original_scope"] == "system" else "project"}
+        for entry in bundle["items"]
+    }
+    args, data = await preview(handler, bundle, selections=selections)
+    acknowledge(args, data, scope="global", overwrite=True)
+    # Project metadata and routing remain destination-project drafts.
+    for entry in bundle["items"]:
+        if entry["original_scope"] == "project":
+            args["selections"][entry["id"]]["scope"] = "project"
+    applied = await handler.execute("policy_apply", args)
+    assert applied["success"], applied
+    restored = await handler.db.get_profile("portable-codex")
+    assert (restored.enabled, restored.min_active, restored.max_active,
+            restored.min_per_project, restored.max_claims_per_session) == (False, 1, None, 1, 5)
+    assert restored.default_class == "portable" and restored.harness == "codex"
+    assert "operator-model" in class_path.read_text()
+    assert "project_settings:project:settings" in applied["pending_configuration"]
+
+
+def test_older_policy_agent_payload_checksums_still_roundtrip():
+    from src.policy_profiles.models import AgentConfig, PolicyAgentSettings, checksum
+
+    bundle = simple_bundle(item("worker", "system", PolicyAgentSettings(
+        name="Worker", config=AgentConfig(harness="codex"),
+    ))).model_dump(mode="json")
+    payload = bundle["items"][0]["payload"]
+    payload.pop("pool")
+    for key in ("enabled", "min_active", "max_active", "min_per_project", "max_claims_per_session",
+                "mode", "wake_mode", "idle_timeout", "max_session_age", "allow_base_checkout"):
+        payload["config"].pop(key)
+    bundle["items"][0]["checksum"] = checksum(payload)
+    verified = Bundle.model_validate(bundle)
+    assert read_bundle(pack(verified)) == verified
 
 
 async def test_global_profile_sync_failure_retains_draft_and_identical_retry_syncs(
