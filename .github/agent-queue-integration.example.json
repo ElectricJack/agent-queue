@@ -4,6 +4,10 @@
   "canonical_repository_id": "REPLACE_WITH_REPO_CONFIG_ID",
   "ci_producer_app_id": 0,
   "full_name": "REPLACE_OWNER/REPLACE_REPOSITORY",
+  "promotion_attestation_names": [
+    "Agent Queue Promotion Attestation (staging)",
+    "Agent Queue Promotion Attestation (release)"
+  ],
   "repository_id": 0,
   "required_checks": {
     "names": [
