@@ -1,0 +1,79 @@
+{
+  "shared_definitions": {
+    "src/commands/claim_commands.py::ClaimCommandsMixin._attempt_claim_once": {
+      "baseline_span": [
+        534,
+        782
+      ],
+      "landing_span": [
+        534,
+        782
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
+      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._claim_request": {
+      "reason": "Refreshes development-mode long-poll eligibility on bounded intervals because Git can move without daemon events; charges the complete claim request body."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._cmd_task_claim": {
+      "baseline_span": [
+        228,
+        393
+      ],
+      "landing_span": [
+        228,
+        393
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._delivered_source_repairs": {
+      "baseline_span": [
+        505,
+        533
+      ],
+      "landing_span": [
+        505,
+        533
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked": {
+      "baseline_span": [
+        905,
+        1150
+      ],
+      "landing_span": [
+        905,
+        1150
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::_retryable_preparation_error": {
+      "reason": "Treats integration BranchLockTimeout as retryable alongside serialization and deadlock conflicts; its integration lock handling makes the full helper owned."
+    },
+    "src/commands/claim_commands.py::_task_block": {
+      "baseline_span": [
+        50,
+        95
+      ],
+      "landing_span": [
+        50,
+        95
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode": {
+      "baseline_span": [
+        19,
+        19
+      ],
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

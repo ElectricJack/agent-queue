@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 _KIND_DIRS = {"spec": "specs", "plan": "plans", "other": "specs"}
 
@@ -64,7 +65,24 @@ def body_sha256(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def frontmatter_for(review: dict, playbook: dict | None = None) -> dict:
+def spec_kind_from_content(text: str, default: str | None = None) -> str | None:
+    """Read the author's classification; legacy documents can omit it."""
+    frontmatter, _ = split_frontmatter(text)
+    try:
+        fields = YAML(typ="safe").load(frontmatter) if frontmatter is not None else {}
+    except YAMLError as exc:
+        raise ValueError("invalid spec frontmatter") from exc
+    if fields is not None and not isinstance(fields, dict):
+        raise ValueError("spec frontmatter must be a mapping")
+    value = (fields or {}).get("spec_kind", default)
+    if value not in (None, "design", "implementation"):
+        raise ValueError("spec_kind must be design or implementation")
+    return value
+
+
+def frontmatter_for(
+    review: dict, playbook: dict | None = None, spec_kind: str | None = None,
+) -> dict:
     """The frontmatter of *review*'s vault file at its current revision.
 
     *playbook* is the current revision's playbook pin, if any: the file then
@@ -85,6 +103,8 @@ def frontmatter_for(review: dict, playbook: dict | None = None) -> dict:
         "author_task": review["author_task_id"] or "",
         "date": created,
     }
+    if spec_kind is not None:
+        frontmatter["spec_kind"] = spec_kind
     if playbook:
         frontmatter["playbook"] = playbook.get("playbook_id", "")
         frontmatter["artifact_sha256"] = playbook.get("artifact_sha256", "")

@@ -1,0 +1,173 @@
+{
+  "provider_allocation_apply": {
+    "argument_reads_diagnostic_only": [
+      "allow_pinned_wait",
+      "authorize_busy_interrupt",
+      "preview_token"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_allocation_scope_refusal": "sha256:273854a094cfe9bd6bb7c21bc1cd10ccac09f96c9c9ce87281fa4b3abcfcbd09",
+      "_allocation_worker_refusal": "sha256:f3837c367ab3d82be04733300d408868a61fbaa268ef5eda66093539564f6ec0",
+      "_apply_allocation": "sha256:b5958e6c66dd04896b92a4ea3d72678af7febc98ab92e953269d0fedd06c16a9"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_allocation_commands.py:ProviderAllocationCommandsMixin._cmd_provider_allocation_apply",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'orchestrator is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'preview_token is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'allow_pinned_wait must be a boolean'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'authorize_busy_interrupt must be a list of session or task ids'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'preview_unknown', 'error': 'preview token is unknown or expired (tokens are single-use and last until the daemon restarts); run provider_allocation_preview again'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'preview_stale', 'error': f'preview_stale: the previewed request no longer applies: {preview.get('error')}', 'preview': None}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'preview_stale', 'error': 'preview_stale: the fleet changed since the preview; review the fresh preview and apply its token', 'preview': preview}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'pinned_wait_unacknowledged', 'error': '; '.join((warning['message'] for warning in waiting)), 'preview': preview}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': code, 'error': message, 'preview': preview}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._apply_allocation(orchestrator, preview)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:dac592aefa3899fcfb90e0a302fdf8123148b12b6cb3378c0804550ef13087e7",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_provider_allocation.py"
+    ]
+  },
+  "provider_allocation_preview": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_allocation_commands.py:ProviderAllocationCommandsMixin._cmd_provider_allocation_preview",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'orchestrator is not running'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "preview"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:4961afe9cbb5454b6cbab7372b32bc0a2452d4bbd83bf73f36eff6bc158a34ba",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "provider_allocation_status": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "provider"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/provider_allocation_commands.py:ProviderAllocationCommandsMixin._cmd_provider_allocation_status",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'orchestrator is not running'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"out of scope: provider_allocation_status reads only the caller's project\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{view}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'unknown provider {args['provider']!r}; known providers: {known}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "status_view(snapshot, visible_projects=visible, provider=provider, project_id=view, redacted=scoped)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:d0ff4d18d926068a389a3dd66e5f556a6c2fb1deef0fd072e7a22be8674fef7c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}
