@@ -376,9 +376,15 @@ per affected parent and invalidates its aggregate verification and review eligib
 invalidates both old and new parents. Changes below a completed ancestor require explicitly
 reopening the affected ancestor chain first; completed ancestors cannot silently remain eligible.
 
-Reparenting is allowed only before the child has acquired a workspace, created a branch, or
-received a delivery receipt. It replaces the unused branch reservation with a checkpoint from the
-new parent. Once code work starts, keep its delivery target fixed; transfer later work through a
+The ordinary reparent command uses this integration transaction, including moves to root.
+An unheld leaf with no delivery receipt may move while its reservation is unused, or while
+fresh Git evidence proves its published branch is still exactly its recorded base (no commits).
+Live claims, locked workspaces, attached owners, completed work, descendants and sealed
+ancestors refuse the move. Both affected parents invalidate verification. An unused reservation
+is replaced from the new parent checkpoint or the default branch for root. A materialized
+no-commit branch keeps its exact base and ref; another parent must have that same checkpoint,
+and root delivery targets the default branch. The retired origin remains audit history.
+Once code work starts, keep its delivery target fixed; transfer later work through a
 new task instead. A delivered task cannot be reopened for additional code: create a follow-up task
 from its current parent's checkpoint. A root already sealed into a batch, and its descendants,
 cannot be reopened, reparented, or have delivery dispositions changed until the batch is terminal;
@@ -792,6 +798,25 @@ epoch. This saves no new work, changes no resume point, and never admits an acti
 dirty checkout or unpublished detached HEAD. A failed preparation releases to READY;
 an external task stop uses the same proof and returns that unactivated task to READY too.
 
+A retained failed preparation may resume its own `handoff_pending` row in the same
+pool session. The retry must prove the exact session instance, preparing claim epoch,
+workspace acquisition receipt and generation, task assignment and canonical branch.
+It uses the pool clean/published checkout proof and a fenced self-transfer, restoring
+the same task and role to `reserved` before retrying preparation. It never requires
+the pool session to stop. If proof fails, retain the claim and workspace binding;
+the generic branch-busy retry ladder must not erase that evidence.
+
+The operator or project supervisor may preview this recovery with
+`aq integration release-owner --task-id TASK_ID --self-owned`, then apply it with
+`--apply`. This opt-in requires a retained preparation-failure record naming the
+exact instance, epoch, workspace and generation. It also works for a retained
+preparation whose repeated failures requested drain and disabled its workspace.
+An active claim, changed identity, unproved child cleanup, dirty or unpublished
+checkout is refused. Preview neither detaches nor changes ownership. Apply records
+the recovery and restores the reservation while retaining the claim, session and
+workspace locks; ordinary preparation or teardown still owns their lifecycle.
+The normal stopped-writer `release-owner` behavior remains the default.
+
 When the ordinary stop proof is unavailable, stop retains every binding and names the exact
 writer session and the supervisor recovery commands. `aq session kill` requests termination;
 `aq integration release-owner --task-id TASK_ID --dry-run` previews the provider-backed,
@@ -1189,6 +1214,9 @@ that keeps its frozen destinations and can be replayed. The reviewed event types
 playbook consumes are instead marked delivered with an audit reason, and only once the playbook
 runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
+Graceful runtime shutdown settles any in-flight pending-event claim before releasing
+its dispatch lease, including cancellation while the claim transaction is returning.
+A restarted consumer can then replay the retained event without waiting for lease expiry.
 
 ## 12. Events, gates, and operator controls
 

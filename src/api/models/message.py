@@ -54,6 +54,7 @@ class MessageModel(BaseModel):
     via: str | None = None
     body_kind: str | None = None
     pane_open: dict | None = None
+    provenance: dict | None = None
 
 
 class MessageReplyResponse(BaseModel):
