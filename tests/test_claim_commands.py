@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -156,7 +157,10 @@ async def handler(db, config):
     orch.db = db
     orch.git = MagicMock()
     orch._worktree_slots = MagicMock(
-        return_value=MagicMock(reset_slot_for_task=AsyncMock(return_value="aq/t"))
+        return_value=MagicMock(
+            reset_slot_for_task=AsyncMock(return_value="aq/t"),
+            prefetch_slot_for_task=AsyncMock(),
+        )
     )
     orch._last_scheduler_state = None  # no snapshot yet → admissible
     # ``orch.git`` is a bare MagicMock (no real checkout exists under
@@ -754,13 +758,11 @@ async def test_repair_start_allows_git_import_beyond_publication_bound(
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
 
 
-@pytest.mark.parametrize("stage", ["repair_start", "slot_reset"])
 async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_retries(
-    handler, db, tmp_path, stage,
+    handler, db, tmp_path,
 ):
     env = await ordinary_pool_repair(handler, db, tmp_path)
-    operation = (handler.orchestrator._hierarchy_repair_start if stage == "repair_start"
-                 else handler.orchestrator._worktree_slots.return_value.reset_slot_for_task)
+    operation = handler.orchestrator._hierarchy_repair_start
     operation.side_effect = BranchLockTimeout(env.target, 150)
     result = await settled_claim(env.handler, {"next": True})
     assert result["result"] == "no_ready_work", result
@@ -784,6 +786,101 @@ async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_r
     assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
     assert (await env.locks.get(env.target)).fence == env.lease.fence
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+
+
+async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp_path, monkeypatch):
+    from src.integration import lock as lock_module
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    exclusion = lock_module.BranchLock.exclusion
+    inside = False
+
+    @asynccontextmanager
+    async def observed_exclusion(lock, fence, **kwargs):
+        nonlocal inside
+        async with exclusion(lock, fence, **kwargs) as row:
+            inside = True
+            try:
+                yield row
+            finally:
+                inside = False
+
+    monkeypatch.setattr(lock_module.BranchLock, "exclusion", observed_exclusion)
+    slots = handler.orchestrator._worktree_slots()
+    resolve_origin = handler.orchestrator._hierarchy_origin_and_fence
+
+    async def private_stack_origin(*args, **kwargs):
+        origin, fence, role = await resolve_origin(*args, **kwargs)
+        origin["stack_store"] = "/private/stack"
+        origin["stack_repair_inputs"] = {"store": "/private/repair", "heads": ["c" * 40]}
+        return origin, fence, role
+
+    async def import_private_stack(*args, **kwargs):
+        assert not inside
+
+    handler.orchestrator._hierarchy_origin_and_fence = private_stack_origin
+    handler.orchestrator.git._arun = AsyncMock(side_effect=import_private_stack)
+
+    async def slow_fetch(*args, **kwargs):
+        assert not inside
+        assert handler.orchestrator.git._arun.await_count == 2
+        # Exceed the real 30s fence deadline without shortening SQL lock budgets.
+        await asyncio.sleep(40)
+        assert not inside
+
+    async def reset(*args, **kwargs):
+        assert inside
+        assert kwargs["fetch_origin"] is False
+        return env.target.branch
+
+    slots.prefetch_slot_for_task.side_effect = slow_fetch
+    slots.reset_slot_for_task.side_effect = reset
+    result = await settled_claim(env.handler, {"next": True}, timeout=60)
+    assert result["result"] == "claimed", result
+    slots.prefetch_slot_for_task.assert_awaited_once()
+    slots.reset_slot_for_task.assert_awaited_once()
+
+
+async def test_repeated_slot_fence_timeout_reaches_recovery_incident(handler, db, tmp_path):
+    await mktask(db, "t1", profile_id="worker")
+    slots = handler.orchestrator._worktree_slots()
+    slots.reset_slot_for_task.side_effect = BranchLockTimeout(
+        BranchKey(repository_id="repo", branch="aq/t1"), 30,
+    )
+    for attempt in range(1, 4):
+        sid, _ = await pool_session(db, tmp_path, f"s{attempt}", f"agent-{attempt}")
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+        assert result["result"] == "drain_requested", result
+        failure = await db.get_task_meta("t1", "slot_reset_failure")
+        assert failure["attempt"] == attempt
+        assert failure["error_type"] == "BranchLockTimeout"
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == attempt
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+    assert slots.reset_slot_for_task.await_count == 3
+    assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+    # The normal recovery scan must see the exhausted preparation, even when
+    # the worker's execution retry_count is still zero.
+    await db.queue_task_recovery_notifications()
+    incident = await db.get_task_meta("t1", "supervisor_recovery_incident")
+    assert incident["reason"] == "slot_reset_failed"
+
+
+async def test_attached_slot_fence_timeout_records_failure_instead_of_silent_retry(
+    handler, db, tmp_path,
+):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    slots = handler.orchestrator._worktree_slots()
+    slots.reset_slot_for_task.side_effect = BranchLockTimeout(env.target, 30)
+    handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(return_value=False)
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "prepare_failed", result
+    slots.reset_slot_for_task.assert_awaited_once()
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert (failure["disposition"], failure["error_type"]) == ("retained", "BranchLockTimeout")
+    held = await db.get_session(env.sid)
+    assert held.claim_phase == "preparing"
+    assert held.claim_refusal["count"] == 1
+    assert (await env.locks.get(env.target)).fence == env.lease.fence
 
 
 @pytest.mark.parametrize("error", [TimeoutError("git import timeout"), RuntimeError("broken")])
@@ -1029,7 +1126,7 @@ async def test_conflicting_batch_publishes_before_real_repair_claim(
         assert (await db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
 
 
-async def settled_claim(handler, args):
+async def settled_claim(handler, args, *, timeout=10):
     """Await the invoked preparation and return its settled outcome.
 
     Real Git tests assert final ownership or recovery. A no-wait HTTP response
@@ -1047,7 +1144,7 @@ async def settled_claim(handler, args):
            result["task_id"], result["claim_epoch"])
     preparation = handler.orchestrator.claim_preparations.get(key)
     if preparation is not None:
-        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=timeout)
     else:
         # Completion can remove the live job while the progress response is
         # returning. Only the matching generation's cached outcome may settle it.

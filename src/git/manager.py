@@ -344,6 +344,9 @@ class _OriginFetchTransfer:
     objects: int
     size_kib: int
     elapsed_seconds: float
+    prepare_seconds: float
+    network_seconds: float
+    import_seconds: float
 
 
 @dataclass(frozen=True)
@@ -2278,6 +2281,7 @@ class GitManager:
                     home=home, deadline=deadline,
                 )
             mode = "incremental" if borrowable_objects is not None else "full"
+            prepared_at = loop.time()
             try:
                 await self._arun_authenticated_git(
                     # The checkout's tips reach negotiation only through the
@@ -2299,6 +2303,7 @@ class GitManager:
                 raise GitError(
                     f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
                 ) from None
+            acquired_at = loop.time()
             received_objects, received_kib = await self._areceived_objects(
                 imported, home=home, deadline=deadline
             )
@@ -2354,12 +2359,17 @@ class GitManager:
             objects=received_objects,
             size_kib=received_kib,
             elapsed_seconds=loop.time() - started,
+            prepare_seconds=prepared_at - started,
+            network_seconds=acquired_at - prepared_at,
+            import_seconds=loop.time() - acquired_at,
         )
         logger.info(
             "authenticated origin fetch: origin_fetch=%s, seeded_tips=%d, "
-            "received_objects=%d, received_kib=%d, elapsed=%.1fs",
+            "received_objects=%d, received_kib=%d, elapsed=%.1fs, "
+            "prepare=%.1fs, network=%.1fs, import=%.1fs",
             transfer.mode, transfer.seeded_tips, transfer.objects, transfer.size_kib,
             transfer.elapsed_seconds,
+            transfer.prepare_seconds, transfer.network_seconds, transfer.import_seconds,
         )
         return transfer
 

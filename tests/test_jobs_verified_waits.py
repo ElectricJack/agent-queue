@@ -130,6 +130,9 @@ async def test_flag_rollback_preserves_atomic_continuation_and_delivers_outcome(
     # Writer maintenance runs independently of source delivery. Await its
     # completion before checking the accounting produced by that command.
     await asyncio.gather(*r.service.lifecycle._hibernate_tasks.values())
+    # The listener can yield to maintenance's graph lock in the first tick.
+    # Drain again after maintenance finishes so the outcome is committed.
+    await r.service.listener.tick()
     assert (await rows(r, wait_records))[0]["outcome"] == "satisfied"
     persisted = (await rows(r, continuations))[0]
     # The runtime adds usage accounting while retaining the original intent and

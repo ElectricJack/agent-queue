@@ -1499,8 +1499,9 @@ class TestMissingSentinelRecovery:
 
 
 class TestResetSlot:
+    @pytest.mark.parametrize("prefetch", [False, True])
     async def test_exact_worker_retry_preserves_published_tip_with_stale_local_branch(
-        self, mgr, base_ws, kind,
+        self, mgr, base_ws, kind, prefetch,
     ):
         slot = await mgr.create_slot(base_ws, kind, 0)
         path = Path(slot.workspace_path)
@@ -1513,9 +1514,12 @@ class TestResetSlot:
         _git(["push", "origin", "aq/tsk-1"], path)
         _git(["reset", "--hard", initial], path)
 
+        if prefetch:
+            await mgr.prefetch_slot_for_task(slot, base_branch=initial, preserve_branch=True)
+            mgr.git.afetch_origin = AsyncMock(side_effect=AssertionError("origin fetch under fence"))
         await mgr.reset_slot_for_task(
             slot, FakeTask(), target_branch="aq/tsk-1", base_branch=initial,
-            preserve_branch=True,
+            preserve_branch=True, fetch_origin=not prefetch,
         )
 
         assert _git(["rev-parse", "HEAD"], path) == published

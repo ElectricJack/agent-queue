@@ -21,6 +21,9 @@ from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
 from src.messages.delivery import MessageDeliveryEngine
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType
+from tests.test_integration_batches import batch_env as batch_env
+from tests.test_integration_gitops import git_history_template as git_history_template
+from tests.test_integration_gitops import setup as setup
 
 HEAD = "a" * 40
 NEXT = "b" * 40
@@ -693,6 +696,7 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
     overrides = dict(getattr(request, "param", {}))
+    brief = overrides.pop("brief", "")
     repair_policy = overrides.pop("repair_policy", None)
     harness_id = overrides.get("id", "codex")
     permission_flag = ("--dangerously-bypass-approvals-and-sandbox" if harness_id == "codex"
@@ -735,7 +739,7 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
     service = BatchFixerService(db, runtime)
     result = await service.allocate("real", target_ref=candidate_ref("real"), head_sha=source,
                                     authorize=AsyncMock(return_value=True),
-                                    policy=(RepairPolicy.model_validate(repair_policy)
+                                    brief=brief, policy=(RepairPolicy.model_validate(repair_policy)
                                             if repair_policy is not None else None))
     assert result["outcome"] == "filed", result
     row = await db.get_session(result["session_id"])
@@ -773,6 +777,35 @@ async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, l
     assert not await db.get_task("real")
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 0
+
+
+@pytest.mark.parametrize("live_fixer", [pytest.param(
+    {"brief": "é" * 1_200_000}, id="multi-megabyte-brief",
+)], indirect=True)
+async def test_fixer_launch_keeps_complete_input_in_file_and_caps_preview(db, live_fixer):
+    import json
+
+    _, _, orch, row, _, _, _ = live_fixer
+    spec = orch.session_providers.create("fake").sessions[row.name].spec
+    contents = dict(spec.files)
+    frozen = json.loads(contents[".aq/tmp/batch-fixer-input.json"])
+    assert frozen["brief"] == "é" * 1_200_000
+    assert frozen["batch_id"] == "real"
+    assert len(spec.prompt.encode()) < 16 * 1024
+    assert ".aq/tmp/batch-fixer-input.json" in spec.prompt
+    assert "[preview truncated]" in spec.prompt
+    assert max(len(arg.encode()) for arg in spec.command) < 16 * 1024
+
+
+def test_fixer_prompt_leaves_repeated_ownership_evidence_in_full_input():
+    from src.integration.fixer_runtime import fixer_prompt
+
+    evidence = {"groups": [{"frozen_members": [{"files": ["member.py"] * 20_000}]}] * 11}
+    prompt = fixer_prompt({"failure_evidence": evidence, "brief": "Repair the red checks"})
+    assert len(prompt.encode()) < 16 * 1024
+    assert '"failure_group_count": 11' in prompt
+    assert "member.py" not in prompt
+    assert "Repair the red checks" in prompt
 
 
 @pytest.mark.parametrize("changed", ["instance_token", "launch_started_at"])
@@ -999,16 +1032,6 @@ async def test_failure_input_uses_frozen_file_ownership_and_ignores_observation_
     assert len(first["groups"]) == 1
     assert first["groups"][0]["attributed_member"] == "member"
     assert first["groups"][0]["frozen_members"][0]["source_sha"] == source
-
-
-# These fixtures use real retained repositories and the ordinary publication gate.
-from tests.test_integration_batches import batch_env as batch_env
-from tests.test_integration_gitops import (
-    git_history_template as git_history_template,
-)
-from tests.test_integration_gitops import (
-    setup as setup,
-)
 
 
 @pytest.fixture
