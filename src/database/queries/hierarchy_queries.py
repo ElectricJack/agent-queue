@@ -14,6 +14,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 
 from sqlalchemy import (
     Text,
@@ -36,12 +37,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.queries.task_queries import (
     INTEGRATION_REWORK_AT_KEY,
     STALE_OPEN_ATTENTION,
     TransitionResult,
 )
-from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -344,7 +345,7 @@ PHASES_UNSUPPORTED_MODE_CODE = "hierarchy.phases_unsupported_mode"
 
 @dataclass(frozen=True)
 class ProjectIntegrationMode:
-    """The two per-project constants the hierarchy claim predicates need.
+    """The per-project constants the hierarchy claim predicates need.
 
     Both predicates below ask one question of the ``projects`` row —
     "is this project in hierarchy/train mode, and against which
@@ -371,6 +372,8 @@ class ProjectIntegrationMode:
     parent_contained_task_ids: frozenset[str] = frozenset()
     stacked: bool = False
     stackable_prerequisite_ids: frozenset[str] = frozenset()
+    project_id: str | None = None
+    train_playbook_id: str = "fast-smooth-train"
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -384,6 +387,9 @@ class ProjectIntegrationMode:
         from src.integration.stacked_branches import stacked_policy
 
         return cls(
+            project_id=getattr(project, "id", None),
+            train_playbook_id=((getattr(project, "hierarchical_integration_policy", None)
+                                or {}).get("train") or {}).get("playbook_id") or "fast-smooth-train",
             stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
@@ -394,7 +400,31 @@ class ProjectIntegrationMode:
         )
 
 
+@lru_cache(maxsize=128)
+def _train_disabled_for_binding(project_id=None, playbook_id=None):
+    # Reuse the SQL expression/binds; its activation values are read per query.
+    from src.integration.train_policy import train_activation_disabled, train_disabled_for_project
+
+    if playbook_id is not None:
+        return train_activation_disabled(project_id or tasks.c.project_id, playbook_id)
+
+    return exists(select(literal(1)).where(
+        projects.c.id == tasks.c.project_id, train_disabled_for_project(),
+    ))
+
+
+def _train_disabled_for_task(mode=None):
+    # Hoist only identity; activation state stays fresh even for a reused mode.
+    return (_train_disabled_for_binding(mode.project_id, mode.train_playbook_id)
+            if mode is not None else _train_disabled_for_binding())
+
+
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
+    """An explicitly paused train creates no new origin admission requirement."""
+    return _train_disabled_for_task(mode) | _materialized_origin_when_hierarchical(mode)
+
+
+def _materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
     """Require an exact origin or an active delegate reservation in enabled projects.
 
     A repair delegate writes its operation's existing branch and a parent
@@ -599,6 +629,11 @@ def integration_rework_cutoff(task_id):
 def delivered_same_parent_prerequisites_when_hierarchical(
     mode: ProjectIntegrationMode | None = None,
 ):
+    """Paused trains use ordinary task dependencies without delivery paperwork."""
+    return _train_disabled_for_task(mode) | _delivered_same_parent_prerequisites(mode)
+
+
+def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = None):
     """Require a direct sibling prerequisite to reach the shared parent first.
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
@@ -718,6 +753,10 @@ def _cross_parent_prerequisites():
 
 
 def _cross_parent_delivery_enabled(mode):
+    return ~_train_disabled_for_task(mode) & _configured_cross_parent_delivery(mode)
+
+
+def _configured_cross_parent_delivery(mode):
     if mode is None:
         return exists(select(literal_column("1")).where(
             projects.c.id == tasks.c.project_id,

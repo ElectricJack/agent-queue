@@ -69,6 +69,17 @@ class ResumeTransaction:
         self.clock = clock
 
     async def reserve(self, continuation_id, generation):
+        from src.integration.delivery_observer import hierarchy_frontier_modes
+
+        # Network/Git observation must not hold the global wait graph lock.
+        # AdmissionReader revalidates these cached identities in the transaction.
+        async with self.db._engine.connect() as conn:
+            task_id = await conn.scalar(select(continuations.c.task_id).where(
+                continuations.c.id == continuation_id,
+                continuations.c.resume_state == 'queued',
+            ))
+        if task_id:
+            await hierarchy_frontier_modes(self.db, task_id=task_id)
         async with self.db._engine.begin() as conn:
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == continuation_id,
@@ -155,10 +166,16 @@ class ResumeTransaction:
             if await git._arun(['status', '--porcelain'], cwd=target):
                 raise WaitError('continuation.head_drift', 'recovered checkout is not clean')
             kind = await self.db.resolve_workspace_kind(task.project_id, workspace.kind_id)
+            base = await self.db.get_workspace(workspace.base_workspace_id)
+            if base is None:
+                raise WaitError('wait.unavailable', 'worktree base disappeared')
+            await self.db.update_workspace(workspace.id, workspace_path=target)
+            self.orch._worktree_base_paths[target] = base.workspace_path
             await self.orch._worktree_slots().reprovision_slot(
                 replace(workspace, workspace_path=target), kind, prune=False,
             )
-            await self.db.update_workspace(workspace.id, workspace_path=target)
+            # A restart may have landed before the old folder was retired.
+            await self.retire_checkout(stage['old_path'], target, base)
             return target
         path = await self.orch._prepare_workspace_locked(task, agent)
         workspace = await self.db.get_workspace_for_task(task.id)
@@ -191,18 +208,33 @@ class ResumeTransaction:
             await git._arun_unlocked(['worktree', 'add', target, intent['branch']],
                                      cwd=base.workspace_path)
         fresh = replace(workspace, workspace_path=target)
+        # Cleanup must see the checkout holding the branch even if setup fails.
+        await self.db.update_workspace(workspace.id, workspace_path=target)
+        self.orch._worktree_base_paths[target] = base.workspace_path
         # reprovision reuses this *new* checkout and applies the configured
         # setup and ownership sentinel. It never copies an old agent folder.
         await self.orch._worktree_slots().reprovision_slot(fresh, kind, prune=False)
         await git._arun(['merge-base', '--is-ancestor', intent['saved_head'], 'HEAD'], cwd=target)
-        await self.db.update_workspace(workspace.id, workspace_path=target)
-        # Old detached folder is clean and unowned after the atomic path update.
-        # Removal failure is harmless retained disk, never a second writer.
+        await self.retire_checkout(path, target, base)
+        return target
+
+    async def retire_checkout(self, old_path, target, base):
+        """Remove the superseded detached folder once no row names it.
+
+        The old folder is clean and unowned after the atomic path update;
+        ``worktree remove`` without ``--force`` refuses anything else, so a
+        failure is harmless retained disk, never a second writer.
+        """
+        old = Path(old_path)
+        if old.resolve() == Path(target).resolve() or not old.is_dir():
+            return
+        for row in await self.db.list_workspaces():
+            if row.workspace_path and Path(row.workspace_path).resolve() == old.resolve():
+                return
         try:
-            await git._arun(['worktree', 'remove', path], cwd=base.workspace_path)
+            await self.orch.git._arun(['worktree', 'remove', str(old)], cwd=base.workspace_path)
         except Exception:
             pass
-        return target
 
     async def dispatch(self, args, *, principal, scope, handler):
         async with self.db._engine.connect() as conn:
@@ -293,8 +325,8 @@ class ResumeTransaction:
             ).values(state='consumed', consumed_by_session_id=record.id, consumed_at=self.clock()))
 
     async def failed(self, action, task, reason, *, handler, hold_reason=None):
-        from src.database.tables import integration_branch_owners
-        from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
+        from src.database.queries.claim_queries import retire_owner_attachments
+        from src.orchestrator.workspace_attachments import detach_task_slot
 
         async with self.db._engine.connect() as conn:
             original = (await conn.execute(select(continuations).where(
@@ -304,16 +336,10 @@ class ResumeTransaction:
         workspace = await self.db.get_workspace_for_task(action.task_id)
         if session and session.state != 'stopped':
             hold_reason = 'resume_stop_uncertain'
-        if not hold_reason and workspace:
-            project = await self.db.get_project(task.project_id)
-            repository = await self.db.get_repo(task.repo_id or project.integration_repository_id)
-            detached = bool(repository and await detach_slot_for_integration_handoff(
-                self.db, self.orch.git, self.orch._git_mutex, workspace,
-                expected_branch=original['branch'], repository_url=repository.url,
-                default_branch=repository.default_branch,
-            ))
-            if not detached:
-                hold_reason = 'resume_detach_uncertain'
+        if not hold_reason and workspace and not await detach_task_slot(
+            self.db, self.orch, task, workspace, original['branch'],
+        ):
+            hold_reason = 'resume_detach_uncertain'
         async with self.db._engine.begin() as conn:
             task_row, wait, intent = await locked_suspension(conn, original['wait_id'])
             if intent['suspension_generation'] != action.generation:
@@ -333,17 +359,9 @@ class ResumeTransaction:
                     conn, task_row, wait, intent, hold_reason, handler, detail=reason,
                 )
             if session and workspace:
-                owners = (await conn.execute(select(integration_branch_owners).where(
-                    integration_branch_owners.c.owner_id == task_row['id'],
-                    integration_branch_owners.c.session_id == session.id,
-                ).with_for_update())).mappings().all()
-                for owner in owners:
-                    if owner['handoff_state'] != 'attached' or owner['workspace_id'] != workspace.id:
-                        raise WaitError('continuation.stop_uncertain', 'resume attachment changed')
-                    await conn.execute(update(integration_branch_owners).where(
-                        integration_branch_owners.c.id == owner['id'],
-                    ).values(handoff_state='reserved', session_id=None, workspace_id=None,
-                             confirmed_workspace_id=workspace.id, updated_at=self.clock()))
+                await retire_owner_attachments(conn, task_row['id'], {session.id}, {workspace.id},
+                    WaitError('continuation.stop_uncertain', 'resume attachment changed'),
+                    self.clock())
             if intent['launch_attempts'] >= 2:
                 result = await self.service.lifecycle.hibernate.hold(
                     conn, task_row, wait, intent, 'resume_launch_failed', handler, detail=reason,

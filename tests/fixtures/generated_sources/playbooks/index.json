@@ -63,5 +63,9 @@
   "supervisor-hourly-report": [
     "tests/fixtures/playbooks/v2/supervisor-hourly-report",
     "src/prompts/reviewed_playbooks/supervisor-hourly-report"
+  ],
+  "fast-smooth-train": [
+    "tests/fixtures/playbooks/v2/fast-smooth-train",
+    "src/prompts/reviewed_playbooks/fast-smooth-train"
   ]
 }

@@ -375,6 +375,18 @@ daemon-only `integration_reconcile_git_truth` (system scope, like
 transport definitions, the typed contract fingerprint and the chained catalogue
 digest; removing exactly those two fallback definitions must reproduce the
 withheld-source catalogue byte for byte.
+The batch repair change at `67575c6b9a43f820d824ff2bdb7d6be41ec21db3`
+records its optional `task_set.repair_batch` argument separately in
+`batch-repair-contract-changes.json`. Removing exactly that property restores
+the publication-delegation catalogue bytes. The producer audit also records
+the reserved metadata, active-mode and assignment validation refusals, with
+worker publication tests covering the supervisor/operator authority boundary.
+
+The epic refresh merge records both frozen input catalogues in
+`epic-main-refresh-contract-changes.json`. Its deltas reconstruct either input
+byte for byte before the earlier recording chains are checked. The epic keeps
+its existing hibernation recording; the upstream recording is retained unchanged
+as `hibernation-main-refresh-contract-changes.json`.
 
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
@@ -382,6 +394,18 @@ pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
 built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
+
+After reviewing a handler's return branches and contract fields, refresh its
+source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
+(repeat `--command` for each reviewed handler). The default mode, also available
+as `--check`, reports digest drift without writing. This command updates only
+the selected handler digests; return
+branches and other audit evidence stay authored. A reviewed helper requires
+`--helper <existing-helper-name>` with exactly one `--command`; this updates only
+that command's existing helper pin, preserving the handler and other helper
+digests. Repeat the command explicitly if multiple audit rows pin that helper.
+Unknown selections are refused. This workflow is separate from bulk
+generated-artifact regeneration.
 
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the

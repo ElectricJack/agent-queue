@@ -213,3 +213,56 @@ async def test_local_checks_register_only_the_exact_pending_job_and_replace_host
     producer.job_states.assert_awaited_once_with(provider._owner(head), head)
     assert (await case.train.waits.sync(MAIN, batch, first, (), exact))["wait_ids"] == (
         visit["wait_ids"])
+
+
+async def test_speculative_ci_run_wait_is_exact_and_cancelled_when_base_splits(world):
+    from dataclasses import replace
+
+    from src.waits.conditions import Condition, Scope, WaitError
+    import pytest
+
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "train": {"speculative_ci": True, "speculative_public_hosted": True},
+    })
+    case = await runtime(world)
+    original = case.train.lane_for
+
+    async def lane_for(target):
+        current = await original(target)
+
+        async def prepare(parent, base, snapshot):
+            return await case.train.batches.prepare_speculative(
+                target, current.service, parent, base, snapshot)
+
+        return replace(current, prepare_speculative=prepare)
+
+    case.train.lane_for = lane_for
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    item = case.train._speculative[MAIN.key]
+    await item.task
+    case.train._discard_speculative(MAIN)
+    await completed(world, "second")
+    await case.train.visit(MAIN)
+    item = case.train._speculative[MAIN.key]
+    await item.task
+    assert item.sha
+    observed = await case.train.visit(MAIN)
+    assert not observed.detail["dispatch"].get("wait_errors"), observed.detail
+    runs = [row for row in await rows(world) if row["condition_kind"] == "ci_run"]
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["condition"]["head_sha"] == item.sha
+    assert run["condition"]["run_id"] == "run-1"
+    assert run["outcome"] == "pending"
+    assert len(await rows(world, integration_batches)) == 1
+    adapter = case.service.registry.adapter("ci_run")
+    condition = Condition.from_record(run["condition"])
+    async with world.db._engine.connect() as conn:
+        with pytest.raises(WaitError, match="head is not known"):
+            await adapter.authorise(conn, condition, Scope(
+                project_id="p", owner_kind="integration", owner_id="untrusted", principal="agent"))
+    await (await original(MAIN)).service.store.set_intent(first.batch_id, "aborted")
+    await case.train.visit(MAIN)
+    assert next(row for row in await rows(world) if row["id"] == run["id"])["outcome"] == "cancelled"
+    await case.train.stop()

@@ -774,6 +774,15 @@ from .inspect_playbook_run_response_trigger_event import InspectPlaybookRunRespo
 from .install_profile_request import InstallProfileRequest
 from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
+from .integration_batch_fix_request import IntegrationBatchFixRequest
+from .integration_batch_fix_response import IntegrationBatchFixResponse
+from .integration_batch_fix_response_422 import IntegrationBatchFixResponse422
+from .integration_batch_fix_response_fixer_type_0 import IntegrationBatchFixResponseFixerType0
+from .integration_continue_close_request import IntegrationContinueCloseRequest
+from .integration_continue_close_response import IntegrationContinueCloseResponse
+from .integration_continue_close_response_422 import IntegrationContinueCloseResponse422
+from .integration_continue_close_response_close_type_0 import IntegrationContinueCloseResponseCloseType0
+from .integration_continue_close_response_outcome import IntegrationContinueCloseResponseOutcome
 from .integration_settings import IntegrationSettings
 from .integration_settings_engine import IntegrationSettingsEngine
 from .integration_settings_hierarchical_integration_mode import IntegrationSettingsHierarchicalIntegrationMode
@@ -1363,6 +1372,12 @@ from .project_policy import ProjectPolicy
 from .project_ready_request import ProjectReadyRequest
 from .project_ready_response import ProjectReadyResponse
 from .project_ready_response_422 import ProjectReadyResponse422
+from .project_relocate_request import ProjectRelocateRequest
+from .project_relocate_request_owner_inventory import ProjectRelocateRequestOwnerInventory
+from .project_relocate_response import ProjectRelocateResponse
+from .project_relocate_response_422 import ProjectRelocateResponse422
+from .project_relocate_response_binding_type_0 import ProjectRelocateResponseBindingType0
+from .project_relocate_response_plan_type_0 import ProjectRelocateResponsePlanType0
 from .project_root_info import ProjectRootInfo
 from .project_settings import ProjectSettings
 from .project_settings_integration_preferences import ProjectSettingsIntegrationPreferences
@@ -1764,6 +1779,7 @@ from .session_sleep_response_422 import SessionSleepResponse422
 from .session_subagents import SessionSubagents
 from .session_summary import SessionSummary
 from .session_summary_failed_preparation_type_0 import SessionSummaryFailedPreparationType0
+from .session_summary_supervisor_health_type_0 import SessionSummarySupervisorHealthType0
 from .session_token_request import SessionTokenRequest
 from .session_token_response import SessionTokenResponse
 from .session_token_response_422 import SessionTokenResponse422
@@ -2966,6 +2982,15 @@ __all__ = (
     "InstallProfileRequest",
     "InstallProfileResponse",
     "InstallProfileResponse422",
+    "IntegrationBatchFixRequest",
+    "IntegrationBatchFixResponse",
+    "IntegrationBatchFixResponse422",
+    "IntegrationBatchFixResponseFixerType0",
+    "IntegrationContinueCloseRequest",
+    "IntegrationContinueCloseResponse",
+    "IntegrationContinueCloseResponse422",
+    "IntegrationContinueCloseResponseCloseType0",
+    "IntegrationContinueCloseResponseOutcome",
     "IntegrationSettings",
     "IntegrationSettingsEngine",
     "IntegrationSettingsHierarchicalIntegrationMode",
@@ -3551,6 +3576,12 @@ __all__ = (
     "ProjectReadyRequest",
     "ProjectReadyResponse",
     "ProjectReadyResponse422",
+    "ProjectRelocateRequest",
+    "ProjectRelocateRequestOwnerInventory",
+    "ProjectRelocateResponse",
+    "ProjectRelocateResponse422",
+    "ProjectRelocateResponseBindingType0",
+    "ProjectRelocateResponsePlanType0",
     "ProjectRootInfo",
     "ProjectSettings",
     "ProjectSettingsIntegrationPreferences",
@@ -3950,6 +3981,7 @@ __all__ = (
     "SessionSubagents",
     "SessionSummary",
     "SessionSummaryFailedPreparationType0",
+    "SessionSummarySupervisorHealthType0",
     "SessionTokenRequest",
     "SessionTokenResponse",
     "SessionTokenResponse422",
