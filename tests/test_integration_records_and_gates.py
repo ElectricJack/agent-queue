@@ -17,7 +17,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.gates import EjectionPlan, GatePrimitives
-from src.integration.records import AttemptObservation, DeliveryProof, RecordsPrimitives
+from src.integration.records import AttemptObservation, RecordsPrimitives
 from src.integration.runtime_contracts import (
     EjectArgs,
     GateArgs,
@@ -116,74 +116,6 @@ def observation(subject, **overrides):
         published_at=NOW - 1,
         observed_at=NOW,
         **overrides,
-    )
-
-
-async def test_receipt_projects_exact_source_target_once_and_survives_restart(db):
-    subject = await seed(db)
-    args = RecordReceiptArgs(
-        kind=ReceiptKind.CODE, source_task_id="member", source_head_sha=OTHER, target=subject.head
-    )
-
-    async def proof(conn, subject, request):
-        return DeliveryProof(
-            **{k: v for k, v in request.model_dump().items() if k != "primitive"},
-            evidence={"ancestry": True},
-        )
-
-    ports = RecordsPrimitives(db, delivery_reader=proof, clock=lambda: NOW)
-    assert (await ports.record_receipt(subject, args)).outcome == "recorded"
-    # A replay after process restart needs no remote proof, only the immutable receipt.
-    replay = await RecordsPrimitives(db).record_receipt(subject, args)
-    assert replay.outcome == "exists"
-    (receipt,) = await rows(db, task_delivery_receipts)
-    assert receipt["reviewed_head_sha"] == OTHER and receipt["after_sha"] == HEAD
-    assert len(await rows(db, integration_subject_journal)) == 1
-    # The same source into another subject is a separate receipt identity.
-    other = await seed(db, id="subject-2", subject_key="another", phase=SubjectPhase.TESTING)
-    assert (await ports.record_receipt(other, args)).outcome == "recorded"
-    assert len(await rows(db, task_delivery_receipts)) == 2
-
-
-async def test_receipt_never_fabricates_delivery_from_args_or_wrong_head(db):
-    subject = await seed(db)
-    args = RecordReceiptArgs(
-        kind="code", source_task_id="member", source_head_sha=OTHER, target=subject.head
-    )
-    records = RecordsPrimitives(db)
-    assert (await records.record_receipt(subject, args)).reason == "delivery_proof_unavailable"
-    wrong = args.model_copy(update={"target": subject.head.model_copy(update={"sha": OTHER})})
-    assert (await records.record_receipt(subject, wrong)).reason == "target_identity_mismatch"
-    assert await rows(db, task_delivery_receipts) == []
-
-
-@pytest.mark.parametrize("kind", ["noop", "skipped"])
-async def test_non_code_receipt_retains_disposition_proof(db, kind):
-    subject = await seed(db)
-    args = RecordReceiptArgs(
-        kind=kind, source_task_id="member", source_head_sha=OTHER, target=subject.head
-    )
-
-    async def proof(conn, subject, request):
-        return DeliveryProof(
-            kind=request.kind,
-            source_task_id="member",
-            source_head_sha=OTHER,
-            target=subject.head,
-            evidence={
-                "content_equivalent": True,
-                "repair_task_id": "repair",
-                "skip_authorized": True,
-            },
-        )
-
-    assert (
-        await RecordsPrimitives(db, delivery_reader=proof).record_receipt(subject, args)
-    ).outcome == "recorded"
-    (receipt,) = await rows(db, task_delivery_receipts)
-    assert (
-        receipt["disposition"] == kind
-        and receipt["resolution_evidence"]["repair_task_id"] == "repair"
     )
 
 
@@ -515,18 +447,31 @@ async def test_ejection_preserves_manual_pause_and_live_writer(db):
     ).reason == "writer_stop_proof_required"
 
 
-async def test_ports_register_only_the_six_primitives(db):
+async def test_ports_register_five_primitives_and_no_receipt_writer(db):
     ports = PrimitivePorts()
     RecordsPrimitives(db).bind(ports)
     GatePrimitives(db).bind(ports)
     assert ports.bound == {
-        Primitive.RECORD_RECEIPT,
         Primitive.RECORD_ATTEMPT,
         Primitive.RECORD_DECISION,
         Primitive.WAIT,
         Primitive.GATE,
         Primitive.EJECT,
     }
+    # Receipts are historical audit only: the vocabulary keeps primitive 14, but
+    # invoking it records nothing.
+    subject = await seed(db)
+    result = await ports.invoke(
+        subject,
+        RecordReceiptArgs(
+            kind=ReceiptKind.CODE,
+            source_task_id="member",
+            source_head_sha=OTHER,
+            target=subject.head,
+        ),
+    )
+    assert result.is_unknown and result.reason == "primitive_unavailable"
+    assert await rows(db, task_delivery_receipts) == []
 
 
 async def test_new_generation_alone_does_not_count_the_same_head_again(db):
@@ -566,50 +511,6 @@ async def test_concurrent_gate_answers_have_one_immutable_winner(db):
         row for row in await rows(db, integration_subject_journal) if row["outcome"] == "answered"
     ]
     assert len(answers) == 1
-
-
-async def test_receipt_projection_rolls_back_if_journal_cannot_commit(db, monkeypatch):
-    subject = await seed(db)
-    args = RecordReceiptArgs(
-        kind="code", source_task_id="member", source_head_sha=OTHER, target=subject.head
-    )
-
-    async def proof(conn, subject, request):
-        return DeliveryProof(
-            kind="code",
-            source_task_id="member",
-            source_head_sha=OTHER,
-            target=subject.head,
-            evidence={"ancestry": True},
-        )
-
-    async def broken(*args, **kwargs):
-        raise RuntimeError("journal unavailable")
-
-    monkeypatch.setattr(db, "append_integration_subject_journal_on", broken)
-    with pytest.raises(RuntimeError, match="journal unavailable"):
-        await RecordsPrimitives(db, delivery_reader=proof).record_receipt(subject, args)
-    assert await rows(db, task_delivery_receipts) == []
-
-
-async def test_skipped_receipt_needs_explicit_authorization_and_live_repair(db):
-    subject = await seed(db)
-    args = RecordReceiptArgs(
-        kind="skipped", source_task_id="member", source_head_sha=OTHER, target=subject.head
-    )
-
-    async def proof(conn, subject, request):
-        return DeliveryProof(
-            kind="skipped",
-            source_task_id="member",
-            source_head_sha=OTHER,
-            target=subject.head,
-            evidence={"repair_task_id": "repair"},
-        )
-
-    result = await RecordsPrimitives(db, delivery_reader=proof).record_receipt(subject, args)
-    assert result.reason == "skip_requires_repair_provenance"
-    assert await rows(db, task_delivery_receipts) == []
 
 
 async def test_explicit_policy_skip_keeps_the_member_repair_link(db):
