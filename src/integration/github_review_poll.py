@@ -25,6 +25,9 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,10 +35,12 @@ from sqlalchemy import and_, select
 
 from src.database.tables import projects, repos, tasks
 from src.git.github import GitHubAccess
+from src.git.github_activity import check_background_budget, github_component
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
 from src.integration.source_ci import pull_request_conflicts
+from src.integration.selection_metrics import selection_count
 from src.models import TaskStatus
 from src.projects.github import GitHubError
 
@@ -51,6 +56,32 @@ MERGEABILITY_RETRY_SECONDS = 15
 #: fetch queue. A visit waits this long for it, then defers that root and goes
 #: on; the recovery keeps running and a later visit takes its outcome.
 ROOT_PR_RECOVERY_WAIT_SECONDS = 30.0
+
+# Successful observations must survive a cold pass through a large frontier,
+# but reviews and rerun checks can change without a new head.
+PR_GATE_CACHE_SECONDS = 600.0
+PR_GATE_CACHE_LIMIT = 2048
+_PR_TARGET: ContextVar[tuple | None] = ContextVar("root_pr_target", default=None)
+
+
+@contextmanager
+def root_pr_target_scope(target, target_sha):
+    """Bind admission to the fetched target, including paired-repair admission."""
+    token = _PR_TARGET.set((target.key, target_sha))
+    try:
+        yield
+    finally:
+        _PR_TARGET.reset(token)
+
+
+def _pull_fingerprint(pull):
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    if (not isinstance(head, dict) or not isinstance(base, dict)
+            or not isinstance(head.get("repo"), dict) or not isinstance(base.get("repo"), dict)
+            or not pull.get("updated_at") or not head.get("sha") or not base.get("ref")):
+        return None
+    return (pull.get("updated_at"), pull.get("state"), head.get("sha"), head.get("ref"),
+            head["repo"].get("id"), base.get("ref"), base.get("sha"), base["repo"].get("id"))
 
 
 def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
@@ -74,7 +105,7 @@ def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
 
 
 class RootPullRequestGate:
-    """Read the PR at freeze time; unavailable observations back off, never admit.
+    """Observe exact PR admission; reuse bounded observations on unchanged tips.
 
     Git alone has already decided this source is pending. These observations
     authorize admission, and have no bearing on delivery or a frozen batch.
@@ -88,6 +119,8 @@ class RootPullRequestGate:
         self._deferred = {}
         self._recoveries = {}
         self._running = set()
+        self._admitted = OrderedDict()
+        self._target_tips = {}
 
     async def __call__(self, target, member):
         return await self._observe(target, member)
@@ -119,6 +152,12 @@ class RootPullRequestGate:
                     conn=conn, reduced=True)).get(member.task_id)
         policy = row["hierarchical_integration_policy"] or {}
         url = row["pr_url"]
+        observed_target = _PR_TARGET.get()
+        scoped = observed_target is not None and observed_target[0] == target.key
+        if scoped:
+            self._target_tips[target.key] = observed_target[1]
+        target_sha = self._target_tips.get(target.key)
+        root = (target.key, member.task_id)
 
         def blocker(code, **detail):
             return {"code": code, "task_id": member.task_id, "ref": member.task_id,
@@ -126,23 +165,39 @@ class RootPullRequestGate:
                     "detail": f"root {member.task_id} PR admission: {code}", **detail}
 
         if not isinstance(url, str) or not url.strip():
+            self._admitted.pop(root, None)
             return blocker("awaiting_pr")
         key = (target.key, member.task_id, member.source_sha, url, row["branch_name"],
-               json.dumps(policy, sort_keys=True), request)
+               json.dumps(policy, sort_keys=True), request, member.source_base_sha,
+               row["hierarchical_integration_generation"], target_sha)
+        # A target move invalidates admission, but cannot cancel an exact-source
+        # recovery that may already be publishing or recording its outcome.
+        recovery_key = key[:-1]
         for stale in list(self._deferred):
             if stale[:2] == key[:2] and stale != key:
                 del self._deferred[stale]
         for stale in list(self._recoveries):
-            if stale[:2] == key[:2] and stale != key:
+            if stale[:2] == recovery_key[:2] and stale != recovery_key:
                 # A superseded observation could only answer stale; at most one
                 # recovery runs per target and root.
                 self._recoveries.pop(stale).cancel()
         previous = self._deferred.get(key)
         now = self.clock()
-        recovered = key in self._recoveries and self._recoveries[key].done()
+        admitted = self._admitted.get(root)
+        if (not repaired_source and scoped and target_sha and admitted is not None
+                and admitted[0] == key and now < admitted[1]):
+            self._admitted.move_to_end(root)
+            selection_count("pr_gate_cache_hits")
+            return None
+        # Never fall back to a stale success after an unsuccessful refresh.
+        self._admitted.pop(root, None)
+        recovered = (recovery_key in self._recoveries
+                     and self._recoveries[recovery_key].done())
         if (previous and now < previous["retry_at"] and not recovered
                 and not (repaired_source and previous["code"] == "pr_checks_red")):
+            selection_count("pr_gate_cache_hits")
             return previous
+        selection_count("pr_gate_cache_misses")
 
         def defer(code, *, due_at=None, **detail):
             delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
@@ -220,7 +275,7 @@ class RootPullRequestGate:
                     # Workflow-level failure, absent checks and cancellations do
                     # not establish a failed required job that a worker can fix.
                     if any(check.conclusion is Conclusion.FAILURE for check in result.checks):
-                        recovery = await self._recover(key, RootPRCheckFailure(
+                        recovery = await self._recover(recovery_key, RootPRCheckFailure(
                             request=request, source_sha=member.source_sha,
                             source_base_sha=member.source_base_sha, pr_url=url,
                             policy_generation=row["hierarchical_integration_generation"],
@@ -235,6 +290,10 @@ class RootPullRequestGate:
                 if state != "approved":
                     return defer(state)
             self._deferred.pop(key, None)
+            if not repaired_source and scoped and target_sha and result.green:
+                self._admitted[root] = (key, self.clock() + PR_GATE_CACHE_SECONDS)
+                while len(self._admitted) > PR_GATE_CACHE_LIMIT:
+                    self._admitted.popitem(last=False)
             return None
         except ReviewerPermissionUnavailable as exc:
             return defer("pr_review_permission_unavailable", reason=str(exc))
@@ -259,7 +318,8 @@ class RootPullRequestGate:
             self._recoveries[key] = task
             self._running.add(task)
             task.add_done_callback(self._settled)
-        if not task.done():
+            # Spend the bounded wait once. Later visits consult the same task
+            # without blocking every healthy root behind another 30-second wait.
             await asyncio.wait({task}, timeout=ROOT_PR_RECOVERY_WAIT_SECONDS)
         if not task.done():
             logger.info("root %s PR check recovery still running after %.0fs; deferring",
@@ -286,11 +346,13 @@ class _Observation:
     reviews_at: float = 0.0
     recorded: set[tuple] = field(default_factory=set)
     authorized: int | None = None
+    details: dict | None = None
+    details_at: float = 0.0
 
 
 @dataclass
 class _Repository:
-    """One tick's binding, client and open-PR numbers for a repository URL."""
+    """One tick's binding, client and open-PR inventory for a repository URL."""
 
     binding: Any
     client: Any
@@ -342,6 +404,16 @@ class GitHubReviewPoller:
         self._repository_failures: dict[str, _RepositoryFailure] = {}
 
     async def tick(self, now: float) -> None:
+        with github_component(__name__, background=True):
+            try:
+                check_background_budget(self.git)
+                await self._tick(now)
+            except GitHubAccessError as exc:
+                if exc.category != "rate_limited":
+                    raise
+                self.next_due_at = max(now + self.interval_seconds, exc.retry_at or 0)
+
+    async def _tick(self, now: float) -> None:
         if now < self.next_due_at:
             return
         self.next_due_at = now + self.interval_seconds
@@ -353,11 +425,15 @@ class GitHubReviewPoller:
         if self.after_id is None:
             self._start_cycle()
         for row in rows:
-            self.after_id = row["id"]
             self._cycle_seen.add(row["id"])
             try:
+                check_background_budget(self.git)
                 await self._poll(row, now)
+                check_background_budget(self.git)
             except (GitHubAccessError, GitError) as exc:
+                check_background_budget(self.git)
+                if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                    raise
                 self._report(
                     row["id"], ("failed", type(exc).__name__, str(exc)), logging.WARNING,
                     "GitHub PR review poll failed for epic %s in %s: %s",
@@ -368,6 +444,7 @@ class GitHubReviewPoller:
                     row["id"], ("failed", type(exc).__name__, str(exc)), logging.ERROR,
                     "GitHub PR review poll failed for epic %s", row["id"], exc_info=True,
                 )
+            self.after_id = row["id"]
 
     def _start_cycle(self) -> None:
         """Forget roots the finished cycle no longer listed; they re-observe in full."""
@@ -479,6 +556,8 @@ class GitHubReviewPoller:
             binding = await self.git.bind_github_repository(url)
             found = _Repository(binding, self.git._github_client(binding))
         except Exception as exc:  # noqa: BLE001 - repository adapter failures back off
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             delay = min(
                 failure.delay * 2 if failure else self.repository_retry_seconds,
                 self.repository_retry_max_seconds,
@@ -500,13 +579,15 @@ class GitHubReviewPoller:
             repository.open_numbers = await self._open_numbers(repository)
         return repository.open_numbers is not None and number not in repository.open_numbers
 
-    async def _open_numbers(self, repository: _Repository) -> frozenset[int] | None:
-        """Open PR numbers, or None when unreadable so each closed PR is fetched."""
+    async def _open_numbers(self, repository: _Repository) -> dict[int, dict] | None:
+        """One open-PR inventory, or None so unreadable listings never hide changes."""
         try:
             pulls = await repository.client.paged_list(
                 f"/repositories/{repository.binding.repository_id}/pulls?state=open&per_page=100"
             )
         except (GitHubAccessError, GitError) as exc:
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             logger.debug(
                 "Open pull request list unavailable for %s: %s",
                 repository.binding.full_name, " ".join(str(exc).split())[:1000],
@@ -515,7 +596,7 @@ class GitHubReviewPoller:
         except Exception:
             logger.debug("Open pull request list unavailable", exc_info=True)
             return None
-        numbers = set()
+        numbers = {}
         for pull in pulls:
             number = pull.get("number")
             if (
@@ -523,8 +604,8 @@ class GitHubReviewPoller:
                 or pull.get("state") != "open"
             ):
                 return None
-            numbers.add(number)
-        return frozenset(numbers)
+            numbers[number] = pull
+        return numbers
 
     async def _observe(self, row: dict[str, Any], source: dict[str, Any], now: float) -> None:
         identity = (row["url"], row["default_branch"], tuple(sorted(source.items())))
@@ -538,7 +619,18 @@ class GitHubReviewPoller:
         number = GitHubAccess.validate_pr_url(binding, source["pr_url"])
         if seen.open is False and await self._still_closed(repository, number):
             return
-        pull = await client.pull_request(source["pr_url"])
+        pull = None
+        if seen.open is True and seen.details is not None:
+            if repository.open_numbers is _UNREAD:
+                repository.open_numbers = await self._open_numbers(repository)
+            listed = (repository.open_numbers or {}).get(number)
+            if (listed is not None and _pull_fingerprint(listed) is not None
+                    and _pull_fingerprint(listed) == _pull_fingerprint(seen.details)
+                    and now - seen.details_at < self.review_refresh_seconds):
+                pull = seen.details
+        if pull is None:
+            pull = await client.pull_request(source["pr_url"])
+            seen.details, seen.details_at = pull, now
         seen.open = pull.get("state") == "open"
         head, base = pull.get("head"), pull.get("base")
         head_repo = head.get("repo") if isinstance(head, dict) else None

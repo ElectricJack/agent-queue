@@ -1,5 +1,22 @@
 # Wait outcome integration contract
 
+## Supervisor delivery and CI observation correction — 2026-10-23
+
+Operational wait and continuation incidents remain internal during initial
+delivery, reconciliation and retries. Only a committed `escalate_to_human` wait
+decision authorizes human delivery; `needs_human` alone does not. Unread project
+supervisor notices use the existing global-supervisor fallback. A previously
+suppressed, unbound root may be retried after that explicit decision, while an
+ambiguous transport attempt retains its reconciliation state.
+
+CI source observation runs independently of integration-train visits and
+continuation maintenance, including while new V2 admissions are disabled.
+Provider quota responses preserve pending waits and defer observation until the
+repository backoff expires. Each remote observation has a five-second budget,
+including reads under the graph fence, so stalled CI calls release supervisor
+controls. This narrows the remote-read budget without changing the source
+listener's lease or transaction fences.
+
 ## Terminal owners and refused deadlines — 2026-10-22
 
 Terminal task source events retire the owner's waits through the shared
@@ -223,3 +240,23 @@ so suspension history and admission audit keep their task identity, and the
 independent wait outcome audit is retained. Bulk hierarchy changes publish every changed dependency source
 in the mutation transaction using a bounded number of database statements.
 All wait feature flags remain disabled by default.
+
+
+## Retry and repair of resume workspace preparation
+
+Workspace preparation retries contention (`wait.graph_busy`), transport failures,
+and OS busy/timeout errors up to three attempts, with durable 5/10 second backoff.
+The queued continuation retains the same reservation, agent, staged checkout,
+saved head and resolved source outcome. Reserved capacity remains counted during
+backoff. Identity, dirty-checkout and other non-retryable failures hold immediately;
+exhausted retries create the existing `resume_workspace_failed` incident.
+
+A live owning supervisor or local operator can issue `wait_decide` with
+`decision=requeue`, `wait_id`, `continuation_id`, `expected_generation` and a
+nonblank note. The transaction repeats project, generation, stopped-writer,
+branch and resolved-wait fences. Only workspace/launch resume holds are eligible;
+suspension, pause and uncertain-stop holds require their own recovery. Requeue
+preserves the source and checkout, records actor/reason/time in facts and an audit
+event, and resets the retry budget. It does not acknowledge the outcome. The hold
+incident is withdrawn when the fresh process receives prime, atomically with
+outcome delivery; failed retries retain the incident.

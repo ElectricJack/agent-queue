@@ -53,6 +53,7 @@ PRIORITY_DIGEST = 20
 OPEN_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 #: States in which nothing may be re-opened; a late reply is answered, not acted on.
 TERMINAL_STATES = frozenset({"resolved", "cancelled", "stale"})
+INTERNAL_DELIVERY_ERROR = "supervisor delivery incident is internal-only; nothing was sent"
 
 _SEVERITY_LABEL = {
     "critical": "🚨 Critical",
@@ -80,6 +81,8 @@ class EscalationFacts:
     choices: Sequence[str] = field(default_factory=tuple)
     terminal_outcome: str | None = None
     source_kind: str = ""
+    #: Derived from the committed wait decision, never from a transport event.
+    human_delivery_authorized: bool = False
     #: Which §5.5 rule closed the incident (``human`` for one a person closed).
     #: NULL for an incident closed before the stateful phase, which renders
     #: exactly as it always did.
@@ -97,7 +100,9 @@ class EscalationFacts:
 
     @property
     def wants_human_delivery(self) -> bool:
-        return self.source_kind != "supervisor_delivery"
+        if self.source_kind in {"supervisor_delivery", "continuation"}:
+            return False
+        return self.source_kind != "wait" or self.human_delivery_authorized
 
     @property
     def needs_human_answer(self) -> bool:
@@ -137,6 +142,7 @@ class EscalationFacts:
                 str(row["terminal_outcome"]) if row.get("terminal_outcome") else None
             ),
             source_kind=str(row.get("source_kind") or ""),
+            human_delivery_authorized=bool(row.get("human_delivery_authorized", False)),
             outcome=(str(row["outcome"]) if row.get("outcome") else None),
             collapsed_at=(float(row["collapsed_at"]) if row.get("collapsed_at") else None),
             created_at=(float(row["created_at"]) if row.get("created_at") else None),
