@@ -250,7 +250,6 @@
       "x-reload": "hot"
     },
     "data_dir": {
-      "default": "/home/jkern/.agent-queue",
       "type": "string",
       "x-reload": "restart"
     },
@@ -261,6 +260,8 @@
         "pool_min_size": 2,
         "pool_recycle_seconds": 1800,
         "pre_ping": "local",
+        "schema_ahead_max_revisions": null,
+        "schema_ahead_migrations": "",
         "url": ""
       },
       "properties": {
@@ -280,6 +281,17 @@
           "default": "local",
           "type": "string"
         },
+        "schema_ahead_max_revisions": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schema_ahead_migrations": {
+          "default": "",
+          "type": "string"
+        },
         "url": {
           "default": "",
           "type": "string"
@@ -293,6 +305,41 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "deploy": {
+      "additionalProperties": false,
+      "default": {
+        "poll_interval_seconds": 300.0,
+        "tag_glob": null,
+        "target": "main",
+        "track_branch": null
+      },
+      "properties": {
+        "poll_interval_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "tag_glob": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "default": "main",
+          "type": "string"
+        },
+        "track_branch": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "discord": {
       "additionalProperties": false,
       "default": {
@@ -300,9 +347,13 @@
         "bot_token": "",
         "channel_id": "",
         "conversation": {
-          "enabled": false
+          "allow_dm": false,
+          "enabled": false,
+          "require_mention": true
         },
         "digest": {
+          "author_fallback_minutes": 10,
+          "cadence_minutes": 120,
           "catchup_hours": 24,
           "categories": [
             "work",
@@ -312,7 +363,13 @@
           ],
           "enabled": true,
           "interval_minutes": 60,
-          "project_ids": []
+          "project_ids": [],
+          "quiet_hours": {
+            "end": "07:00",
+            "start": "22:00"
+          },
+          "quiet_line_after_skips": 3,
+          "supervisor_authored": false
         },
         "escalation": {
           "enabled": true,
@@ -321,7 +378,11 @@
           "reminder_minutes": 0,
           "supervisor_delivery_timeout_minutes": 15
         },
+        "escalations": {
+          "stateful": false
+        },
         "guild_id": "",
+        "project_id": "",
         "rate_guard_critical": 5000,
         "rate_guard_halt": 8000,
         "rate_guard_warn": 1000
@@ -345,11 +406,21 @@
         "conversation": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allow_dm": false,
+            "enabled": false,
+            "require_mention": true
           },
           "properties": {
+            "allow_dm": {
+              "default": false,
+              "type": "boolean"
+            },
             "enabled": {
               "default": false,
+              "type": "boolean"
+            },
+            "require_mention": {
+              "default": true,
               "type": "boolean"
             }
           },
@@ -358,6 +429,8 @@
         "digest": {
           "additionalProperties": false,
           "default": {
+            "author_fallback_minutes": 10,
+            "cadence_minutes": 120,
             "catchup_hours": 24,
             "categories": [
               "work",
@@ -367,9 +440,27 @@
             ],
             "enabled": true,
             "interval_minutes": 60,
-            "project_ids": []
+            "project_ids": [],
+            "quiet_hours": {
+              "end": "07:00",
+              "start": "22:00"
+            },
+            "quiet_line_after_skips": 3,
+            "supervisor_authored": false
           },
           "properties": {
+            "author_fallback_minutes": {
+              "default": 10,
+              "maximum": 60,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "cadence_minutes": {
+              "default": 120,
+              "maximum": 1440,
+              "minimum": 15,
+              "type": "integer"
+            },
             "catchup_hours": {
               "default": 24,
               "maximum": 168,
@@ -409,6 +500,37 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": {
+                "end": "07:00",
+                "start": "22:00"
+              },
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "quiet_line_after_skips": {
+              "default": 3,
+              "maximum": 24,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "supervisor_authored": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -456,7 +578,24 @@
           },
           "type": "object"
         },
+        "escalations": {
+          "additionalProperties": false,
+          "default": {
+            "stateful": false
+          },
+          "properties": {
+            "stateful": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "guild_id": {
+          "default": "",
+          "type": "string"
+        },
+        "project_id": {
           "default": "",
           "type": "string"
         },
@@ -513,6 +652,30 @@
       },
       "type": "object",
       "x-reload": "restart"
+    },
+    "git_identity": {
+      "additionalProperties": false,
+      "default": {
+        "email": "",
+        "name": "",
+        "source": ""
+      },
+      "properties": {
+        "email": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "global_token_budget_daily": {
       "default": null,
@@ -580,6 +743,30 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "host_shell": {
+      "additionalProperties": false,
+      "default": {
+        "allow_remote": false,
+        "enabled": false,
+        "max_shells": 4
+      },
+      "properties": {
+        "allow_remote": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_shells": {
+          "default": 4,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "inbox": {
       "default": {
         "client_secret": "$GOOGLE_CLIENT_SECRET",
@@ -594,23 +781,41 @@
       "additionalProperties": false,
       "default": {
         "default_mode": "pull_request",
+        "git_first": "active",
         "github_app": null,
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
-        "owner_recovery_sweep": false,
+        "owner_recovery_sweep": true,
         "publisher_stall_after": 5,
-        "scratch_probe": null
+        "reconciler_active": true,
+        "reconciler_shadow": false,
+        "scratch_probe": null,
+        "service_item_timeout_seconds": 60.0,
+        "service_source_timeout_seconds": 300.0,
+        "service_source_timeouts": {}
       },
       "properties": {
         "default_mode": {
           "default": "pull_request",
           "type": "string"
         },
+        "git_first": {
+          "default": "active",
+          "type": "string"
+        },
         "github_app": {
           "additionalProperties": false,
           "default": null,
           "properties": {
+            "actions_permission": {
+              "default": "read",
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
             "app_id": {
               "minimum": 1,
               "type": "integer"
@@ -667,12 +872,20 @@
           "type": "array"
         },
         "owner_recovery_sweep": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "publisher_stall_after": {
           "default": 5,
           "type": "integer"
+        },
+        "reconciler_active": {
+          "default": true,
+          "type": "boolean"
+        },
+        "reconciler_shadow": {
+          "default": false,
+          "type": "boolean"
         },
         "scratch_probe": {
           "additionalProperties": false,
@@ -734,10 +947,322 @@
             "object",
             "null"
           ]
+        },
+        "service_item_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        },
+        "service_source_timeout_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "service_source_timeouts": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "type": "object"
         }
       },
       "type": "object",
       "x-reload": "restart"
+    },
+    "knowledge": {
+      "additionalProperties": false,
+      "default": {
+        "authority_review_required": true,
+        "consolidation": {
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
+        },
+        "context": {
+          "bundle_ttl_seconds": 300,
+          "discovery_max_items": 8,
+          "discovery_max_tokens": 1000,
+          "enabled": false,
+          "input_max_tokens": null,
+          "max_bytes": 16384,
+          "max_tokens": 4096,
+          "output_reserve_tokens": 4096,
+          "supervisor_global_scope": false,
+          "supervisor_project_ids": [],
+          "supervisor_query": "",
+          "wrapper_reserve_tokens": 256
+        },
+        "enabled": false,
+        "enabled_projects": [],
+        "export": {
+          "enabled": false
+        },
+        "extraction": {
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
+        },
+        "global_enabled": false,
+        "import_apply": {
+          "enabled": false
+        },
+        "import_inventory": {
+          "enabled": false
+        },
+        "legacy_memory_mode": "disabled",
+        "semantic": {
+          "enabled": false
+        },
+        "ui_enabled": false,
+        "writes_enabled": false
+      },
+      "properties": {
+        "authority_review_required": {
+          "default": true,
+          "type": "boolean"
+        },
+        "consolidation": {
+          "additionalProperties": false,
+          "default": {
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
+          },
+          "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "context": {
+          "additionalProperties": false,
+          "default": {
+            "bundle_ttl_seconds": 300,
+            "discovery_max_items": 8,
+            "discovery_max_tokens": 1000,
+            "enabled": false,
+            "input_max_tokens": null,
+            "max_bytes": 16384,
+            "max_tokens": 4096,
+            "output_reserve_tokens": 4096,
+            "supervisor_global_scope": false,
+            "supervisor_project_ids": [],
+            "supervisor_query": "",
+            "wrapper_reserve_tokens": 256
+          },
+          "properties": {
+            "bundle_ttl_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "discovery_max_items": {
+              "default": 8,
+              "type": "integer"
+            },
+            "discovery_max_tokens": {
+              "default": 1000,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "input_max_tokens": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_bytes": {
+              "default": 16384,
+              "type": "integer"
+            },
+            "max_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "output_reserve_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "supervisor_global_scope": {
+              "default": false,
+              "type": "boolean"
+            },
+            "supervisor_project_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "supervisor_query": {
+              "default": "",
+              "type": "string"
+            },
+            "wrapper_reserve_tokens": {
+              "default": 256,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled_projects": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "export": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "extraction": {
+          "additionalProperties": false,
+          "default": {
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
+          },
+          "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "global_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "import_apply": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "import_inventory": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "legacy_memory_mode": {
+          "default": "disabled",
+          "type": "string"
+        },
+        "semantic": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "ui_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "writes_enabled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "llm": {
       "additionalProperties": false,
@@ -1310,6 +1835,7 @@
         "enabled": true,
         "max_inject_per_prompt": 10,
         "reply_timeout": 120.0,
+        "reply_window_multiplier": 3.0,
         "transcript_tail_fallback": true
       },
       "properties": {
@@ -1327,6 +1853,10 @@
         },
         "reply_timeout": {
           "default": 120.0,
+          "type": "number"
+        },
+        "reply_window_multiplier": {
+          "default": 3.0,
           "type": "number"
         },
         "transcript_tail_fallback": {
@@ -1451,6 +1981,8 @@
       "default": {
         "cancellation_grace_seconds": 30,
         "enabled": false,
+        "private_value_active_key_id": "",
+        "private_value_key_env": {},
         "v2_artifact_min_versions": 10,
         "v2_artifact_retention_days": 90,
         "v2_dry_run_max_paths": 32,
@@ -1475,6 +2007,17 @@
           "description": "When false the V2 playbook runtime, TimerService, resume handlers, and workflow recovery are not started. V2 artifacts and run data are preserved. See docs/specs/design/feature-pauses.md.",
           "restart_required": true,
           "type": "boolean"
+        },
+        "private_value_active_key_id": {
+          "default": "",
+          "type": "string"
+        },
+        "private_value_key_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "v2_artifact_min_versions": {
           "default": 10,
@@ -1544,6 +2087,20 @@
           "items": {
             "additionalProperties": false,
             "properties": {
+              "cache_read_per_mtok": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cache_write_per_mtok": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
               "input_per_mtok": {
                 "default": 0.0,
                 "type": "number"
@@ -2150,9 +2707,15 @@
         "jobs": {
           "enabled": false,
           "exclusive_queue_seconds": 5400,
+          "full_suite_reserved_slots": 2,
           "head_bytes": 1048576,
           "log_budget_bytes": 2147483648,
           "log_days": 14,
+          "matter_artifact_bytes": 268435456,
+          "matter_capture_script": "",
+          "matter_editor": "",
+          "matter_gpu_id": "default",
+          "matter_python": "",
           "max_queued": 100,
           "per_task_active": 2,
           "per_task_queued": 10,
@@ -2166,8 +2729,31 @@
         "max_concurrent_agents": 8,
         "max_pytest_processes": 24,
         "per_session_cpu_share": null,
+        "scripts": {
+          "enabled": true,
+          "env_allowlist": [],
+          "input_bytes": 67108864,
+          "input_root": "",
+          "input_storage_bytes": 2147483648,
+          "output_storage_bytes": 2147483648,
+          "per_run_storage_bytes": 67108864,
+          "queue_seconds": 300,
+          "runtime_bytes": 1073741824,
+          "runtime_manifest": "",
+          "runtime_root": "",
+          "search_path": [
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+          ],
+          "state_root": "",
+          "stderr_bytes": 1048576,
+          "stdout_bytes": 1048576,
+          "wall_seconds": 60
+        },
         "session_nice": 10,
         "test_deselect_markers": "not perf and not migration and not slow and not tmux and not integration",
+        "test_interpreters": {},
         "test_poll_interval": 2.0,
         "test_slots": 2,
         "test_wait_timeout": 1800,
@@ -2213,9 +2799,15 @@
           "default": {
             "enabled": false,
             "exclusive_queue_seconds": 5400,
+            "full_suite_reserved_slots": 2,
             "head_bytes": 1048576,
             "log_budget_bytes": 2147483648,
             "log_days": 14,
+            "matter_artifact_bytes": 268435456,
+            "matter_capture_script": "",
+            "matter_editor": "",
+            "matter_gpu_id": "default",
+            "matter_python": "",
             "max_queued": 100,
             "per_task_active": 2,
             "per_task_queued": 10,
@@ -2234,6 +2826,10 @@
               "default": 5400,
               "type": "integer"
             },
+            "full_suite_reserved_slots": {
+              "default": 2,
+              "type": "integer"
+            },
             "head_bytes": {
               "default": 1048576,
               "type": "integer"
@@ -2245,6 +2841,26 @@
             "log_days": {
               "default": 14,
               "type": "integer"
+            },
+            "matter_artifact_bytes": {
+              "default": 268435456,
+              "type": "integer"
+            },
+            "matter_capture_script": {
+              "default": "",
+              "type": "string"
+            },
+            "matter_editor": {
+              "default": "",
+              "type": "string"
+            },
+            "matter_gpu_id": {
+              "default": "default",
+              "type": "string"
+            },
+            "matter_python": {
+              "default": "",
+              "type": "string"
             },
             "max_queued": {
               "default": 100,
@@ -2300,6 +2916,108 @@
             "null"
           ]
         },
+        "scripts": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": true,
+            "env_allowlist": [],
+            "input_bytes": 67108864,
+            "input_root": "",
+            "input_storage_bytes": 2147483648,
+            "output_storage_bytes": 2147483648,
+            "per_run_storage_bytes": 67108864,
+            "queue_seconds": 300,
+            "runtime_bytes": 1073741824,
+            "runtime_manifest": "",
+            "runtime_root": "",
+            "search_path": [
+              "/usr/local/bin",
+              "/usr/bin",
+              "/bin"
+            ],
+            "state_root": "",
+            "stderr_bytes": 1048576,
+            "stdout_bytes": 1048576,
+            "wall_seconds": 60
+          },
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "env_allowlist": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "input_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "input_root": {
+              "default": "",
+              "type": "string"
+            },
+            "input_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "output_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "per_run_storage_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "queue_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "runtime_bytes": {
+              "default": 1073741824,
+              "type": "integer"
+            },
+            "runtime_manifest": {
+              "default": "",
+              "type": "string"
+            },
+            "runtime_root": {
+              "default": "",
+              "type": "string"
+            },
+            "search_path": {
+              "default": [
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "state_root": {
+              "default": "",
+              "type": "string"
+            },
+            "stderr_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "stdout_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "wall_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "session_nice": {
           "default": 10,
           "type": "integer"
@@ -2307,6 +3025,13 @@
         "test_deselect_markers": {
           "default": "not perf and not migration and not slow and not tmux and not integration",
           "type": "string"
+        },
+        "test_interpreters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "test_poll_interval": {
           "default": 2.0,
@@ -2349,6 +3074,9 @@
       "additionalProperties": false,
       "default": {
         "affinity_wait_seconds": 120,
+        "config_poll_interval_seconds": 30.0,
+        "cycle_interval_seconds": 5.0,
+        "min_cycle_interval_seconds": 1.0,
         "min_task_guarantee": true,
         "rolling_window_hours": 24
       },
@@ -2356,6 +3084,18 @@
         "affinity_wait_seconds": {
           "default": 120,
           "type": "integer"
+        },
+        "config_poll_interval_seconds": {
+          "default": 30.0,
+          "type": "number"
+        },
+        "cycle_interval_seconds": {
+          "default": 5.0,
+          "type": "number"
+        },
+        "min_cycle_interval_seconds": {
+          "default": 1.0,
+          "type": "number"
         },
         "min_task_guarantee": {
           "default": true,
@@ -2415,6 +3155,8 @@
         "dialog_settle_seconds": 1.5,
         "enabled": true,
         "fake_script_file": "",
+        "idle_claim_timeout_seconds": 900,
+        "idle_stop_grace_seconds": 60,
         "lease_ttl_seconds": 480,
         "max_restarts": 3,
         "nudge_debounce_ms": 500,
@@ -2427,9 +3169,14 @@
         "stall_backoff_seconds": 300,
         "stall_max_nudges": 3,
         "state_cache_ttl_seconds": 2,
+        "stop_intent_report_seconds": 600,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
-        "transcript_startup_replay_limit": 100
+        "transcript_startup_replay_limit": 100,
+        "worker_claude_plugin_overrides": {},
+        "worker_context_checkpoint_tokens": 120000,
+        "worker_context_compact_tokens": 160000,
+        "worker_context_unknown_checkpoint_turns": 40
       },
       "properties": {
         "adopt_on_start": {
@@ -2451,6 +3198,14 @@
         "fake_script_file": {
           "default": "",
           "type": "string"
+        },
+        "idle_claim_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "idle_stop_grace_seconds": {
+          "default": 60,
+          "type": "integer"
         },
         "lease_ttl_seconds": {
           "default": 480,
@@ -2500,6 +3255,10 @@
           "default": 2,
           "type": "integer"
         },
+        "stop_intent_report_seconds": {
+          "default": 600,
+          "type": "integer"
+        },
         "tmux_socket": {
           "default": "aq",
           "type": "string"
@@ -2510,6 +3269,25 @@
         },
         "transcript_startup_replay_limit": {
           "default": 100,
+          "type": "integer"
+        },
+        "worker_claude_plugin_overrides": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "worker_context_checkpoint_tokens": {
+          "default": 120000,
+          "type": "integer"
+        },
+        "worker_context_compact_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
+        "worker_context_unknown_checkpoint_turns": {
+          "default": 40,
           "type": "integer"
         }
       },
@@ -2574,11 +3352,21 @@
     "supervisor": {
       "additionalProperties": false,
       "default": {
+        "context_ceiling_tokens": 160000,
         "global_": {
           "idle_timeout_seconds": 2700
-        }
+        },
+        "max_session_age_seconds": 86400,
+        "max_turn_retries": 2,
+        "question_timeout_seconds": 900,
+        "retry_backoff_seconds": 60,
+        "turn_timeout_seconds": 900
       },
       "properties": {
+        "context_ceiling_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
         "global_": {
           "additionalProperties": false,
           "default": {
@@ -2591,6 +3379,26 @@
             }
           },
           "type": "object"
+        },
+        "max_session_age_seconds": {
+          "default": 86400,
+          "type": "integer"
+        },
+        "max_turn_retries": {
+          "default": 2,
+          "type": "integer"
+        },
+        "question_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 60,
+          "type": "integer"
+        },
+        "turn_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
         }
       },
       "type": "object",
@@ -2789,11 +3597,344 @@
       "type": "boolean",
       "x-reload": "restart"
     },
+    "wait_policy": {
+      "additionalProperties": false,
+      "default": {
+        "branch_admission_deadline_seconds": 1800,
+        "hibernate_margin": 2.0,
+        "hibernation_enabled": true,
+        "in_place_ceiling_seconds": 1800,
+        "kinds": {
+          "batch": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 2700
+          },
+          "ci_check": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1200
+          },
+          "ci_run": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1500
+          },
+          "dependency": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "human": {
+            "escalate_after_seconds": null,
+            "expected_duration_seconds": null
+          },
+          "job": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 900
+          },
+          "message": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "playbook_condition": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "pull_request": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "resource": {
+            "escalate_after_seconds": 1800,
+            "expected_duration_seconds": null
+          },
+          "task": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "timer": {
+            "escalate_after_seconds": 300,
+            "expected_duration_seconds": null
+          }
+        },
+        "loop_window_registrations": 3,
+        "loop_window_seconds": 3600,
+        "metrics": {
+          "cohort": null,
+          "pre_rollout_tokens_per_turn": null,
+          "pre_rollout_turn_rate": null,
+          "window": null
+        },
+        "min_samples": 5,
+        "projects": {},
+        "resume_cost_minutes": 10.0,
+        "resume_launch_attempts": 2,
+        "resume_stall_seconds": 300,
+        "scheduler_waits_enabled": true,
+        "transition_budget_seconds": 120,
+        "v1_bodies": "refuse",
+        "v2_enabled": true
+      },
+      "properties": {
+        "branch_admission_deadline_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "hibernate_margin": {
+          "default": 2.0,
+          "type": "number"
+        },
+        "hibernation_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "in_place_ceiling_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "kinds": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "escalate_after_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expected_duration_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {
+            "batch": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 2700
+            },
+            "ci_check": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1200
+            },
+            "ci_run": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1500
+            },
+            "dependency": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "human": {
+              "escalate_after_seconds": null,
+              "expected_duration_seconds": null
+            },
+            "job": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 900
+            },
+            "message": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "playbook_condition": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "pull_request": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "resource": {
+              "escalate_after_seconds": 1800,
+              "expected_duration_seconds": null
+            },
+            "task": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "timer": {
+              "escalate_after_seconds": 300,
+              "expected_duration_seconds": null
+            }
+          },
+          "type": "object"
+        },
+        "loop_window_registrations": {
+          "default": 3,
+          "type": "integer"
+        },
+        "loop_window_seconds": {
+          "default": 3600,
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "default": {
+            "cohort": null,
+            "pre_rollout_tokens_per_turn": null,
+            "pre_rollout_turn_rate": null,
+            "window": null
+          },
+          "properties": {
+            "cohort": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_rollout_tokens_per_turn": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "pre_rollout_turn_rate": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "window": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "min_samples": {
+          "default": 5,
+          "type": "integer"
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "hibernate_margin": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "hibernation_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "in_place_ceiling_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kinds": {
+                "additionalProperties": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "escalate_after_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "expected_duration_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "resume_cost_minutes": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "resume_stall_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "scheduler_waits_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "v2_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "resume_cost_minutes": {
+          "default": 10.0,
+          "type": "number"
+        },
+        "resume_launch_attempts": {
+          "default": 2,
+          "type": "integer"
+        },
+        "resume_stall_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "scheduler_waits_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "transition_budget_seconds": {
+          "default": 120,
+          "type": "integer"
+        },
+        "v1_bodies": {
+          "default": "refuse",
+          "type": "string"
+        },
+        "v2_enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "work_graph": {
       "additionalProperties": false,
       "default": {
         "conditional_autoclose": true,
         "container_sweep_interval_seconds": 60,
+        "frontier_rejected_after_seconds": 600,
         "gate_sweep_interval_seconds": 30,
         "lifecycle_sweep_interval_seconds": 300,
         "stale_open_after_seconds": 21600
@@ -2805,6 +3946,10 @@
         },
         "container_sweep_interval_seconds": {
           "default": 60,
+          "type": "integer"
+        },
+        "frontier_rejected_after_seconds": {
+          "default": 600,
           "type": "integer"
         },
         "gate_sweep_interval_seconds": {
@@ -2825,9 +3970,58 @@
       "x-reload": "hot"
     },
     "workspace_dir": {
-      "default": "/home/jkern/agent-queue-workspaces",
       "type": "string",
       "x-reload": "restart"
+    },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "worktrees": {
       "additionalProperties": false,
@@ -2839,6 +4033,8 @@
         "salvage_dirty": true,
         "salvage_max_bytes": 5242880,
         "setup_timeout_seconds": 900,
+        "slot_reset_git_timeout_seconds": 600,
+        "slot_reset_git_timeouts": {},
         "spawn_conflict_continuation": false
       },
       "properties": {
@@ -2870,6 +4066,17 @@
           "default": 900,
           "type": "integer"
         },
+        "slot_reset_git_timeout_seconds": {
+          "default": 600,
+          "type": "integer"
+        },
+        "slot_reset_git_timeouts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "type": "object"
+        },
         "spawn_conflict_continuation": {
           "default": false,
           "type": "boolean"
@@ -2888,9 +4095,13 @@
       "archive",
       "auto_task",
       "dashboard_server",
+      "deploy",
       "docs",
+      "git_identity",
       "global_token_budget_daily",
       "graph_layout",
+      "host_shell",
+      "knowledge",
       "llm_logging",
       "logging",
       "max_concurrent_playbook_runs",
@@ -2909,7 +4120,9 @@
       "surface",
       "swarm",
       "test_selection",
-      "work_graph"
+      "wait_policy",
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [

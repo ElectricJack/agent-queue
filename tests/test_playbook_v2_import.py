@@ -22,14 +22,12 @@ from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_IMPORT_COMMANDS,
     PlaybookV2CommandsMixin,
 )
-from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 from src.profiles.capabilities import CapabilityPolicy
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -41,15 +39,14 @@ PLAYBOOK_IDS = (
     "blocked-task-escalation",
     "supervisor-failure-triage",
     "morning-report",
+    "supervisor-digest",
 )
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("reviewed-import.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("reviewed-import.db")
     yield database
-    await database.close()
 
 
 class _Handler(PlaybookV2CommandsMixin):
@@ -129,6 +126,11 @@ async def test_imports_all_reviewed_fixtures_without_activating(db, tmp_path):
         assert result["artifact_sha256"].startswith("sha256:")
         assert await db.get_playbook_artifact(result["artifact_sha256"]) is not None
         assert handler._store.exists(result["artifact_sha256"])
+        from src.playbooks.definition import source_digest
+        row = await db.get_playbook_artifact_row(result["artifact_sha256"])
+        assert source_digest(handler._store.load_source(result["artifact_sha256"])) == (
+            row["source_digest"]
+        )
     assert await db.list_playbook_activations() == []
 
 
@@ -143,6 +145,33 @@ async def test_import_refuses_a_bundle_outside_the_vault(db, tmp_path):
     assert result["success"] is False
     assert "inside vault root" in result["error"]
     assert await db.list_playbook_artifacts("default-pipeline") == []
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_router_bundle_and_shared_fleet_alias_activate_ready(db, tmp_path):
+    handler = _Handler(tmp_path, db)
+    relative = _copy_bundle(tmp_path, "default-assignment-routing")
+    shared = Path("reviewed/default-assignment-routing-shared-fleet/default-assignment-routing")
+    shutil.copytree(Path("docs/playbooks/shared-fleet/default-assignment-routing"),
+                    tmp_path / "vault" / shared)
+    imported = await _import(handler, relative)
+    shared_import = await _import(handler, shared)
+    assert imported["success"] is True, imported
+    assert shared_import["success"] is True, shared_import
+    assert imported["artifact_sha256"] == shared_import["artifact_sha256"]
+    activated = await handler._cmd_playbook_activate({
+        "playbook_id": "default-assignment-routing",
+        "artifact_sha256": imported["artifact_sha256"],
+    })
+    assert not activated.get("blocked"), activated
+    assert activated["activation"]["health"] == "ready", activated
+    health = await handler._cmd_playbook_activation_health({
+        "playbook_id": "default-assignment-routing", "scope": "system",
+    })
+    assert health["count"] == 1, health
+    assert health["activations"][0]["enabled"] is True
+    assert health["activations"][0]["active_artifact_sha256"] == imported["artifact_sha256"]
+    assert health["activations"][0]["health"] == "ready"
 
 
 @pytest.mark.asyncio
