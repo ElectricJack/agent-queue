@@ -1,0 +1,444 @@
+{
+  "shared_definitions": {
+    "src/cli/auto_commands.py::EXCLUDED['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/cli/auto_commands.py::EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_abort']": {
+      "baseline_span": [
+        131,
+        131
+      ],
+      "landing_span": [
+        130,
+        130
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_adopt']": {
+      "baseline_span": [
+        133,
+        133
+      ],
+      "landing_span": [
+        132,
+        132
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_adopt_legacy_deliveries']": {
+      "baseline_span": [
+        153,
+        153
+      ],
+      "landing_span": [
+        152,
+        152
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_app_verify']": {
+      "baseline_span": [
+        124,
+        124
+      ],
+      "landing_span": [
+        124,
+        124
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_authorize_root']": {
+      "baseline_span": [
+        145,
+        145
+      ],
+      "landing_span": [
+        144,
+        144
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_bind_legacy_repositories']": {
+      "baseline_span": [
+        154,
+        154
+      ],
+      "landing_span": [
+        153,
+        153
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_cancel_preserving']": {
+      "baseline_span": [
+        136,
+        136
+      ],
+      "landing_span": [
+        135,
+        135
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_clear_retained_recovery']": {
+      "reason": "Registers the handcrafted retained-integration-recovery CLI command so automatic generation does not duplicate its recovery interface."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_clear_stale_request']": {
+      "baseline_span": [
+        142,
+        142
+      ],
+      "landing_span": [
+        141,
+        141
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_close_delivered_pr']": {
+      "baseline_span": [
+        155,
+        155
+      ],
+      "landing_span": [
+        154,
+        154
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_continue_close']": {
+      "baseline_span": null,
+      "landing_span": [
+        152,
+        152
+      ],
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15)."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_develop']": {
+      "baseline_span": [
+        132,
+        132
+      ],
+      "landing_span": [
+        131,
+        131
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_development_sweep']": {
+      "baseline_span": [
+        135,
+        135
+      ],
+      "landing_span": [
+        134,
+        134
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_enable']": {
+      "baseline_span": [
+        126,
+        126
+      ],
+      "landing_span": [
+        126,
+        126
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_flush']": {
+      "baseline_span": [
+        125,
+        125
+      ],
+      "landing_span": [
+        125,
+        125
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_materialize_root']": {
+      "baseline_span": [
+        144,
+        144
+      ],
+      "landing_span": [
+        143,
+        143
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_migrate_provenance']": {
+      "baseline_span": [
+        134,
+        134
+      ],
+      "landing_span": [
+        133,
+        133
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_rebind_detached_repair']": {
+      "baseline_span": [
+        150,
+        150
+      ],
+      "landing_span": [
+        149,
+        149
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_rebind_repair']": {
+      "baseline_span": [
+        149,
+        149
+      ],
+      "landing_span": [
+        148,
+        148
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_rebind_reused_identity']": {
+      "baseline_span": [
+        148,
+        148
+      ],
+      "landing_span": [
+        147,
+        147
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_reconcile_unmaterialized']": {
+      "baseline_span": [
+        127,
+        127
+      ],
+      "landing_span": [
+        127,
+        127
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_record_root_noop']": {
+      "reason": "Register the hand-crafted CLI control for retaining an unheld root's exact no-artifact completion provenance."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_candidate_member']": {
+      "baseline_span": [
+        158,
+        158
+      ],
+      "landing_span": [
+        157,
+        157
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_completed_container']": {
+      "reason": "Registers the handcrafted completed-container checkpoint recovery CLI command, an integration-specific control surface."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_parent_head']": {
+      "baseline_span": [
+        152,
+        152
+      ],
+      "landing_span": [
+        151,
+        151
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_preserved_repair']": {
+      "baseline_span": [
+        151,
+        151
+      ],
+      "landing_span": [
+        150,
+        150
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_redrive_child']": {
+      "baseline_span": [
+        146,
+        146
+      ],
+      "landing_span": [
+        145,
+        145
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_redrive_root']": {
+      "baseline_span": [
+        143,
+        143
+      ],
+      "landing_span": [
+        142,
+        142
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_reevaluate_repair']": {
+      "baseline_span": [
+        130,
+        130
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_release_delegates']": {
+      "baseline_span": [
+        156,
+        156
+      ],
+      "landing_span": [
+        155,
+        155
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_release_held_gate']": {
+      "baseline_span": [
+        120,
+        121
+      ],
+      "landing_span": [
+        120,
+        121
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_release_owner']": {
+      "baseline_span": [
+        139,
+        139
+      ],
+      "landing_span": [
+        138,
+        138
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_release_stale_owners']": {
+      "baseline_span": [
+        141,
+        141
+      ],
+      "landing_span": [
+        140,
+        140
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_reopen_collection']": {
+      "baseline_span": [
+        147,
+        147
+      ],
+      "landing_span": [
+        146,
+        146
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_reserve_owner']": {
+      "baseline_span": [
+        140,
+        140
+      ],
+      "landing_span": [
+        139,
+        139
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_resolve_candidate_member']": {
+      "baseline_span": [
+        157,
+        157
+      ],
+      "landing_span": [
+        156,
+        156
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_resume']": {
+      "baseline_span": [
+        129,
+        129
+      ],
+      "landing_span": [
+        129,
+        129
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_retry_cleanup']": {
+      "baseline_span": [
+        138,
+        138
+      ],
+      "landing_span": [
+        137,
+        137
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_settle_parked']": {
+      "baseline_span": [
+        137,
+        137
+      ],
+      "landing_span": [
+        136,
+        136
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_status']": {
+      "baseline_span": [
+        122,
+        122
+      ],
+      "landing_span": [
+        122,
+        122
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
+      "reason": "Registers the handcrafted superseded integration completion CLI command, preserving its explicit operator recovery interface."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_trust_manifest']": {
+      "baseline_span": [
+        123,
+        123
+      ],
+      "landing_span": [
+        123,
+        123
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_waive_history']": {
+      "baseline_span": [
+        128,
+        128
+      ],
+      "landing_span": [
+        128,
+        128
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
