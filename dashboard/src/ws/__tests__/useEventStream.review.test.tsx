@@ -18,6 +18,31 @@ afterEach(cleanup);
 afterAll(() => vi.unstubAllGlobals());
 
 describe("useEventStream — review events", () => {
+  it.each(["project.paused", "project.resumed"] as const)(
+    "refreshes held notifications on %s",
+    (eventType) => {
+      const client = new QueryClient();
+      const invalidate = vi.spyOn(client, "invalidateQueries");
+      renderHook(() => useEventStream(), {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        ),
+      });
+      __dispatchEventForTests({
+        _event_type: eventType,
+        event_type: eventType,
+        project_id: "project-1",
+      });
+      for (const queryKey of [
+        ["projects"], ["project", "project-1"],
+        ["reviews"], ["review"], ["escalations"], ["escalation"],
+      ]) {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey });
+      }
+      client.clear();
+    },
+  );
+
   it("invalidates the review list and changed review for every review event", () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");

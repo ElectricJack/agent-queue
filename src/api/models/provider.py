@@ -17,6 +17,8 @@ would report a healthy account as stale (spec amendment A3).
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -484,7 +486,7 @@ class ProviderAllocationProject(BaseModel):
     name: str = ""
     status: str = ""
     preferred_provider: str | None = None
-    default_profile_id: str | None = None
+    assignment_playbook_id: str | None = None
     max_concurrent_agents: int | None = None
 
 
@@ -514,7 +516,296 @@ class ProviderAllocationStatusResponse(BaseModel):
     diagnostics: list[ProviderAllocationDiagnostic] = []
 
 
+class ProviderAllocationBoundsBody(BaseModel):
+    """Per selected pool profile; an explicit ``max: null`` removes the ceiling."""
+
+    min: int | None = None
+    #: An integer, ``null`` (unbounded) or the string ``"unbounded"``.
+    max: int | str | None = None
+
+
+class ProviderAllocationReceiveNewWorkBody(BaseModel):
+    """One project's preferred provider for unpinned work."""
+
+    project_id: str
+    #: ``prefer`` or ``clear``.
+    mode: str
+
+
+class ProviderAllocationPreviewBody(BaseModel):
+    """``POST /api/providers/allocation/preview``: one allocation request (spec §Backend commands)."""
+
+    provider: str
+    #: ``null`` or omitted selects every ordinary worker profile of the provider.
+    profile_ids: list[str] | None = None
+    #: ``pool`` or ``task``.
+    participation: str | None = None
+    bounds: ProviderAllocationBoundsBody | None = None
+    receive_new_work: ProviderAllocationReceiveNewWorkBody | None = None
+    #: ``graceful`` (default), ``idle-now`` or ``interrupt-busy``.
+    drain: str | None = None
+    allow_pinned_wait: bool | None = None
+
+
+class ProviderAllocationRequest(BaseModel):
+    """The canonical request a preview token was issued for.
+
+    ``bounds`` keeps only the keys the caller gave, so ``{"max": null}``
+    (unbounded) stays distinct from an omitted ``max``.
+    """
+
+    provider: str
+    profile_ids: list[str] | None = None
+    participation: str | None = None
+    bounds: dict[str, int | None] | None = None
+    receive_new_work: dict[str, str] | None = None
+    drain: str = "graceful"
+    allow_pinned_wait: bool = False
+
+
+class ProviderAllocationProfileState(BaseModel):
+    """The fields an allocation compares on one profile."""
+
+    lifecycle: str
+    enabled: bool = True
+    min_active: int | None = None
+    max_active: int | None = None
+    min_per_project: int | None = None
+
+
+class ProviderAllocationPreviewProfile(BaseModel):
+    """One eligible profile of the provider, before and after the request."""
+
+    profile_id: str
+    name: str = ""
+    harness: str | None = None
+    intelligence_class: str | None = None
+    selected: bool = False
+    changed: bool = False
+    changed_fields: list[str] = []
+    before: ProviderAllocationProfileState
+    after: ProviderAllocationProfileState
+
+
+class ProviderAllocationCeilingChange(BaseModel):
+    """The provider-wide configured ceiling before and after."""
+
+    before: ProviderAllocationCeiling
+    after: ProviderAllocationCeiling
+
+
+class ProviderAllocationProjectLimit(BaseModel):
+    """One project's effective max for one changed pool profile (``aq pool scale``)."""
+
+    project_id: str
+    profile_id: str
+    max_concurrent_agents: int | None = None
+    lifecycle_before: str
+    lifecycle_after: str
+    effective_max_before: int | None = None
+    effective_max_after: int | None = None
+
+
+class ProviderAllocationPreviewSession(BaseModel):
+    """A live session of a changed profile and what the request does to it.
+
+    ``action``: ``none``, ``stop`` (marked stopped, reconciler teardown),
+    ``terminate`` (idle, now), ``stop_after_task`` (busy, finishes first) or
+    ``interrupt`` (busy, only under an authorized ``interrupt-busy``).
+    """
+
+    session_id: str
+    project_id: str | None = None
+    profile_id: str
+    lifecycle: str
+    state: str
+    activity: str
+    task_id: str | None = None
+    task_title: str | None = None
+    action: str
+
+
+class ProviderAllocationBusySet(BaseModel):
+    """The busy sessions (and their tasks) the request stops."""
+
+    session_ids: list[str] = []
+    task_ids: list[str] = []
+
+
+class ProviderAllocationPinnedTask(BaseModel):
+    """An explicit pin on a changed profile; allocation never rewrites it."""
+
+    task_id: str
+    project_id: str | None = None
+    profile_id: str
+    status: str
+    #: READY on a profile leaving the pool: the task stays on this provider.
+    waits: bool = False
+
+
+class ProviderAllocationPushChange(BaseModel):
+    """A manual agent definition whose push eligibility the request changes."""
+
+    agent_id: str
+    name: str | None = None
+    profile_id: str
+    provider: str
+    effective_harness: str | None = None
+    state: str | None = None
+    current_task_id: str | None = None
+    push_before: bool
+    push_after: bool
+
+
+class ProviderAllocationPreference(BaseModel):
+    """A project's preferred provider for unpinned work, before and after."""
+
+    project_id: str
+    mode: str
+    before: str | None = None
+    after: str | None = None
+    changed: bool = False
+
+
+class ProviderAllocationWarning(BaseModel):
+    """``pinned_ready_wait`` (blocking), ``manual_agent_push_changes``, ``bounds_skipped``,
+    ``no_change``."""
+
+    code: str
+    blocking: bool = False
+    acknowledged: bool = False
+    message: str
+    subjects: list[str] = []
+
+
+class ProviderAllocationPreviewResponse(BaseModel):
+    """``provider_allocation_preview`` and ``POST /api/providers/allocation/preview``."""
+
+    success: bool = True
+    now: float | None = None
+    provider: str
+    vendor: str = ""
+    state: str | None = None
+    request: ProviderAllocationRequest
+    #: ``operator`` or ``project_admin``: the least scope that may apply it.
+    required_scope: str
+    global_max_active: int | None = None
+    selected: list[str] = []
+    profiles: list[ProviderAllocationPreviewProfile] = []
+    ceiling: ProviderAllocationCeilingChange
+    project_limits: list[ProviderAllocationProjectLimit] = []
+    sessions: list[ProviderAllocationPreviewSession] = []
+    busy: ProviderAllocationBusySet
+    pinned: list[ProviderAllocationPinnedTask] = []
+    manual_agents: list[ProviderAllocationPushChange] = []
+    preference: ProviderAllocationPreference | None = None
+    warnings: list[ProviderAllocationWarning] = []
+    #: A blocking warning is not acknowledged; apply refuses until it is.
+    blocked: bool = False
+    #: SHA-256 over the canonical request plus everything the preview observed.
+    preview_token: str
+
+
+class ProviderAllocationApplyBody(BaseModel):
+    """``POST /api/providers/allocation/apply``: apply a reviewed preview by its token."""
+
+    preview_token: str
+    #: For ``drain: interrupt-busy``: exactly the preview's busy set (session or task ids).
+    authorize_busy_interrupt: list[str] | None = None
+    allow_pinned_wait: bool | None = None
+
+
+class ProviderAllocationAppliedProfile(BaseModel):
+    """One changed profile and what apply did to it.
+
+    ``status``: ``applied``, ``failed``, ``rolled_back`` (applied, then
+    compensated), ``rollback_failed`` or ``skipped`` (never reached after an
+    earlier failure).  ``before`` / ``after`` are the previewed rows.
+    """
+
+    profile_id: str
+    status: str
+    changed_fields: list[str] = []
+    before: ProviderAllocationProfileState
+    after: ProviderAllocationProfileState
+    error: str | None = None
+    compensated: bool | None = None
+    compensation_error: str | None = None
+
+
+class ProviderAllocationSessionAction(BaseModel):
+    """One thing apply did to a live session (``drain``, ``terminate``, ``interrupt`` ...)."""
+
+    project_id: str | None = None
+    profile_id: str | None = None
+    session_id: str
+    action: str
+    reason: str | None = None
+    error: str | None = None
+
+
+class ProviderAllocationPlacement(BaseModel):
+    """The queued ``class_only`` router routes a ``prefer`` returned to the router.
+
+    ``moved`` lists each task reset to ``unrouted`` (``kind:
+    returned_to_router``) so the router re-plans it with the preferred
+    provider (mandatory routing §6.8); ``skipped`` the routes left alone.
+    ``held`` and ``batch_ids`` stay empty: nothing is a ``task_reroutes`` move.
+    """
+
+    applied: bool = False
+    moved: list[dict[str, Any]] = []
+    held: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    batch_ids: list[str] = []
+    detail: str | None = None
+    #: Moves that raised; the apply is then ``partial``.
+    errors: list[str] = []
+
+
+class ProviderAllocationAppliedPreference(ProviderAllocationPreference):
+    """The project preference apply wrote, and the queued work it re-placed."""
+
+    applied: bool | None = None
+    placement: ProviderAllocationPlacement | None = None
+
+
+class ProviderAllocationApplyResponse(BaseModel):
+    """``provider_allocation_apply`` and ``POST /api/providers/allocation/apply``.
+
+    ``success`` only when ``status`` is ``applied``.  A refusal before any
+    change carries ``error_code`` (``preview_unknown``, ``preview_stale``,
+    ``pinned_wait_unacknowledged``, ``busy_authorization_required`` /
+    ``_mismatch`` / ``_unexpected``) and the current ``preview`` when there
+    is one; an apply that failed part-way carries ``status`` ``rolled_back``
+    or ``partial`` with every row.
+    """
+
+    success: bool = True
+    status: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    #: A refusal's current preview (``preview_stale``: apply its token after review).
+    preview: ProviderAllocationPreviewResponse | None = None
+    request_id: str | None = None
+    event_id: int | None = None
+    provider: str | None = None
+    vendor: str = ""
+    actor: str | None = None
+    preview_token: str | None = None
+    request: ProviderAllocationRequest | None = None
+    profiles: list[ProviderAllocationAppliedProfile] = []
+    ceiling: ProviderAllocationCeilingChange | None = None
+    preference: ProviderAllocationAppliedPreference | None = None
+    session_actions: list[ProviderAllocationSessionAction] = []
+    pinned: list[ProviderAllocationPinnedTask] = []
+    manual_agents: list[ProviderAllocationPushChange] = []
+    warnings: list[ProviderAllocationWarning] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "provider_allocation_apply": ProviderAllocationApplyResponse,
+    "provider_allocation_preview": ProviderAllocationPreviewResponse,
     "provider_allocation_status": ProviderAllocationStatusResponse,
     "provider_status": ProviderStatusResponse,
     "provider_history": ProviderHistoryResponse,
