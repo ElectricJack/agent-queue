@@ -103,7 +103,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/observe.py` | Receipt table snapshots, child selection, parent readiness | admission; close_merge; policy_docs |
 | `src/integration/parent_subjects.py` | Parent receipt table augmentation and generation facts | close_merge; policy_docs |
 | `src/integration/parent_source.py` | Receipt source/ancestor locator and already-delivered guard | admission; policy_docs |
-| `src/integration/root_pull_requests.py` | Root readiness/diagnostic receipt exclusion | dispatch; admission |
+| `src/integration/root_pull_requests.py` | Root readiness/diagnostic receipt exclusion; exact historical code receipts retire stale PR-conflict diagnostics without granting containment | dispatch; admission |
 | `src/integration/epic_delivery.py` | Shadow receipt projection, delivered display and stale receipt selection | dashboard; admission |
 | `src/integration/source_repairs.py` | Repair ancestor delivery using a root receipt | fixers; admission |
 | `src/integration/repair.py` | Conflict-resolution receipt identity/chain and current receipt inventory | fixers; close_merge; policy_docs |

@@ -775,6 +775,26 @@ async def test_pr_checks_are_separate_from_push_cache_and_share_one_listing_per_
     assert listed.count("check_runs") == 2
 
 
+async def test_root_pr_fallback_cache_cannot_satisfy_strict_pr_or_candidate_checks(db):
+    client, trust = github(app=False, names=("unit",))
+    admission = ExactChecks(db, HostedChecks(HostedCIProducer(
+        client, trust, expected_event="pull_request", allow_push_fallback=True,
+    )))
+    push = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)))
+    strict_pr = ExactChecks(db, HostedChecks(HostedCIProducer(
+        client, trust, expected_event="pull_request",
+    )))
+    assert (await admission.refresh(head())).green
+    assert admission.required.producer_id == "15368:pull_request+push"
+    assert not (await push.read(head())).green
+    assert not (await strict_pr.read(head())).green
+    assert (await strict_pr.refresh(head())).state is ChecksState.PENDING
+    assert (await admission.read(head())).green
+    rerun(client, status="completed", conclusion="failure")
+    assert (await admission.refresh(head())).state is ChecksState.RED
+    assert not (await admission.read(head())).green
+
+
 async def test_exact_check_changes_wake_readiness_once_per_conclusion_or_attempt(db):
     client, trust = github(app=False)
     changed = AsyncMock()

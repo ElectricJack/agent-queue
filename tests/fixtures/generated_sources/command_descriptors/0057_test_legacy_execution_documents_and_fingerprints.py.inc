@@ -10,7 +10,7 @@ def test_legacy_execution_documents_and_fingerprints():
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
                           _leaf_changes(), _completion_changes(), _structure_changes(),
                           _git_first_changes(), _obsolete_child_changes(),
-                          _restart_hold_changes(), _updater_changes()):
+                          _restart_hold_changes(), _updater_changes(), _task_list_limit_changes()):
             later = recording.get("contracts", {}).get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]

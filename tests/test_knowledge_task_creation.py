@@ -9,15 +9,19 @@ from src.database.tables import knowledge_records, record_link_heads, record_req
 from src.records.models import RecordError
 from tests.record_helpers import knowledge_config, seed_project, seed_task
 
-pytestmark = pytest.mark.usefixtures("unpooled_postgres")
-
 
 @pytest.fixture
 async def handler(command_handler_factory):
+    # These async command tests share one event loop. Keep connection pooling:
+    # NullPool's repeated connects can exhaust the five-second request budget
+    # on a busy CI runner; it is only needed by cross-loop TestClient tests.
     h = await command_handler_factory()
     await seed_project(h.db, "p")
     h.config.knowledge = knowledge_config(ui_enabled=True)
-    return h
+    try:
+        yield h
+    finally:
+        await h.db.close()
 
 
 async def source(handler):
@@ -89,7 +93,8 @@ async def test_concurrent_replay_rolls_back_competing_task(handler):
 
 async def test_changed_request_and_route_override_refused_without_new_task(handler):
     record = await source(handler)
-    assert (await handler.execute("knowledge_create_task", filing(record)))["success"]
+    first = await handler.execute("knowledge_create_task", filing(record))
+    assert first["success"], first
     changed = filing(record)
     changed["title"] = "Changed work"
     result = await handler.execute("knowledge_create_task", changed)

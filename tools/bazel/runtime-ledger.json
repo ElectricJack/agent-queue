@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": ".test_durations",
+    "sha256": "cda1610facc8501c5d615b14ddd883796bbe090e401fe4d4e8fc0b42adb1ddec",
+    "node_count": 18574,
+    "measurement": "historical aggregate durations; phase attribution unavailable"
+  },
+  "slow_candidates": [
+    {
+      "nodeid": "tests/test_integration_cleanup.py::test_postgres_last_cleanup_items_serialize_aggregate_projection",
+      "recorded_seconds": 65.62,
+      "phase_measurement": "pending H3/H4 and B1 integration",
+      "disposition": "retain complete concurrency regression; no split or trim without phase evidence"
+    }
+  ],
+  "coverage_changes": [],
+  "demonstrated_flakes": [],
+  "full_timing_acceptance": {
+    "status": "pending",
+    "requires": [
+      "H3 private PostgreSQL lifecycle",
+      "H4 E2E lifecycle",
+      "B1 launcher integration",
+      "quiet serial perf_strict measurements"
+    ]
+  },
+  "known_failure_reference": {
+    "path": "projects/agent-queue/notes/full-suite-baseline-2026-09-22.md",
+    "commit": "35d9605eab99480b29fd54598eb840b2a614ee09",
+    "applicable_runtime_failures": []
+  }
+}

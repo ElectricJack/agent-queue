@@ -180,6 +180,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_ack": "wait",
     "wait_decide": "wait",
     "wait_lift": "wait",
+    "wait_source_redispatch": "wait",
     "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
@@ -1279,6 +1280,14 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Filter by project ID (optional, but required for tree/compact modes)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Maximum tasks in a flat live listing, after filtering. "
+                        "The total remains uncapped. Use page_size for snapshots."
+                    ),
                 },
                 "status": {
                     "type": "string",
@@ -6025,10 +6034,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "message_inbox",
         "description": (
-            "List the pending (undelivered) messages for one recipient.  With "
-            "inject=true it also marks them delivered and archives any rows "
+            "List unread, unarchived messages for one recipient, including "
+            "already-delivered mail. Supervisor aliases and the current named "
+            "session UUID share an inbox. With inject=true, return only "
+            "undelivered messages, mark them delivered and archive any rows "
             "flagged archive_after_inject.  include_consumed additionally "
-            "returns rows already delivered to this recipient, read-only, so a "
+            "returns other consumed rows for this recipient, read-only, so a "
             "worker whose inject consumed delivery before it could render the "
             "bodies can still read them."
         ),
@@ -9505,6 +9516,7 @@ _WAIT_V2_DESCRIPTIONS = {
     "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
     "wait_decide": "Record a supervisor decision for a verified wait.",
     "wait_lift": "Lift an escalated verified wait with an authorized decision.",
+    "wait_source_redispatch": "Reobserve one durable source event in a supervisor project.",
 }
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],

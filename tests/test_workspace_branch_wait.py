@@ -373,7 +373,7 @@ async def test_verifier_uses_its_parents_reserved_noncanonical_branch(env):
     assert origin["base_sha"] == "b" * 40
 
 
-async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(env):
+async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(env, monkeypatch):
     await env.db.create_repo(
         RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
     )
@@ -415,6 +415,15 @@ async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(en
     slots = _SuccessfulSlots()
     env.orch._worktree_slot_manager = slots
     origin = await env.db.get_task_branch_origin_for_promotion(child.id, "repo")
+    env.orch.config.worktrees.slot_reset_git_timeouts["p"] = 75
+    exclusion = BranchOwnership.mutation_exclusion
+    budgets = []
+
+    def observe_exclusion(ownership, fence, **kwargs):
+        budgets.append(kwargs.get("timeout_seconds"))
+        return exclusion(ownership, fence, **kwargs)
+
+    monkeypatch.setattr(BranchOwnership, "mutation_exclusion", observe_exclusion)
 
     result = await env.orch._prepare_slot_workspace(
         child,
@@ -427,6 +436,7 @@ async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(en
     assert result == env.slot.workspace_path
     assert slots.calls[0][2]["base_branch"] == "b" * 40
     assert slots.calls[0][2]["resume_branch"] is None
+    assert budgets == [105]
 
 
 async def test_hierarchy_non_slot_prep_uses_exact_origin_under_owner_fence(
