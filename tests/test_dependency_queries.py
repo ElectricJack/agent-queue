@@ -8,20 +8,17 @@ from __future__ import annotations
 
 import pytest
 
-from src.database import Database
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.models import DepType, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 PROJECT = "p-dep"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("dep.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("dep.db")
     await database.create_project(Project(id=PROJECT, name="dep"))
     yield database
-    await database.close()
 
 
 async def _mktask(db, tid):
@@ -29,6 +26,31 @@ async def _mktask(db, tid):
         Task(id=tid, project_id=PROJECT, title=tid, description=tid, status=TaskStatus.DEFINED)
     )
     return tid
+
+
+@pytest.mark.parametrize("caller_connection", [False, True])
+async def test_guarded_dependency_waits_for_hierarchy_then_rechecks_target(
+    db, monkeypatch, caller_connection,
+):
+    """Classification must reflect a hierarchy move that wins the lock."""
+    await _mktask(db, "worker")
+    await _mktask(db, "target")
+    real_lock = db.lock_hierarchy_project
+
+    async def lock_then_convert(conn, project_id):
+        await real_lock(conn, project_id)
+        await db.declare_container("target", conn=conn)
+
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock_then_convert)
+    with pytest.raises(HierarchyError, match="leaf task") as raised:
+        if caller_connection:
+            async with db._engine.begin() as conn:
+                await db.add_dependency("worker", "target", reject_container_target=True, conn=conn)
+        else:
+            await db.add_dependency("worker", "target", reject_container_target=True)
+    assert raised.value.code == "dependency_on_container"
+    assert await db.get_typed_dependencies("worker") == []
+    assert await db.get_task_meta("target", "container") is None  # Entire transaction rolled back.
 
 
 class TestAddDependencyIdempotent:
