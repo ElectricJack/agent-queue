@@ -61,10 +61,12 @@
 ## Purpose
 
 Move queued work off a provider that has run out of usage or lost its login.
-When `codex` is unavailable, a `standard-high-codex` task that nobody pinned
-should run on `standard-high-claude` instead of waiting out the outage, while
-an `astra-high` task (a class only OpenAI serves) and anything a human pinned
-to its provider stay where they are with a visible reason. The command does one
+When `codex` is unavailable, a `standard-high-codex` task that is not pinned
+should run on the next candidate its router recorded — `standard-high-claude`,
+say — instead of waiting out the outage, while an `astra-high` task (a class
+only OpenAI serves) and anything pinned to its provider (an override, or a
+router `hold` lane such as art design) stay where they are with a visible
+reason. The command does one
 sweep of that policy and reports what it moved and what it held
 ([provider failover](../../specs/provider-failover.md) D11-D16).
 
@@ -90,14 +92,20 @@ naming tasks, `to_profile` and `force` are operator arguments of
    an unavailable provider plus automatically-paused ones.
 3. The pure planner `plan_sweep` decides per task, in `priority, created_at`
    order: `pinned` holds (`provider_pinned`); a class set to `hold` holds
-   (`class_policy_hold`); otherwise it looks for the same class on the next
-   provider in `provider_failover.order` (default: the project default's
-   provider, then `WORKER_PROVIDERS`), skipping providers the task already
-   left, and only an `available` provider is a target. No rung anywhere is
-   `no_equivalent_rung`; rungs only on unavailable or degraded providers is
-   `no_available_target`; a full trickle is `awaiting_failover_capacity` with
+   (`class_policy_hold`). A task the router routed then takes the next entry
+   of `tasks.route.candidates`, in the router's order, whose profile still
+   exists and whose provider is not the one it is leaving or one it already
+   left; it moves at that candidate's class. A task without candidates (a
+   legacy route) looks for the same class on the next provider in
+   `provider_failover.order` (default: `WORKER_PROVIDERS` order — `claude`,
+   then `codex` — then any other provider), skipping providers it already
+   left. Either way only an `available` provider is a target. No candidate or
+   rung on another provider is `no_equivalent_rung`; ones only on unavailable
+   or degraded providers is `no_available_target`; a full trickle is `awaiting_failover_capacity` with
    `ahead`; `reroute.max_auto_per_task` and `task_cooldown_seconds` give
-   `reroute_limit_reached`.
+   `reroute_limit_reached`. An operator's `to_profile` for a routed task must
+   be one of its candidates, even with `force`: a move outside them is an
+   override (`aq task route-override`).
 4. A provider-paused task (`task_metadata['provider_pause']`) whose provider has
    tripped returns `PAUSED -> READY` first; a pause with no recorded cause is
    touched only with `include_paused`.
@@ -112,8 +120,9 @@ naming tasks, `to_profile` and `force` are operator arguments of
    pass. It takes one pool measurement (`Orchestrator._measure_pools`), counts
    failover's planned moves on their targets, and runs the pure planner
    [`plan_capacity_spill`](../../../src/providers/spill.py): a task moves from a
-   pool that cannot serve it to a same-class pool with headroom in its project,
-   at most `spill.max_per_sweep` per sweep. Both passes are planned before
+   pool that cannot serve it to a same-class pool with headroom in its project —
+   for a routed task, only one of its route candidates — at most
+   `spill.max_per_sweep` per sweep. Both passes are planned before
    either writes. Every decision in `moved` / `held` / `skipped` carries
    `reason_code` (`provider_unavailable`, `operator_forced` or
    `capacity_spill`). `provider_failover.spill.enabled: false` skips the pass.
@@ -127,7 +136,8 @@ system-authored task comment and a `task.rerouted` event. Per batch: one
 `provider.reroute_batch` event when it moved or newly held anything, and one
 message to `session:supervisor-<project>` per project, keyed by the message
 `thread_id` `reroute:<batch>:<project>` so a later sweep of the same outage
-never repeats it. Intent and class never change. Everything is durable; a
+never repeats it. Intent and route source never change, and the class
+changes only to a route candidate's own class. Everything is durable; a
 restart re-plans from the rows.
 
 Per capacity spill move: the same guarded write, with `reason_code =

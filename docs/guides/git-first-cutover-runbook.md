@@ -1,0 +1,260 @@
+# Git-first integration cutover: transfer, upgrade, restart, canary
+
+> Historical cutover procedure: C1 and the 2026-10-12 consumer retirement removed
+> the subject publishers and Development transfer command. The steps below document
+> that earlier rollout; use the [current train runbook](git-first-train-runbook.md)
+> and [consumer audit](../reports/2026-10-12-legacy-consumer-retirement.md) for the
+> retained runtime and safety boundaries.
+
+Operator procedure for selecting `integration.git_first: active`, the
+five-table protocol that replaces the old subject runtime as the delivery path
+for a project. The design is `projects/agent-queue/specs/2026-10-04-git-first-integration-train.md`
+and `projects/agent-queue/plans/2026-10-04-git-first-integration-plan-2.md`
+§4 ("Stages, owners and cutover") and §3. The invariants this runbook depends on
+are asserted in `tests/test_integration_cutover.py` and `tests/test_integration_replay.py`.
+
+A worker session must never run any step below. Every one of them is an operator
+or supervisor action: a database upgrade, a daemon configuration change, a
+restart, or a live observation of the real queue.
+
+## What selecting `active` actually changes
+
+The current train always runs. `integration.git_first` accepts only `active`;
+old `shadow` settings fail validation with a migration message. This historical
+cutover record does not provide an alternate engine or a rollback selector.
+`IntegrationService` refuses a train beside any subject runtime.
+
+Prerequisites, all of which must be true **before** step 4:
+
+- the whole reduced loop and both check providers exist
+  (`src/integration/{git_truth,lock,checks,reviews,batches,epics,train,train_sources}.py`);
+- the compatible schema is installed (steps 1–2 below);
+- every root of the target repositories is reconciler-owned (step 3);
+- `aq test tests/test_integration*.py tests/test_config.py` is green on the
+  checkout being deployed;
+- a disposable smoke run of the swarm kit has completed **with
+  `git_first: active`**: `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh`.
+
+## 1. Dump before the upgrade
+
+```bash
+pg_dump --format=custom --file "$HOME/aq-cutover-$(date +%Y%m%dT%H%M%S).dump" "$AGENT_QUEUE_DB_URL"
+sha256sum "$HOME"/aq-cutover-*.dump
+```
+
+Record the dump's path and hash in the canary evidence below. Verify it restores
+onto a disposable database before you rely on it; an unverified dump is not a
+dump.
+
+## 2. Upgrade the schema
+
+```bash
+aq db current          # read-only: which revision the database is stamped at
+aq db upgrade          # to a00000000075, the merged single head
+```
+
+`aq db upgrade` is refused with `AQ_DB_SCOPE=worker`; that refusal is the guard
+working. The three stage-2 revisions are additive and compatible with the old
+readers: they add columns, indexes and check constraints, they reshape
+`integration_check_evidence` in place, and nothing is dropped. If the database
+reports a revision this checkout lacks, that is
+`aq doctor --check db.alembic_orphan [--fix]`, not a manual stamp.
+
+## 3. Transfer every root that is not reconciler-owned
+
+Root ownership is durable and already enforced in code
+(`RootEngineOwnership._operation`, `src/integration/engine.py:264`). There is
+nothing to activate: this step exists only for a repository that never received
+a transfer.
+
+Preview first, then apply the exact previewed versions. The preview prints the
+`SUBJECT_ID:VERSION` pairs; the apply refuses anything but those exact pairs, a
+non-empty reason, and at least one evidence reference.
+
+```bash
+aq integration engine-transfer "$REPOSITORY_ID" --engine reconciler
+aq integration engine-transfer "$REPOSITORY_ID" --engine reconciler \
+    --expected-subject SUBJECT_ID:VERSION [--expected-subject ...] \
+    --reason "git-first cutover canary" \
+    --evidence "aq test tests/test_integration*.py tests/test_config.py: green" \
+    --evidence "scripts/e2e-smoke.sh with git_first=active: green" \
+    --apply
+```
+
+Development-mode projects transfer per project:
+
+```bash
+aq integration development-engine-transfer "$PROJECT_ID" --engine reconciler
+```
+
+Record, for the canary: the repository or project id, and **every transfer
+performed** with its exact subject ids and versions, or the explicit statement
+that none was needed because the roots were already owned.
+
+## 3a. Backfill legacy deliveries the train cannot see
+
+Completions closed before retained provenance existed (merged pull requests, the
+old engine's batches) are `missing_git_provenance` to the train: they are listed
+as unknown blockers on the root target, and anything that depends on them is held
+out of every batch. Record the ones git proves are already on the default branch:
+
+```bash
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --output preview.json
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --apply \
+    --reason "git-first cutover: legacy work already on main"
+```
+
+For each such task it locates exact candidate sources (reported completion commits,
+origin branch tip, old batch members and delivery receipts, the pull request
+head), and writes an `integration_legacy_deliveries` row only when a candidate is
+an ancestor of the tip (`development_delivery`) or merging it changes only
+generated artifacts (`content_equivalent`). The latter ignores differences and
+conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
+attributes; other differences or conflicts remain unproven.
+It never writes provenance, moves a ref or edits a task;
+anything unproven is listed and left alone for an explicit decision. A reopened
+task's new completion is not covered by the old row.
+
+A child of a still-open epic whose exact source is already on the epic branch
+gets retained provenance instead (`epic_branch_provenance`), because the epic's
+readiness reads provenance, not rows. For the rest — a completion git can no
+longer prove and that must not now be delivered — an explicit, reasoned decision
+is the only answer, and it is per task:
+
+```bash
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" \
+    --abandon-task TASK_ID --abandon-task ANOTHER_TASK_ID
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" \
+    --abandon-task TASK_ID --abandon-task ANOTHER_TASK_ID \
+    --apply --reason "superseded by later work on main"
+```
+
+`--abandon-task` names any one completed task, leaf or container, and records
+`abandoned` rows for it and, when it is a container, for its undelivered
+descendants, so the train neither blocks on them nor merges a stale branch.
+Both flags are repeatable and both are refused when git already proves the work
+(the ordinary backfill then records that proof instead), when the task is not
+`COMPLETED`, or when `--apply` has no nonblank `--reason`. A container with no
+branch of its own is decided the same way; `--abandon-epic` is the same decision
+by name for a container, and refuses a task with no children. Nothing is deleted;
+removing the rows restores the previous state.
+
+Re-run the ordinary backfill afterwards: it lists whatever still cannot be
+accounted for, and every such task needs its own decision here.
+
+## 4. Select `active` and restart
+
+```yaml
+# ~/.agent-queue/config.yaml
+integration:
+  git_first: active
+```
+
+```bash
+aq restart --no-dashboard
+```
+
+If this deploy changed dashboard sources, also rebuild and restart the dashboard:
+`python3 ~/.agent-queue/operator-checks/build-dashboard.py`, then `aq dashboard restart`.
+Restarting the daemon does not rebuild the dashboard.
+
+`aq restart --no-dashboard` preserves agent tmux sessions. Never `aq stop` then
+`aq start` for an update: `aq stop` kills every agent session.
+
+Then verify, in this order, before believing anything else:
+
+```bash
+curl -fsS localhost:PORT/api/health
+curl -fsS localhost:PORT/ready
+aq integration status "$PROJECT_ID"          # projection_kind: train
+```
+
+`projection_kind: train` is the proof the configured mode actually ran. If it
+says otherwise, the selector did not take effect and nothing below is evidence
+of anything.
+
+## 5. Observe one real delivery
+
+Let one ordinary completed task route to its configured parent or default ref
+and watch it land. Collect, at minimum:
+
+| Field | Where it comes from |
+|---|---|
+| configured mode | `aq integration status` → `projection_kind`, plus the `integration.git_first` value the daemon loaded |
+| task id | the delivered task |
+| source OID | the task's exact pushed source (`AQ-Source: <task-id>@<sha>` on the merge commit) |
+| candidate OID | the batch's candidate ref tip that the checks ran on |
+| target ref and target OID | before and after the fast-forward |
+| checks | the exact-commit verdicts read for the candidate OID, from `integration_check_evidence` |
+| transfers | every `engine-transfer` apply from step 3 |
+| dump path and hash | step 1 |
+
+Record the mode that actually ran. A development-mode delivery does **not** prove
+hosted-train operation and a hosted-train delivery does not prove the local
+resource-job provider; both are proven separately in the disposable smoke run,
+and the project's actual configured mode is proven only by the live evidence
+above.
+
+For an epic canary, finish two children and observe both delivery boundaries.
+The child batch first collects their exact completion sources onto the epic
+branch. The train then evaluates recursive readiness: all required child work
+is complete and contained, the exact collected epic head has green required
+checks, and any required review approves its tree. Only then does it retain
+Git provenance and append the container's ordinary completion record with
+that head as its source. A completed task status or an uncollected branch tip
+does not supply this record.
+
+The root lane batches that epic completion and checks its own merge candidate
+before landing it on the default branch. Record the child sources, collected
+epic head, epic completion id, review evidence (when required), root candidate
+and final default-branch OID. Verify that the final OID contains the epic and
+both child sources. Green checks on the epic head alone do not authorize the
+different root candidate.
+
+If the child batch has landed but a head check or tree review is pending, the
+epic target reports readiness blockers in `aq integration status`. Idle epic
+visits retry readiness, including after a restart; repeated visits reuse the
+same completion identity while its inputs are unchanged. Root admission and
+publication recheck the current task graph, required checks and tree review;
+changed readiness inputs require a fresh collected completion. No operator
+completion record or manual merge is needed. The two-child regression fixture
+is `tests/test_integration_train_sources.py::test_collected_two_child_epic_gets_completion_and_lands_via_root`.
+
+## 6. Confirm old-event isolation
+
+Under `active` the scheduler, legacy outbox dispatch and the green continuations
+are stopped for owned projects. Promotion policy events continue to dispatch;
+pending legacy events stay pending. After the restart:
+
+```sql
+SELECT event_type, count(*), sum(attempts) FROM integration_outbox GROUP BY 1;
+SELECT count(*) FROM integration_subject_journal;
+```
+
+Both must be unchanged from immediately before the restart. A pending legacy
+event whose `attempts` moved, or a new subject-journal row, means something is
+still dispatching into an old writer: pause the affected batch and report
+the event id. `tests/test_integration_cutover.py` asserts this against real rows
+across a restart; it is not a substitute for the live check, and the live check
+is not a substitute for the assertion.
+
+## Rollback
+
+Trial mode has been removed. Recovery is roll-forward through the current
+runbook’s batch pause, abort and eject controls; preserve the evidence and fix
+through the configured integration owner.
+
+If a cutover produced a wrong publication, do not revert the branch from the
+daemon. Delivery means historical inclusion, so a revert is new work: file a
+task, let the train publish it through the normal path.
+
+## What this procedure does not do
+
+- It does not declare any observation window elapsed. There is no fixed soak and
+  no seven-day legacy-exclusive shadow report; the retired
+  `aq integration shadow-report` cannot certify this protocol and is gone with
+  its module.
+- It does not settle the recorded backlog stalls. `s3_settle` is operator
+  evidence gathered through the supervisor.
+- Legacy tables retain historical recovery evidence. Trial mode was removed on
+  2026-10-23; the current runbook supersedes the original activation procedure.

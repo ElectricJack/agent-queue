@@ -1,0 +1,62 @@
+{
+  "event": {
+    "type": "timer.1h",
+    "tick_time": "2026-09-28T05:07:00.000000+00:00",
+    "interval": "1h"
+  },
+  "check_summary": "QUILT-HEALTH: OK - coordinator ok; Trader1 online; 3/3 deployments running; no new error signatures",
+  "tree": {
+    "artifact_sha256": "sha256:1106457d00ac79ed070ab0ec311c2e671abd9e8f6f24716185de92781e577477",
+    "rules_selected": [
+      "off-hours"
+    ],
+    "paths": [
+      {
+        "rule_id": "off-hours",
+        "nodes": [
+          {
+            "step_id": "off-hours--check",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": "off-hours--read",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "off-hours--read",
+            "status": "simulated",
+            "outcome": "read",
+            "target": "off-hours--verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "off-hours--verdict",
+            "status": "resolved",
+            "outcome": "matched",
+            "target": "off-hours--done",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "off-hours--done",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": null,
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          }
+        ],
+        "status": "resolved",
+        "completed": true,
+        "omitted_frontiers": []
+      }
+    ],
+    "truncated": false,
+    "step_visits": 4
+  }
+}

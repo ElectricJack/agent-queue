@@ -15,6 +15,8 @@ import signal
 import struct
 from typing import TYPE_CHECKING
 
+from src.sessions.provider import SessionError
+
 if TYPE_CHECKING:
     from src.models import SessionRecord
     from src.sessions.tmux import TmuxProvider
@@ -25,6 +27,22 @@ _CONNECTION_FAILED = "Terminal connection failed."
 _REQUIRE_DETACH = "Terminal requires tmux detach-on-destroy on for this session."
 _MAX_READ = 16 * 1024
 _MAX_INPUT = 64 * 1024
+# The window size and ``window-size`` policy from before the first sizing viewer
+# attached, then the client pids of the viewers holding it, as
+# ``"<cols>x<rows> <policy> <pid>..."``; see ``PtyTmuxClient.attach(restore_size=)``.
+_RESTORE_OPTION = "@aq_restore_size"
+_RESTORE_VALUE = re.compile(
+    r"([0-9]{1,5})x([0-9]{1,5}) (largest|smallest|manual|latest)((?: [0-9]{1,10})*)"
+)
+_HISTORY_LIMIT = 4 * 1024 * 1024
+# Trailing blanks (and the SGR codes between them) a joined history line keeps:
+# on a narrower terminal they would wrap into rows of nothing.
+_TRAILING_BLANK = re.compile(r"(?:[ \t]|\x1b\[[0-9;:]*m)+$")
+# Attach clients run as xterm-256color, whose ``indn`` (CSI n S) scrolls several
+# lines at once. A terminal discards lines that CSI S removes but keeps those a
+# line feed pushes off the top, so a viewer keeping its own scrollback needs tmux
+# to scroll with line feeds; see ``PtyTmuxClient.attach(scrollback=)``.
+_LINE_FEED_SCROLL = "xterm-256color:indn@"
 
 
 class TerminalAttachError(Exception):
@@ -72,11 +90,24 @@ class PtyTmuxClient:
         self._close_lock = asyncio.Lock()
         self._read_waiter: tuple[int, asyncio.Future[bool]] | None = None
         self._write_waiter: tuple[int, asyncio.Future[bool]] | None = None
+        self._restore_size = False
 
     @classmethod
     async def attach(
         cls, provider: TmuxProvider, row: SessionRecord, *, cols: int, rows: int,
+        restore_size: bool = False, scrollback: bool = False,
     ) -> PtyTmuxClient:
+        """Attach a client at *cols* x *rows*.
+
+        Every attached client resizes the agent's window (``window-size latest``),
+        and tmux keeps the last size once no client is left. With *restore_size*
+        (phones), the size from before the first such viewer attached is put back
+        when the last client detaches, so the agent does not keep a phone-sized
+        window after the phone leaves. A phone that leaves only other kinds of
+        viewer attached drops the record: they keep the window at their own size.
+        With *scrollback* the viewer keeps its own
+        scrollback, so tmux is made to scroll with line feeds.
+        """
         if os.name != "posix":
             raise TerminalAttachError("Interactive terminals require a POSIX host.")
         import pty
@@ -93,6 +124,10 @@ class PtyTmuxClient:
                     raise TerminalAttachError(_UNAVAILABLE)
                 if policy != "on":
                     raise TerminalAttachError(_REQUIRE_DETACH)
+                if restore_size:
+                    await client._remember_size()
+                if scrollback:
+                    await client._scroll_with_line_feeds()
                 client._master, slave = pty.openpty()
                 client._set_size(slave, cols, rows)
                 os.set_blocking(client._master, False)
@@ -125,6 +160,8 @@ class PtyTmuxClient:
                 # have been checked again after the attachment became visible.
                 if not await client.verify():
                     raise TerminalAttachError(_UNAVAILABLE)
+                if client._restore_size:
+                    await client._hold_record()
             return client
         except asyncio.CancelledError:
             await client.close()
@@ -153,6 +190,154 @@ class PtyTmuxClient:
             return f"{proc.pid}\t{self._session_id}" in clients.splitlines()
         except Exception:
             return False
+
+    async def _other_clients(self) -> set[str]:
+        """Pids of the clients attached to this session, other than this one."""
+        own = str(self._process.pid) if self._process is not None else None
+        out = await self._provider._tmux(
+            "list-clients", "-t", self._session_id, "-F", "#{client_pid}", timeout=1,
+        )
+        return {pid for pid in out.split() if pid != own}
+
+    async def _record(self) -> re.Match[str] | None:
+        return _RESTORE_VALUE.fullmatch((await self._provider._tmux(
+            "show-options", "-qv", "-t", self._session_id, _RESTORE_OPTION, timeout=1,
+        )).strip())
+
+    async def _remember_size(self) -> None:
+        """Record the resting window size before this client changes it.
+
+        A record held by a viewer still attached (another phone) is kept.
+        Otherwise this viewer records the current size, which is the size any
+        other viewers set, so the last one out restores what was there first.
+        """
+        sid = self._session_id
+        try:
+            recorded = await self._record()
+            if recorded is not None and set(recorded[4].split()) & await self._other_clients():
+                self._restore_size = True
+                return
+            size = (await self._provider._tmux(
+                "display-message", "-p", "-t", f"{sid}:",
+                "#{window_width}x#{window_height}", timeout=1,
+            )).strip()
+            policy = (await self._provider._tmux(
+                "show-options", "-wAv", "-t", f"{sid}:", "window-size", timeout=1,
+            )).strip()
+            value = f"{size} {policy}"
+            if not _RESTORE_VALUE.fullmatch(value):
+                return
+            await self._provider._tmux(
+                "set-option", "-t", sid, _RESTORE_OPTION, value, timeout=1,
+            )
+            self._restore_size = True
+        except (SessionError, OSError):
+            # Best effort: an unrecorded size only means the window keeps the
+            # viewer's size, which is what every other attach does.
+            return
+
+    async def _hold_record(self) -> None:
+        """Add this attached client's pid to the record, which keeps it live."""
+        with contextlib.suppress(SessionError, OSError):
+            recorded = await self._record()
+            if recorded is not None and self._process is not None:
+                await self._provider._tmux(
+                    "set-option", "-t", self._session_id, _RESTORE_OPTION,
+                    f"{recorded[0]} {self._process.pid}", timeout=1,
+                )
+
+    async def _restore_window(self) -> None:
+        sid = self._session_id
+        if await self._current_session_id() != sid:
+            return
+        recorded = await self._record()
+        if recorded is None:
+            return
+        others = await self._other_clients()
+        if others:
+            # Viewers that did not ask for a restore keep the window at their
+            # size; a record no attached viewer holds would only go stale.
+            if not set(recorded[4].split()) & others:
+                await self._provider._tmux(
+                    "set-option", "-u", "-t", sid, _RESTORE_OPTION, timeout=1,
+                )
+            return
+        cols, rows, policy = recorded.groups()[:3]
+        try:
+            # resize-window also switches the window to a manual size; the
+            # policy is put back after, which keeps this size until a client
+            # attaches (tmux.py repaint does the same).
+            await self._provider._tmux(
+                "resize-window", "-t", f"{sid}:", "-x", cols, "-y", rows, timeout=1,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await self._provider._tmux(
+                    "set-option", "-w", "-t", f"{sid}:", "window-size", policy, timeout=1,
+                )
+            with contextlib.suppress(Exception):
+                await self._provider._tmux(
+                    "set-option", "-u", "-t", sid, _RESTORE_OPTION, timeout=1,
+                )
+
+    async def _scroll_with_line_feeds(self) -> None:
+        """Drop ``indn`` for xterm-256color clients of this tmux server.
+
+        The override is server-wide and only ever added: every client still sees
+        the same screen, drawn with line feeds where tmux would send CSI n S.
+        Best effort; without it a viewer's scrollback misses some lines.
+        """
+        try:
+            current = await self._provider._tmux(
+                "show-options", "-sv", "terminal-overrides", timeout=1,
+            )
+            if _LINE_FEED_SCROLL in current.splitlines():
+                return
+            await self._provider._tmux(
+                "set-option", "-sa", "terminal-overrides", _LINE_FEED_SCROLL, timeout=1,
+            )
+        except (SessionError, OSError):
+            pass
+
+    async def history(self, lines: int, rows: int) -> bytes:
+        """Up to *lines* of the pane's scrollback, framed for a fresh terminal.
+
+        Sent before any attach output, the lines end up in the receiving
+        terminal's own scrollback: *rows* line feeds push the last of them just
+        above a blank screen, which tmux's first redraw then paints. Wrapped
+        lines are joined (the viewer may be narrower than the pane) and each
+        line ends with an SGR reset so no colour leaks into the next.
+        """
+        if self._closed or lines <= 0:
+            return b""
+        sid = self._session_id
+        try:
+            size = int((await self._provider._tmux(
+                "display-message", "-p", "-t", f"{sid}:", "#{history_size}", timeout=1,
+            )).strip())
+            count = min(lines, size)
+            if count <= 0:
+                return b""
+            out = await self._provider._tmux(
+                "capture-pane", "-p", "-e", "-J", "-S", f"-{count}", "-E", "-1",
+                "-t", f"{sid}:", timeout=2,
+            )
+        except (SessionError, OSError, ValueError):
+            return b""
+        out = out.removesuffix("\n")
+        kept: list[str] = []
+        total = 0
+        for line in reversed(out.split("\n")):
+            line = _TRAILING_BLANK.sub("", line)
+            total += len(line) + 6
+            if total > _HISTORY_LIMIT:
+                break
+            kept.append(line)
+        kept.reverse()
+        if not kept:
+            return b""
+        text = "\x1b[0m\r\n".join(kept) + "\x1b[0m" + "\r\n" * rows
+        return text.encode("utf-8", errors="replace")
 
     async def _detach_policy(self) -> str | None:
         try:
@@ -287,3 +472,7 @@ class PtyTmuxClient:
                     with contextlib.suppress(ProcessLookupError):
                         proc.kill()
                     await proc.wait()
+            if self._restore_size:
+                with contextlib.suppress(Exception):
+                    async with asyncio.timeout(3):
+                        await self._restore_window()

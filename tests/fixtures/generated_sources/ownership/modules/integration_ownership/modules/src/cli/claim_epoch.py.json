@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/cli/claim_epoch.py::claim_epoch_option": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/claim_epoch.py::resolve_claim_epoch": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
