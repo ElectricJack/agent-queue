@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from src.asks.delivery import config_fingerprint, destination
+from src.asks.delivery import config_fingerprint, destination, fence_config_modes
 from src.asks.models import AskError
 from src.database.tables import (
     ask_external_bindings,
@@ -87,6 +87,7 @@ async def cutover(handler, args):
     db, config = handler.db, handler.config
     project, dest, target = args["project_id"], destination(handler.config), args["mode"]
     async with db.immediate() as conn:
+        await fence_config_modes(config, conn=conn, now=time.time(), exclude=(project, dest))
         # The admission fence commits even with unknown writes. Those writes remain
         # evidence, and block channel ownership until independently reconciled.
         await conn.execute(
@@ -130,50 +131,6 @@ async def cutover(handler, args):
                     "ask.transfer_unverified",
                     "Record the current inventory hash and controls/redirect evidence",
                 )
-        # Global destination/allowlist changes revoke every old ownership row.
-        peers = (
-            (
-                await conn.execute(
-                    select(human_communication_modes)
-                    .where(
-                        human_communication_modes.c.config_fingerprint
-                        != config_fingerprint(config),
-                    )
-                    .order_by(
-                        human_communication_modes.c.project_id,
-                        human_communication_modes.c.destination,
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
-        for peer in peers:
-            if (peer["project_id"], peer["destination"]) == (project, dest):
-                continue
-            await db.advance_ask_mode(
-                {
-                    **dict(peer),
-                    "mode": "delivery_disabled",
-                    "config_fingerprint": config_fingerprint(config),
-                    "updated_at": time.time(),
-                },
-                expected_generation=peer["generation"],
-                conn=conn,
-            )
-            await conn.execute(
-                update(ask_action_tokens)
-                .where(
-                    ask_action_tokens.c.binding_id.in_(
-                        select(ask_external_bindings.c.id).where(
-                            ask_external_bindings.c.project_id == peer["project_id"],
-                            ask_external_bindings.c.destination == peer["destination"],
-                        )
-                    ),
-                    ask_action_tokens.c.revoked_at.is_(None),
-                )
-                .values(revoked_at=time.time())
-            )
         recorded = dict((old or {}).get("inventory") or {})
         recorded.update(
             last_inventory=inventory,

@@ -1,0 +1,18 @@
+{
+  "exclusions": {
+    "src/database/queries/onboarding_queries.py::_TERMINAL['failed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/database/queries/onboarding_queries.py::OnboardingQueryMixin.register_onboarded_project": {
+      "baseline_span": [
+        74,
+        118
+      ],
+      "landing_span": [
+        74,
+        118
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -175,3 +175,25 @@ checks include the task's migration/doctor/v1/inventory/command-surface files,
 cutover and wait area tests, generated-artifact drift and the disposable swarm
 smoke (`scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh`). A passing isolated
 smoke does not authorize a worker to manage the live daemon or operator database.
+
+
+## A satisfied wait that does not resume
+
+A task in `RESUME_PENDING` must still pass capacity, provider, policy and current
+prerequisite delivery checks. In Git-first projects, resume uses the same Git
+prerequisite evidence as ordinary claims, including cross-epic delivery and parent
+containment; legacy delivery receipts alone cannot determine that admission.
+Resume refreshes Git evidence before taking the wait graph lock, then revalidates
+its identities in the reservation transaction. Missing proof and operator holds
+continue to withhold admission.
+
+The source listener can contend with scheduler reconciliation for the wait graph
+lock. It leaves its durable cursor unchanged, releases the transaction and retries
+within the lease-renewal interval. Contention does not require a listener restart
+or a manual wake. Source dispatch and deadline firing acquire the graph fence
+before the lease row, so neither waits on that graph while preventing renewal.
+
+Scheduler waits describe admission blockers; their `hibernate` decision does not
+create an agent continuation. Resolving one clears its explanatory wait and edges
+without launching an agent or demanding a checkpoint. Continuation ownership
+proof remains mandatory for hibernating task owners.

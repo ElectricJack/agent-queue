@@ -1,0 +1,101 @@
+{
+  "shared": {
+    "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
+      "landing_span": [
+        83,
+        149
+      ],
+      "reason": "Locked resume admission and reservation extracted from the charged reserve wrapper; both remain charged within the approved footprint."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.bind_launch": {
+      "landing_span": [
+        229,
+        266
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.dispatch": {
+      "landing_span": [
+        177,
+        228
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.failed": {
+      "landing_span": [
+        267,
+        335
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.fresh_workspace": {
+      "landing_span": [
+        108,
+        176
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.recovery_event": {
+      "landing_span": [
+        336,
+        374
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
+      "landing_span": [
+        45,
+        107
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::import from src.database.queries.continuation_queries import wait_outcome_envelope": {
+      "landing_span": [
+        10,
+        11
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::import from src.wait_runtime.hibernate import locked_suspension": {
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::import from src.waits.mail import held_messages": {
+      "landing_span": [
+        20,
+        20
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::verify_saved_branch": {
+      "landing_span": [
+        22,
+        36
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  },
+  "storage_sinks": {
+    "src/wait_runtime/resume.py::ResumeTransaction.failed::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 418,
+      "owner": "ResumeTransaction.failed",
+      "owner_fingerprint": "8ee5da3fed3499f756251860eb293388659632cffceff0b807a30256c1fc6408",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.requeue::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 352,
+      "owner": "ResumeTransaction.requeue",
+      "owner_fingerprint": "785accff5b08eddd30f89fe135c9ff1dbe62d6cb730226a4ef5fbd4d575f7f68",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    }
+  }
+}

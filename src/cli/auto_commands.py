@@ -156,6 +156,8 @@ HANDCRAFTED_COVERAGE = {
     "integration_release_owner",
     "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
     "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_redrive_root",
@@ -164,6 +166,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_recover_completed_container",
     "integration_reopen_collection",
     "integration_close_delivered_pr",
+    "integration_fast_forward_pr",
     "integration_record_root_noop",
     "integration_supersede_completion",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)

@@ -192,6 +192,7 @@ async def test_reply_identity_cannot_be_spoofed_and_notice_is_atomic(env):
 async def versioned_apply(handler, args):
     legacy = await supervisor_execute(handler, "escalation_apply_reply", args)
     assert legacy["error_code"] == "ask.context_missing", legacy
+    assert legacy["ask_url"] == f"/focus/asks/{legacy['ask_id']}"
     args["expected"] = legacy["expected"]
     prepared = await supervisor_execute(handler, "escalation_apply_reply", {**args, "prepare": True})
     if not prepared["success"]:
