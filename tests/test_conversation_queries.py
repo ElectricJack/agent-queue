@@ -331,10 +331,18 @@ async def test_set_state_honours_expected_states_and_stamps_closing(db):
         await db.set_conversation_state(conversation_id, state="gone", now=1300.0)
 
 
-async def test_reply_is_addressed_to_the_author_in_the_thread_and_answers_the_input(db):
+@pytest.mark.parametrize("prior_delivery", [None, 1400.0])
+@pytest.mark.parametrize("prior_read", [None, 1450.0])
+async def test_reply_is_addressed_to_the_author_in_the_thread_and_answers_the_input(
+    db, prior_delivery, prior_read
+):
     first = await open_conversation(db)
     conversation = first["conversation"]
     item = first["input"]
+    async with db._engine.begin() as conn:
+        await conn.execute(messages.update().where(
+            messages.c.id == item["supervisor_message_id"],
+        ).values(delivered_at=prior_delivery, read_at=prior_read))
 
     reply = await db.record_conversation_reply(
         conversation_id=conversation["id"],
@@ -374,7 +382,8 @@ async def test_reply_is_addressed_to_the_author_in_the_thread_and_answers_the_in
     )
     assert reply["message"]["id"] == "msg-conv-reply-abc"
     notice = await db.get_message(item["supervisor_message_id"])
-    assert notice.read_at == 1500.0
+    assert notice.read_at == (prior_read or 1500.0)
+    assert notice.delivered_at == (prior_delivery or 1500.0)
 
     before = await row_counts(db)
     replay = await db.record_conversation_reply(

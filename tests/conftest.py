@@ -15,7 +15,7 @@ from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 from src.config import DatabaseConfig
 from tests.db_fixtures import lease_dsn
 
-# Fresh per-test SQLite databases use the migration template cache. Individual
+# Fresh per-test PostgreSQL databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
 
@@ -72,26 +72,29 @@ _PG_BASE_DSN: str | None = None
 
 
 def pytest_configure(config) -> None:
-    """Validate the required DSN once, before collection or worker startup."""
+    """Admit declared PG consumers; collection and pure targets allocate nothing.
+
+    Bazel sets AQ_TEST_PG_MODE explicitly. Legacy pytest keeps its DSN-based
+    behavior, including aq test's required-Postgres admission contract.
+    """
     from src.cli.test_runner import postgres_test_dsn_error
+    from tests import pg_dsn
 
-    error = postgres_test_dsn_error()
-    if error:
-        raise pytest.UsageError(error)
     _refuse_stale_selection_catalogue(config)
-
-    # Collection validates configuration but must not create test resources.
-    if getattr(config.option, "collectonly", False):
+    mode = os.environ.get("AQ_TEST_PG_MODE", "legacy")
+    if mode not in {"legacy", "pure", "postgres"}:
+        raise pytest.UsageError("AQ_TEST_PG_MODE must be pure or postgres (legacy when unset)")
+    pg_dsn._COLLECTION_ONLY = bool(getattr(config.option, "collectonly", False))
+    if pg_dsn._COLLECTION_ONLY or mode == "pure":
         return
+    if mode == "postgres" or os.environ.get("AQ_REQUIRE_POSTGRES_TESTS") == "1":
+        error = postgres_test_dsn_error()
+        if error:
+            raise pytest.UsageError(error)
 
-    # Under xdist the controller coordinates only; each worker derives its own
-    # database after PYTEST_XDIST_WORKER is present. Avoid creating a controller
-    # database that no test can use and no fixture would clean up.
-    is_xdist_worker = hasattr(config, "workerinput")
-    num_processes = getattr(config.option, "numprocesses", 0)
-    if num_processes and not is_xdist_worker:
+    # The controller coordinates only; each worker derives its own database.
+    if getattr(config.option, "numprocesses", 0) and not hasattr(config, "workerinput"):
         return
-
     global _PG_BASE_DSN
     _PG_BASE_DSN = _resolve_base_dsn()
 
@@ -245,9 +248,13 @@ async def _pg_backend():
     from tests import db_fixtures
     from tests.db_fixtures import POOL_SIZE, LeasePool
 
+    if not _PG_BASE_DSN:
+        # Pure tests still run all ordinary fixtures. An actual lease/PG helper
+        # request fails with a dependency diagnostic instead of skipping a test.
+        db_fixtures.begin_test([])
+        yield
+        return
     if _PG_POOL is None:
-        if not _PG_BASE_DSN:
-            pytest.fail("PostgreSQL test preflight did not provision this worker's database")
         pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
         try:
             pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]
@@ -284,6 +291,9 @@ async def reuse_database(_pg_backend, _initialized_databases):
     Fresh adapters and engines preserve each test's callbacks and pool options,
     and prevent connections crossing pytest-asyncio's function-scoped loops.
     """
+    from tests.pg_dsn import require_postgres_dependency
+
+    require_postgres_dependency()
     databases = {}
 
     async def _get(name="test"):

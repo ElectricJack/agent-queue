@@ -1,0 +1,50 @@
+load(":defs.bzl", "js_smoke", "py_smoke")
+load("@pypi//:requirements.bzl", "requirement")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+
+py_smoke(
+    name = "python_smoke",
+    srcs = ["python_smoke.py"],
+    deps = [
+        "//:generated_client_smoke",
+        requirement("pydantic"),
+        requirement("sqlalchemy"),
+    ],
+    size = "small",
+)
+
+ts_project(
+    name = "typescript",
+    srcs = ["typescript_smoke.ts"],
+    tsconfig = "tsconfig.json",
+    transpiler = "tsc",
+)
+
+js_smoke(
+    name = "typescript_smoke",
+    entry_point = "typescript_smoke.js",
+    data = [":typescript"],
+    size = "small",
+)
+
+py_smoke(
+    name = "native_smoke",
+    srcs = ["native_smoke.py"],
+    args = [
+        "$(rootpath @aq_native//:runtime/bin/git)",
+        "$(rootpath @aq_native//:runtime/bin/tmux)",
+        "$(rootpath @aq_native//:runtime/bin/postgres)",
+        "$(rootpath @aq_native//:runtime/bin/initdb)",
+        "$(rootpath @aq_native//:runtime/bin/pg_ctl)",
+        "$(rootpath @aq_uv//:uv)",
+    ],
+    data = [
+        "@aq_native//:runtime/bin/git",
+        "@aq_native//:runtime/bin/tmux",
+        "@aq_native//:runtime/bin/postgres",
+        "@aq_native//:runtime/bin/initdb",
+        "@aq_native//:runtime/bin/pg_ctl",
+        "@aq_uv//:uv",
+    ],
+    size = "small",
+)
