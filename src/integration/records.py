@@ -1,7 +1,9 @@
-"""Audited subject receipts, attempts and decisions (primitives 14–16).
+"""Audited subject attempts and decisions (primitives 15–16).
 
-The foundation's append-only journal is the record; task delivery receipts are
-the task-side projection. Proof readers are trusted, server-owned adapters to
+The foundation's append-only journal is the record. Primitive 14
+(``record_receipt``) stays in the closed vocabulary but has no adapter: no
+active path writes task delivery receipts, which are historical audit only.
+Proof readers are trusted, server-owned adapters to
 git/CI, never fields accepted from a playbook. They run in the caller's
 transaction and must establish publication and producer identity themselves.
 No reader means no proof and no counted attempt. These ports add no public
@@ -21,11 +23,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, insert, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     archived_tasks,
@@ -57,6 +57,7 @@ from src.database.tables import (
 )
 from src.integration.ci import ParentVerification, binding_diagnosis, required_checks
 from src.integration.drain_owners import terminal_reservation_clause
+from src.integration.manual_control import fence_disable
 from src.integration.models import (
     AWAITING_TRUSTED_VERIFICATION,
     HierarchicalIntegrationPolicy,
@@ -70,62 +71,23 @@ from src.integration.owner_guards import (
     parent_engine_guard,
 )
 from src.integration.promotion_steps import FlowSchema, flow_targets, protected_changes
+from src.integration.row_query import select_row
 from src.integration.runtime_contracts import (
     HeadIdentity,
     JournalMode,
     Primitive,
     PrimitiveOutcome,
     PrimitivePorts,
-    ReceiptKind,
     RecordAttemptArgs,
     RecordDecisionArgs,
-    RecordReceiptArgs,
     Subject,
     SubjectPhase,
 )
 from src.playbooks.artifact_ref import ArtifactRef
+from src.task_templates import render_task_template
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 logger = logging.getLogger(__name__)
-
-
-class ReceiptProjection(BaseModel):
-    """Existing train/parent receipt bindings supplied by the proof adapter."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    parent_operation_id: str | None = Field(default=None, min_length=1)
-    parent_episode_id: str | None = Field(default=None, min_length=1)
-    batch_id: str | None = Field(default=None, min_length=1)
-    member_ordinal: int | None = Field(default=None, ge=0)
-    candidate_revision: int | None = Field(default=None, ge=0)
-    disposition_revision: int | None = Field(default=None, ge=0)
-    squash_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
-    reviewed_tree_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
-    review_evidence: dict[str, Any] | None = None
-    verification_evidence: dict[str, Any] | None = None
-
-    @model_validator(mode="after")
-    def _parent_pair(self):
-        if bool(self.parent_operation_id) != bool(self.parent_episode_id):
-            raise ValueError("parent receipt needs both operation and episode")
-        return self
-
-
-class DeliveryProof(BaseModel):
-    """Exact source/target proof obtained by the delivery adapter.
-
-    Code needs ancestry/merge proof; noop needs content equivalence. A skipped
-    receipt needs an explicit policy disposition, including its repair link.
-    The proof is retained verbatim so a future receipt reader can explain it.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    source_task_id: str = Field(min_length=1)
-    source_head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
-    target: HeadIdentity
-    kind: ReceiptKind
-    evidence: dict[str, Any] = Field(min_length=1)
-    projection: ReceiptProjection = ReceiptProjection()
 
 
 class AttemptObservation(BaseModel):
@@ -145,7 +107,6 @@ class AttemptObservation(BaseModel):
     superseded: bool = False
 
 
-DeliveryReader = Callable[[Any, Subject, RecordReceiptArgs], Awaitable[DeliveryProof | None]]
 AttemptReader = Callable[[Any, Subject, RecordAttemptArgs], Awaitable[AttemptObservation | None]]
 
 
@@ -266,131 +227,23 @@ class RecordsPrimitives:
 
     Counting an attempt bumps the subject version; callers that schedule after
     a port invocation must reload it (or compose using ``record_attempt_on``).
-    Receipts and decisions only advance the journal pointer.
+    Decisions only advance the journal pointer.
     """
 
     def __init__(
         self,
         db,
         *,
-        delivery_reader: DeliveryReader | None = None,
         attempt_reader: AttemptReader | None = None,
         clock=time.time,
     ):
         self.db = db
-        self.delivery_reader = delivery_reader
         self.attempt_reader = attempt_reader
         self.clock = clock
 
     def bind(self, ports: PrimitivePorts) -> None:
-        ports.bind(Primitive.RECORD_RECEIPT, self.record_receipt)
         ports.bind(Primitive.RECORD_ATTEMPT, self.record_attempt)
         ports.bind(Primitive.RECORD_DECISION, self.record_decision)
-
-    async def record_receipt(self, subject: Subject, args: RecordReceiptArgs) -> PrimitiveOutcome:
-        async with self.db._engine.begin() as conn:
-            return await self.record_receipt_on(conn, subject, args)
-
-    async def record_receipt_on(self, conn, subject, args) -> PrimitiveOutcome:
-        primitive = Primitive.RECORD_RECEIPT
-        key = journal_key("receipt", args.model_dump(mode="json"))
-        current = await lock_current_on(self.db, conn, subject)
-        previous = await journal_entry_on(conn, subject.id, key)
-        if previous:
-            return PrimitiveOutcome(
-                primitive=primitive, outcome="exists", detail=previous["payload"]
-            )
-        if current is None:
-            return PrimitiveOutcome.unknown(primitive, "stale_subject")
-        if args.target != current.head:
-            return PrimitiveOutcome.unknown(primitive, "target_identity_mismatch")
-        source = (
-            (
-                await conn.execute(
-                    select(tasks).where(
-                        tasks.c.id == args.source_task_id,
-                    )
-                )
-            )
-            .mappings()
-            .first()
-        )
-        if (
-            source is None
-            or source["project_id"] != current.project_id
-            or source["repo_id"] not in {None, current.repository_id}
-        ):
-            return PrimitiveOutcome.unknown(primitive, "source_identity_mismatch")
-        if self.delivery_reader is None:
-            return PrimitiveOutcome.unknown(primitive, "delivery_proof_unavailable")
-        proof = await self.delivery_reader(conn, current, args)
-        if proof is None or (
-            proof.source_task_id != args.source_task_id
-            or proof.source_head_sha != args.source_head_sha
-            or proof.target != args.target
-            or proof.kind != args.kind
-        ):
-            return PrimitiveOutcome.unknown(primitive, "delivery_proof_mismatch")
-        if args.kind is ReceiptKind.SKIPPED:
-            repair_id = proof.evidence.get("repair_task_id")
-            repair = (
-                (await conn.execute(select(tasks).where(tasks.c.id == repair_id)))
-                .mappings()
-                .first()
-            )
-            if (
-                proof.evidence.get("skip_authorized") is not True
-                or repair is None
-                or repair["project_id"] != current.project_id
-                or repair["status"] in {"COMPLETED", "FAILED"}
-                or repair_id == args.source_task_id
-            ):
-                return PrimitiveOutcome.unknown(primitive, "skip_requires_repair_provenance")
-        now = self.clock()
-        receipt_id = journal_key("receipt", {"subject": current.id, "key": key})
-        # A subject-specific domain key never rewrites a receipt for an older
-        # generation or another parent. Exact identity is in both projections.
-        domain_key = f"subject:{current.id}:{key}"
-        values = {
-            "id": receipt_id,
-            "domain_key": domain_key,
-            "source_task_id": args.source_task_id,
-            "target_task_id": current.task_id,
-            "repository_id": current.repository_id,
-            "target_branch": args.target.ref.removeprefix("refs/heads/"),
-            "reviewed_head_sha": args.source_head_sha,
-            "before_sha": args.target.base_sha,
-            "after_sha": args.target.sha,
-            "disposition": args.kind.value,
-            "resolution_evidence": proof.evidence,
-            **proof.projection.model_dump(),
-            "created_at": now,
-        }
-        row = (
-            await conn.execute(
-                pg_insert(task_delivery_receipts)
-                .values(**values)
-                .on_conflict_do_nothing(constraint="uq_task_delivery_receipts_domain_key")
-                .returning(task_delivery_receipts.c.id)
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            # Journal and projection are committed together, so an orphan or a
-            # colliding key is a refusal rather than fabricated delivery truth.
-            return PrimitiveOutcome.unknown(primitive, "receipt_projection_conflict")
-        payload = {"receipt_id": receipt_id, **proof.model_dump(mode="json")}
-        await append_record_on(
-            self.db,
-            conn,
-            current,
-            key=key,
-            primitive=primitive,
-            entry_kind="receipt",
-            outcome="recorded",
-            payload=payload,
-            now=now,
-        )
-        return PrimitiveOutcome(primitive=primitive, outcome="recorded", detail=payload)
 
     async def record_attempt(self, subject: Subject, args: RecordAttemptArgs) -> PrimitiveOutcome:
         async with self.db._engine.begin() as conn:
@@ -548,14 +401,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
     ) -> dict[str, Any]:
         existing_episode = checkpoint.get("episode_id")
         if existing_episode:
-            existing = (
-                await conn.execute(
-                    select(integration_repair_operations).where(
-                        integration_repair_operations.c.parent_task_id == parent["id"],
-                        integration_repair_operations.c.episode_id == existing_episode,
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn,
+                integration_repair_operations,
+                integration_repair_operations.c.parent_task_id == parent["id"],
+                integration_repair_operations.c.episode_id == existing_episode,
+            )
             if existing is None:
                 raise HierarchyError("invariant_error", "checkpoint episode has no operation")
             return dict(existing)
@@ -571,13 +422,11 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         route = boundary.route
         if route is None:
             raise HierarchyError("invalid", "parent route is not configured")
-        artifact_row = (
-            await conn.execute(
-                select(playbook_artifacts).where(
-                    playbook_artifacts.c.artifact_sha256 == route.artifact.artifact_sha256
-                )
-            )
-        ).mappings().one_or_none()
+        artifact_row = await select_row(
+            conn,
+            playbook_artifacts,
+            playbook_artifacts.c.artifact_sha256 == route.artifact.artifact_sha256,
+        )
         if artifact_row is None:
             raise HierarchyError("invalid", "parent route artifact is not stored")
         if ArtifactRef.from_row(artifact_row).as_dict() != route.artifact.model_dump(mode="json"):
@@ -628,21 +477,15 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             )
         )
         if carry_forward is not None:
-            previous = (
-                await conn.execute(
-                    select(integration_parent_verifications).where(
-                        integration_parent_verifications.c.id
-                        == carry_forward["verification_id"],
-                        integration_parent_verifications.c.operation_id
-                        == carry_forward["operation_id"],
-                        integration_parent_verifications.c.parent_task_id == parent["id"],
-                        integration_parent_verifications.c.episode_id
-                        == carry_forward["episode_id"],
-                        integration_parent_verifications.c.head_sha
-                        == carry_forward["head_sha"],
-                    )
-                )
-            ).mappings().one_or_none()
+            previous = await select_row(
+                conn,
+                integration_parent_verifications,
+                integration_parent_verifications.c.id == carry_forward["verification_id"],
+                integration_parent_verifications.c.operation_id == carry_forward["operation_id"],
+                integration_parent_verifications.c.parent_task_id == parent["id"],
+                integration_parent_verifications.c.episode_id == carry_forward["episode_id"],
+                integration_parent_verifications.c.head_sha == carry_forward["head_sha"],
+            )
             previous_operation = (
                 await conn.execute(
                     select(integration_repair_operations.c.id).where(
@@ -831,15 +674,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                     .values(verifier_task_id=verifier_id, updated_at=self.clock())
                 )
                 operation = dict(operation) | {"verifier_task_id": verifier_id}
-        owner = (
-            await conn.execute(
-                select(integration_branch_owners).where(
-                    integration_branch_owners.c.repository_id
-                    == checkpoint["repository_id"],
-                    integration_branch_owners.c.ref == checkpoint["branch"],
-                )
-            )
-        ).mappings().one_or_none()
+        owner = await select_row(
+            conn,
+            integration_branch_owners,
+            integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+            integration_branch_owners.c.ref == checkpoint["branch"],
+        )
         if owner is None:
             raise HierarchyError(
                 "invariant_error", "integration-ready parent has no branch owner"
@@ -900,9 +740,7 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         if not resolution_evidence or (disposition == "noop" and not verification_evidence):
             raise HierarchyError("invalid", "disposition evidence is required")
         async with self.db.immediate() as conn:
-            child = (
-                await conn.execute(select(tasks).where(tasks.c.id == child_task_id))
-            ).mappings().one_or_none()
+            child = await select_row(conn, tasks, tasks.c.id == child_task_id)
             if child is None or not child["parent_task_id"]:
                 raise HierarchyError("invalid", "disposition child has no parent")
             parent, _project, checkpoint, operation = await self._locked_context_on(
@@ -911,13 +749,9 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             child = (
                 await conn.execute(select(tasks).where(tasks.c.id == child_task_id))
             ).mappings().one()
-            child_checkpoint = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == child_task_id
-                    )
-                )
-            ).mappings().one_or_none()
+            child_checkpoint = await select_row(
+                conn, task_integration_checkpoints, task_integration_checkpoints.c.task_id == child_task_id
+            )
             if (
                 child["status"] not in {"COMPLETED", "FAILED"}
                 or child_checkpoint is None
@@ -946,15 +780,13 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                 ):
                     raise HierarchyError("invalid", "current child close is not a verified no-op")
                 if child["profile_id"] in {"reviewer", "final-reviewer"}:
-                    review = (
-                        await conn.execute(
-                            select(integration_review_evidence).where(
-                                integration_review_evidence.c.id == verified_review_id,
-                                integration_review_evidence.c.reviewer_task_id == child_task_id,
-                                integration_review_evidence.c.verdict == "approved",
-                            )
-                        )
-                    ).mappings().one_or_none()
+                    review = await select_row(
+                        conn,
+                        integration_review_evidence,
+                        integration_review_evidence.c.id == verified_review_id,
+                        integration_review_evidence.c.reviewer_task_id == child_task_id,
+                        integration_review_evidence.c.verdict == "approved",
+                    )
                     if review is None:
                         raise HierarchyError("invalid", "approved reviewer evidence is required")
             code_receipt = (
@@ -967,29 +799,24 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             ).first()
             if code_receipt:
                 raise HierarchyError("delivery_target_fixed", "delivered code cannot be disposed")
-            origin = (
-                await conn.execute(
-                    select(task_branch_origins).where(
-                        task_branch_origins.c.task_id == child_task_id,
-                        task_branch_origins.c.repository_id == checkpoint["repository_id"],
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            ).mappings().one_or_none()
+            origin = await select_row(
+                conn,
+                task_branch_origins,
+                task_branch_origins.c.task_id == child_task_id,
+                task_branch_origins.c.repository_id == checkpoint["repository_id"],
+                task_branch_origins.c.retired_at.is_(None),
+            )
             if origin is None:
                 raise HierarchyError("invalid", "disposition child has no active branch origin")
             if verified_completion_id is not None and origin["base_sha"] != reviewed_head_sha:
                 raise HierarchyError("invalid", "no-op child head differs from its reserved base")
-            current = (
-                await conn.execute(
-                    select(integration_child_dispositions)
-                    .where(
-                        integration_child_dispositions.c.parent_task_id == parent["id"],
-                        integration_child_dispositions.c.child_task_id == child_task_id,
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            current = await select_row(
+                conn,
+                integration_child_dispositions,
+                integration_child_dispositions.c.parent_task_id == parent["id"],
+                integration_child_dispositions.c.child_task_id == child_task_id,
+                lock=True,
+            )
             revision = 0 if current is None else int(current["revision"])
             completion_changed = False
             if current is not None and verified_completion_id is not None:
@@ -997,13 +824,9 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                     f"disposition:{parent['id']}:{child_task_id}:"
                     f"{current['parent_operation_id']}:{revision}"
                 )
-                prior = (
-                    await conn.execute(
-                        select(task_delivery_receipts).where(
-                            task_delivery_receipts.c.domain_key == prior_key
-                        )
-                    )
-                ).mappings().one_or_none()
+                prior = await select_row(
+                    conn, task_delivery_receipts, task_delivery_receipts.c.domain_key == prior_key
+                )
                 completion_changed = bool(
                     prior is not None
                     and (prior["resolution_evidence"] or {}).get("completion_id")
@@ -1059,13 +882,9 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                 f"disposition:{parent['id']}:{child_task_id}:"
                 f"{operation['id']}:{revision}"
             )
-            existing = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.domain_key == domain_key
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn, task_delivery_receipts, task_delivery_receipts.c.domain_key == domain_key
+            )
             if existing is not None:
                 if existing["disposition"] != disposition:
                     raise HierarchyError("invariant_error", "disposition identity changed")
@@ -1268,15 +1087,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                     ),
                 }
             expected_owner = operation["verifier_task_id"] or task_id
-            owner = (
-                await conn.execute(
-                    select(integration_branch_owners).where(
-                        integration_branch_owners.c.repository_id
-                        == checkpoint["repository_id"],
-                        integration_branch_owners.c.ref == checkpoint["branch"],
-                    )
-                )
-            ).mappings().one_or_none()
+            owner = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+                integration_branch_owners.c.ref == checkpoint["branch"],
+            )
             if (
                 operation["state"] not in {"active", "escalated"}
                 or owner is None
@@ -1350,10 +1166,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
 class PolicyActivation:
     """Current project inputs; existing subjects retain their frozen artifact."""
 
-    def __init__(self, db, *, clock=time.time):
+    def __init__(self, db, *, hierarchy_service_factory=None, clock=time.time):
         self.db = db
         self.clock = clock
+        self.hierarchy_service_factory = hierarchy_service_factory
 
+    @fence_disable
     async def configure(
         self,
         project_id: str,
@@ -1427,11 +1245,7 @@ class PolicyActivation:
         now = self.clock()
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == project_id).with_for_update()
-                )
-            ).mappings().one_or_none()
+            project = await select_row(conn, projects, projects.c.id == project_id, lock=True)
             if project is None:
                 return {"outcome": "not_found", "project_id": project_id}
             generation = int(project["hierarchical_integration_generation"])
@@ -1445,6 +1259,14 @@ class PolicyActivation:
             effective_mode = mode or project["hierarchical_integration_mode"]
             if "hierarchical_integration_policy" in updates:
                 raw_policy = updates["hierarchical_integration_policy"]
+                from src.integration.models import validate_policy_producers
+
+                try:
+                    validate_policy_producers(raw_policy)
+                except ValueError as exc:
+                    return {"success": False, "outcome": "invalid", "project_id": project_id,
+                            "generation": generation, "error_code": "invalid_ci_producer",
+                            "error": str(exc)}
                 if effective_mode == "development":
                     from src.integration.development import DevelopmentPolicy
                     from src.integration.models import PlaybookRoute
@@ -1464,8 +1286,14 @@ class PolicyActivation:
                     policy = HierarchicalIntegrationPolicy.model_validate(raw_policy or {})
                     deprecated = deprecated_route_fields(policy)
                     if deprecated:
-                        raise ValueError("integration route profile fields are deprecated: "
-                                         + ", ".join(deprecated))
+                        return {
+                            "success": False, "outcome": "invalid", "project_id": project_id,
+                            "generation": generation,
+                            "error_code": "deprecated_integration_route_fields",
+                            "fields": deprecated,
+                            "error": "integration route profile fields are deprecated: "
+                                     + ", ".join(deprecated),
+                        }
                     for boundary in (policy.parent, policy.root):
                         if (boundary.route is not None
                                 and not boundary.route.is_available_to_project(project_id)):
@@ -1481,9 +1309,7 @@ class PolicyActivation:
             repository_row = None
             if has_repository_config:
                 repository_id = repository_config["id"]
-                repository_row = (
-                    await conn.execute(select(repos).where(repos.c.id == repository_id))
-                ).mappings().one_or_none()
+                repository_row = await select_row(conn, repos, repos.c.id == repository_id)
                 if repository_row is not None and repository_row["project_id"] != project_id:
                     return {
                         "outcome": "blocked",
@@ -1577,6 +1403,15 @@ class PolicyActivation:
             if dry_run:
                 return {"outcome": "checked", "project_id": project_id,
                         "generation": generation, "updates": dict(updates)}
+            # A mode edit is also the idempotent doctor repair entry point.
+            # Refuse before writes when the caller cannot prove/adopt legacy refs.
+            backfill = mode in {"hierarchy", "train"}
+            if backfill and self.hierarchy_service_factory is None:
+                from src.integration.hierarchy import missing_origin_tasks_on
+
+                if await missing_origin_tasks_on(conn, project_id, repository_id):
+                    return {"outcome": "blocked", "project_id": project_id,
+                            "generation": generation, "error": "branch_origins_missing"}
             if cutover is not None:
                 await cutover.prepare()
                 await cutover.write_on(conn, project)
@@ -1600,6 +1435,11 @@ class PolicyActivation:
             ).values(**updates, hierarchical_integration_generation=generation + 1))
             if changed.rowcount != 1:
                 raise RuntimeError("policy activation lost its generation fence")
+            backfilled = []
+            if backfill and self.hierarchy_service_factory is not None:
+                service = self.hierarchy_service_factory()
+                repo = await service._repo_on(conn, repository_id)
+                backfilled = await service.backfill_origins_on(conn, project_id, repo)
             if cutover is not None:
                 await cutover.verify_on(conn, generation + 1)
             effective = mode or project["hierarchical_integration_mode"]
@@ -1610,7 +1450,8 @@ class PolicyActivation:
                 project_integration_schedules.c.project_id == project_id
             ).values(enabled=effective == "train", updated_at=now))
         return {"outcome": "configured", "project_id": project_id,
-                "generation": generation + 1, "fields": configured_fields}
+                "generation": generation + 1, "fields": configured_fields,
+                "backfilled_origins": backfilled}
 
 
     @staticmethod

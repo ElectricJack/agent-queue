@@ -69,9 +69,8 @@ async def _submit(handler, **overrides) -> dict:
 
 
 async def _approve(handler, review_id: str, revision: int = 1) -> dict:
-    return await handler.execute(
-        "review_decide", {"review_id": review_id, "revision": revision, "decision": "approve"}
-    )
+    from tests.test_review_commands import decide
+    return await decide(handler, {"review_id": review_id, "revision": revision, "decision": "approve"})
 
 
 def _frontmatter(handler, review: dict) -> dict:
@@ -328,7 +327,7 @@ async def test_approval_activates_when_the_review_asks(env):
     assert "stored and activated" in notice.body
 
 
-async def test_approval_stands_when_the_pinned_artifact_cannot_be_stored(env):
+async def test_approval_stays_held_when_the_pinned_artifact_cannot_be_stored(env):
     handler, db = env
     submitted = await _submit(handler, activate_on_approval=True)
     review_id = submitted["review_id"]
@@ -347,19 +346,14 @@ async def test_approval_stands_when_the_pinned_artifact_cannot_be_stored(env):
         )
 
     decided = await _approve(handler, review_id)
-    assert decided["success"] is True
-    assert (await db.get_review(review_id))["state"] == "approved"
-    outcome = decided["playbook"]
-    assert outcome["stored"] is False and outcome["activated"] is False
-    assert "do not match" in outcome["error"]
+    assert decided["success"] is False and decided["application_state"] == "failed"
+    review = await db.get_review(review_id)
+    assert review["state"] == "in_review" and review["pending_decision_id"] == decided["decision_id"]
+    assert (await db.get_gate(review["gate_id"]))["status"] == "open"
+    assert "do not match" in decided["error"]
     assert await db.get_playbook_artifact_row(submitted["playbook"]["artifact_sha256"]) is None
     assert await db.list_playbook_activations() == []
-    notice = next(
-        message
-        for message in await db.get_pending_messages("session", "supervisor-p")
-        if review_id in message.body
-    )
-    assert "could not be stored" in notice.body
+    assert not await db.get_pending_messages("session", "supervisor-p")
 
 
 # -- doctor ----------------------------------------------------------------------
@@ -392,7 +386,7 @@ async def test_doctor_lists_unstored_and_unactivated_approved_playbooks(env):
     ]
 
     fixed = await _fix_playbooks(ctx)
-    assert fixed.fix_applied is True and fixed.data["stored"] == [review_id]
+    assert fixed.fix_applied is True and fixed.data["reconciled"] == [review_id]
     assert await db.get_playbook_artifact_row(sha) is not None
     assert await db.list_playbook_activations() == []  # the fix never activates
 

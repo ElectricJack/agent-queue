@@ -72,9 +72,14 @@ they do not need cross-task read grants.
 Requests read the version and notes bytes at pinned S and
 require `--notes-reviewed` for nonempty notes. Request admission also recomputes the source digest, refuses `notes_stale`,
 requires V to exceed this step's previous release, and verifies additive
-migrations in the release range. The standalone
+migrations in the release range, refusing `migrations_not_additive` before creating
+the PR, retained source or intent. The range starts at the previous step tag, or
+`notes.bootstrap_sha` for the first tag; without either it audits the full migration
+history. The conservative, nonexecuting
+[checker](../../src/database/additive_migrations.py) is shared with the standalone
 [scripts/check_additive_migrations.py](../../scripts/check_additive_migrations.py)
-is used by request admission. The contract comes from the dev-branch releases revision 3
+command. SQL, backfills, constraint drops and other unproven operations remain
+findings. A malformed migration graph cannot be overridden. The contract comes from the dev-branch releases revision 3
 spec §§3.4–3.5, amended by the fidelity spec's PR gate.
 
 ### Request and prove the tag
@@ -85,13 +90,28 @@ The operator then uses `aq promote approve REQUEST_ID --project demo` to post
 the exact-head GitHub review. See [request, approve and cancel](promotion-flow.md#request-approve-and-cancel)
 for authority and PR details.
 
+A local operator may explicitly accept the reported compatibility findings:
+
+```bash
+aq promote request --project demo --step release --from S --version V \
+  --notes-reviewed --allow-breaking-migration
+```
+
+This flag is operator-only; supervisor, worker, service and playbook principals
+cannot use it. It records the authenticated operator identity, GitHub login,
+timestamp, exact range, bounded findings and full findings digest in immutable
+intent evidence and the annotated tag. It does not replace source CI, notes
+validation or the exact-head human approval. An idempotent replay preserves the
+original audit and cannot add an override to an existing intent. Implementing or
+documenting this command does not authorize its use for a pending release.
+
 The lane fast-forwards the target to S and creates the annotated tag in two
 recoverable writes. Its tag message names the promotion task, source and request.
 Read-back requires the target to contain S and the tag to peel to S. A target
 write with a missing tag is incomplete; a later visit finishes the tag without
 moving a conflicting immutable tag. Source:
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
-(`PromotionPublisher`).
+(`PromotionVisit`).
 
 Reviewed promotion policies drive publication and post-publication backmerge.
 Hotfixes use the same tag gate and send the published commit down the chain through
@@ -115,7 +135,10 @@ an explicit version. Selection pins the remote tag-object OID, fetches it,
 requires an annotated tag peeling to a commit contained in `origin/<target>`,
 and refuses a tag that changes during fetch. The update detaches the checkout
 at that commit and records it in `deploy.json`. With no tag selector configured,
-the existing branch-following update path remains available. An explicit
+the guarded branch-following `aq update` remains available to the operator.
+The daemon's `update_and_restart` command instead refuses until a tag glob or
+tracked branch is configured. Tag deployment planning validates the selected
+commit's migration graph and requires one Alembic head. An explicit
 `--ref <branch>` is an unreleased deployment recorded as such. Sources:
 [src/install/deploy.py](../../src/install/deploy.py) and
 [src/cli/update.py](../../src/cli/update.py).
@@ -141,6 +164,16 @@ be verified for the actual release range. The shipped
 database; it is not permission to downgrade the live schema. Release requests enforce the additive migration check over their actual range. Sources:
 [src/database/additive_migrations.py](../../src/database/additive_migrations.py)
 and [migration guard](../../src/database/migration_guard.py).
+
+An explicit breaking override disables rollback across that release.
+`aq update --check` displays recorded breaking boundaries and their operator;
+`--allow-rollback` cannot cross them (`rollback_crosses_breaking_migration`).
+The updater reads immutable tag annotations, including skipped releases, and
+retains boundary evidence in `deploy.json`. Rollback to the breaking release
+itself remains possible from later compatible code. Use updater code containing
+this enforcement before deploying an overridden release; older updater code
+does not understand the evidence. A database restore still requires a separate
+operator recovery decision and is never an automatic rollback.
 
 ### Back up and restore the database
 
