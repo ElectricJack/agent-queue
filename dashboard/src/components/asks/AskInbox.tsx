@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useAsks } from "../../api/asks";
-import { AskCard } from "../../components/asks/AskCard";
-import { useFocusChrome } from "./focusChrome";
+import { AskCard } from "./AskCard";
 
 export function AskInbox({ sourceKind, newestFirst = false }: { sourceKind?: string; newestFirst?: boolean }) {
   const [view, setView] = useState<"needs_you" | "waiting" | "history">("needs_you");
@@ -28,8 +27,4 @@ export function AskInbox({ sourceKind, newestFirst = false }: { sourceKind?: str
         {cursor && <button className="min-h-11 px-3" onClick={() => setCursor(undefined)}>First page</button>}
       </>}
   </div>;
-}
-export default function FocusInbox() {
-  useFocusChrome({ title: "Needs you" });
-  return <AskInbox />;
 }

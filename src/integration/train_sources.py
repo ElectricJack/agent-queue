@@ -1055,6 +1055,20 @@ class DatabaseBatches:
         admission_blockers = []
         delivered_ids = set()
         current = await self.current(target)
+        if (current is not None and current.epic_refresh and current.intent == "open"
+                and snapshot.error == "target_ref_missing" and snapshot.target_oid is None):
+            from src.integration.train_controls import TrainControls
+
+            async def observed(db, requested):
+                return snapshot
+
+            await TrainControls(self.db, snapshot=observed, clock=self.clock).abort_batch(
+                current.id, dry_run=False, operator_id="integration-train",
+                reason="Epic refresh target ref is missing: " + current.target_ref)
+            return BatchSelection(detail={
+                "reason": "epic_refresh_target_missing", "batch_id": current.id,
+                "target_missing": True,
+            })
         if current is None:
             from src.integration.fixer_batches import FixerBatches
 

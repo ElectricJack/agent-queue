@@ -157,6 +157,11 @@ dispatched at most three times; when that budget is spent
 Batch-review authority reaches only the live assigned reviewer; reassignment
 revokes the previous holder's authority in the same transaction.
 
+Reviewer dispatch acquires the project hierarchy lock before locking the batch
+in both its receipt preflight and its task-creation transaction. This preserves
+the graph writers' hierarchy-before-batch order, so materialization replay can
+read its receipt while automatic reviewer dispatch waits to create a task.
+
 The reviewer judges fidelity first and structure second. It edits only that
 batch's unclaimed members through the held branch of `task_batch_update`
 (`aq batch update`), which requires `expected_revision` and a list of

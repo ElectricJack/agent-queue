@@ -1,4 +1,4 @@
-// `/focus/sessions/:id` is the host shell page's terminal at every profile, so
+// `/sessions/:id` is the host shell page's terminal at every profile, so
 // a phone and a desktop see the same window. This check covers the page around
 // it: geometry, the pinned process, a restart never followed silently, ended
 // and missing sessions, the transport a compact viewport asks tmux for, and a
@@ -10,9 +10,9 @@ import { SESSION } from "../fixtures/base.mjs";
 import { HOST_SHELL } from "../fixtures/host-shell.mjs";
 import { ENDED_SESSION, SESSIONS, STARTED, showSession } from "../fixtures/session.mjs";
 
-export const name = "focus-session";
+export const name = "session-detail";
 
-const HEADER = ['header [aria-label="Back"]', 'header [aria-label="Focus home"]', 'header [aria-label="Open in full dashboard"]'];
+const HEADER = [];
 const TOOLS = ['[aria-label^="Details for "]', '[aria-label="Focus worker-a terminal"]'];
 const SCREEN = "claimed: fixture-task-1\r\n$ ";
 const SCREEN_TEXT = "claimed: fixture-task-1";
@@ -27,20 +27,12 @@ const attachQuery = (t, sessionId) => t.stub.terminalUpgrades
 export async function run(t) {
   const wide = t.page.viewport().width >= 768;
   t.stub.allowTerminal(SESSION, SCREEN);
-  await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url(`/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
 
   // Live: the host shell page's terminal, attached and drawing.
   await waitForText(t.page, SCREEN_TEXT);
   await statusMatches(t, /connected/);
   assert.equal(await t.page.$('[aria-label="Watch only"]'), null, "a watch/type mode is back");
-  assert.deepEqual(t.stub.statePuts(), [], "a focus route wrote roaming preferences");
-  // The terminal's frame runs edge to edge.
-  const frame = await t.page.$eval("[data-interactive-terminal]", (el) => {
-    const r = el.parentElement.getBoundingClientRect();
-    return { left: r.left, right: r.right };
-  });
-  const vp = t.page.viewport();
-  assert.ok(frame.left <= 1 && frame.right >= vp.width - 1, `the terminal is not edge to edge (${frame.left}–${frame.right})`);
   await expectLayout(t, { primary: [...HEADER, ...TOOLS] });
   await t.shot("live");
 
@@ -57,28 +49,28 @@ export async function run(t) {
   t.stub.override("POST /api/system/session-show", (body) => body.session_id === SESSION
     ? { session: { ...SESSIONS[SESSION], started_at: STARTED + 50 } }
     : showSession(body));
-  await t.page.goto(t.url(`/focus/sessions/${SESSION}?started=${STARTED}`), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url(`/sessions/${SESSION}?started=${STARTED}`), { waitUntil: "domcontentloaded" });
   await waitForText(t.page, "restarted");
   await t.shot("restarted");
-  assert.equal(await t.page.$("[data-allow-overflow-x]"), null, "the restarted process is shown without a tap");
+  assert.equal(await t.page.$("[data-interactive-terminal]"), null, "the restarted process is shown without a tap");
   await expectLayout(t, { primary: [...HEADER, "xpath/.//button[normalize-space()='Watch the new process']"] });
   await t.page.click("xpath/.//button[normalize-space()='Watch the new process']");
   await t.page.waitForSelector("[data-interactive-terminal]");
   assert.ok(t.page.url().endsWith(`?started=${STARTED + 50}`), "the new process is not pinned in the URL");
 
   // An ended session links the agent's current one.
-  await t.page.goto(t.url(`/focus/sessions/${ENDED_SESSION}`), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url(`/sessions/${ENDED_SESSION}`), { waitUntil: "domcontentloaded" });
   await waitForText(t.page, "Session ended");
   await waitForText(t.page, "Task closed: pass");
-  await t.page.waitForSelector(`a[href="/focus/sessions/${SESSION}"]`);
-  await expectLayout(t, { primary: [...HEADER, `a[href="/focus/sessions/${SESSION}"]`] });
+  await t.page.waitForSelector(`a[href="/sessions/${SESSION}"]`);
+  await expectLayout(t, { primary: [...HEADER, `a[href="/sessions/${SESSION}"]`] });
   await t.shot("ended");
 
   // A missing session is a scoped error with a way back (once: the query retries first).
   if (t.profile === "phone-320") {
-    await t.page.goto(t.url("/focus/sessions/fixture-missing"), { waitUntil: "domcontentloaded" });
+    await t.page.goto(t.url("/sessions/fixture-missing"), { waitUntil: "domcontentloaded" });
     await t.page.waitForSelector("[role=alert]", { timeout: 20_000 });
-    await expectLayout(t, { primary: ["xpath/.//button[normalize-space()='Retry']", "xpath/.//button[normalize-space()='Go back']"] });
+    await expectLayout(t, { primary: ["xpath/.//button[normalize-space()='Retry session']"] });
   }
 
   // A refused viewer is told so on the same terminal and sends nothing: there

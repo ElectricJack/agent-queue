@@ -706,7 +706,7 @@ class BatchStore:
         return True
 
     async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
-                         authorize=None, operator_id=None, reason=""):
+                         authorize=None, operator_id=None, reason="", expected_batch=None):
         """Abort before intentional candidate deletion; an abort is irreversible."""
         if intent not in {"open", "paused", "aborted"}:
             raise ValueError("invalid batch intent")
@@ -715,6 +715,8 @@ class BatchStore:
                 integration_batches.c.id == batch_id,
                 integration_batches.c.target_ref.is_not(None),
             ).with_for_update())).mappings().one()
+            if expected_batch is not None and Batch.from_row(row) != expected_batch:
+                raise ValueError("batch identity changed; preview again")
             if row["intent"] == "aborted" and intent != "aborted":
                 raise ValueError("aborted batch cannot reopen")
             if row["lifecycle"] == "promoted" and intent != "aborted":
@@ -746,10 +748,12 @@ class BatchStore:
             ).values(**values))
             if intent == "aborted":
                 from src.integration.branch_retirement import request_batch_retirement_on
+                from src.integration.fixers import BatchFixerService
                 from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
 
                 await request_batch_retirement_on(conn, row, reason="aborted batch candidate",
                                                  now=self.clock())
+                await BatchFixerService.abort_on(conn, row, reason=reason, now=self.clock())
                 await fail_stranded_promotion_tasks_on(  # a promotion task can no longer settle
                     self.db, conn, now=self.clock(), batch_id=batch_id)
             if operator_id is not None:
