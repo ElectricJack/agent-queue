@@ -59,6 +59,7 @@ DAY = 86_400.0
 async def test_live_arrival_overwrites_publisher_timestamp(monkeypatch, supplied_time):
     runtime = object.__new__(V2PlaybookRuntime)
     runtime._tasks = set()
+    runtime._event_triggers = None
     runtime._dispatch = AsyncMock()
     monkeypatch.setattr("src.playbooks.runtime.time.time", lambda: NOW)
     event = {"event_type": "task.completed", "_received_at": supplied_time}
@@ -68,6 +69,121 @@ async def test_live_arrival_overwrites_publisher_timestamp(monkeypatch, supplied
 
     assert runtime._dispatch.await_args.args[0]["_received_at"] == NOW
     assert event["_received_at"] == supplied_time
+
+
+@pytest.mark.parametrize("event_type", ["notify.task_message", "task.completed"])
+async def test_runtime_skips_unsubscribed_event_types_before_dispatch(tmp_path, event_type):
+    runtime = _notification_runtime(tmp_path)
+    await runtime.refresh()
+    runtime._on_event({"_event_type": event_type, "task_id": "t"})
+    assert not runtime._tasks
+    runtime._dispatch.assert_not_called()
+
+
+def _notification_runtime(tmp_path):
+    runtime = V2PlaybookRuntime(
+        config=SimpleNamespace(
+            compiled_root=str(tmp_path), playbooks=PlaybooksConfig(),
+            security=SimpleNamespace(capability_enforcement="enforce"),
+        ),
+        db=SimpleNamespace(
+            list_playbook_activations=AsyncMock(return_value=[]),
+            set_playbook_private_values=lambda values: None,
+        ),
+        handler=SimpleNamespace(), llm=None, bus=None,
+    )
+    runtime._ensure_integration_reconciler = lambda: None
+    runtime._dispatch = AsyncMock()
+    return runtime
+
+
+@pytest.mark.parametrize("scope", ["system", "project", "agent_type"])
+async def test_runtime_refresh_adds_and_removes_notification_triggers(tmp_path, scope):
+    runtime = _notification_runtime(tmp_path)
+    await runtime.refresh()
+    row = {
+        "activation_id": "a", "playbook_id": "messages", "scope": scope,
+        "scope_identifier": "p" if scope != "system" else "",
+        "enabled": True, "health": "ready", "active_artifact_sha256": "sha",
+    }
+    runtime._db.list_playbook_activations.return_value = [row]
+    runtime._store = SimpleNamespace(load=lambda sha: SimpleNamespace(rules=[
+        SimpleNamespace(trigger=SimpleNamespace(event_type="notify.task_message")),
+    ]))
+    await runtime.refresh()
+    event = {"_event_type": "notify.task_message", "task_id": "t", "project_id": "p"}
+    runtime._on_event(event)
+    await asyncio.gather(*runtime._tasks)
+    runtime._dispatch.assert_awaited_once()
+
+    runtime._dispatch.reset_mock()
+    row["enabled"] = False
+    await runtime.refresh()
+    runtime._on_event(event)
+    assert not runtime._tasks
+    runtime._dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("catalog_state", ["startup", "unavailable", "invalid"])
+async def test_runtime_unknown_trigger_catalog_dispatches_conservatively(tmp_path, catalog_state):
+    runtime = _notification_runtime(tmp_path)
+    if catalog_state != "startup":
+        runtime._db.list_playbook_activations.return_value = [{
+            "activation_id": "a", "playbook_id": "messages", "scope": "system",
+            "enabled": True, "health": "ready", "active_artifact_sha256": "sha",
+        }]
+        runtime._store = SimpleNamespace(load=MagicMock(side_effect=(
+            OSError("missing") if catalog_state == "unavailable" else ValueError("invalid")
+        )))
+        await runtime.refresh()
+    runtime._on_event({"_event_type": "notify.task_message", "task_id": "t"})
+    await asyncio.gather(*runtime._tasks)
+    runtime._dispatch.assert_awaited_once()
+
+
+async def test_runtime_empty_catalog_preserves_required_routing_retention(tmp_path):
+    runtime = _notification_runtime(tmp_path)
+    await runtime.refresh()
+    runtime._on_event({"_event_type": "task.route_needed", "task_id": "t"})
+    await asyncio.gather(*runtime._tasks)
+    runtime._dispatch.assert_awaited_once()
+
+
+async def test_runtime_failed_refresh_does_not_keep_stale_negative_catalog(tmp_path):
+    runtime = _notification_runtime(tmp_path)
+    await runtime.refresh()
+    runtime._db.list_playbook_activations.side_effect = RuntimeError("database unavailable")
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await runtime.refresh()
+    runtime._on_event({"_event_type": "notify.task_message", "task_id": "t"})
+    await asyncio.gather(*runtime._tasks)
+    runtime._dispatch.assert_awaited_once()
+
+
+async def test_runtime_cancelled_refresh_cannot_publish_older_negative_catalog(tmp_path):
+    runtime = _notification_runtime(tmp_path)
+    await runtime.refresh()
+    reading, finish_read = asyncio.Event(), asyncio.Event()
+
+    async def old_activation_read(**kwargs):
+        reading.set()
+        await finish_read.wait()
+        return []
+
+    runtime._db.list_playbook_activations.side_effect = old_activation_read
+    older = asyncio.create_task(runtime.refresh())
+    await reading.wait()
+    # A new activation committed while the older query held its snapshot.
+    newer = asyncio.create_task(runtime.refresh())
+    await asyncio.sleep(0)  # enter refresh and wait for the older reader's lock
+    newer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await newer
+    finish_read.set()
+    await older
+    runtime._on_event({"_event_type": "notify.task_message", "task_id": "t"})
+    await asyncio.gather(*runtime._tasks)
+    runtime._dispatch.assert_awaited_once()
 
 
 @pytest.fixture

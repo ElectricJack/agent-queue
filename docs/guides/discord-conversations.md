@@ -5,8 +5,7 @@ By default that means mentioning the bot user, for example `@Agent Q what is
 blocking the build?`; with `discord.conversation.require_mention: false` any
 message in the channel joins that channel's one conversation, and the next
 plain message continues it. The supervisor answers in the channel itself, as a
-reply to the operator's message, falling back from the project supervisor to
-the global one. A mention-created or operator-created *thread* still carries its
+reply to the operator's message, handled by the global supervisor. A mention-created or operator-created *thread* still carries its
 own conversation. This route is off by default.
 It deliberately relaxes the
 2026-09-08 Discord simplification without restoring slash commands, task
@@ -21,7 +20,7 @@ follow [the human-asks rollout guide](human-asks-rollout.md) before changing mod
 
 ## What enabling means
 
-The initial mention-routing design stated (project routing below extends it):
+The initial mention-routing design stated:
 
 > Choose transport-neutral intake commands plus durable conversation rows and the
 > shared outbound-delivery implementation owned by the narrative spec. Opt-in extension;
@@ -39,20 +38,19 @@ an already-running elevated session. An installation requiring enforced
 read-only chat must keep this feature off until a separately scoped author
 session exists.
 
-The implemented 2026-10-03 chat extension adds project routing. Set
-`discord.project_id` to the project served by this channel. AQ infers it when
-there is exactly one project. Inputs go to that project's enabled named
-supervisor, falling back to an existing global supervisor when the project
-supervisor is missing or disabled. Stopped and sleeping supervisors keep their
-address: after intake commits, an event wakes the independent delivery service
-and starts the addressed named session as needed. This does not wait for an
-orchestrator cycle or the routine delivery interval. With several projects and no
-`discord.project_id`, a shared channel belongs to none of them in particular,
-so the global supervisor answers for it rather than the input being queued for
-nobody. When no eligible supervisor exists at all, the input remains queued and
-the channel says so. Notification retries and gateway replays retain the original
-input and notice IDs. Other supervisors can inspect an input but cannot consume
-it through inbox injection or mark it read.
+Human conversations and reference notices always go to the global supervisor.
+`discord.project_id` still scopes asks and escalations; it does not select a chat
+supervisor. A stopped or sleeping global supervisor keeps its address and delivery
+wakes it after intake commits. If the global named session is missing, input stays
+queued even when a project supervisor is running. Global can consult project
+supervisors through internal messages.
+
+Existing conversation IDs, destinations and input evidence stay intact. The routing
+sweep moves undelivered, unarchived legacy chat notices to global without reopening
+consumed history. Global can answer older project-addressed inputs immediately;
+project supervisors can no longer reply, initiate posts or consume chat notices.
+Recorded replies retain their author and retry keys. Ask discussions retain their
+project scoping. No operator migration is needed.
 
 ## Enable the route
 
@@ -158,15 +156,14 @@ still owns its own thread (§escalations.md); nothing here changes that.
 AQ persists the conversation, verified author and input before queuing any
 Discord delivery. It queues one acknowledgement on the operator's message —
 posted in the channel for a channel conversation, or in the thread it is bound
-to — and addresses a durable input notice to `supervisor-<project_id>` or
-`supervisor-global`. If both are offline, the pending notice is assigned when
-a supervisor becomes available. Follow-up messages in the channel continue that
+to — and addresses a durable input notice to `supervisor-global`. If that named
+session is missing, the pending notice is assigned when it becomes available. Follow-up messages in the channel continue that
 conversation, and messages in a bound thread need no new mention; each is
 checked against the current allowlist and conversation audience.
 
 An explicit `supervisor_inbox_reply` or `message_reply` to the input notice from
-the assigned supervisor or local operator queues one answer per input. The
-supervisor's live launch and instance token must match its recipient address.
+the global supervisor or local operator queues one answer per input. The
+supervisor's live launch and instance token must match the global named session.
 Unrelated mailbox messages, `message.sent` events and transcript-tail fallback
 replies are never relayed. The Discord
 reply is at most 1,900 characters including its marker and dashboard pointer;
@@ -182,8 +179,8 @@ aq supervisor-inbox say --conversation-id <id> --file question.txt \
   --idempotency-key interview-question-2
 ```
 
-`--text` is also supported, exclusive with `--file`. The live addressed project
-supervisor, live global supervisor, or local operator can send; workers report
+`--text` is also supported, exclusive with `--file`. The live global supervisor
+or local operator can send; workers report
 their question to the supervisor. Reuse the key for retries: the first persisted
 body wins and exactly one delivery is reserved. The result includes `delivery_id`
 and `delivery_dedup_key`; acceptance means queued, with the shared outbox retaining

@@ -34,6 +34,7 @@ from src.database.queries.integration_state_queries import session_attached_clau
 from src.database.tables import sessions, tasks, workspaces
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
+from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget, prerequisite_observer
 from src.integration.promotion_contracts import PromotionError
 
 PR_CLOSED_DELIVERED_EVENT = "integration.pr_closed_delivered"
@@ -55,6 +56,19 @@ class DeliveredPullRequestClosure:
         self.promotion = promotion
         self.git = promotion.git
         self.clock = clock
+
+    def _observer(self) -> DeliveryObserver:
+        observer = prerequisite_observer(self.db) or getattr(self.db, "_delivery_observer", None)
+        if observer is None:
+            # Standalone controls share the same port's observer too. Production
+            # uses the daemon's existing observer and its fetched object store.
+            observer = getattr(self.promotion, "_pr_delivery_observer", None)
+            if observer is None:
+                observer = DeliveryObserver(
+                    self.db, git=self.git, data_dir=self.promotion.data_dir,
+                )
+                self.promotion._pr_delivery_observer = observer
+        return observer
 
     async def run(
         self,
@@ -136,8 +150,6 @@ class DeliveredPullRequestClosure:
             ), None
         default_branch = repo.default_branch.removeprefix("refs/heads/")
         try:
-            resolved = await self.promotion._resolve_repository(repo.id)
-            await self.promotion._ensure_retained_repository(resolved)
             binding = await self.git.bind_github_repository(repo.url)
             client = self.git._github_client(binding)
             pr_url = f"https://github.com/{binding.full_name}/pull/{pr_number}"
@@ -181,20 +193,38 @@ class DeliveredPullRequestClosure:
             ), None
         if live_task_ids:
             return self._held_by_tasks(base, live_task_ids), None
-        store = str(resolved.retained_git_dir)
         try:
-            async with self.git.arepository_transaction(store):
-                await self.promotion._fetch_all_heads(
-                    resolved.retained_git_dir, resolved.origin_url
-                )
-                remote = await self.git.als_remote_ref(store, head["ref"])
-                main = await self.git.als_remote_ref(store, default_branch)
-                if remote.state is not RemoteRefState.PRESENT or remote.oid != head["sha"]:
-                    return _refused(base, "changed", "the remote head branch is not the PR head"), None
-                if main.state is not RemoteRefState.PRESENT:
-                    return _refused(base, "blocked", "default branch is unavailable"), None
-                base["target_sha"] = main.oid
-                proof, undelivered = await self._prove(store, main.oid, head["sha"])
+            observer = self._observer()
+            for max_age in (DeliveryObserver.READ_MAX_AGE, 0.0):
+                snapshot = await observer.snapshot(DeliveryTarget(
+                    project_id, repo.id, repo.url, "refs/heads/" + default_branch,
+                ), max_age=max_age)
+                # The prerequisite observer wraps the same observation in GitTruth.
+                snapshot = getattr(snapshot, "observation", snapshot)
+                if snapshot.error or not snapshot.target_oid:
+                    return _refused(base, "blocked", "delivery snapshot is unavailable"), None
+                store = snapshot.store
+                async with self.git.arepository_transaction(store):
+                    refs = await self.git.als_remote_refs(
+                        store, [head["ref"], default_branch], repository_url=repo.url,
+                    )
+                    remote, main = refs[head["ref"]], refs[default_branch]
+                    if remote.state is not RemoteRefState.PRESENT or remote.oid != head["sha"]:
+                        return _refused(
+                            base, "changed", "the remote head branch is not the PR head",
+                        ), None
+                    if main.state is not RemoteRefState.PRESENT:
+                        return _refused(base, "blocked", "default branch is unavailable"), None
+                    if (main.oid != snapshot.target_oid or snapshot.source_heads.get(
+                            "refs/remotes/origin/" + head["ref"]) != head["sha"]):
+                        if max_age:
+                            continue
+                        return _refused(
+                            base, "changed", "remote refs differ from the delivery snapshot",
+                        ), None
+                    base["target_sha"] = main.oid
+                    proof, undelivered = await self._prove(store, main.oid, head["sha"])
+                break
         except _OBSERVATION_FAILURES as exc:
             return _refused(base, "blocked", f"Git proof failed: {exc}"), None
         if proof is None:

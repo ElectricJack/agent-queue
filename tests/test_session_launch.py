@@ -356,14 +356,16 @@ _START_SITES = {
     ("src/commands/profile_commands.py", "match.start"): 3,
     ("src/commands/provider_commands.py", "match.start"): 1,
     ("src/config_secrets.py", "match.start"): 2,
-    ("src/conversations/render.py", "match.start"): 2,
     ("src/dashboard_server/app.py", "self.proxy.start"): 1,
     ("src/dashboard_server/proxy.py", "exchange.start"): 1,
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
-    # Freezes an epic refresh batch (conflicting root PR, collected-epic aggregate
-    # readiness); the train visits it without launching an agent.
-    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
+    # URL formatting and budget cuts use re.Match offsets, never agent launches.
+    ("src/discord/links.py", "match.start"): 2,
+    ("src/discord/render_budget.py", "match.start"): 2,
+    # Freezes epic refresh batches for idle prerequisites and collected-epic
+    # aggregate readiness; the train visits them without launching an agent.
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
     # Batch fixer reservation hands its launch to DaemonFixerRuntime, whose
     # process start is the launch_session call pinned below.
     ("src/integration/fixers.py", "self.runtime.start"): 1,
@@ -421,6 +423,7 @@ _PROCESS_SITES = {
     ("src/doctor/builtin.py", "_probe_binary", "create_subprocess_exec"): 1,
     ("src/doctor/dashboard_server_checks.py", "_run_aq", "create_subprocess_exec"): 1,
     ("src/doctor/db_checks.py", "_git", "create_subprocess_exec"): 1,
+    ("src/doctor/db_checks.py", "_docker_output", "create_subprocess_exec"): 1,
     ("src/doctor/service_checks.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/stall_checks.py", "_command", "create_subprocess_exec"): 1,
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,

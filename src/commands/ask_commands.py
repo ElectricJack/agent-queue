@@ -217,7 +217,7 @@ class AskCommandsMixin(AskCommunicationCommandsMixin):
             return {"success": False, "error_code": "ask.context_missing",
                     "error": "Run aq ask show, then aq ask prepare with the returned expected version; "
                              "pass its preview_id and the same intent to aq ask decide",
-                    "ask_id": ask["id"], "ask_url": f"/focus/asks/{ask['id']}",
+                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
                     "expected": {k: ask[k] for k in (
                         "decision_generation", "source_fingerprint", "feedback_version")}}
         return await self._cmd_ask_decide({

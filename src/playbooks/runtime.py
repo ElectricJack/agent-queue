@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from src.commands.principal import ExecutionPrincipal
@@ -120,6 +120,9 @@ class V2PlaybookRuntime:
         self._routing_activation_snapshot = None
         self._routing_activation_refresh_lock = asyncio.Lock()
         self._triggers: tuple[str, ...] = ()
+        # Unknown trigger coverage dispatches conservatively.
+        self._event_triggers: frozenset[str] | None = None
+        self._event_catalog_generation = 0
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
         self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
         self._integration_catalog_loaded = False
@@ -146,65 +149,60 @@ class V2PlaybookRuntime:
         # after its own activation commit, so the refresh that finishes last
         # is current; unserialized, a slower refresh holding an older read
         # could overwrite the trigger map the timer service follows.
+        # Invalidate before waiting for the lock. If this post-commit caller
+        # is cancelled, an older in-flight read cannot restore stale coverage.
+        self._event_catalog_generation += 1
+        self._event_triggers = None
         async with self._routing_activation_refresh_lock:
             await self._refresh_locked()
 
     async def _refresh_locked(self) -> None:
+        generation = self._event_catalog_generation
         rows = await self._db.list_playbook_activations(enabled_only=False)
-        # A verified but schema-invalid artifact must not poison the runtime
-        # catalog or the synchronous routing snapshot. Keep the classification
-        # local: activation health is computed on reads, and only command
-        # handlers change stored activation rows.
+        # Classify malformed artifacts locally; only commands change stored health.
+        # Keep valid definitions in both runtime and routing catalogs.
         runtime_rows = [dict(row) for row in rows]
         loaded_rows: list[dict[str, Any]] = []
         triggers: set[str] = set()
+        trigger_catalog_complete = True
         integration_destinations: list[_IntegrationDestination] = []
         activation_addresses: list[_IntegrationDestination] = []
         for row in runtime_rows:
             sha = row.get("active_artifact_sha256")
-            if sha:
-                activation_addresses.append(
-                    _IntegrationDestination(
-                        activation_id=row["activation_id"],
-                        playbook_id=row["playbook_id"],
-                        scope=row["scope"],
-                        scope_identifier=row.get("scope_identifier") or "",
-                        artifact_sha256=sha,
-                        definition=None,
-                    )
-                )
-            if (
-                row.get("enabled") is not True
-                or getattr(row.get("health"), "value", row.get("health")) != "ready"
-            ):
-                continue
             if not sha:
+                continue
+            address = _IntegrationDestination(
+                activation_id=row["activation_id"],
+                playbook_id=row["playbook_id"],
+                scope=row["scope"],
+                scope_identifier=row.get("scope_identifier") or "",
+                artifact_sha256=sha,
+                definition=None,
+            )
+            activation_addresses.append(address)
+            health = getattr(row.get("health"), "value", row.get("health"))
+            if row.get("enabled") is not True or health != "ready":
                 continue
             try:
                 definition = self._store.load(sha)
             except (OSError, ArtifactVerificationFailed) as exc:
+                trigger_catalog_complete = False
                 row["health"] = "unavailable"
                 logger.warning(
                     "Playbook %s artifact %s is unavailable: %s", row["playbook_id"], sha, exc
                 )
                 continue
             except Exception:  # noqa: BLE001 - quarantine malformed definitions per activation
+                trigger_catalog_complete = False
                 row["health"] = "invalid"
                 logger.exception("Playbook %s artifact %s is invalid", row["playbook_id"], sha)
                 continue
             loaded_rows.append(row)
             triggers.update(rule.trigger.event_type for rule in definition.rules)
-            integration_destinations.append(
-                _IntegrationDestination(
-                    activation_id=row["activation_id"],
-                    playbook_id=row["playbook_id"],
-                    scope=row["scope"],
-                    scope_identifier=row.get("scope_identifier") or "",
-                    artifact_sha256=sha,
-                    definition=definition,
-                )
-            )
+            integration_destinations.append(replace(address, definition=definition))
         self._triggers = tuple(sorted(triggers))
+        if generation == self._event_catalog_generation and trigger_catalog_complete:
+            self._event_triggers = frozenset(triggers)
         install_routing_activation_snapshot(self, loaded_rows, artifact_store=self._store)
         self._required_inactive_ids = self._required_inactive_from(runtime_rows)
         self._integration_destinations = tuple(integration_destinations)
@@ -264,13 +262,19 @@ class V2PlaybookRuntime:
         return len(self._triggers)
 
     def _on_event(self, event: dict[str, Any]) -> None:
-        if event.get("_event_type") == "integration.publication_verified":
-            # Its outbox durably accepts playbook destinations separately;
-            # the bus copy wakes observation and external deployment owners.
+        event_type = event.get("_event_type") or event.get("event_type", "")
+        if (
+            event_type == "integration.publication_verified"
+            or (
+                self._event_triggers is not None
+                and event_type not in self._event_triggers
+                and event_type != "task.route_needed"
+            )
+        ):
+            # Publication uses its durable outbox; unmatched types need no hydration.
             return
         payload = dict(event)
-        # The live publisher cannot choose its own backlog age or observation
-        # time. Replay restores the trusted timestamp from the stored row.
+        # Stamp live receipt time; replay restores its trusted timestamp from storage.
         payload["_received_at"] = time.time()
         # A run triggered by an event emitted inside a project's commit
         # identity scope must not keep that identity (git identity spec §4).

@@ -35,6 +35,13 @@ false`` in its frontmatter — and ``--fix`` runs the same additive merge
 (nothing removed, other sections untouched, ``.bak-<epoch>`` kept).  An
 opted-out profile reports ``info`` and is never merged by ``--fix``.
 
+``profiles.capability_drift``
+
+The same check and additive repair for every installed shipped profile, including
+worker and operator templates. Shipped defaults own each role's grant policy;
+command contracts alone do not establish which roles should receive a command.
+Custom profiles and derived worker rungs are outside this check.
+
 ``profiles.project_overrides``
 Project-scoped profiles were retired: agents are shared between projects, so
 pool lifecycle and sizing belong on the system profile.  This check finds
@@ -47,12 +54,13 @@ one into its system profile before deleting it
 from __future__ import annotations
 
 import asyncio
-import logging
+import threading
 from pathlib import Path
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.profiles.capability_sync import (
     STATUS_FAILED,
+    CapabilitySyncResult,
     capability_sync_enabled,
     publish_sync_result,
     sync_profile_capabilities,
@@ -79,9 +87,13 @@ OVERRIDES_CHECK_ID = "profiles.project_overrides"
 
 SUPERVISOR_DRIFT_CHECK_ID = "profiles.supervisor_capability_drift"
 
+CAPABILITY_DRIFT_CHECK_ID = "profiles.capability_drift"
+
 SUPERVISOR_PROFILE_ID = "supervisor"
 
-logger = logging.getLogger(__name__)
+# The legacy supervisor check and the fleet check can both be fixed in one
+# doctor run. Serialize their read/merge/write so they cannot append twice.
+_CAPABILITY_FIX_LOCK = threading.Lock()
 
 #: How many per-profile summaries the one-line ``detail`` names before it
 #: defers to ``data["profiles"]``.
@@ -231,32 +243,13 @@ async def _check_supervisor_capability_drift(ctx: DoctorContext) -> CheckResult:
 
 async def _fix_supervisor_capability_drift(ctx: DoctorContext) -> CheckResult:
     """Run the additive capability sync for the supervisor, then sync the DB."""
-    from src.profiles.sync import sync_profile_text_to_db
-
     check_id = SUPERVISOR_DRIFT_CHECK_ID
     data_dir = getattr(ctx.config, "data_dir", "") or ""
     if not data_dir:
         return CheckResult(id=check_id, severity=Severity.INFO, detail="no data_dir configured")
 
-    result = await asyncio.to_thread(sync_profile_capabilities, data_dir, SUPERVISOR_PROFILE_ID)
-    if result.status == STATUS_FAILED:
-        raise RuntimeError(result.error)
-
+    result = await _repair_profile_capabilities(ctx, data_dir, SUPERVISOR_PROFILE_ID)
     if result.changed:
-        if ctx.db is not None:
-            vault_path = vault_profile_path(data_dir, SUPERVISOR_PROFILE_ID)
-            markdown = Path(vault_path).read_text(encoding="utf-8")
-            sync = await sync_profile_text_to_db(
-                markdown, ctx.db, source_path=vault_path, fallback_id=SUPERVISOR_PROFILE_ID
-            )
-            if not sync.success:
-                logger.warning(
-                    "supervisor capability fix: DB sync failed: %s", "; ".join(sync.errors)
-                )
-        orchestrator = getattr(ctx.handler, "orchestrator", None)
-        await publish_sync_result(
-            result, event_bus=getattr(orchestrator, "bus", None), trigger="doctor"
-        )
         count, names = _missing_summary(result.added)
         detail = f"added {count} shipped capability grant(s) to the supervisor: {names}"
     else:
@@ -269,6 +262,113 @@ async def _fix_supervisor_capability_drift(ctx: DoctorContext) -> CheckResult:
         fix_applied=result.changed,
         data=result.to_dict(),
     )
+
+
+def _merge_profile_capabilities(data_dir: str, profile_id: str) -> CapabilitySyncResult:
+    with _CAPABILITY_FIX_LOCK:
+        return sync_profile_capabilities(data_dir, profile_id)
+
+
+async def _repair_profile_capabilities(
+    ctx: DoctorContext, data_dir: str, profile_id: str
+) -> CapabilitySyncResult:
+    from src.profiles.sync import sync_profile_text_to_db
+
+    result = await asyncio.to_thread(_merge_profile_capabilities, data_dir, profile_id)
+    if result.status == STATUS_FAILED:
+        raise RuntimeError(result.error)
+
+    if result.changed:
+        if ctx.db is not None:
+            vault_path = vault_profile_path(data_dir, profile_id)
+            markdown = Path(vault_path).read_text(encoding="utf-8")
+            sync = await sync_profile_text_to_db(
+                markdown, ctx.db, source_path=vault_path, fallback_id=profile_id
+            )
+            if not sync.success:
+                raise RuntimeError(
+                    f"{profile_id} capability fix: DB sync failed: {'; '.join(sync.errors)}"
+                )
+        orchestrator = getattr(ctx.handler, "orchestrator", None)
+        await publish_sync_result(
+            result, event_bus=getattr(orchestrator, "bus", None), trigger="doctor"
+        )
+    return result
+
+
+def _capability_drift_profiles(data_dir: str) -> list[dict]:
+    profiles = []
+    for drift in scan_profile_drift(data_dir):
+        if drift.status in (STATUS_NOT_SEEDED, STATUS_RETIRED):
+            continue
+        path = vault_profile_path(data_dir, drift.profile_id)
+        errors = list(drift.errors)
+        if "capabilities" in drift.missing_sections:
+            errors.append("no ## Capabilities block; restore it with profile-reseed")
+        enabled = None
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            enabled = capability_sync_enabled(drift.profile_id, text)
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"cannot read {path}: {exc}")
+        profiles.append({
+            "profile_id": drift.profile_id,
+            "vault_path": path,
+            "missing": {ns: list(names) for ns, names in drift.missing_grants.items()},
+            "capability_sync": enabled,
+            "errors": errors,
+        })
+    return profiles
+
+
+async def _check_capability_drift(ctx: DoctorContext) -> CheckResult:
+    data_dir = getattr(ctx.config, "data_dir", "") or ""
+    if not data_dir:
+        return CheckResult(
+            id=CAPABILITY_DRIFT_CHECK_ID, severity=Severity.INFO, detail="no data_dir configured"
+        )
+    profiles = await asyncio.to_thread(_capability_drift_profiles, data_dir)
+    affected = [p for p in profiles if p["missing"] or p["errors"]]
+    actionable = [p for p in affected if p["errors"] or p["capability_sync"]]
+    if not profiles:
+        severity, detail = Severity.INFO, "no installed shipped profiles to compare"
+    elif not affected:
+        severity, detail = Severity.OK, "all installed shipped profiles grant every default capability"
+    else:
+        severity = Severity.WARN if actionable else Severity.INFO
+        summaries = []
+        for profile in affected:
+            _, names = _missing_summary(profile["missing"])
+            summary = f"{profile['profile_id']}: " + (names or "; ".join(profile["errors"]))
+            if profile["capability_sync"] is False:
+                summary += " (capability_sync: false; skipped by --fix)"
+            summaries.append(summary)
+        detail = (
+            "Missing default capability grants or unreadable profiles: "
+            + "; ".join(summaries)
+            + ". Run `aq doctor --check profiles.capability_drift --fix` for an additive "
+            "merge (keeps edits and a backup); malformed profiles need manual repair."
+        )
+    return CheckResult(
+        id=CAPABILITY_DRIFT_CHECK_ID,
+        severity=severity,
+        detail=detail,
+        data={"checked": len(profiles), "profiles": affected},
+    )
+
+
+async def _fix_capability_drift(ctx: DoctorContext) -> CheckResult:
+    data_dir = getattr(ctx.config, "data_dir", "") or ""
+    profiles = await asyncio.to_thread(_capability_drift_profiles, data_dir) if data_dir else []
+    repaired = []
+    for profile in profiles:
+        if profile["missing"] and not profile["errors"] and profile["capability_sync"]:
+            result = await _repair_profile_capabilities(ctx, data_dir, profile["profile_id"])
+            repaired.append(result.to_dict())
+    post = await _check_capability_drift(ctx)
+    post.fix_applied = any(p["added"] for p in repaired)
+    post.data["repairs"] = repaired
+    return post
 
 
 async def _override_row_ids(ctx: DoctorContext) -> list[str]:
@@ -367,6 +467,12 @@ async def _fix_project_overrides(ctx: DoctorContext) -> CheckResult:
 def profile_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=CHECK_ID, run=_check_system_profile_drift, fix=None, owner=OWNER),
+        DoctorCheck(
+            id=CAPABILITY_DRIFT_CHECK_ID,
+            run=_check_capability_drift,
+            fix=_fix_capability_drift,
+            owner=OWNER,
+        ),
         DoctorCheck(
             id=SUPERVISOR_DRIFT_CHECK_ID,
             run=_check_supervisor_capability_drift,

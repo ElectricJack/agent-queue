@@ -179,7 +179,7 @@ describe("ReviewsInbox", () => {
 
   it("uses the shared document filter and canonical links", () => {
     renderInbox();
-    expect(screen.getByRole("link", { name: "Architecture proposal" })).toHaveAttribute("href", "/focus/asks/review-waiting");
+    expect(screen.getByRole("link", { name: "Architecture proposal" })).toHaveAttribute("href", "/asks/review-waiting");
     expect(reviewsApi.filters[reviewsApi.filters.length - 1]).toEqual({ view: "needs_you", source_kind: "review", cursor: undefined });
     fireEvent.click(screen.getByRole("button", { name: "History" }));
     expect(reviewsApi.filters[reviewsApi.filters.length - 1]).toEqual({ view: "history", source_kind: "review", cursor: undefined });

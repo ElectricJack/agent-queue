@@ -488,15 +488,25 @@ proofs. A refused Resume retains the pause and recovery hold and refuses Restart
 After a successful Resume, Restart performs its normal cleanup and readmission.
 
 Cold restart shares the task-control lock with resume, including its Git setup.
-For a retained continuation, it first proves its old and resumed writers
-stopped through their providers. Under graph/task/workspace exclusion it checks
-every task reservation and both recorded relocation paths, detaches clean,
-published task checkouts, releases all unpinned reservations, and retires the
-waits, continuation and pending admission requests. Directory contents and saved
+The whole restart attempt has a 20-second server deadline, including recovery
+guards and waits for task-control, database and repository locks. Expiry returns
+`task_restart.timeout` and logs the task and current phase/lock; cancellation
+rolls back the active transaction and releases the task-control lock.
+For a retained continuation, it snapshots every task reservation and both
+recorded relocation paths, proves its old and resumed writers stopped through
+their providers, and detaches clean, published task checkouts. A final short
+transaction revalidates the observations under graph/task/workspace exclusion,
+releases all unpinned reservations, and retires the waits, continuation and
+pending admission requests. Directory contents and saved
 HEADs survive. Live or unknown writers, reused reservations, dirty or unpublished
 work and job pins refuse restart and retain ownership. A failed resume setup must
 record the relocated checkout before setup so cleanup observes its branch holder;
 the persisted relocation intent covers a crash before that path update.
+Provider and Git operations run outside database transactions, under task control
+and retained workspace reservations. An unowned staged workspace refuses cleanup;
+changed observations refuse retirement.
+An already retired continuation still permits a generation-fenced cold restart
+from a suspended task state.
 
 **Returns on success:**
 ```python

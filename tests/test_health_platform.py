@@ -69,7 +69,8 @@ def _make_orchestrator(**overrides):
     orch._paused = overrides.get("paused", False)
     orch._running_tasks = overrides.get("running_tasks", {})
     orch._notify = overrides.get("notify", None)
-    orch.wait_scheduler_service = None
+    # Health probes include the scheduler's concrete status in their JSON response.
+    orch.wait_scheduler_service = MagicMock(health={"ok": True, "failed_projects": {}})
 
     # Database stubs
     orch.db = AsyncMock()

@@ -1389,7 +1389,7 @@ async def scoped_reader(handler, db):
     return read
 
 
-@pytest.mark.parametrize("area", ["plans", "specs"])
+@pytest.mark.parametrize("area", ["plans", "specs", "notes"])
 async def test_worker_reads_own_vault_documents(config, scoped_reader, area):
     from pathlib import Path
 
@@ -1403,12 +1403,29 @@ async def test_worker_reads_own_vault_documents(config, scoped_reader, area):
         assert result["path"] == str(target)
 
 
+async def test_worker_reads_full_suite_baseline(config, scoped_reader):
+    from pathlib import Path
+
+    relative = "projects/test-proj/notes/full-suite-baseline-2026-10-24.md"
+    target = Path(config.vault_root) / relative
+    target.parent.mkdir(parents=True)
+    target.write_text("# Full-suite baseline\nKnown failure: café\n", encoding="utf-8")
+    for path in (target, relative):
+        result = await scoped_reader(path)
+        assert result["content"] == "# Full-suite baseline\nKnown failure: café"
+        assert result["path"] == str(target)
+
+
 @pytest.mark.parametrize("path", [
     "projects/other/plans/secret.md",
-    "projects/test-proj/notes/secret.md",
+    "projects/other/notes/full-suite-baseline-2026-10-24.md",
+    "projects/test-proj/memory/secret.md",
     "projects/test-proj/plans/../../other/plans/secret.md",
     "projects/test-proj/plans/../notes/secret.md",
     "projects/test-proj/plans/../../../system/secret.md",
+    "projects/test-proj/notes/../../other/notes/secret.md",
+    "projects/test-proj/notes/../memory/secret.md",
+    "projects/test-proj/notes/../../../system/secret.md",
 ])
 async def test_worker_vault_reads_reject_other_scopes(config, scoped_reader, path):
     from pathlib import Path
@@ -1422,7 +1439,10 @@ async def test_worker_vault_reads_reject_other_scopes(config, scoped_reader, pat
 
 
 @pytest.mark.parametrize("link_level", ["file", "area", "project"])
-async def test_worker_vault_reads_reject_symlink_escapes(config, scoped_reader, tmp_path, link_level):
+@pytest.mark.parametrize("area", ["plans", "notes"])
+async def test_worker_vault_reads_reject_symlink_escapes(
+    config, scoped_reader, tmp_path, link_level, area
+):
     from pathlib import Path
 
     outside = tmp_path / "outside"
@@ -1430,17 +1450,17 @@ async def test_worker_vault_reads_reject_symlink_escapes(config, scoped_reader, 
     (outside / "secret.md").write_text("secret")
     root = Path(config.vault_root) / "projects" / "test-proj"
     if link_level == "file":
-        (root / "plans").mkdir(parents=True)
-        (root / "plans" / "secret.md").symlink_to(outside / "secret.md")
+        (root / area).mkdir(parents=True)
+        (root / area / "secret.md").symlink_to(outside / "secret.md")
     elif link_level == "area":
         root.mkdir(parents=True)
-        (root / "plans").symlink_to(outside, target_is_directory=True)
+        (root / area).symlink_to(outside, target_is_directory=True)
     else:
-        (outside / "plans").mkdir()
-        (outside / "plans" / "secret.md").write_text("secret")
+        (outside / area).mkdir()
+        (outside / area / "secret.md").write_text("secret")
         root.parent.mkdir(parents=True)
         root.symlink_to(outside, target_is_directory=True)
-    result = await scoped_reader("projects/test-proj/plans/secret.md")
+    result = await scoped_reader(f"projects/test-proj/{area}/secret.md")
     assert "Access denied" in result["error"]
 
 

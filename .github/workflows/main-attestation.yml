@@ -11,6 +11,8 @@ on:
 permissions:
   contents: read
   checks: read
+  # Passed through to the reusable tests workflow for its GHCR pulls.
+  packages: read
 jobs:
   attestation:
     name: Main attestation

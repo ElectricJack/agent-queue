@@ -63,6 +63,7 @@ def test_legacy_playbook_fixtures_are_unchanged():
         (ROOT / "tests/fixtures/contracts/hourly-narrative-policy-changes.json").read_text()
     )["playbook_fixtures"]
     assert narrative.keys() == hourly.keys()
+    task_list_limit = _task_list_limit_changes()["playbook_fixtures"]
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -171,6 +172,12 @@ def test_legacy_playbook_fixtures_are_unchanged():
             historical = ROOT / change["preserved_previous_path"]
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert change["sha256"] != digest
+            digest = change["sha256"]
+        if path in task_list_limit:
+            change = task_list_limit[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             digest = change["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 

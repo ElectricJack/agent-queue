@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:6f4227faba6e74f07f46e7ee2caafebdb9455f41028fe15cc9d6e50c507eef26` |
+| Contract fingerprint | `sha256:a04b86d33fc2cb1969ec9e471b5b8ccf3006228efde28577fe1a101653ebca91` |
 
 ## Parameters
 
@@ -25,6 +25,7 @@
 | `page_token` | `string \| null` | no | `null` | — |
 | `page_size` | `integer \| null` | no | `null` | — |
 | `project_id` | `string \| null` | no | `null` | Project |
+| `limit` | `integer \| null` | no | `null` | — |
 | `status` | `string \| null` | no | `null` | Status |
 | `display_mode` | `string \| null` | no | `null` | Display mode |
 | `show_dependencies` | `boolean \| null` | no | `null` | Show dependencies |

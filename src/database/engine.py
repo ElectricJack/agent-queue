@@ -28,6 +28,7 @@ from src.database.schema_key import (
 )
 from src.database.tables import projects, repos
 from src.logging_config import CorrelationContext
+from src.metrics.operation_profile import profile_duration
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class ObservedQueuePool(AsyncAdaptedQueuePool):
             raise
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
+            profile_duration("db.pool_wait", elapsed_ms / 1000)
             perf_registry().observe_pool_wait(elapsed_ms)
             if elapsed_ms >= 1000:
                 with CorrelationContext(
@@ -163,6 +165,7 @@ def _install_query_observer(engine: AsyncEngine) -> None:
         started = conn.info.pop("aq_perf_started", None)
         if started is not None:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
+            profile_duration("db.query", elapsed_ms / 1000)
             perf_registry().observe_query(elapsed_ms)
             if elapsed_ms >= 1000:
                 with CorrelationContext(

@@ -129,6 +129,18 @@ transaction and clears only an incident whose cache is clean, including an `exha
 one; a dirty cache stays held (`not_clean`). See
 [integration-repository-recovery.md](integration-repository-recovery.md).
 
+`aq task claim-abort --task-id <id> --session-id <id> --claim-epoch <n>
+--instance-token <token> --reason <text>` lets a local operator or live project
+supervisor interrupt a hung preparation without acquiring its task-control lock.
+It refuses a session belonging to another project before reading its task.
+It waits up to ten seconds for cleanup (`settled` or `cleanup_pending`). Active or
+changed claims refuse; unavailable cleanup or branch handoff proof retains all
+ownership. The ordinary preparation deadline is `swarm.prepare_timeout`.
+
+Reopen settles a stopped pool predecessor's pending worker-branch handoff before
+moving the producer to READY. Stop, checkout publication, workspace and branch
+fence proofs remain required; an unproved handoff refuses reopen for recovery.
+
 For READY/BLOCKED tasks with `slot_reset_failure`, `aq task resume` clears the
 preparation backoff and retries. A historical claim from a terminal session does
 not prevent recovery once the session provider confirms that exact writer has
@@ -146,11 +158,12 @@ does not release integration ownership or resolve gates and dependencies.
 
 Worker file reads admit `read_file` through the shared command surface. In addition
 to registered repositories and workspaces belonging to the session's project,
-workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+workers may read `vault/projects/<project_id>/plans/`, `specs/` and `notes/` through
 `aq file read`, using either an absolute path or a `projects/...` vault-relative
 path. Resolve traversal and symlinks against these document roots before reading;
 foreign projects, other vault areas and write access remain outside this grant.
-Project document reads do not depend on knowledge-record activation.
+Project notes include the recorded `full-suite-baseline-<date>.md` used to assess
+test failures. Project document reads do not depend on knowledge-record activation.
 
 ### 3.2 Human surface
 
@@ -162,7 +175,7 @@ Project document reads do not depend on knowledge-record activation.
 | `aq session nudge` | `<session_id> <text>` | H | `{submitted: bool}` |
 | `aq session logs` | `<session_id> [-f]` | H | transcript entries (follow via SSE) |
 | `aq session kill` | `<session_id> [-y]` | H | `{killed: true}` |
-| `aq task list` | `[--project] [--status] [--label] [--brief]` | A/H | list of tasks |
+| `aq task list` | `[--project\|--all-projects] [--status] [--limit N] [--label] [--brief]` | A/H | list of tasks |
 | `aq task explain` | `<task_id>` | H | blocker analysis per [work-graph](work-graph.md) |
 | `aq task graph` | `[--project] [--format ascii\|dot\|json]` | H | dependency graph |
 | `aq project ready` | `[<project_id>]` | H | ready tasks + not-ready reasons |
@@ -174,6 +187,16 @@ Project document reads do not depend on knowledge-record activation.
 | `aq doctor` | `[--fix]` | H | system health findings (G.1) |
 | `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([supervisor-agent](supervisor-agent.md)) |
 | `aq schema` | — | A/H | enum catalog (§4.3) |
+
+`aq task list --all-projects` explicitly omits the project filter; it is mutually
+exclusive with `--project`. Local operators and global supervisors can list across
+projects; a project supervisor remains pinned to its token's project. Omitting both
+options preserves the existing scope behavior. `--limit N` accepts a positive integer
+and caps the flat live list after status and completion filtering, including active
+tasks. The matching `total` remains uncapped, so JSON pagination reports truncation.
+Without a limit, the existing active-task and finished-task cap behavior is preserved.
+The `list_tasks` command contract also accepts `limit` for flat live reads; tree and
+compact reads reject it, and snapshot reads use `page_size` instead.
 
 ### 3.3 Preserved existing commands
 
