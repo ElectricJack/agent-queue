@@ -220,6 +220,25 @@ def test_pool_table_renders_a_reasonless_quarantine():
     assert "quarantined until" in out
 
 
+def test_review_show_renders_withdrawal_audit_dependents_and_recovery():
+    out = _render("review_show", {
+        "review": {
+            "id": "rev-1", "state": "withdrawn", "current_revision": 2,
+            "withdrawn_by": "human:local-operator", "withdrawn_via": "dashboard",
+            "withdrawn_at": 1790000000.0, "withdrawal_reason": "accidental",
+        },
+        "revision": {"revision": 2, "content": "# Recover"},
+        "gate": {"id": "gate-1", "status": "cancelled"},
+        "dependent_task_ids": ["impl-1", "impl-2"],
+    })
+    assert "human:local-operator" in out and "dashboard" in out
+    assert "Withdrawn at" in out and "accidental" in out
+    assert "gate-1" in out and "cancelled" in out
+    assert "impl-1, impl-2" in out
+    assert "aq review reopen --review-id rev-1 --revision 2" in out
+    assert "still requires approval" in out
+
+
 def test_review_show_renders_markdown_header_and_comments():
     out = _render(
         "review_show",
@@ -370,3 +389,31 @@ def test_task_detail_shows_the_routing_preference_and_its_verdict():
         prefer_target=None, prefer_mode=None,
     )
     assert all(name != "Routing preference" for name, _ in _route_fields(plain))
+
+
+def test_canonical_ask_formatters_keep_count_health_version_and_full_packet():
+    result = {"items": [{"id": "ask-1", "context": {"title": "[bold]literal[/bold]"},
+                         "decision_generation": 2, "feedback_version": 7}],
+              "count": 101, "snapshot_at": 123, "source_health": "refreshing", "next_cursor": "next"}
+    out = _render("ask_list", result)
+    assert "101" in out and "refreshing" in out and "next" in out
+    assert "[bold]literal[/bold]" in out
+    detail = _render("ask_show", {"ask": result["items"][0], "expected": {
+        "decision_generation": 2, "feedback_version": 7, "source_fingerprint": "exact-source"},
+        "actions": [{"action": "decide", "enabled": False, "disabled_reason": "Only the decider"}]})
+    assert "exact-source" in detail and "Only the decider" in detail
+    packet = _render("ask_prepare_decision", {"preview": {"id": "preview-1", "packet_sha256": "sha",
+        "packet": {"domain": {"feedback": [{"original_text": "Full feedback", "disposition": "fold_in"}]}}}})
+    assert "Full feedback" in packet and "fold_in" in packet and "preview-1" in packet
+
+
+def test_ready_delivery_hold_names_prerequisite_and_target_in_list_and_show():
+    row = {"id": "consumer.4", "project_id": "p", "title": "Consumer",
+           "status": "READY", "priority": 100,
+           "claim_readiness": {"state": "waiting_on_delivery", "claimable": False,
+                               "label": "Waiting on delivery",
+                               "reason": "Land source.6 on dev; refresh aq/epic"}}
+    for command, payload in (("list_tasks", {"tasks": [row]}), ("get_task", row)):
+        text = _render(command, payload)
+        assert "Waiting on delivery" in text
+        assert "source.6" in text and "dev" in text and "aq/epic" in text
