@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import inspect
 import json
 import textwrap
@@ -29,7 +30,7 @@ from src.playbooks.definition import CommandStep
 from src.playbooks.executors.command import _consume
 from src.playbooks.expressions import LiteralValue
 from src.playbooks.run_state import DEFAULT_MAX_RESULT_BYTES
-from src.profiles.capabilities import DENY_ALL
+from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "tests/fixtures/contracts/generated-command-audit.json"
@@ -55,7 +56,7 @@ def consume(value, *, bound=True):
         command=registration.name, save_result_as="result" if bound else None,
         transitions={"success": "done", "failure": "bad", "runtime_error": "bad"},
     )
-    return _consume(value, registration, step, SimpleNamespace(run_id="run"),
+    return _consume(value, registration, step, SimpleNamespace(run_id="run", private_inputs=False),
                     resolved_inputs={}, key="attempt")
 
 
@@ -80,6 +81,128 @@ def test_builtin_audit_is_complete():
             tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(CommandHandler, helper))))
             digest = "sha256:" + hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
             assert digest == expected, (name, helper)
+
+
+@pytest.fixture
+def audit_refresh(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "audit_refresh", ROOT / "scripts/refresh-command-audit-digest.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rows = json.loads(AUDIT.read_text())
+    selected = {name: rows[name] for name in (
+        "explain_task", "get_schema", "task_claim", "task_close",
+    )}
+    for row in selected.values():
+        row["source_digest"] = "sha256:stale"
+        for helper in row.get("helper_producers", {}):
+            row["helper_producers"][helper] = "sha256:stale-helper"
+    audit = tmp_path / "audit.json"
+    audit.write_text(json.dumps(selected, indent=2) + "\n")
+    monkeypatch.setattr(module, "AUDIT", audit)
+
+    def run(*args):
+        monkeypatch.setattr("sys.argv", [str(module.__file__), *args])
+        return module.main()
+
+    return audit, run
+
+
+def test_audit_refresh_requires_explicit_write_and_preserves_review_evidence(audit_refresh):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    before = json.loads(original)
+    assert run("--command", "explain_task") == 1
+    assert audit.read_bytes() == original
+    assert run("--command", "explain_task", "--check") == 1
+    assert audit.read_bytes() == original
+
+    assert run("--command", "explain_task", "--write") == 0
+    after = json.loads(audit.read_text())
+    assert after["explain_task"]["source_digest"] != "sha256:stale"
+    before["explain_task"]["source_digest"] = after["explain_task"]["source_digest"]
+    assert after == before  # All other fields and the unrelated stale row stay untouched.
+    refreshed = audit.read_bytes()
+    assert run("--command", "explain_task", "--check") == 0
+    assert run("--command", "explain_task", "--write") == 0
+    assert audit.read_bytes() == refreshed
+
+
+@pytest.mark.parametrize("args", [[], ["--command", "unknown", "--write"]])
+def test_audit_refresh_refuses_missing_or_unknown_selection(audit_refresh, args):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        run(*args)
+    assert exc.value.code == 2
+    assert audit.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["task_claim", "task_close"])
+def test_audit_helper_refresh_preserves_all_other_evidence(audit_refresh, command):
+    audit, run = audit_refresh
+    helper = "_prepare_and_activate_locked"
+    args = ("--command", command, "--helper", helper)
+    original = audit.read_bytes()
+    before = json.loads(original)
+    assert run(*args) == 1
+    assert audit.read_bytes() == original
+    assert run(*args, "--write") == 0
+    after = json.loads(audit.read_text())
+    digest = after[command]["helper_producers"][helper]
+    assert digest != "sha256:stale-helper"
+    before[command]["helper_producers"][helper] = digest
+    assert after == before
+    refreshed = audit.read_bytes()
+    assert run(*args, "--check") == 0
+    assert run(*args, "--write") == 0
+    assert audit.read_bytes() == refreshed
+
+
+@pytest.mark.parametrize("selection", [
+    ["--command", "task_claim", "--helper", ""],
+    ["--command", "task_claim", "--helper", "_unknown"],
+    ["--command", "get_schema", "--helper", "_prepare_and_activate_locked"],
+    ["--command", "task_claim", "--command", "task_close",
+     "--helper", "_prepare_and_activate_locked"],
+    ["--command", "task_claim", "--helper", "_prepare_and_activate_locked",
+     "--helper", "_prepare_and_activate_locked"],
+])
+def test_audit_helper_refresh_refuses_unknown_or_ambiguous_selection(audit_refresh, selection):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        run(*selection, "--write")
+    assert exc.value.code == 2
+    assert audit.read_bytes() == original
+
+
+@pytest.mark.parametrize(("command", "requirements"), [
+    ("approved_spec_packet", ("held_session",)),
+    ("review_feedback_complete", ("project_resources", "handler_gates")),
+    ("discard_pause_checkpoint", ("project_resources", "handler_gates")),
+    ("workspace_clear_sentinel", ("project_resources", "handler_gates")),
+    ("workspace_retire_claim", ("project_resources", "handler_gates")),
+    *[(name, ("system_scope",)) for name in (
+        "batch_reconcile", "gate_reopen", "playbook_source_resync",
+        "repair_repository_checkout", "repair_workspace_checkout",
+        "spec_ingest_legacy_inventory", "spec_ingest_reconcile", "workspace_cutover",
+    )],
+])
+def test_frozen_main_generated_producers_have_explicit_resource_authority(command, requirements):
+    assert resource_requirements(command) == requirements
+
+
+@pytest.mark.parametrize("command", [
+    "batch_reconcile", "gate_reopen", "playbook_source_resync", "repair_repository_checkout",
+    "repair_workspace_checkout", "spec_ingest_legacy_inventory", "spec_ingest_reconcile",
+    "workspace_cutover",
+])
+async def test_new_system_producers_reject_project_playbook_authority(command):
+    result = await authorize_resources(command, {}, principal(), db=object(), generated=True)
+    assert result["success"] is False
+    assert result["error_code"] == "resource_scope_denied"
 
 
 @pytest.mark.parametrize(("value", "outcome"), [
@@ -143,15 +266,61 @@ async def test_exact_denials_apply_even_to_direct_generated_invocation(name):
     assert (await registration.invoke(args, principal(None)))["error_code"] == "playbook_command_denied"
 
 
-async def test_project_filter_cannot_authorize_a_foreign_task(monkeypatch):
+@pytest.mark.parametrize("generated", [False, True])
+async def test_project_filter_cannot_authorize_a_foreign_task(monkeypatch, generated):
     from src.api.target_scope import TARGET_RESOLVERS
 
     lookup = AsyncMock(return_value=(True, "other"))
     monkeypatch.setitem(TARGET_RESOLVERS, "task_id", lookup)
     result = await authorize_resources("get_task_result", {"project_id": "p", "task_id": "t"},
-                                       principal(), db=object(), generated=True)
+                                       principal(), db=object(), generated=generated)
     assert result["error_code"] == "resource_scope_denied"
     lookup.assert_awaited_once()
+
+
+@pytest.mark.parametrize("generated", [False, True])
+async def test_session_domain_gates_do_not_admit_other_system_resources(generated):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="worker")
+    result = await authorize_resources("get_config", {}, caller, db=object(), generated=generated)
+    assert result["error_code"] == "resource_scope_denied"
+
+
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("project_filter", [None, "p", "other"])
+async def test_pool_status_project_supervisor_view_is_pinned(generated, project_filter):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    args = {} if project_filter is None else {"project_id": project_filter}
+    result = await authorize_resources("pool_status", args, caller, db=object(), generated=generated)
+    if project_filter == "other":
+        assert result["error_code"] == "resource_scope_denied"
+    else:
+        assert result is None
+        assert args == {"project_id": "p"}
+
+
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.PLAYBOOK])
+async def test_pool_status_project_view_requires_a_supervisor(generated, kind):
+    caller = replace(principal(), kind=kind, session_id="worker")
+    result = await authorize_resources("pool_status", {}, caller, db=object(), generated=generated)
+    assert result["error_code"] == "resource_scope_denied"
+
+
+@pytest.mark.parametrize("generated", [False, True])
+async def test_pool_status_global_supervisor_keeps_unfiltered_view(generated):
+    caller = replace(principal(None), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    args = {}
+    assert await authorize_resources("pool_status", args, caller, db=object(), generated=generated) is None
+    assert args == {}
+
+
+@pytest.mark.parametrize("command", [
+    "pool_scale", "pool_rename", "pool_set_enabled", "pool_set_lifecycle",
+])
+async def test_pool_status_read_does_not_grant_project_supervisors_pool_mutations(command):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    result = await authorize_resources(command, {"project_id": "p"}, caller, db=object())
+    assert result["error_code"] == "resource_scope_denied"
 
 
 async def test_scoped_reads_inherit_project_and_global_reads_require_system():
@@ -190,6 +359,29 @@ async def test_nested_dispatch_keeps_original_principal_and_scope():
     assert observed[0][1]["project_id"] == "p"
     assert observed[0][1]["kind"] == "playbook"
     assert current_principal() is None
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.PLAYBOOK])
+async def test_untrusted_dispatch_exceptions_keep_details_in_server_logs(kind, caplog):
+    handler = CommandHandler(SimpleNamespace(db=None, bus=SimpleNamespace(emit=AsyncMock()),
+                                             plugin_registry=None), AppConfig())
+    caller = replace(principal(), kind=kind, policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["get_schema"],
+    ))
+    handler._cmd_get_schema = AsyncMock(side_effect=RuntimeError("private-exception-sentinel"))
+    with principal_context(caller):
+        result = await handler.execute("get_schema", {})
+    assert result == {
+        "success": False, "error_code": "command_runtime_error", "error": "Command execution failed",
+    }
+    if kind is PrincipalKind.PLAYBOOK:
+        # Playbook calls may carry decrypted private values, so their server log
+        # keeps only the exception type (see private_call in the handler).
+        assert "err=RuntimeError" in caplog.text
+        assert "private-exception-sentinel" not in caplog.text
+    else:
+        assert "private-exception-sentinel" in caplog.text
+    assert "private-exception-sentinel" not in repr(result)
 
 
 async def test_project_paths_are_confined_to_owned_roots(tmp_path):
@@ -373,7 +565,7 @@ async def test_generated_adapter_preserves_principal_without_inferring_result(mo
         seen.append((name, args, current_principal()))
         return raw
     set_handler_provider(lambda: SimpleNamespace(execute=execute))
-    monkeypatch.setattr(generated, "require_generated_execution", lambda: None)
+    monkeypatch.setattr(generated, "require_generated_execution", AsyncMock())
     try:
         registration = generated_registration(replace(descriptor(), origin="plugin", plugin="probe"))
         result = await registration.invoke(
