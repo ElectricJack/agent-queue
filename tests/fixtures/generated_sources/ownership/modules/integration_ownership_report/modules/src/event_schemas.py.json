@@ -1,0 +1,94 @@
+{
+  "reconciliation_definitions": {
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.publication_verified']": {
+      "fingerprint": "f678cb8a2927073604b7d5b2556468f7aa87bb6275d22138d3eb6256ec03ff54",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.readiness_changed']": {
+      "fingerprint": "48462459748b9d385291bcdd0fc6b195009dd8b5964c0b52e3a83bd7a68a6679",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/event_schemas.py::EVENT_SCHEMAS['integration.completed_container_checkpoint_recovered']": {
+      "reason": "Defines required retained-checkpoint recovery audit fields, including owner proof, origin, Git head, completion and delivery observation."
+    },
+    "src/event_schemas.py::EVENT_SCHEMAS[**_INTEGRATION_SCHEMAS]": {
+      "baseline_span": [
+        1969,
+        1999
+      ],
+      "landing_span": [
+        1957,
+        1987
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/event_schemas.py::_ESCALATION_SCHEMAS['escalation.delivery_status.v1']": {
+      "baseline_span": [
+        883,
+        904
+      ],
+      "landing_span": [
+        883,
+        904
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/event_schemas.py::_INTEGRATION_PAYLOAD_FIELDS": {
+      "baseline_span": [
+        1707,
+        1884
+      ],
+      "landing_span": [
+        1695,
+        1872
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/event_schemas.py::_INTEGRATION_REQUIRED_PAYLOAD_FIELDS": {
+      "baseline_span": [
+        1885,
+        1898
+      ],
+      "landing_span": [
+        1873,
+        1886
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS": {
+      "baseline_span": [
+        1634,
+        1675
+      ],
+      "landing_span": [
+        1622,
+        1663
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.sealed']": {
+      "baseline_span": [
+        1676,
+        1689
+      ],
+      "landing_span": [
+        1664,
+        1677
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/event_schemas.py::statement:97cad5a9706572ee": {
+      "baseline_span": [
+        1899,
+        1919
+      ],
+      "landing_span": [
+        1887,
+        1907
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

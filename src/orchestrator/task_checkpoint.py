@@ -309,25 +309,29 @@ async def _prepare_owned_checkpoint(git, workspace, saved, branch, proved_head):
         if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
             raise GitError("Owned branch tip is ambiguous")
         branch_tip = tips[0] if tips else None
-        if branch_tip is None and proved_head is None:
-            # The caller refreshed authorized origin refs under the owned
-            # preparation fence. Never use the foreign slot's current HEAD.
-            remote = f"refs/remotes/origin/{branch}"
-            refs = await git._arun(
-                ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote], cwd=workspace,
-            )
-            tips = [line.partition(" ")[2] for line in refs.splitlines()
-                    if line.partition(" ")[0] == remote]
-            if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
-                raise GitError("Owned origin branch tip is ambiguous")
-            branch_tip = tips[0] if tips else None
-        head = proved_head or branch_tip
+        # The caller refreshed authorized origin refs under the owned fence.
+        # A present local ref can still predate a later published attempt.
+        remote = f"refs/remotes/origin/{branch}"
+        refs = await git._arun(
+            ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote], cwd=workspace,
+        )
+        tips = [line.partition(" ")[2] for line in refs.splitlines()
+                if line.partition(" ")[0] == remote]
+        if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
+            raise GitError("Owned origin branch tip is ambiguous")
+        remote_tip = tips[0] if tips else None
+        head = proved_head or branch_tip or remote_tip
         if not is_valid_git_oid(head):
             raise GitError("Owned branch has no proved continuation commit")
-        if branch_tip is not None and branch_tip != head:
-            if await git.ais_ancestor(workspace, head, branch_tip, strict=True) is True:
-                head = branch_tip
-            elif await git.ais_ancestor(workspace, branch_tip, head, strict=True) is not True:
+        # A snapshot captured on this exact branch can hold a newer committed
+        # attempt. A renamed snapshot still needs owned-tip reachability proof.
+        saved_head = saved["head"] if saved["branch"] == branch else None
+        for candidate in (branch_tip, remote_tip, saved_head):
+            if candidate is None or candidate == head:
+                continue
+            if await git.ais_ancestor(workspace, head, candidate, strict=True) is True:
+                head = candidate
+            elif await git.ais_ancestor(workspace, candidate, head, strict=True) is not True:
                 raise GitError("Owned branch and continuation diverged or are unproved")
         if await git.ais_ancestor(workspace, saved["head"], head, strict=True) is not True:
             raise GitError("Saved checkpoint is not reachable from the owned branch or is unproved")
@@ -423,6 +427,23 @@ async def restore_checkpoint(
     branch = saved["branch"]
     plan = saved.get("handoff_restore")
     if plan:
+        # Recheck at the destructive boundary, including explicitly supplied
+        # plans: a newer fetched publication must never be reset backwards.
+        remote_ref = f"refs/remotes/origin/{branch}"
+        refs = await git._arun(
+            ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote_ref],
+            cwd=workspace,
+        )
+        tips = [line.partition(" ")[2] for line in refs.splitlines()
+                if line.partition(" ")[0] == remote_ref]
+        if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
+            raise GitError("Owned origin branch tip is ambiguous; workspace was left unchanged")
+        remote = tips[0] if tips else None
+        if remote and await git.ais_ancestor(
+            workspace, remote, plan["head"], strict=True,
+        ) is not True:
+            raise GitError("Paused restoration would move the task branch backwards from origin; "
+                           "workspace was left unchanged")
         await git._arun(["switch", "-C", branch, plan["head"]], cwd=workspace)
     else:
         try:
