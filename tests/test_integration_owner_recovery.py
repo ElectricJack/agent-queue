@@ -147,6 +147,7 @@ class Env:
         state: str = "stopped",
         desired_state: str = "stopped",
         task_id: str | None = None,
+        lifecycle: str = "pool",
         **values,
     ) -> None:
         values.setdefault("claim_phase_at", 1.0)
@@ -160,7 +161,7 @@ class Env:
                     harness="claude",
                     provider="fake",
                     name=f"n-{session_id}",
-                    lifecycle="pool",
+                    lifecycle=lifecycle,
                     state=state,
                     desired_state=desired_state,
                     work_dir=str(work_dir),
@@ -498,19 +499,62 @@ async def test_a_writer_that_is_not_proven_gone_is_refused(env, case):
         confirm.assert_not_awaited()
 
 
-async def test_a_branch_checked_out_where_a_live_session_works_is_refused(env):
+@pytest.mark.parametrize("case", ["claimed", "claiming", "named"])
+async def test_a_branch_checked_out_where_a_live_session_works_is_refused(env, case):
     env.branch("aq/t7")
     slot = await env.slot("slot", "aq/t7")
     await env.session("s7", work_dir=slot)
-    await env.session("s7-live", work_dir=slot, state="running", desired_state="running")
+    live = {
+        "claimed": {"task_id": "t7-other", "claim_phase": "active"},
+        "claiming": {"claim_phase": "claiming"},
+        "named": {"lifecycle": "named"},
+    }[case]
+    if case == "claimed":
+        await env.task("t7-other", TaskStatus.IN_PROGRESS)
+    await env.session(
+        "s7-live", work_dir=slot, state="running", desired_state="running", **live,
+    )
     await env.owner("o7", "aq/t7", "t7", session_id="s7", workspace_id="ws-slot")
 
     result = await env.service().recover("o7", principal="sweep")
 
     assert (result.outcome, result.reason) == ("not_eligible", "checkout_in_use")
+    assert "s7-live" in result.evidence["detail"]
     assert result.evidence["worktree"] == str(slot)
     assert not detached(slot)
     assert (await env.row("o7"))["handoff_state"] == "attached"
+
+
+async def test_idle_successor_in_the_stopped_writers_slot_does_not_fence_recovery(env):
+    """eager-vault-55.19: a fresh pool session launched into the stopped writer's
+    still-locked slot sat idle there, and its work_dir alone made the branch
+    look in use, so the READY task kept the stopped writer's assignment."""
+    env.branch("aq/t7i")
+    await env.task("t7i", TaskStatus.READY)
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(agents).values(
+            id="a7i", name="worker", profile_id="worker", state="IDLE", created_at=1.0,
+        ))
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "t7i").values(claim_epoch=1, assigned_agent_id="a7i")
+        )
+    slot = await env.slot("slot", "aq/t7i", locked_by_agent_id="a7i", locked_by_task_id="t7i")
+    await env.session(
+        "s7i", work_dir=slot, task_id="t7i", agent_id="a7i", claim_phase="active",
+        last_claim_epoch=1,
+    )
+    await env.session("s7i-idle", work_dir=slot, state="running", desired_state="running")
+    await env.owner("o7i", "aq/t7i", "t7i", session_id="s7i", workspace_id="ws-slot")
+
+    result = await env.service().recover("o7i", principal="human:local-operator")
+
+    assert (result.outcome, result.reason) == ("released", None), result
+    assert result.evidence["worktree"] == str(slot)
+    assert detached(slot)
+    assert result.evidence["claim_released"] is True
+    task = await env.db.get_task("t7i")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+    assert (await env.db.get_session("s7i-idle")).state == "running"
 
 
 async def test_stale_base_attachment_releases_without_touching_operator_checkout(env):
@@ -2242,10 +2286,9 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     transition and the branch handoff, completion record and claim release
     that follow it.  The attached owner kept the claim; the drained worker sat
     idle; owner recovery answered ``writer_live`` until a supervisor killed it.
-    With delivery still running there is no receipt yet (bold-impact-53 waited
-    for one); the identity the accepting transition records proves the close.
-    bold-impact-53 itself predates that marker, and its bare close metadata
-    proves nothing (``TestSettledClaimDrain``).
+    The identity the accepting transition records proves the close, whether
+    delivery finished or is still running. Historical delivery receipts and
+    bare close metadata cannot replace that identity (``TestSettledClaimDrain``).
     """
     from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
     from src.database.tables import task_delivery_receipts, task_session_attempts
@@ -2290,9 +2333,8 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     # 1. The close writes its outcome metadata, its terminal transition commits
     #    -- the same write ``complete_session_task`` makes -- and the daemon
     #    restarts before the handoff, the completion record and the claim
-    #    release.  Delivery then lands the work with a code receipt, or is
-    #    still running and only the accepted-close identity the transition
-    #    records in its transaction (smart-cascade) speaks for the close.
+    #    release. A historical receipt cannot settle the writer; only the
+    #    accepted-close identity recorded by the transition speaks for it.
     await env.db.set_task_meta("leaf", "outcome", "pass")
     await env.db.set_task_meta("leaf", "close_session_id", "writer")
     await env.db.set_task_meta("leaf", "summary", "Pushed the fix.")
@@ -2307,10 +2349,10 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
                 repository_id="r", target_branch="main", disposition="code",
                 created_at=time.time(),
             ))
-    else:
-        await env.db.set_task_meta("leaf", ACCEPTED_CLOSE_KEY, {
-            "completion_id": "close-leaf", "session_id": "writer", "claim_epoch": 1,
-        })
+    assert await env.db.get_settled_pool_claim("writer") is None
+    await env.db.set_task_meta("leaf", ACCEPTED_CLOSE_KEY, {
+        "completion_id": "close-leaf", "session_id": "writer", "claim_epoch": 1,
+    })
     assert await env.db.get_task_completion("leaf") is None
     assert (await env.db.get_session("writer")).task_id == "leaf"
     assert (await env.row("owner"))["handoff_state"] == "attached"
@@ -2348,10 +2390,7 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
         TaskStatus.COMPLETED, None, 1
     )
-    proof = (
-        "code delivery receipt receipt" if delivered
-        else "accepted close close-leaf by session writer (claim epoch 1)"
-    )
+    proof = "accepted close close-leaf by session writer (claim epoch 1)"
     bodies = [c["body"] for c in (await env.db.list_task_comments("leaf"))["comments"]]
     assert any(f"is COMPLETED with {proof}" in body for body in bodies)
 
