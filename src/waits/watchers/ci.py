@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from src.database.tables import integration_check_evidence, repos, wait_records
 from src.git.manager import GitError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.integration.checks import Conclusion, evaluate
 from src.integration.runtime_contracts import HeadIdentity
 from src.waits.adapters.ci import CIAdapter
@@ -32,6 +33,9 @@ KINDS = ("ci_check", "ci_run", "pull_request")
 # Final conclusions plus cancellation: each is a result the waiter must read.
 TERMINAL = frozenset({Conclusion.SUCCESS, Conclusion.FAILURE, Conclusion.MISSING,
                       Conclusion.CANCELLED})
+# Reads also run under the graph fence during registration and dispatch. Keep
+# their remote work below the listener renewal interval and control lock budget.
+OBSERVATION_TIMEOUT_SECONDS = 5.0
 
 
 def wait_source_handlers():
@@ -74,6 +78,7 @@ class CheckWatcher:
         self.required_check_sets = dict(required_check_sets or {})
         self.page_size, self.pr_poll_seconds = page_size, pr_poll_seconds
         self._due = {}
+        self._backoff = {}
         self._tick_lock = asyncio.Lock()
 
     def registry_readers(self):
@@ -212,14 +217,26 @@ class CheckWatcher:
 
     async def read(self, conn, cond):
         """Fresh registration/post-subscribe read; never trusts a previous conclusion."""
+        repo_id = cond.parameters["repository_id"]
+        if self._backoff.get(repo_id, 0) > self.clock():
+            raise WaitError("wait.unavailable", "CI observation is backing off",
+                            retry_after=self._backoff[repo_id] - self.clock())
         try:
-            prepared = await self._prepare(conn, cond)
-            if prepared is None:
-                return None
-            if cond.kind == "pull_request":
-                return await self._pr(cond, prepared)
-            return await self._ci(cond, prepared)
-        except (GitError, TimeoutError, ConnectionError):
+            async with asyncio.timeout(OBSERVATION_TIMEOUT_SECONDS):
+                prepared = await self._prepare(conn, cond)
+                if prepared is None:
+                    return None
+                if cond.kind == "pull_request":
+                    return await self._pr(cond, prepared)
+                return await self._ci(cond, prepared)
+        except (GitError, GitHubAccessError, TimeoutError, ConnectionError) as exc:
+            if limit := rate_limit_cause(exc):
+                due = self._backoff[repo_id] = max(self.clock() + 300, limit.retry_at or 0)
+                raise WaitError("wait.unavailable", "CI observation is backing off",
+                                retry_after=due - self.clock()) from exc
+            if isinstance(exc, (TimeoutError, ConnectionError)):
+                raise WaitError("wait.unavailable", "CI observation temporarily unavailable",
+                                retry_after=300) from exc
             return self._snapshot(cond, "unavailable", "provider_unavailable",
                                   reason="provider_unavailable")
 
@@ -256,29 +273,41 @@ class CheckWatcher:
                             continue
                         key = (cond.kind, source.identity, cond.parameters.get("required_check_set"))
                         active.add(key)
-                        if self._due.get(key, 0) > self.clock():
+                        if max(self._due.get(key, 0), self._backoff.get(
+                                cond.parameters["repository_id"], 0)) > self.clock():
                             continue
                         try:
-                            prepared = await self._prepare(conn, cond)
-                            if prepared is None:
-                                snapshot = self._snapshot(cond, "unavailable", "missing", reason="missing")
-                                delay = 300
-                            elif cond.kind == "pull_request":
-                                snapshot, delay = await self._pr(cond, prepared), self.pr_poll_seconds
-                            else:
-                                exact = prepared[2]
-                                result = None
-                                if exact is not None:
-                                    head_key = (cond.parameters["repository_id"],
-                                                cond.parameters["head_sha"], id(exact))
-                                    if head_key not in seen:
-                                        # Records changed exact-SHA rows as ci_check events.
-                                        seen[head_key] = await exact.refresh(self.head(cond))
-                                    result = seen[head_key]
-                                snapshot = await self._ci(cond, prepared, result=result)
-                                delay = (exact.retry_seconds if snapshot.observation.state == "unavailable"
-                                         else exact.poll_seconds) if exact is not None else 300
-                        except (GitError, TimeoutError, ConnectionError, WaitError):
+                            async with asyncio.timeout(OBSERVATION_TIMEOUT_SECONDS):
+                                prepared = await self._prepare(conn, cond)
+                                if prepared is None:
+                                    snapshot = self._snapshot(cond, "unavailable", "missing", reason="missing")
+                                    delay = 300
+                                elif cond.kind == "pull_request":
+                                    snapshot, delay = await self._pr(cond, prepared), self.pr_poll_seconds
+                                else:
+                                    exact = prepared[2]
+                                    result = None
+                                    if exact is not None:
+                                        head_key = (cond.parameters["repository_id"],
+                                                    cond.parameters["head_sha"], id(exact))
+                                        if head_key not in seen:
+                                            # Records changed exact-SHA rows as ci_check events.
+                                            seen[head_key] = await exact.refresh(self.head(cond))
+                                        result = seen[head_key]
+                                    snapshot = await self._ci(cond, prepared, result=result)
+                                    delay = (exact.retry_seconds if snapshot.observation.state == "unavailable"
+                                             else exact.poll_seconds) if exact is not None else 300
+                        except (GitError, GitHubAccessError, TimeoutError,
+                                ConnectionError, WaitError) as exc:
+                            if limit := rate_limit_cause(exc):
+                                due = max(self.clock() + 300, limit.retry_at or 0)
+                                self._backoff[cond.parameters["repository_id"]] = due
+                                self._due[key] = due
+                                continue  # quota is temporary, never a source outcome
+                            if isinstance(exc, (TimeoutError, ConnectionError)) or (
+                                    isinstance(exc, WaitError) and exc.code == "wait.unavailable"):
+                                self._due[key] = self.clock() + 300
+                                continue
                             snapshot = self._snapshot(cond, "unavailable", "provider_unavailable",
                                                       reason="provider_unavailable")
                             delay = 300

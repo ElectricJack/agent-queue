@@ -18,6 +18,13 @@ tags: [design, work-graph, dependencies, gates, labels, state-machine, explain, 
 
 ---
 
+> **Current task-graph contract (2026-10-22).** This design includes unimplemented
+> status-collapse proposals and superseded removal rules. Current AQ has twelve
+> task states, shared integration admission, managed-parent settlement gates and
+> unified deletion. Start with [Tasks](../../concepts/tasks.md) and the
+> [system map](../systems/task-graph.md); the historical sections below are not
+> an operational command reference.
+
 ## 1. Problem
 
 The task graph is the substrate everything else in the overhaul (sessions, worktrees, the supervisor agent) stands on, and today it is too thin:
@@ -65,6 +72,7 @@ A blocking edge contributes to `is_blocked` until its **satisfaction rule** hold
 | `parent-child` | task is a child of dep (its container) | `dep.status ≠ DEFINED` — the container has been *released* (the rule originally also excluded the since-removed `AWAITING_PLAN_APPROVAL` status) |
 | `waits-for` | task fans in over dep's children | every task with a `parent-child` edge to dep has `status = COMPLETED` (vacuously true with zero children; children added later **re-block** the waiter) |
 | `conditional-blocks` | task runs only if dep failed | `dep.status = BLOCKED`, or `dep.status = FAILED` with `retry_count ≥ max_retries` (terminal failure only — a transiently FAILED task about to be retried does not satisfy it) |
+| `delivery-of` | task runs after dep's delivery lands | a durable root landing receipt in `task_delivery_receipts` names dep or one of its ancestors, on the integration repository's default branch with a delivering disposition, recorded at or after dep's latest completion. Git is never read directly; unknown, absent or failed delivery keeps the task blocked |
 
 Notes:
 
@@ -84,6 +92,18 @@ Notes:
   candidates for retargeting or confirmation of intentional operator fan-in;
   diagnostics never rewrite edges and omit container sequencing and finished
   dependents.
+- **`delivery-of` gates operational roots.** Deploys, production cutovers,
+  post-landing observation and soak periods depend on landed code, not on a
+  completed task. Spec ingestion creates them as **operational roots**: a task
+  with no parent, proposed with `placement: operational_root` and
+  `delivery_targets`, gets `task_metadata.delivery_condition = {"kind":
+  "delivery-of", "targets": [...]}` (shown by `aq task show` and the API) and
+  one `delivery-of` edge per target. An operational root is never a child of a
+  delivery epic, which would then wait on it forever
+  (`post_landing_inside_delivery_epic`), and a target cannot itself wait on the
+  operation (`delivery_condition_cycle`). Completing an epic or elapsed time
+  never satisfies the edge. See
+  [systems/task-graph](../systems/task-graph.md) for the satisfaction query.
 - **`conditional-blocks` has a disposal rule.** When the dependency reaches COMPLETED the edge is permanently unsatisfiable. A cascade step auto-closes dependents whose *only* remaining unsatisfied blocking edges are conditional edges on COMPLETED deps: they transition to COMPLETED with `work_outcome=no-op` metadata and a `task.skipped_conditional` event. Contingency tasks never rot in the queue.
 
 ### 3.2 Non-blocking edge types
@@ -106,35 +126,49 @@ It is *graph* blockedness only. Transient capacity reasons — no idle agent, wo
 
 Development delivery is a separate dynamic admission condition. In development
 mode, completed `blocks` prerequisites and completed children consumed by
-`waits-for` must be contained in the configured repository target, or have no
-artifact. `src/integration/admission.py` gathers these identities in a batch and
+`waits-for` are checked for containment in the configured repository target,
+or absence of an artifact. `src/integration/admission.py` gathers these identities
+in a batch and
 uses `delivery_truth` to fetch and inspect git outside row-lock transactions.
 Readiness, scheduler supply, pool demand, claim selection and explain share that
-request-scoped answer. Unknown git evidence withholds work; absent or misleading
+request-scoped answer. Unknown Git evidence permits preparation; absent or misleading
 SQL delivery rows never establish containment. Branchless organizational tasks
 have no own artifact; a missing worker ref is unknown.
 
-In hierarchy/train mode, a completed `blocks` sibling
-must be proven on the shared parent's current branch before its dependent can
-run. One request-scoped, identity-revalidated Git prerequisite view per project
+In hierarchy/train mode, a completed `blocks` sibling is checked against the
+shared parent's current branch. One request-scoped, identity-revalidated Git
+prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
 database locks. Advisory scheduling reads, including direct readiness and
 frontier diagnostics, may reuse a successful snapshot of the same target for
 up to `DeliveryObserver.READ_MAX_AGE` (30 seconds). Each request still evaluates
 current identities and checks remote target freshness. Beyond the bound the
 observer refetches; a failed refresh never falls back to the expired snapshot.
-A rewind, retarget, reopened generation or unknown proof withholds work; no
-receipt can override it. Claim selection
+A proven ancestry negative withholds work; a rewind, retarget or reopened
+generation invalidates the current view and retries admission. Unknown or unloaded
+Git evidence permits worker preparation without asserting delivery; no receipt
+can override Git evidence. Claim selection
 retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. An
-absent truth-bearing observer withholds the affected prerequisites without a
-receipt fallback. Non-hierarchy projects keep their source admission policy.
+absent truth-bearing observer permits preparation without a receipt fallback.
+The agent merges prerequisite state from Git; ancestry at publication remains
+the delivery authority. Non-hierarchy projects keep their source admission policy.
+
+Pool claims first try candidates without `blocks`, `delivery-of` or `waits-for`
+sources. These candidates pass the same frontier predicates and locked input
+revalidation, without waiting for unrelated Git observations. If that pass has
+no compatible claimable task, selection retries with the full candidate set.
+Admission scopes hierarchy prerequisite observations to its candidate identities;
+an empty source set requires no Git observation. Prerequisite views never
+recompute dependent blockedness: they may be read while the scheduler holds
+those task rows under the wait-graph fence on another connection.
 
 `delivery-of` edges require source completion in the persisted graph projection
-and current default-target Git proof in `AdmissionView`. Completion alone is
-insufficient for dispatch, pool demand or a claim. Delivery is never persisted
-as blockedness: a rewind withholds the dependent on its next admission view
-without waiting for a SQL receipt change.
+and a separate default-target Git observation in `AdmissionView`. Unknown
+observations permit dispatch, pool demand and claims; proven missing ancestry
+can withhold them. This admission choice does not establish delivery. Delivery
+is never persisted as blockedness: a proven rewind withholds the dependent on its
+next admission view without waiting for a SQL receipt change.
 
 A cross-epic dependent whose epic already contains every prerequisite's exact
 default-branch source needs no new refresh. Ordinary sibling collection does
@@ -146,21 +180,25 @@ the checked refresh publishes it.
 
 Interactive `task explain` and `pool status` only read snapshots inside that
 age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.
-Missing or expired evidence is unknown and conservatively withholds demand;
+Missing or expired evidence is unknown and permits worker demand;
 current database identities are still revalidated against the pinned observation.
 If a background freshness check has already rejected that exact snapshot,
-diagnostics withhold its proof until a new observation or successful check.
-Stacked prerequisites additionally require the existing, unexpired remote-ref
-cache. An explanation shares one request-scoped pool measurement between the
+diagnostics discard its proof until a new observation or successful check.
+Unknown evidence does not become an admission exclusion.
+Automatic stack overlays additionally require the existing, unexpired remote-ref
+cache. Unavailable stack evidence supplies no overlay and permits normal worker
+preparation; changed refs still invalidate an observed stack. An explanation
+shares one request-scoped pool measurement between the
 pool wait reason and capacity spill planning. Actual scheduling, routing and
 claim admission retain their existing fresh observations and guards.
 
 For pull-request prerequisites, interactive explanations do not observe the
-current PR identity or its Git containment. They report
-`delivery_evidence_unavailable`, explicitly naming containment and claimability
-as unknown in this cached-only read, rather than asserting that the source is
-missing from the default branch. This also applies to merged PRs and running
-tasks. Fresh admission still requires the current PR and containment proof.
+current PR identity or its Git containment. They leave containment unknown and
+permit preparation without adding a
+`delivery_evidence_unavailable` exclusion. This also applies to merged PRs and
+running tasks. Fresh observations can still withhold a prerequisite whose source
+is provably absent from the prospective base. Publication and destructive
+cleanup continue to require their own current Git proof.
 
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
@@ -197,6 +235,31 @@ containment without requiring a paused legacy collecting parent. It reports
 already contained work or pending delivery owned by the train, and never
 reissues receipts or invokes the legacy collector. Unknown Git proof remains a
 visible blocker.
+
+For pending children without a batch, redrive reports the train's source admission
+blockers or the open batch ahead of the child, rather than claiming a batch owns
+it. If every changed path existed at the child's origin base and is absent from
+the current parent tree, diagnostics identify `obsolete_child`. New files and
+renamed destinations do not satisfy this test. This is a diagnostic, never proof
+of delivery or permission to discard code.
+The diagnostic supplies `aq integration redrive-child CHILD --dispose-obsolete
+--superseded-by SHA --apply --head SOURCE --parent-head TARGET --reason REASON`.
+This explicit local operator or project/global supervisor disposition creates a
+two-parent merge with the parent's unchanged tree (`-s ours` semantics). The child
+then has real ancestry on the parent; its completion and source history remain.
+`--superseded-by` must name an ancestor of the parent that removed the last of
+the child's changed paths. The audit commit records the source, superseding
+commit, actor and reason. Preview is read-only; apply pins both heads, rechecks
+task/repository identities and absence of live writers/batches under the hierarchy
+and repository/ref fences, and pushes with an exact expected-parent lease.
+Movement, active ownership or unavailable proof refuses the write. Retrying an
+already contained source is harmless. No human gate is required. A child with
+real code is never reclassified as a code-free completion by `record-noop`.
+
+`integration record-noop` admits local operators, authorized playbooks and live
+elevated named supervisors (project-scoped or global). Workers, stopped supervisors
+and supervisors of another project remain refused. The exact-head, passing no-op
+completion, reserved-base and approved reviewer evidence guards still apply.
 
 For a completed leaf with `missing_git_provenance`, `redrive-child --adopt-source`
 previews retaining its existing passing completion generation. Apply requires the
@@ -446,16 +509,18 @@ they do not infer eligibility from a cached scheduler snapshot. Receipt freshnes
 in shadow mode is scoped to the prerequisite's own `integration_rework_at`, never
 another task's marker or ordinary `updated_at` bookkeeping.
 
-Cross-epic prerequisites in hierarchy/train mode require two independent proofs.
-Their exact completed sources must be on the default branch
-(`frontier_prerequisite_not_on_default_branch` when unproven). A dependent with an
-epic branch also requires those sources to be contained in that branch and any
-open `train-epic-refresh-*` batch targeting it to finish
+Cross-epic prerequisites in hierarchy/train mode inspect two independent proofs.
+Their exact completed sources are checked against the default branch
+(`frontier_prerequisite_not_on_default_branch` for a known negative). A dependent
+with an epic branch also checks whether those sources are contained in that branch
+and requires any open `train-epic-refresh-*` batch targeting it to finish
 (`frontier_epic_refresh_pending`, with blocking batch ids in the detail).
 Ordinary sibling collection batches never withhold an already-contained dependent,
-including when failed or human-blocked. Missing epic containment withholds even
-without an open batch. Scheduler, pool demand, explain and claim share these
-predicates; claim retains fresh Git and identity revalidation. The explicit
+including when failed or human-blocked. Proven missing epic containment withholds
+even without an open batch. Unknown observations permit preparation but never
+establish containment or bypass an open refresh batch. Scheduler, pool demand,
+explain and claim share these predicates; claim retains fresh Git and identity
+revalidation. The explicit
 `cross_epic_prerequisites: completed` policy keeps legacy graph-only admission.
 
 ### 9.2 Ready frontier
@@ -484,7 +549,7 @@ branch without requiring a delivery receipt or a PAUSED parent. A live successfu
 code close must verify its exact task-branch head on origin before releasing its
 claim, including projects outside the train modes.
 
-`aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
+`aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label ∧ held_batch_id IS NULL`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
 
 ## 10. Events: replay and payload registry
 
@@ -558,6 +623,8 @@ filing rather than substituting another branch. This base selection does not
 replace live remote observations used by adoption, reparenting or completion.
 
 ### Operator removal (2026-10-06)
+
+> **Superseded:** use the [unified delete contract](../../superpowers/specs/2026-10-11-unified-task-delete.md). `remove` is a deprecated alias; deletion can explicitly delete branches, and task-only deletion reparents surviving children. The former always-subtree/no-branch-removal policy below is historical.
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
 available to a local human or live project/global supervisor. A worker cannot
@@ -817,3 +884,35 @@ there is no automatic replay of historical approvals. New decisions cannot use
 this compatibility branch. Inventory rows are operator evidence, not authority.
 The operator reconciles installed profile grants (`approved_spec_packet`) and
 activates the reviewed pipeline bundle; workers never reseed or activate it.
+
+## 15a. Held ingestion batches (2026-10-22)
+
+The approved design `2026-10-13-spec-ingestion-with-task-structure-review-before-release.md`
+and its implementation spec replace §15's immediate application for
+implementation documents. Ingestion still commits the whole graph in one
+transaction, but **held**: each row carries `tasks.held_batch_id`, the batch's
+`task_proposals` id. The hold is a separate axis from status, gates, labels and
+routing. `not_ingest_held()` is the one predicate, used by the claim frontier,
+pool demand, explicit claims, claim activation, launch, restart, push
+scheduling, container settlement, integration and the blocked-state projection.
+`aq task explain` reports "member of ingestion batch <id> awaiting fidelity
+review". Resolving a gate, resuming a task or moving a member never sheds the
+hold.
+
+One fidelity-reviewer task per batch, filed as an ordinary root task outside
+the held graph, edits the held members (`task_batch_update` operations) and
+records a receipt fenced by the batch's structure revision and digest.
+`task_batch_release` then clears every member's hold in one transaction, after
+it re-checks the source, membership, hard structural checks and the receipt.
+Only ingestion policy, the project supervisor or the operator may release. A
+scope question parks the batch in `needs_scope` with one ask; it never releases.
+`task_batch_retire` finalizes a batch whose members were already retired
+through the obsolete lifecycle. Design documents still produce only an epic and
+an implementation-spec authoring child, released at creation by the server's
+`design_authoring_shape` receipt.
+
+After release the graph is ordinary work. The supervisor repairs structure
+with `aq task reparent --root` (queued, unmaterialized work) and `aq task archive
+--disposition obsolete` with a replacement, satisfying evidence or rewire plan.
+Splitting a started task and a `needs_quiescence` answer are not built yet. The
+contract and rollout are in [spec-ingestion](../implementation/spec-ingestion.md).
