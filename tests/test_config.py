@@ -1,12 +1,203 @@
 import os
 import pytest
 import yaml
-from src.config import DatabaseConfig, load_config
+from src.config import DatabaseConfig, WaitPolicyConfig, load_config
+
+
+def test_wait_policy_cutover_defaults_and_approved_policy():
+    policy = WaitPolicyConfig()
+    assert policy.validate() == []
+    assert policy.v2_enabled
+    assert policy.hibernation_enabled
+    assert policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "refuse"
+    assert policy.in_place_ceiling_seconds == 1800
+    assert policy.hibernate_margin == 2.0
+    assert policy.resume_cost_minutes == 10
+    assert policy.min_samples == 5
+    assert policy.loop_window_registrations == 3
+    assert policy.loop_window_seconds == 3600
+    assert policy.branch_admission_deadline_seconds == 1800
+    assert policy.transition_budget_seconds == 120
+    assert policy.resume_launch_attempts == 2
+    assert policy.resume_stall_seconds == 300
+    assert {
+        kind: (row.escalate_after_seconds, row.expected_duration_seconds)
+        for kind, row in policy.kinds.items()
+    } == {
+        "task": (14400, 3600), "dependency": (14400, 3600),
+        "pull_request": (14400, 3600), "batch": (14400, 2700),
+        "job": (7200, 900), "message": (7200, 1800),
+        "playbook_condition": (7200, 1800), "ci_check": (5400, 1200),
+        "ci_run": (5400, 1500), "resource": (1800, None),
+        "timer": (300, None), "human": (None, None),
+    }
+
+
+def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
+        "wait_policy": {
+            "v2_enabled": False,
+            "scheduler_waits_enabled": False,
+            "resume_cost_minutes": 20,
+            "resume_stall_seconds": 600,
+            "hibernation_enabled": True,
+            "kinds": {"task": {"escalate_after_seconds": 12000}},
+            "projects": {
+                "canary": {
+                    "v2_enabled": True,
+                    "hibernation_enabled": False,
+                    "scheduler_waits_enabled": True,
+                    "resume_cost_minutes": 40,
+                    "resume_stall_seconds": 120,
+                    "in_place_ceiling_seconds": 7200,
+                    "hibernate_margin": 3,
+                    "kinds": {"task": {"expected_duration_seconds": 6000}},
+                },
+                "inherits": {},
+            },
+        },
+    }))
+    policy = load_config(str(path)).wait_policy
+    canary = policy.resolve_project("canary")
+    assert canary.v2_enabled and canary.scheduler_waits_enabled
+    assert not canary.hibernation_enabled
+    assert canary.resume_cost_minutes == 40
+    assert canary.resume_stall_seconds == 120
+    assert canary.in_place_ceiling_seconds == 7200
+    assert canary.hibernate_margin == 3
+    assert canary.kinds["task"].escalate_after_seconds == 12000
+    assert canary.kinds["task"].expected_duration_seconds == 6000
+    for project in ("inherits", "unconfigured"):
+        resolved = policy.resolve_project(project)
+        assert not resolved.v2_enabled
+        assert not resolved.scheduler_waits_enabled
+        assert resolved.hibernation_enabled
+        assert resolved.resume_cost_minutes == 20
+        assert resolved.resume_stall_seconds == 600
+        assert resolved.kinds["task"].expected_duration_seconds == 3600
+    canary.kinds["job"].escalate_after_seconds = 10000
+    assert policy.kinds["job"].escalate_after_seconds == 7200
+    assert WaitPolicyConfig().kinds["job"].escalate_after_seconds == 7200
+
+
+def test_wait_policy_config_and_runtime_share_models_and_preserve_metrics(tmp_path):
+    from src.config import WaitKindPolicy, WaitProjectOverrides
+    from src.config_wait_policy import (
+        WaitKindPolicy as RuntimeKindPolicy,
+        WaitPolicyConfig as RuntimePolicyConfig,
+        WaitProjectOverrides as RuntimeProjectOverrides,
+        parse_wait_policy,
+    )
+
+    assert WaitPolicyConfig is RuntimePolicyConfig
+    assert WaitKindPolicy is RuntimeKindPolicy
+    assert WaitProjectOverrides is RuntimeProjectOverrides
+    values = {
+        "metrics": {
+            "pre_rollout_turn_rate": 2.5,
+            "pre_rollout_tokens_per_turn": 100,
+            "cohort": "before-rollout",
+            "window": "2026-10-01/2026-10-07",
+        },
+        "projects": {"canary": {
+            "v2_enabled": True,
+            "kinds": {"job": {"escalate_after_seconds": 9000}},
+        }},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
+        "wait_policy": values,
+    }))
+    loaded = load_config(str(path)).wait_policy
+    assert loaded == parse_wait_policy(values)
+    resolved = loaded.resolve_project("canary")
+    assert resolved.v2_enabled
+    assert resolved.escalation_seconds("job") == 9000
+    assert resolved.escalation_seconds("human") is None
+    assert resolved.metrics == loaded.metrics
+    resolved.metrics.cohort = "changed"
+    assert loaded.metrics.cohort == "before-rollout"
+    assert loaded.metrics.pre_rollout_turn_rate == 2.5
 
 
 @pytest.fixture
 def config_dir(tmp_path):
     return tmp_path
+
+
+@pytest.mark.parametrize("seconds", [0, 120, 600])
+def test_ready_frontier_attention_threshold_loads(config_dir, seconds):
+    from src.config import WorkGraphConfig
+
+    assert WorkGraphConfig().frontier_rejected_after_seconds == 600
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "work_graph": {"frontier_rejected_after_seconds": seconds},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.work_graph.frontier_rejected_after_seconds == seconds
+    assert config.work_graph.validate() == []
+    assert any(
+        error.field == "frontier_rejected_after_seconds"
+        for error in WorkGraphConfig(frontier_rejected_after_seconds=-1).validate()
+    )
+
+
+@pytest.mark.parametrize("value", ["shadow", "active"])
+def test_git_first_selector_loads_without_activating_ownership(config_dir, value):
+    from src.config import IntegrationConfig
+
+    assert IntegrationConfig().git_first == "shadow"
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "integration": {"git_first": value},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.integration.git_first == value
+    # The selector never changes root ownership: reconciler flags keep their defaults.
+    assert config.integration.reconciler_active is IntegrationConfig().reconciler_active
+    assert not config.integration.reconciler_shadow
+    assert config.integration.validate() == []
+
+
+@pytest.mark.parametrize("value", [None, False, "legacy", "", [], {}])
+def test_git_first_selector_rejects_other_modes(value):
+    from src.config import IntegrationConfig
+
+    assert any(error.field == "git_first" for error in IntegrationConfig(git_first=value).validate())
+
+
+def test_deploy_selection_is_opt_in_and_loads_the_promotion_target(config_dir):
+    from src.config import AppConfig
+
+    assert AppConfig().deploy.tag_glob is None
+    assert AppConfig().deploy.target == "main"
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "deploy": {"tag_glob": "production-v*", "target": "production"},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.deploy.tag_glob == "production-v*"
+    assert config.deploy.target == "production"
+
+
+@pytest.mark.parametrize("value", ["", False, 3, [], {}])
+def test_deploy_selection_rejects_invalid_tag_globs(value):
+    from src.config import DeployConfig
+
+    assert any(error.field == "tag_glob" for error in DeployConfig(tag_glob=value).validate())
 
 
 class TestConfigLoading:
@@ -55,6 +246,33 @@ class TestConfigLoading:
         assert config.scheduling.min_task_guarantee is True
         assert config.agents_config.heartbeat_interval_seconds == 30
         assert config.messages.enabled is True
+
+    def test_docs_base_url_defaults_and_loads_override(self, config_dir):
+        from src.docs_urls import DEFAULT_DOCS_BASE_URL
+
+        config_file = config_dir / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "x", "guild_id": "1"},
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+                    "docs": {"base_url": "https://docs.example.test/aq"},
+                }
+            )
+        )
+
+        assert load_config(str(config_file)).docs.base_url == "https://docs.example.test/aq"
+
+        default_config = config_dir / "default-config.yaml"
+        default_config.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "x", "guild_id": "1"},
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+                }
+            )
+        )
+        assert load_config(str(default_config)).docs.base_url == DEFAULT_DOCS_BASE_URL
 
     def test_custom_workspace_dir(self, config_dir):
         config_file = config_dir / "config.yaml"
@@ -160,6 +378,77 @@ def test_asyncpg_dsn_is_pooled_like_any_other_postgres_url():
     assert [e.field for e in cfg.validate()] == ["pool_min_size"]
 
 
+def test_the_liveness_keys_are_read_off_the_database_section(config_dir):
+    """The knobs exist so an operator can move them without a code change."""
+
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "database": {
+                    "url": "postgresql://u:p@localhost:5533/aq_cfg_test",
+                    "pre_ping": "wire",
+                    "pool_recycle_seconds": 90,
+                },
+            }
+        )
+    )
+    cfg = load_config(str(config_file))
+    assert cfg.database.pre_ping == "wire"
+    assert cfg.database.pool_recycle_seconds == 90
+
+
+def test_a_database_section_without_the_liveness_keys_keeps_the_defaults(config_dir):
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+            }
+        )
+    )
+    cfg = load_config(str(config_file))
+    assert (cfg.database.pre_ping, cfg.database.pool_recycle_seconds) == ("local", 1800)
+
+
+def test_connection_liveness_defaults_are_the_cheap_ones():
+    """``pre_ping`` defaults to the free check, with recycling as its backstop.
+
+    The old unconditional ``pool_pre_ping=True`` was three asyncpg round trips
+    on every pooled checkout; ``local`` reads a flag asyncpg already maintains.
+    ``pool_recycle_seconds`` is the complement — retiring an old connection
+    locally is how a server-side idle reaper stops being raced at all.
+    """
+
+    cfg = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db")
+    assert cfg.pre_ping == "local"
+    assert cfg.pool_recycle_seconds == 1800
+    assert cfg.validate() == []
+
+
+@pytest.mark.parametrize("mode", ["off", "local", "wire"])
+def test_every_named_liveness_mode_validates(mode):
+    assert DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pre_ping=mode).validate() == []
+
+
+def test_an_unknown_liveness_mode_is_a_validation_error_naming_the_choices():
+    """A typo has to be caught here — the engine falls back to ``local`` rather
+    than refusing to start, so config validation is the only place it shows."""
+
+    errors = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pre_ping="ping").validate()
+    assert [e.field for e in errors] == ["pre_ping"]
+    assert "off, local, wire" in errors[0].message
+
+
+def test_a_negative_recycle_window_is_rejected():
+    errors = DatabaseConfig(
+        url="postgresql+asyncpg://u:p@h/db", pool_recycle_seconds=-1
+    ).validate()
+    assert [e.field for e in errors] == ["pool_recycle_seconds"]
+
+
 def test_psycopg2_dsn_is_rejected_at_load():
     """Recognized as PostgreSQL, but it cannot run this daemon.
 
@@ -188,13 +477,16 @@ def test_graph_layout_config_defaults_and_parse(tmp_path):
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
         "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
-        "dashboard": {"graph_layout": {"enabled": False, "incremental_debounce_ms": 250}},
+        "dashboard": {
+            "graph_layout": {"enabled": False, "incremental_debounce_ms": 250, "row_aspect": 1.8}
+        },
     }))
     cfg = load_config(str(p))
     # The block wins over the on-by-default field.
     assert cfg.graph_layout.enabled is False
     assert cfg.graph_layout.incremental_debounce_ms == 250
     assert cfg.graph_layout.reconcile_interval_seconds == 900
+    assert cfg.graph_layout.row_aspect == 1.8
 
 
 def test_graph_layout_config_defaults_when_absent(tmp_path):
@@ -211,6 +503,7 @@ def test_graph_layout_config_defaults_when_absent(tmp_path):
     assert cfg.graph_layout.reconcile_interval_seconds == 900
     assert cfg.graph_layout.incremental_debounce_ms == 500
     assert cfg.graph_layout.tidy_job_budget_seconds == 60
+    assert cfg.graph_layout.row_aspect == 1.3
 
 
 def test_graph_layout_config_validate_rejects_negative():
@@ -218,6 +511,124 @@ def test_graph_layout_config_validate_rejects_negative():
 
     errors = GraphLayoutConfig(reconcile_interval_seconds=-1).validate()
     assert [e.field for e in errors] == ["reconcile_interval_seconds"]
+
+
+@pytest.mark.parametrize("value", (False, 0.0, -1.0, float("inf"), float("nan")))
+def test_graph_layout_config_rejects_non_positive_or_non_finite_row_aspect(value):
+    from src.config import GraphLayoutConfig
+
+    errors = GraphLayoutConfig(row_aspect=value).validate()
+    assert [e.field for e in errors] == ["row_aspect"]
+
+
+def _dashboard_server_config(tmp_path, **sections):
+    from src.config import load_config
+
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.dump({
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+        **sections,
+    }))
+    return load_config(str(p))
+
+
+def test_dashboard_server_config_defaults(tmp_path):
+    """docs/specs/dashboard-server.md §3.1: on, loopback, port 8082."""
+    cfg = _dashboard_server_config(tmp_path)
+    assert (cfg.dashboard_server.enabled, cfg.dashboard_server.host, cfg.dashboard_server.port) == (
+        True, "127.0.0.1", 8082,
+    )
+
+
+def test_dashboard_server_config_reads_both_spellings(tmp_path):
+    nested = _dashboard_server_config(
+        tmp_path, dashboard={"server": {"enabled": False, "host": "::1", "port": 9090}},
+    )
+    assert (nested.dashboard_server.enabled, nested.dashboard_server.host) == (False, "::1")
+    assert nested.dashboard_server.port == 9090
+    # The config editor writes AppConfig field names as top-level keys.
+    top = _dashboard_server_config(tmp_path, dashboard_server={"port": 9191})
+    assert top.dashboard_server.port == 9191
+    # A nested graph_layout block does not hide a top-level dashboard_server one.
+    both = _dashboard_server_config(
+        tmp_path, dashboard={"graph_layout": {"enabled": True}}, dashboard_server={"port": 9292},
+    )
+    assert both.dashboard_server.port == 9292
+
+
+def test_dashboard_public_url_is_loaded_independently_of_server_settings(tmp_path):
+    config = _dashboard_server_config(
+        tmp_path,
+        dashboard={
+            "public_url": "https://queue.example.test",
+            "server": {"port": 9090},
+        },
+    )
+
+    assert config.dashboard_server.public_url == "https://queue.example.test"
+    assert config.dashboard_server.port == 9090
+
+
+@pytest.mark.parametrize(
+    ("server", "field", "fragment"),
+    [
+        ({"port": 0}, "port", "between 1 and 65535"),
+        ({"port": 65536}, "port", "between 1 and 65535"),
+        ({"port": 8081}, "port", "mcp_server.port"),
+        ({"host": "dashboard.example.com"}, "host", "IP literal"),
+        ({"host": ""}, "host", "IP literal"),
+    ],
+)
+def test_dashboard_server_config_validation_names_the_key(tmp_path, server, field, fragment):
+    from src.config import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError) as caught:
+        _dashboard_server_config(tmp_path, dashboard={"server": server})
+    messages = [str(error) for error in caught.value.errors]
+    assert any(
+        m.startswith(f"[dashboard.server] {field}:") and fragment in m for m in messages
+    ), messages
+
+
+def test_dashboard_server_port_is_checked_against_a_moved_daemon_port(tmp_path):
+    from src.config import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError):
+        _dashboard_server_config(
+            tmp_path, mcp_server={"port": 9000}, dashboard={"server": {"port": 9000}},
+        )
+    moved = _dashboard_server_config(tmp_path, mcp_server={"port": 9000})
+    assert moved.dashboard_server.port == 8082
+
+
+@pytest.mark.parametrize(
+    "sections",
+    [
+        {},
+        {"dashboard": {"server": {"enabled": True}}},
+        {"dashboard": {"server": {"port": None}}},
+        {"dashboard": {"graph_layout": {"enabled": True}}},
+        {"dashboard_server": {"host": "::1"}},
+    ],
+)
+def test_dashboard_server_default_steps_aside_for_a_daemon_already_on_it(tmp_path, sections):
+    """A daemon moved to 8082 before the dashboard server existed must still
+    load after the upgrade: an unset ``dashboard.server.port`` takes 8083."""
+    for port in (8082, "8082"):
+        cfg = _dashboard_server_config(tmp_path, mcp_server={"port": port}, **sections)
+        assert cfg.dashboard_server.port == 8083
+
+
+def test_dashboard_server_port_set_on_the_daemons_port_is_still_refused(tmp_path):
+    """Only the default steps aside; a port the operator chose is never moved."""
+    from src.config import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError) as caught:
+        _dashboard_server_config(
+            tmp_path, mcp_server={"port": 8082}, dashboard={"server": {"port": 8082}},
+        )
+    assert any("mcp_server.port (8082)" in str(error) for error in caught.value.errors)
 
 def test_graph_layout_config_reads_top_level_block(tmp_path):
     """``update_config``/``config_editor`` address sections by AppConfig
@@ -376,3 +787,83 @@ def test_hot_reload_round_trip_does_not_touch_the_retired_section(config_dir):
 
     assert reloaded.scheduling.min_task_guarantee == 9
     assert not hasattr(reloaded, "chat_analyzer")
+
+
+@pytest.mark.parametrize("agents", [None, {}, {"stuck_timeout_seconds": 73}])
+def test_stuck_timeout_construction_paths_agree(tmp_path, agents):
+    from src.config import AgentsDefaultConfig
+
+    assert AgentsDefaultConfig().stuck_timeout_seconds == 0
+    values = {"messaging_platform": "none",
+              "database": {"url": "postgresql://u:p@localhost:5534/disposable"}}
+    if agents is not None:
+        values["agents"] = agents
+    path = tmp_path / "wait-config.yaml"
+    path.write_text(yaml.safe_dump(values))
+    assert load_config(str(path)).agents_config.stuck_timeout_seconds == (
+        agents.get("stuck_timeout_seconds", 0) if agents else 0
+    )
+
+
+@pytest.mark.parametrize("field", ["cycle_interval_seconds", "min_cycle_interval_seconds",
+                                    "config_poll_interval_seconds"])
+@pytest.mark.parametrize("value", [0, -1, True, float("inf"), float("nan"), "fast"])
+def test_scheduler_cadence_rejects_invalid_values(field, value):
+    from src.config import SchedulingConfig
+
+    config = SchedulingConfig(**{field: value})
+    assert any(error.field == field for error in config.validate())
+
+
+def test_scheduler_minimum_cannot_exceed_periodic_interval():
+    from src.config import SchedulingConfig
+
+    assert SchedulingConfig(cycle_interval_seconds=0.5).validate()
+    assert not SchedulingConfig(cycle_interval_seconds=0.5, min_cycle_interval_seconds=0.25).validate()
+
+
+def test_scheduler_cadence_loads_and_hot_reloads(tmp_path):
+    import yaml
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"messaging_platform": "none",
+                                  "database": {"url": "postgresql://test:test@localhost:5534/aq_cfg_test"},
+                                  "scheduling": {"cycle_interval_seconds": 2,
+                                                "min_cycle_interval_seconds": 0.25,
+                                                "config_poll_interval_seconds": 0.5}}))
+    fresh = load_config(str(path))
+    from src.config import AppConfig
+    original = AppConfig()
+    original._config_path = str(path)
+    reloaded = original.reload_non_critical()
+    assert fresh.scheduling == reloaded.scheduling
+    assert reloaded.scheduling.cycle_interval_seconds == 2
+    assert reloaded.scheduling.min_cycle_interval_seconds == 0.25
+    assert reloaded.scheduling.config_poll_interval_seconds == 0.5
+
+
+@pytest.mark.parametrize("branch,interval", [
+    ("", 300), (False, 300), ("dev branch", 300), ("-dev", 300),
+    ("dev", 59), ("dev", True), ("dev", float("inf")), ("dev", float("nan")),
+])
+def test_branch_tracking_rejects_invalid_settings(branch, interval):
+    from src.config import DeployConfig
+
+    assert DeployConfig(track_branch=branch, poll_interval_seconds=interval).validate()
+
+
+def test_branch_tracking_loads_and_conflicts_with_tag_selection(config_dir):
+    from src.config import DeployConfig
+
+    assert DeployConfig().track_branch is None
+    assert DeployConfig(track_branch="dev", tag_glob="v*").validate()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "deploy": {"track_branch": "dev", "poll_interval_seconds": 120},
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.deploy.track_branch == "dev"
+    assert config.deploy.poll_interval_seconds == 120

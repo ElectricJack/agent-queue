@@ -9,7 +9,9 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.run_playbook_response_failed_steps_item import RunPlaybookResponseFailedStepsItem
     from ..models.run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem
+    from ..models.run_playbook_response_runs_item import RunPlaybookResponseRunsItem
 
 
 T = TypeVar("T", bound="RunPlaybookResponse")
@@ -28,6 +30,9 @@ class RunPlaybookResponse:
         node_trace (list[RunPlaybookResponseNodeTraceItem] | Unset):
         error (None | str | Unset):
         final_response (None | str | Unset):
+        run_ids (list[str] | Unset):
+        runs (list[RunPlaybookResponseRunsItem] | Unset):
+        failed_steps (list[RunPlaybookResponseFailedStepsItem] | Unset):
     """
 
     run_id: str
@@ -39,6 +44,9 @@ class RunPlaybookResponse:
     node_trace: list[RunPlaybookResponseNodeTraceItem] | Unset = UNSET
     error: None | str | Unset = UNSET
     final_response: None | str | Unset = UNSET
+    run_ids: list[str] | Unset = UNSET
+    runs: list[RunPlaybookResponseRunsItem] | Unset = UNSET
+    failed_steps: list[RunPlaybookResponseFailedStepsItem] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +81,24 @@ class RunPlaybookResponse:
         else:
             final_response = self.final_response
 
+        run_ids: list[str] | Unset = UNSET
+        if not isinstance(self.run_ids, Unset):
+            run_ids = self.run_ids
+
+        runs: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.runs, Unset):
+            runs = []
+            for runs_item_data in self.runs:
+                runs_item = runs_item_data.to_dict()
+                runs.append(runs_item)
+
+        failed_steps: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.failed_steps, Unset):
+            failed_steps = []
+            for failed_steps_item_data in self.failed_steps:
+                failed_steps_item = failed_steps_item_data.to_dict()
+                failed_steps.append(failed_steps_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -94,12 +120,20 @@ class RunPlaybookResponse:
             field_dict["error"] = error
         if final_response is not UNSET:
             field_dict["final_response"] = final_response
+        if run_ids is not UNSET:
+            field_dict["run_ids"] = run_ids
+        if runs is not UNSET:
+            field_dict["runs"] = runs
+        if failed_steps is not UNSET:
+            field_dict["failed_steps"] = failed_steps
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.run_playbook_response_failed_steps_item import RunPlaybookResponseFailedStepsItem
         from ..models.run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem
+        from ..models.run_playbook_response_runs_item import RunPlaybookResponseRunsItem
 
         d = dict(src_dict)
         run_id = d.pop("run_id")
@@ -141,6 +175,26 @@ class RunPlaybookResponse:
 
         final_response = _parse_final_response(d.pop("final_response", UNSET))
 
+        run_ids = cast(list[str], d.pop("run_ids", UNSET))
+
+        _runs = d.pop("runs", UNSET)
+        runs: list[RunPlaybookResponseRunsItem] | Unset = UNSET
+        if _runs is not UNSET:
+            runs = []
+            for runs_item_data in _runs:
+                runs_item = RunPlaybookResponseRunsItem.from_dict(runs_item_data)
+
+                runs.append(runs_item)
+
+        _failed_steps = d.pop("failed_steps", UNSET)
+        failed_steps: list[RunPlaybookResponseFailedStepsItem] | Unset = UNSET
+        if _failed_steps is not UNSET:
+            failed_steps = []
+            for failed_steps_item_data in _failed_steps:
+                failed_steps_item = RunPlaybookResponseFailedStepsItem.from_dict(failed_steps_item_data)
+
+                failed_steps.append(failed_steps_item)
+
         run_playbook_response = cls(
             run_id=run_id,
             playbook_id=playbook_id,
@@ -151,6 +205,9 @@ class RunPlaybookResponse:
             node_trace=node_trace,
             error=error,
             final_response=final_response,
+            run_ids=run_ids,
+            runs=runs,
+            failed_steps=failed_steps,
         )
 
         run_playbook_response.additional_properties = d

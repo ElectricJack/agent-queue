@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  boundedBatch, cellDistance, cellRect, cellsForRect, centreCell, maxDepthForZoom, toPx,
-  worldRectFromViewport,
+  boundedBatch, cellDistance, cellRect, cellsForRect, centreCell, toPx, worldRectFromViewport,
 } from "../units";
 
 describe("units", () => {
@@ -50,9 +49,8 @@ describe("units", () => {
   it("centreCell is the cell holding the rect's midpoint", () => {
     expect(centreCell({ x0: 0, y0: 0, x1: 32, y1: 16 })).toBe("2:1");
   });
-  it("lod thresholds", () => {
-    expect(maxDepthForZoom(0.2)).toBe(0);
-    expect(maxDepthForZoom(0.5)).toBe(1);
-    expect(maxDepthForZoom(1)).toBeNull();
+  it("exposes no zoom-derived depth: containers are collapsed at every zoom", async () => {
+    const units = await import("../units");
+    expect("maxDepthForZoom" in units).toBe(false);
   });
 });

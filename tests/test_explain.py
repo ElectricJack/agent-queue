@@ -13,32 +13,30 @@ Covers docs/specs/implementation/work-graph.md §6.3 and §11:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.explain import build_capacity_reasons
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, AgentState, DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
-
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj-explain"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("explain.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("explain.db")
     await database.create_project(Project(id=PROJECT_ID, name="Explain"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -93,6 +91,7 @@ async def handler(db, config):
 
 
 async def mktask(db, tid, project_id=PROJECT_ID, status=TaskStatus.DEFINED, **kw):
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(
         Task(id=tid, project_id=project_id, title=tid, description=tid, status=status, **kw)
     )
@@ -114,31 +113,301 @@ def make_state(**kw):
         workspace_locks=kw.get("workspace_locks", {}),
         global_budget=kw.get("global_budget"),
         global_tokens_used=kw.get("global_tokens_used", 0),
-        provider_cooldowns=kw.get("provider_cooldowns", {}),
+        suppressed_agent_ids=kw.get("suppressed_agent_ids", frozenset()),
         project_constraints=kw.get("project_constraints", {}),
         now=kw.get("now", time.time()),
         affinity_wait_seconds=kw.get("affinity_wait_seconds", 60),
     )
 
 
+@pytest.fixture
+async def spill_pool(handler, db):
+    from src.orchestrator.pools import PoolMeasurement
+    from src.scheduler import PlacementCandidate, PoolKey, PoolProjectSupply, PoolSupply
+    from src.sessions.harness_parser import Harness
+
+    orch = handler.orchestrator
+    handler.config.swarm.enabled = True
+    orch.harness_registry.upsert(Harness(id="codex", name="Codex", command="codex"))
+    orch.session_spec_builder._intelligence_classes["fast-low"] = IntelligenceClass(
+        "fast-low", "Fast", "", {
+            "anthropic": {"model": "claude-sonnet-5"},
+            "openai": {"model": "gpt-5"},
+        },
+    )
+    measurement = PoolMeasurement(projects={PROJECT_ID: await db.get_project(PROJECT_ID)})
+    for harness, idle, busy, ready in (("codex", 0, 1, 1), ("claude", 1, 0, 0)):
+        pid = f"fast-low-{harness}"
+        profile = AgentProfile(
+            id=pid, name=pid, harness=harness, default_class="fast-low",
+            lifecycle="pool", max_active=1,
+        )
+        await db.create_profile(profile)
+        key = PoolKey(pid)
+        measurement.profiles[key] = profile
+        measurement.supply[key] = PoolSupply(
+            running_idle=idle, running_busy=busy,
+            by_project={PROJECT_ID: PoolProjectSupply(running_idle=idle, running_busy=busy)},
+        )
+        measurement.demand[key] = ready
+        measurement.bounds[key] = (0, 1)
+        measurement.candidates[key] = [PlacementCandidate(
+            PROJECT_ID, ready=ready, live=1, project_live_total=2,
+            project_cap=None, workspace_capacity=0, quarantined=False, warm_floor=0,
+        )]
+    orch._measure_pools = AsyncMock(return_value=measurement)
+    orch.provider_reroute._pool_measure = orch._measure_pools
+    orch.provider_reroute._pool_global_cap = lambda: None
+    orch.provider_reroute._clock = lambda: 10_000.0
+    orch.provider_reroute.playbook_active = AsyncMock(return_value=True)
+    return measurement
+
+
+async def spill_task(db, tid="spill", *, age=900, intent="preferred", priority=100):
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    await mktask(
+        db, tid, status=TaskStatus.READY, profile_id="fast-low-codex",
+        intelligence_class="fast-low", provider_intent=intent, priority=priority,
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == tid).values(updated_at=10_000 - age))
+
+
+@pytest.mark.parametrize("age,target_kind,active,alarm", [
+    (1790, "batch", True, False),
+    (1810, "batch", True, True),
+    (40_000, "batch", False, False),
+    (40_000, "parent", True, False),
+])
+async def test_explain_train_repair_capacity_alarm(
+    handler, db, spill_pool, monkeypatch, age, target_kind, active, alarm,
+):
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    await spill_task(db, intent="pinned")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "spill").values(
+            updated_at=time.time() - age,
+        ))
+    monkeypatch.setattr(db, "get_active_integration_repair_for_task", AsyncMock(
+        return_value={"target_kind": target_kind, "batch_id": "train-1", "id": "operation-1"}
+        if active else None,
+    ))
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    assert ("train_repair_capacity_wait" in result["reason_codes"]) is alarm
+    assert "awaiting_pool_session" in result["reason_codes"]
+    if alarm:
+        reason = result["reasons"][-1]
+        assert reason["ref"] == "operation-1"
+        assert "train-1" in reason["detail"] and "fast-low-codex" in reason["detail"]
+
+
+@pytest.mark.parametrize(
+    "age,intent,target_idle,expected",
+    [
+        (100, "preferred", 1, "eligible in 200 s"),
+        (900, "preferred", 1, "the next sweep moves it to fast-low-claude"),
+        (900, "pinned", 1, "spill_pinned"),
+        (900, "preferred", 0, "spill_no_target"),
+    ],
+)
+async def test_pool_wait_explains_capacity_spill(
+    handler, db, spill_pool, age, intent, target_idle, expected,
+):
+    from src.scheduler import PoolKey
+
+    await spill_task(db, age=age, intent=intent)
+    target = spill_pool.supply[PoolKey("fast-low-claude")]
+    target.running_idle = target_idle
+    target.running_busy = 1 - target_idle
+    target.by_project[PROJECT_ID].running_idle = target_idle
+    target.by_project[PROJECT_ID].running_busy = 1 - target_idle
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    reason = next(r for r in result["reasons"] if r["code"] == "awaiting_pool_session")
+    assert "capacity spill:" in reason["detail"]
+    assert expected in reason["detail"]
+    task = await db.get_task("spill")
+    assert task.profile_id == "fast-low-codex"
+    assert await db.list_task_reroutes(task_id="spill") == []
+    handler.orchestrator._measure_pools.assert_awaited_once_with(for_display=True)
+
+
+@pytest.mark.parametrize("inactive", ["observe", "reroute", "spill", "playbook", "swarm"])
+async def test_pool_wait_explains_inactive_capacity_spill(handler, db, spill_pool, inactive):
+    await spill_task(db)
+    cfg = handler.config
+    if inactive == "observe":
+        cfg.provider_failover.mode = "observe"
+    elif inactive == "reroute":
+        cfg.provider_failover.reroute.enabled = False
+    elif inactive == "spill":
+        cfg.provider_failover.spill.enabled = False
+    elif inactive == "playbook":
+        handler.orchestrator.provider_reroute.playbook_active.return_value = False
+    else:
+        cfg.swarm.enabled = False
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    reason = next(r for r in result["reasons"] if r["code"] == "awaiting_pool_session")
+    assert "spill_inactive" in reason["detail"]
+    assert "the next sweep moves" not in reason["detail"]
+
+
+async def test_capacity_spill_explanation_respects_queue_headroom(handler, db, spill_pool):
+    from dataclasses import replace
+
+    from src.scheduler import PoolKey
+
+    await spill_task(db, "first", priority=10)
+    await spill_task(db, "second", priority=20)
+    source = PoolKey("fast-low-codex")
+    spill_pool.demand[source] = 2
+    spill_pool.candidates[source][0] = replace(spill_pool.candidates[source][0], ready=2)
+    reroute = handler.orchestrator.provider_reroute
+    first = await reroute.spill_state(await db.get_task("first"))
+    second = await reroute.spill_state(await db.get_task("second"))
+    assert first["to_profile_id"] == "fast-low-claude"
+    assert second["kind"] == "spill_no_target"
+    plan = await reroute.sweep(dry_run=True)
+    assert [d["task_id"] for d in plan["moved"]] == ["first"]
+    assert [(d["task_id"], d["kind"]) for d in plan["held"]] == [
+        ("second", second["kind"]),
+    ]
+
+
+async def test_capacity_spill_explanation_excludes_other_young_tasks(handler, db, spill_pool):
+    from dataclasses import replace
+
+    from src.scheduler import PoolKey
+
+    await spill_task(db, "young", age=100, priority=10)
+    await spill_task(db, "old", priority=20)
+    source = PoolKey("fast-low-codex")
+    spill_pool.demand[source] = 2
+    supply = spill_pool.supply[source]
+    supply.running_idle, supply.running_busy = 1, 0
+    supply.by_project[PROJECT_ID].running_idle = 1
+    supply.by_project[PROJECT_ID].running_busy = 0
+    spill_pool.candidates[source][0] = replace(spill_pool.candidates[source][0], ready=2)
+    state = await handler.orchestrator.provider_reroute.spill_state(await db.get_task("old"))
+    assert state["to_profile_id"] == "fast-low-claude"
+
+
+async def test_capacity_spill_explanation_keeps_frontier_exclusions(handler, db, spill_pool):
+    await spill_task(db)
+    await db.add_task_label("spill", "hold:operator")
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    reason = next(r for r in result["reasons"] if r["code"] == "awaiting_pool_session")
+    assert "capacity spill:" not in reason["detail"]
+    assert "frontier_hold_label" in result["reason_codes"]
+
+
+@pytest.mark.parametrize("profile_id", [None, "worker"])
+async def test_project_preferred_provider_unavailable_is_explained(handler, db, profile_id):
+    await db.update_project(PROJECT_ID, preferred_provider="codex")
+    await mktask(db, "preferred-held", status=TaskStatus.READY,
+                 intelligence_class="fast-low", profile_id=profile_id)
+    result = await handler._cmd_explain_task({"task_id": "preferred-held"})
+    reason = next(r for r in result["reasons"] if r["code"] == "preferred_provider_unavailable")
+    assert reason["ref"] == "codex"
+    assert "fast-low" in reason["detail"]
+    assert "codex" in reason["detail"]
+
+    await db.update_task("preferred-held", profile_id="worker",
+    route_source="legacy", provider_intent="pinned")
+    assert "preferred_provider_unavailable" not in (
+        await handler._cmd_explain_task({"task_id": "preferred-held"})
+    )["reason_codes"]
+
+
 # ── Golden per reason code ───────────────────────────────────────────────
 
 
 class TestExplainCommand:
-    async def test_unrouted_ready_task_reports_awaiting_intelligence_route(
-        self, handler, db
-    ):
+    async def test_ready_task_explains_the_live_pool_frontier_predicates(self, handler, db):
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(RepoConfig(
+            id="frontier-repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK,
+        ))
+        from src.models import AgentProfile
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await mktask(db, "frontier-held", status=TaskStatus.READY, profile_id="coder")
+        await db.add_task_label("frontier-held", "hold:operator")
+        await db.set_task_meta("frontier-held", "claim_prepare_backoff_until", time.time() + 300)
+        # No hierarchy origin exists; this must be explained even when the
+        # graph row is unblocked and no scheduler snapshot is available.
+        await db.update_project(
+            PROJECT_ID, hierarchical_integration_mode="train",
+            integration_repository_id="frontier-repo",
+        )
+        result = await handler._cmd_explain_task({"task_id": "frontier-held"})
+        exclusions = {r["code"]: r for r in result["reasons"] if r["code"].startswith("frontier_")}
+        assert set(exclusions) == {
+            "frontier_origin_not_materialized", "frontier_hold_label", "frontier_claim_prepare_backoff"
+        }
+        assert "materialized_origin_when_hierarchical()" in exclusions[
+            "frontier_origin_not_materialized"
+        ]["detail"]
+        assert "claim_prepare_backoff_until" in exclusions["frontier_claim_prepare_backoff"]["detail"]
+        assert all(r["ref"] == "frontier-held" for r in exclusions.values())
+        await db.update_project(PROJECT_ID, hierarchical_integration_mode="disabled")
+        await db.remove_task_label("frontier-held", "hold:operator")
+        await db.set_task_meta("frontier-held", "claim_prepare_backoff_until", 0)
+        cleared = await handler._cmd_explain_task({"task_id": "frontier-held"})
+        assert not any(code.startswith("frontier_") for code in cleared["reason_codes"])
+
+    async def test_frontier_names_a_route_the_project_does_not_accept(self, handler, db):
+        """Mandatory routing §9.1: unrouted never, legacy only before readiness."""
+        from src.models import AgentProfile
+        from src.routing.readiness import RouterReadiness
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await mktask(db, "unrouted-ready", status=TaskStatus.READY)
+        await mktask(db, "legacy-ready", status=TaskStatus.READY, profile_id="coder")
+
+        async def codes(task_id):
+            result = await handler._cmd_explain_task({"task_id": task_id})
+            return {c for c in result["reason_codes"] if c.startswith("frontier_")}
+
+        assert await codes("unrouted-ready") == {"frontier_route_not_claimable"}
+        assert await codes("legacy-ready") == set()
+        readiness = RouterReadiness(db_getter=lambda: db, artifact_loader=lambda sha: None)
+        readiness._ready = frozenset({PROJECT_ID})
+        handler.orchestrator.router_readiness = readiness
+        assert await codes("legacy-ready") == {"frontier_route_not_claimable"}
+
+    async def test_unrouted_ready_task_reports_its_router(self, handler, db):
+        """Mandatory routing §10: not ready, then awaiting the router's answer."""
+        from src.routing.readiness import RouterReadiness
+
         await mktask(db, "unrouted", status=TaskStatus.READY)
 
         res = await handler._cmd_explain_task({"task_id": "unrouted"})
-
-        assert "awaiting_intelligence_route" in res["reason_codes"]
+        assert "router_not_ready" in res["reason_codes"]
         assert res["assignment_route"] is None
 
-    async def test_unrouted_task_reports_the_playbook_not_the_scheduler(
+        readiness = RouterReadiness(db_getter=lambda: db, artifact_loader=lambda sha: None)
+        readiness._ready = frozenset({PROJECT_ID})
+        handler.orchestrator.router_readiness = readiness
+        res = await handler._cmd_explain_task({"task_id": "unrouted"})
+        assert "awaiting_route" in res["reason_codes"]
+        assert "router_not_ready" not in res["reason_codes"]
+
+    async def test_unrouted_task_reports_the_router_not_the_scheduler(
         self, handler, db
     ):
+        from src.routing.readiness import RouterReadiness
+
         await mktask(db, "unrouted-2", status=TaskStatus.READY)
+        readiness = RouterReadiness(db_getter=lambda: db, artifact_loader=lambda sha: None)
+        readiness._ready = frozenset({PROJECT_ID})
+        handler.orchestrator.router_readiness = readiness
         state = make_state(
             projects=[Project(id=PROJECT_ID, name="Explain")],
             project_available_workspaces={PROJECT_ID: 1},
@@ -150,11 +419,11 @@ class TestExplainCommand:
 
         res = await handler._cmd_explain_task({"task_id": "unrouted-2"})
 
-        assert res["reason_codes"].count("awaiting_intelligence_route") == 1
-        [reason] = [r for r in res["reasons"] if r["code"] == "awaiting_intelligence_route"]
+        assert "awaiting_intelligence_route" not in res["reason_codes"]
+        [reason] = [r for r in res["reasons"] if r["code"] == "awaiting_route"]
         assert "task.route_needed" in reason["detail"]
 
-    async def test_explicit_class_is_exposed_as_effective_assignment_route(
+    async def test_a_route_is_exposed_as_the_effective_assignment_route(
         self, handler, db
     ):
         await mktask(
@@ -162,12 +431,13 @@ class TestExplainCommand:
             "explicit",
             status=TaskStatus.READY,
             intelligence_class="fast-low",
+            profile_id="worker",
         )
 
         res = await handler._cmd_explain_task({"task_id": "explicit"})
 
         assert res["assignment_route"] == {
-            "source": "explicit",
+            "source": "legacy",
             "intelligence_class": "fast-low",
             "provider": None,
             "reason": None,
@@ -175,6 +445,11 @@ class TestExplainCommand:
             "playbook_version": None,
             "playbook_run_id": None,
             "freshness": "fresh",
+            "profile_id": "worker",
+            "provider_intent": "class_only",
+            "lane": None,
+            "rule": None,
+            "override": None,
         }
         assert "route_waiting_for_compatible_agent" in res["reason_codes"]
 
@@ -194,6 +469,87 @@ class TestExplainCommand:
         gid, _ = await db.create_gate(PROJECT_ID, "human", "review", waiter_task_ids=["t"])
         res = await handler._cmd_explain_task({"task_id": "t"})
         assert any(r["code"] == "blocked_gate" and r["ref"] == gid for r in res["reasons"])
+
+    async def test_retired_delegate_explains_terminal_operation_without_resume_advice(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.PAUSED)
+        await db.set_task_meta("t", "integration_retirement", {
+            "operation_id": "operation", "state": "completed",
+            "reason": "integration operation operation is completed",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert "integration_delegate_retired" in res["reason_codes"]
+        assert "paused_manually" not in res["reason_codes"]
+        reason = next(r for r in res["reasons"] if r["code"] == "integration_delegate_retired")
+        assert reason["ref"] == "operation"
+        assert "no longer required" in reason["detail"]
+
+    async def test_terminal_operation_explained_before_retirement_cleanup(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.PAUSED)
+        await db.set_task_meta("t", "needs_attention", "slot_reset_failed")
+        db.get_terminal_integration_delegate_operation = AsyncMock(return_value={
+            "id": "cancelled-operation", "state": "cancelled",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert "integration_delegate_retired" in res["reason_codes"]
+        assert "paused_manually" not in res["reason_codes"]
+        assert "needs_attention" not in res["reason_codes"]
+        assert "cancelled" in res["reasons"][0]["detail"]
+        assert await db.get_task_meta("t", "needs_attention") == "slot_reset_failed"
+
+    async def test_retired_delegate_names_cleanup_separately_from_its_disposition(
+        self, handler, db
+    ):
+        await mktask(db, "t", status=TaskStatus.FAILED)
+        await db.set_task_meta("t", "integration_retirement", {
+            "operation_id": "operation", "state": "cancelled", "disposition": "cancelled",
+            "reason": "integration operation operation is cancelled",
+        })
+        db.get_integration_delegate_cleanup = AsyncMock(return_value=[
+            {"code": "branch_owner_retained", "owner_row_id": "owner", "repository_id": "repo",
+             "ref": "aq/parent", "handoff_state": "attached", "session_id": "writer",
+             "workspace_id": "ws"},
+            {"code": "workspace_locked", "workspace_id": "ws", "workspace_path": "/w"},
+        ])
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        retired = next(r for r in res["reasons"] if r["code"] == "integration_delegate_retired")
+        assert "retired as cancelled, not a pass" in retired["detail"]
+        cleanup = [r for r in res["reasons"] if r["code"] == "integration_cleanup_blocked"]
+        assert [r["ref"] for r in cleanup] == ["aq/parent", "ws"]
+        assert all("not released automatically" in r["detail"] for r in cleanup)
+        owner_reason = cleanup[0]["detail"]
+        assert "owner-recovery sweep every 5 min" in owner_reason
+        assert "integration.owner_recovery_sweep" in owner_reason
+        assert "aq integration release-owner --task-id t" in owner_reason
+        assert "(LOCAL operator)" not in owner_reason
+        db.get_integration_delegate_cleanup.assert_awaited_once_with("t")
+
+    async def test_open_recovery_incident_shows_owner_budget_and_next_action(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("t", "supervisor_recovery_incident", {
+            "id": "recovery-1", "reason": "stuck_timeout", "decision": None,
+            "owner": {"kind": "supervisor", "id": "supervisor-p"},
+            "budget": {
+                "worker_retries": {"used": 1, "limit": 3, "remaining": 2},
+                "supervisor_recoveries": {"used": 2, "limit": 2, "remaining": 0},
+            },
+            "deadline_kind": "runtime",
+            "next_action": "Recovery budget exhausted: hold",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        reason = next(r for r in res["reasons"] if r["code"] == "recovery_incident")
+        assert reason["ref"] == "recovery-1"
+        for fragment in ("project supervisor", "worker retries: 2 of 3 left",
+                         "supervisor recoveries: 0 of 2 left", "runtime deadline",
+                         "next: Recovery budget exhausted"):
+            assert fragment in reason["detail"], fragment
+
+    async def test_decided_recovery_incident_is_not_reported_as_open(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("t", "supervisor_recovery_incident", {
+            "id": "recovery-1", "reason": "stuck_timeout", "decision": "hold",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert "recovery_incident" not in res["reason_codes"]
 
     async def test_hold_label_reason(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
@@ -253,6 +609,107 @@ class TestExplainCommand:
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
 
+    async def test_delivery_of_requires_git_even_with_a_historical_failure(self, handler, db):
+        from sqlalchemy import insert
+
+        from src.database.tables import task_delivery_receipts
+
+        await mktask(db, "leaf", status=TaskStatus.COMPLETED)
+        await mktask(db, "root", status=TaskStatus.READY)
+        await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
+
+        async def detail():
+            res = await handler._cmd_explain_task({"task_id": "root"})
+            return next(
+                r["detail"] for r in res["reasons"]
+                if r["code"] == "delivery_evidence_unavailable" and r["ref"] == "leaf"
+            )
+
+        expected = "Delivery prerequisite leaf: Git evidence unavailable"
+        assert await detail() == expected
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
+                repository_id="repo", target_branch="main", disposition="failed",
+                resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
+            ))
+        assert await detail() == expected
+        assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict"}
+        # SQL projects completion; Git admission separately withholds the task.
+        assert not (await db.get_task("root")).is_blocked
+
+    async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
+        """Explain reports only the exact typed edges that currently block.
+
+        This covers the edge rules whose satisfaction cannot be inferred from
+        a target task merely being COMPLETED: released and manually withheld
+        containers, waits-for fan-in, and conditional failure.  It also keeps
+        a provenance edge out of diagnostics and retains cross-project
+        attribution for an ordinary blocking edge.
+        """
+        async def assert_blockers(task_id, expected):
+            task = await db.get_task(task_id)
+            blockers = await db.get_blocking_dependencies(task_id)
+            assert {(row[0], row[3], row[4]) for row in blockers} == expected
+            assert bool(blockers) is task.is_blocked
+
+            result = await handler._cmd_explain_task({"task_id": task_id})
+            reasons = [reason for reason in result["reasons"] if reason["code"] == "blocked_dependency"]
+            assert {(reason["ref"], reason["detail"].split(" dep '")[0].removeprefix("blocked by ")) for reason in reasons} == {
+                (dep_id, dep_type) for dep_id, dep_type, _project_id in expected
+            }
+            return result
+
+        # A normally released PAUSED container does not withhold its child.
+        await mktask(db, "released-parent", status=TaskStatus.PAUSED)
+        await mktask(db, "released-child")
+        await db.add_dependency("released-child", "released-parent", DepType.PARENT_CHILD.value)
+        await assert_blockers("released-child", set())
+
+        # The same PAUSED state is unmet when the explicit hold marker exists.
+        await mktask(db, "held-parent", status=TaskStatus.PAUSED)
+        await db.set_task_meta("held-parent", "manual_pause_withholds_children", True)
+        await mktask(db, "held-child")
+        await db.add_dependency("held-child", "held-parent", DepType.PARENT_CHILD.value)
+        await assert_blockers(
+            "held-child", {("held-parent", DepType.PARENT_CHILD.value, PROJECT_ID)}
+        )
+
+        # waits-for is blocked by an open descendant, not by the container's status.
+        await mktask(db, "container", status=TaskStatus.PAUSED)
+        await mktask(db, "waiter")
+        await mktask(db, "open-descendant", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("waiter", "container", DepType.WAITS_FOR.value)
+        await db.add_dependency("open-descendant", "container", DepType.PARENT_CHILD.value)
+        await assert_blockers("waiter", {("container", DepType.WAITS_FOR.value, PROJECT_ID)})
+
+        # Only a transient failure holds its contingency; a terminal failure releases it.
+        await mktask(db, "transient", status=TaskStatus.FAILED, retry_count=2, max_retries=3)
+        await mktask(db, "contingency")
+        await db.add_dependency("contingency", "transient", DepType.CONDITIONAL_BLOCKS.value)
+        await assert_blockers(
+            "contingency", {("transient", DepType.CONDITIONAL_BLOCKS.value, PROJECT_ID)}
+        )
+        await db.transition_task("transient", TaskStatus.FAILED, retry_count=3)
+        await assert_blockers("contingency", set())
+
+        # Provenance never enters either the projection or an explain blocker list.
+        await mktask(db, "origin", status=TaskStatus.DEFINED)
+        await mktask(db, "provenance-only")
+        await db.add_dependency("provenance-only", "origin", DepType.DISCOVERED_FROM.value)
+        await assert_blockers("provenance-only", set())
+
+        other_project = "proj-explain-typed-other"
+        await db.create_project(Project(id=other_project, name="Typed other"))
+        await mktask(db, "cross-project-dep", project_id=other_project)
+        await mktask(db, "cross-project-dependent")
+        await db.add_dependency("cross-project-dependent", "cross-project-dep")
+        result = await assert_blockers(
+            "cross-project-dependent", {("cross-project-dep", DepType.BLOCKS.value, other_project)}
+        )
+        detail = next(reason["detail"] for reason in result["reasons"] if reason["ref"] == "cross-project-dep")
+        assert f"project '{other_project}'" in detail
+
     async def test_unknown_task(self, handler):
         res = await handler._cmd_explain_task({"task_id": "no-such"})
         assert res["success"] is False
@@ -297,12 +754,44 @@ class TestExplainAfterASessionExitedWithoutClose:
 
 
 class TestBuildCapacityReasons:
+    @pytest.mark.parametrize("active,blocked", [(0, False), (1, False), (2, True), (3, True)])
+    def test_project_agent_cap_names_live_count_and_config(self, active, blocked):
+        project = Project(id=PROJECT_ID, name="p", max_concurrent_agents=2)
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(projects=[project], project_active_agent_counts={PROJECT_ID: active})
+
+        reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})
+
+        cap_reasons = [reason for reason in reasons if reason["code"] == "project_agent_cap"]
+        assert bool(cap_reasons) == blocked
+        if blocked:
+            assert reasons[0] == cap_reasons[0]
+            assert f"{active}/2 live sessions" in cap_reasons[0]["detail"]
+            assert "max_concurrent_agents=2" in cap_reasons[0]["detail"]
+            assert cap_reasons[0]["ref"] == PROJECT_ID
+
     def test_no_idle_agent(self):
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
         state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 1})
         codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})]
         assert "no_idle_agent" in codes
+
+    def test_exclusive_constraint_lowers_effective_agent_cap(self):
+        from src.models import ProjectConstraint
+
+        project = Project(id=PROJECT_ID, name="p", max_concurrent_agents=8)
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(
+            projects=[project], project_active_agent_counts={PROJECT_ID: 1},
+            project_constraints={PROJECT_ID: ProjectConstraint(project_id=PROJECT_ID, exclusive=True)},
+        )
+
+        reason = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})[0]
+
+        assert reason["code"] == "project_agent_cap"
+        assert "1/1 live sessions" in reason["detail"]
+        assert "max_concurrent_agents=8, exclusive=True" in reason["detail"]
 
     def test_workspace_locked(self):
         proj = Project(id=PROJECT_ID, name="p")
@@ -320,30 +809,29 @@ class TestBuildCapacityReasons:
         ]
         assert "budget_exhausted" in codes
 
-    def test_rate_limited(self):
+    def test_suppressed_worker_is_not_idle_supply_but_not_incompatible_either(self):
+        """A worker on an unavailable provider (provider-failover D11) is not
+        idle supply, and explain does not call it an incompatible worker --
+        the hold is explained by ``provider_hold`` from the task row instead.
+        The retired ``rate_limited`` code is never produced."""
         from src.models import Agent
 
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
-        agent = Agent(
-            id="a1",
-            name="a1",
-            profile_id="claude",
-            state=AgentState.IDLE,
-        )
-        agent.project_id = PROJECT_ID  # type: ignore[attr-defined]
-        now = time.time()
+        agent = Agent(id="a1", name="a1", profile_id="claude", state=AgentState.IDLE)
         state = make_state(
-            projects=[proj],
-            agents=[agent],
-            provider_cooldowns={"claude": now + 100},
-            now=now,
+            projects=[proj], agents=[agent], suppressed_agent_ids=frozenset({"a1"}), now=100.0
         )
+        from src.scheduler import idle_workers
+
+        assert idle_workers(state) == []
+        assert [a.id for a in idle_workers(state, include_suppressed=True)] == ["a1"]
         reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})
         codes = [r["code"] for r in reasons]
-        assert "rate_limited" in codes
+        assert "rate_limited" not in codes
+        assert "no_compatible_agent" not in codes
 
-    def test_capacity_reasons_are_stably_ordered_and_rate_limit_is_deduplicated(self):
+    def test_capacity_reasons_are_stably_ordered(self):
         project = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
         agents = [
@@ -356,7 +844,6 @@ class TestBuildCapacityReasons:
             agents=agents,
             global_budget=10,
             global_tokens_used=10,
-            provider_cooldowns={"claude": now + 30},
             now=now,
         )
         reasons = build_capacity_reasons(task, state, {}, {PROJECT_ID: 0})
@@ -364,9 +851,7 @@ class TestBuildCapacityReasons:
             "workspace_locked",
             "no_idle_agent",
             "budget_exhausted",
-            "rate_limited",
         ]
-        assert reasons[-1]["ref"] == "claude"
 
 
 # ── _describe_task_blocker uses reasons[0]["detail"] ─────────────────────
@@ -433,24 +918,22 @@ class TestProjectReady:
         res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "coder"})
         assert [t["task_id"] for t in res["ready"]] == ["c1"]
 
-    async def test_default_profile_also_gets_unassigned_tasks(self, handler, db):
-        """Same widening as select_ready_for_profile: NULL profile counts."""
+    async def test_a_profile_does_not_get_unassigned_tasks(self, handler, db):
+        """No project-default widening (mandatory routing §8): NULL profile is no one's."""
         from src.models import AgentProfile
 
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
-        await db.update_project(PROJECT_ID, default_profile_id="coder")
         await mktask(db, "c1", status=TaskStatus.READY, profile_id="coder")
         await mktask(db, "u1", status=TaskStatus.READY)  # profile_id is NULL
 
         res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "coder"})
-        assert {t["task_id"] for t in res["ready"]} == {"c1", "u1"}
+        assert {t["task_id"] for t in res["ready"]} == {"c1"}
 
     async def test_non_default_profile_does_not_get_unassigned_tasks(self, handler, db):
         from src.models import AgentProfile
 
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
         await db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
-        await db.update_project(PROJECT_ID, default_profile_id="coder")
         await mktask(db, "u1", status=TaskStatus.READY)
 
         res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "reviewer"})
@@ -497,6 +980,29 @@ class TestProjectReady:
 
 
 class TestBetweenTicks:
+    async def test_project_agent_cap_is_visible_in_command_and_blocker_log(self, handler, db, caplog):
+        await mktask(db, "capped", status=TaskStatus.READY, profile_id="worker")
+        project = await db.get_project(PROJECT_ID)
+        task = await db.get_task("capped")
+        state = make_state(
+            projects=[project], tasks=[task],
+            project_active_agent_counts={PROJECT_ID: project.max_concurrent_agents},
+        )
+        handler.orchestrator._last_scheduler_state = state
+        handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 1}
+        handler.orchestrator._last_scheduler_idle_by_project = {}
+
+        result = await handler._cmd_explain_task({"task_id": task.id})
+
+        reason = next(r for r in result["reasons"] if r["code"] == "project_agent_cap")
+        assert "2/2 live sessions" in reason["detail"]
+        assert handler.orchestrator._describe_task_blocker(task, state, {PROJECT_ID: 1}, {}) == (
+            reason["detail"]
+        )
+        caplog.set_level("INFO", logger="src.orchestrator.core")
+        handler.orchestrator._log_scheduler_blockers(state, [], {PROJECT_ID: 1})
+        assert f"scheduler blocked task=capped reason={reason['detail']}" in caplog.messages
+
     async def test_uses_cached_scheduler_state(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
         # No tick has run — cached snapshot is None; explain should still
@@ -533,3 +1039,136 @@ class TestExplainAfterATerminalClose:
         details = {r["code"]: r["detail"] for r in res["reasons"]}
         assert details["blocked_terminal"].startswith("session_close_hard_failure")
         assert "restart or reopen" in details["blocked_terminal"]
+
+
+class TestExplainABlockedTaskNothingHolds:
+    """A BLOCKED row with no attention, mark or graph blocker is never requeued.
+
+    Pools count only READY, so explain must name the status itself rather
+    than answer with route and pool waits (swift-crest-94).
+    """
+
+    async def test_unheld_blocked_names_the_requeue(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "no recorded blocker" in details["blocked_unheld"]
+        assert "set-status --task-id parked --status READY" in details["blocked_unheld"]
+
+    async def test_failed_slot_reset_names_resume(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("parked", "slot_reset_failure", {
+            "reason": "worktree dirty", "attempt": 5, "retry": "manual",
+        })
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "worktree dirty (attempt 5)" in details["blocked_unheld"]
+        assert "aq task resume --task-id parked" in details["blocked_unheld"]
+
+    @pytest.mark.parametrize("held_by", ["attention", "terminal", "dependency"])
+    async def test_held_blocked_is_not_unheld(self, handler, db, held_by):
+        await mktask(db, "parked", status=TaskStatus.IN_PROGRESS)
+        if held_by == "terminal":
+            await db.transition_task(
+                "parked", TaskStatus.BLOCKED, context="session_close_hard_failure",
+            )
+        else:
+            await db.transition_task("parked", TaskStatus.BLOCKED, context="test")
+        if held_by == "attention":
+            await db.set_task_meta("parked", "needs_attention", "slot_reset_failed")
+        elif held_by == "dependency":
+            await mktask(db, "upstream")
+            await db.add_dependency("parked", "upstream")
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        assert "blocked_unheld" not in res["reason_codes"]
+
+
+async def test_explain_includes_shared_operator_decision(handler, db):
+    from src.operator_decisions import OperatorDecisions
+
+    await mktask(db, "decision-task")
+    row = await OperatorDecisions(db).record({
+        "object_kind": "task", "object_id": "decision-task", "operator": "Jack",
+        "decision": "Wait for the fix", "effect": "hold", "source": "chat",
+        "source_ref": "chat:123", "idempotency_key": "chat:123", "releases": None,
+    }, recorded_by="human:local-operator")
+    result = await handler.execute("explain_task", {"task_id": "decision-task"})
+    assert result["success"], result
+    assert "operator_decision_hold" in result["reason_codes"]
+    assert result["operator_decisions"][0]["id"] == row["id"]
+
+
+async def test_explain_returns_persisted_and_live_claim_timing(handler, db):
+    from src.claim_timing import ClaimTiming
+
+    await mktask(db, "timed", status=TaskStatus.IN_PROGRESS)
+    persisted = ClaimTiming("session", task_id="timed", claim_epoch=1)
+    persisted.finish("claimed")
+    await db.set_task_meta("timed", "claim_timing", persisted.snapshot())
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"] == persisted.snapshot()
+    live = ClaimTiming("new-session", task_id="timed", claim_epoch=2)
+    live.running.append(("fetch", time.monotonic()))
+    handler.orchestrator.claim_timings["timed"] = live
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"]["current_phase"] == "fetch"
+    assert result["claim_timing"]["claim_epoch"] == 2
+
+
+@pytest.mark.parametrize("stage", ["frontier", "admission", "integration"])
+async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
+    handler, db, monkeypatch, stage,
+):
+    """Successful controls do not turn an incomplete explanation into evidence."""
+    from src.integration import admission
+    from src.integration.status import IntegrationStatusService
+
+    await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        # Control reads share these dependencies; only stall the explanation.
+        if asyncio.current_task() is not request:
+            return await original(*args, **kwargs)
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monkeypatch.context() as fault:
+        if stage == "frontier":
+            original = db.claim_frontier_exclusions_many
+            fault.setattr(db, "claim_frontier_exclusions_many", stalled)
+        elif stage == "admission":
+            original = admission.observe_admission
+            fault.setattr(admission, "observe_admission", stalled)
+        else:
+            original = IntegrationStatusService.task_blockers
+            fault.setattr(IntegrationStatusService, "task_blockers", stalled)
+        request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            shown = await handler._cmd_get_task({"task_id": "slow-explain"})
+            assert shown["id"] == "slow-explain"
+            assert shown["status"] == "READY"
+            assert not request.done()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cancelled.is_set()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    # The later successful reads establish their own results only. No empty
+    # reason list was produced or persisted for the cancelled request.
+    assert (await handler._cmd_get_task({"task_id": "slow-explain"}))["status"] == "READY"
+    complete = await handler._cmd_explain_task({"task_id": "slow-explain"})
+    assert complete["success"]
+    assert complete["reasons"]

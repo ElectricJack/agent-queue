@@ -19,6 +19,16 @@ test("every registered entry has a manifest whose id matches the key", () => {
   }
 });
 
+test("view components are code-split, not part of the entry chunk", () => {
+  // An eager glob put every pane (and React Flow, dagre, the markdown and
+  // unified stacks behind them) into the bundle every page load parses.
+  const lazyType = Symbol.for("react.lazy");
+  for (const entry of Object.values(PANE_REGISTRY)) {
+    expect((entry.Component as unknown as { $$typeof?: symbol }).$$typeof).toBe(lazyType);
+    expect(typeof entry.preload).toBe("function");
+  }
+});
+
 test("no open_shortcut collisions across views", () => {
   const seen = new Map<string, string>();
   for (const entry of Object.values(PANE_REGISTRY)) {

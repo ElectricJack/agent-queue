@@ -1,0 +1,1344 @@
+"""Drive the durable escalation outbox: one root, one thread, per incident.
+
+The dispatcher is the only component that talks to a chat platform about an
+escalation, and it does so exclusively through rows in ``escalation_deliveries``
+(:mod:`src.database.queries.escalation_queries`).  That gives §7 its
+guarantees for free:
+
+* **one post per incident** -- the row's unique ``dedup_key`` is derived from
+  the incident and its generation, so a replayed event, a second daemon or a
+  gateway reconnect all converge on the same row;
+* **one owner at a time** -- ``claim_escalation_deliveries`` hands out a lease,
+  and an expired lease is reclaimed rather than duplicated;
+* **honest ambiguity** -- an external send that may or may not have landed is
+  reconciled against the message history using the marker embedded in the text,
+  and when ownership still cannot be established the row is recorded ``unknown``
+  (attention-needed) instead of being reposted.
+
+Nothing here raises into the caller: :meth:`EscalationDeliveryService.tick` is
+called from the orchestrator cycle, and a Discord outage must never stop the
+scheduler.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+from src.escalations.facts import (
+    KIND_ACK,
+    KIND_RELAY,
+    KIND_RESOLUTION,
+    KIND_ROOT,
+    OPEN_STATES,
+    TERMINAL_STATES,
+    EscalationFacts,
+    MentionPolicy,
+    TransportBinding,
+)
+from src.escalations.interactions import ButtonSpec, choice_buttons
+from src.escalations.plan import (
+    DEFER_SECONDS,
+    MAX_ATTEMPTS,
+    backoff_for,
+    binding_from_deliveries,
+    plan_deliveries,
+    plan_replacement,
+)
+from src.escalations.render import (
+    marker_for,
+    render_ack,
+    render_collapsed_root,
+    render_relay,
+    render_resolution,
+    render_resolved_root,
+    render_root,
+    render_state_root,
+    render_thread_opener,
+    thread_name,
+)
+from src.escalations.state import (
+    KIND_STATE,
+    STATE_OPEN,
+    STATE_STALE,
+    display_state,
+    is_collapsed,
+    is_stale_due,
+)
+from src.escalations.transport import (
+    EscalationTransport,
+    SendOutcome,
+    TransportAmbiguous,
+    TransportError,
+    TransportMissing,
+    TransportRejected,
+)
+from src.models import ProjectStatus
+from src.remote_links import DashboardLinkSource
+
+logger = logging.getLogger(__name__)
+
+#: How long a claimed delivery stays leased before another process may take it.
+LEASE_SECONDS = 120.0
+#: Reconciliation re-derives the whole desired set for every open incident, so
+#: it runs on its own slower cadence than the pump.  Nothing is lost by the
+#: gap: creation enqueues the first delivery atomically; reconciliation
+#: repairs legacy gaps and queues follow-ups. The outbox orders the work.
+RECONCILE_INTERVAL_SECONDS = 30.0
+#: A closed incident stops being re-derived once its resolution has had ample
+#: time to go out; without this the newest hundred rows would be re-queried
+#: for the life of the daemon.
+TERMINAL_HORIZON_SECONDS = 3600.0
+#: §7.2: "Escalation edits coalesce: at most one edit per escalation per 30 s,
+#: latest state wins".  One incident's post is one message, so a burst of state
+#: changes inside half a minute is written once, at its last value, and the
+#: edits that lost the race are deferred rather than dropped.
+EDIT_COALESCE_SECONDS = 30.0
+#: The delivery kinds that write to an incident's root post.  Both are edits in
+#: the §7.2 sense, so both feed the coalescing floor.
+ROOT_EDIT_KINDS = frozenset({KIND_STATE, KIND_RESOLUTION})
+#: How a state edit records the form it wrote in its receipt.  It has to be in
+#: the receipt — ``payload`` is the form the row was *planned* for, and §7.2's
+#: "latest state wins" means the two legitimately differ when an edit was
+#: overtaken.  Neither an id nor a form can contain ``|``, and the form comes
+#: from :data:`~src.escalations.state.DISPLAY_STATES`.
+EDIT_RECEIPT_PREFIXES = ("edit|", "current|")
+
+
+class _ProjectPaused(Exception):
+    """Stop between external writes without losing confirmed bindings."""
+
+
+def _written_form(receipt: str | None) -> str | None:
+    """The form a sent root-edit receipt recorded, or ``None``."""
+    if not receipt:
+        return None
+    for prefix in EDIT_RECEIPT_PREFIXES:
+        if receipt.startswith(prefix):
+            parts = receipt.split("|")
+            return parts[2] if len(parts) > 2 and parts[2] else None
+    return None
+
+
+@dataclass
+class TickReport:
+    """What one pump did — the shape the dashboard health panel reads."""
+
+    enqueued: int = 0
+    sent: int = 0
+    retried: int = 0
+    unknown: int = 0
+    edits: int = 0
+    coalesced: int = 0
+    held: int = 0
+    skipped: str | None = None
+    replacements: tuple[str, ...] = field(default_factory=tuple)
+
+
+class EscalationDeliveryService:
+    """Reconcile incidents into deliveries, then drive the deliveries out."""
+
+    def __init__(
+        self,
+        db: Any,
+        transport: EscalationTransport,
+        *,
+        config: Any,
+        lease_owner: str,
+        base_url: str = "",
+        dashboard_notice: str = "",
+        links: DashboardLinkSource | None = None,
+        clock: Callable[[], float] = time.time,
+        rate_guard: Callable[[], bool] | None = None,
+        on_status: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+        max_attempts: int = MAX_ATTEMPTS,
+    ) -> None:
+        self.db = db
+        self.transport = transport
+        self._config = config
+        self._lease_owner = lease_owner
+        # ``links`` (the daemon's DashboardLinkResolver) wins; the fixed
+        # ``base_url`` / ``dashboard_notice`` pair serves callers without one.
+        self._base_url = base_url
+        self._dashboard_notice = dashboard_notice
+        self._links = links
+        self._clock = clock
+        self._rate_guard = rate_guard
+        self._on_status = on_status
+        self._max_attempts = max_attempts
+        self._last_reconcile_at = 0.0
+
+    # -- configuration -------------------------------------------------
+    @property
+    def _discord(self) -> Any:
+        return getattr(self._config, "discord", self._config)
+
+    @property
+    def _settings(self) -> Any:
+        return self._discord.escalation
+
+    @property
+    def _stateful(self) -> bool:
+        """§7.1's P1 flag: the escalation state machine and edit-in-place.
+
+        Read per call so a hot-reloaded ``discord.escalations.stateful`` bites
+        at once.  False is not a degraded mode: it is exactly the behaviour
+        that shipped before this phase -- one root post per incident, edited
+        only when it closes, no auto-resolution, no collapse bookkeeping.
+        """
+        return bool(getattr(getattr(self._discord, "escalations", None), "stateful", False))
+
+    def _reminder_minutes(self) -> int:
+        minutes = getattr(self._settings, "reminder_minutes", 0)
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)):
+            return 0
+        return max(0, int(minutes))
+
+    def _stale(self, facts: EscalationFacts) -> bool:
+        """Has §5.2's stale timer fired for this incident?"""
+        return is_stale_due(
+            facts.state,
+            facts.updated_at,
+            now=self._clock(),
+            reminder_minutes=self._reminder_minutes(),
+        )
+
+    @property
+    def _channel_id(self) -> str:
+        return str(getattr(self._discord, "channel_id", "") or "")
+
+    def _mentions(self) -> MentionPolicy:
+        return MentionPolicy.from_config(self._settings)
+
+    def _buttons(
+        self, facts: EscalationFacts, *, display: str = STATE_OPEN
+    ) -> tuple[ButtonSpec, ...]:
+        """§5.3's buttons for one form of the post, or none.
+
+        Only the ``open`` and ``stale`` forms still want an answer -- the stale
+        reminder is §5.2's "this has been sitting since" on a question that is
+        *still* open -- so both keep the choice row.  ``answered`` and the two
+        collapsed forms drop it, so a post that says the supervisor is acting on
+        it does not still offer the alternatives it is acting between.
+
+        Entirely a §7.1 P1 affordance: with the flag off the post carries no
+        components at all, exactly as it did before the phase.
+        """
+        if (
+            not self._stateful or not facts.needs_human_answer
+            or display not in {STATE_OPEN, STATE_STALE}
+        ):
+            return ()
+        return choice_buttons(facts.id, tuple(facts.choices))
+
+    async def _dashboard(self) -> tuple[str, str]:
+        """``(base_url, notice)`` for the payload about to be rendered."""
+        if self._links is None:
+            return self._base_url, self._dashboard_notice
+        link = await self._links.resolve()
+        return link.url, link.unavailable_notice
+
+    # -- public entry points -------------------------------------------
+    async def tick(self, *, limit: int = 20) -> TickReport:
+        """Reconcile open incidents and push whatever is due, never raising."""
+        report = TickReport()
+        if not getattr(self._settings, "enabled", False):
+            report.skipped = "discord.escalation.enabled is false"
+            return report
+        now = self._clock()
+        if now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
+            self._last_reconcile_at = now
+            try:
+                report.enqueued = await self.reconcile_open()
+            except Exception:
+                logger.warning("escalation delivery reconcile failed", exc_info=True)
+        try:
+            await self.pump(limit=limit, report=report)
+        except Exception:
+            logger.warning("escalation delivery pump failed", exc_info=True)
+        return report
+
+    async def reconcile_open(self, *, limit: int = 100) -> int:
+        """Enqueue every delivery the current incident states imply."""
+        states = tuple(OPEN_STATES) + tuple(TERMINAL_STATES)
+        incidents = await self.db.list_escalations(states=states, limit=limit)
+        horizon = self._clock() - TERMINAL_HORIZON_SECONDS
+        created = 0
+        for incident in incidents:
+            terminal_at = incident.get("terminal_at")
+            if terminal_at is not None and float(terminal_at) < horizon:
+                continue
+            created += len(await self.reconcile(incident))
+        return created
+
+    async def reconcile(self, incident: Mapping[str, Any] | str) -> list[dict[str, Any]]:
+        """Enqueue the deliveries one incident is missing.  Idempotent."""
+        if isinstance(incident, str):
+            row = await self.db.get_escalation(incident)
+            if row is None:
+                return []
+            incident = row
+        facts = EscalationFacts.from_row(incident)
+        deliveries = await self.db.list_escalation_deliveries(facts.id)
+        messages = await self.db.list_escalation_messages(facts.id)
+        plan = plan_deliveries(
+            facts,
+            deliveries=deliveries,
+            messages=messages,
+            stateful=self._stateful,
+            stale=self._stateful and self._stale(facts),
+        )
+        now = self._clock()
+        created: list[dict[str, Any]] = []
+        for planned in plan.deliveries:
+            row, was_created = await self.db.enqueue_escalation_delivery(
+                facts.id,
+                dedup_key=planned.dedup_key,
+                kind=planned.kind,
+                payload=planned.payload,
+                available_at=now,
+                escalation_message_id=planned.escalation_message_id,
+                priority=planned.priority,
+                generation=planned.generation,
+            )
+            if was_created:
+                created.append(row)
+        return created
+
+    async def pump(self, *, limit: int = 20, report: TickReport | None = None) -> TickReport:
+        """Claim due deliveries and attempt each one exactly once."""
+        report = report or TickReport()
+        now = self._clock()
+        claimed = await self.db.claim_escalation_deliveries(
+            lease_owner=self._lease_owner,
+            now=now,
+            lease_seconds=LEASE_SECONDS,
+            limit=limit,
+        )
+        for row in claimed:
+            try:
+                await self._deliver_one(row, report)
+            except _ProjectPaused:
+                await self.db.defer_escalation_delivery(
+                    row["id"], lease_owner=self._lease_owner, now=self._clock(),
+                    reclaimed=bool(row.get("reclaimed")),
+                    attempted=bool(row.get("external_write_started")),
+                )
+                report.held += 1
+            except Exception:
+                logger.warning(
+                    "escalation delivery %s raised; leaving it leased", row["id"], exc_info=True
+                )
+        return report
+
+    # -- one delivery ---------------------------------------------------
+    async def _ensure_project_active(self, row: Mapping[str, Any]) -> None:
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        if incident is not None:
+            project = await self.db.get_project(incident["project_id"])
+            if project is not None and project.status == ProjectStatus.PAUSED:
+                raise _ProjectPaused
+
+    async def _before_write(self, row: MutableMapping[str, Any]) -> None:
+        await self._ensure_project_active(row)
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        blocked = getattr(self.db, "legacy_human_delivery_blocked", None)
+        if incident and blocked and await blocked(incident["project_id"]):
+            raise _ProjectPaused
+        # A later pause must retain the attempt so resume searches for posts
+        # whose receipt is only recorded once this whole delivery finishes.
+        row["external_write_started"] = True
+
+    async def _finish(
+        self,
+        row: Mapping[str, Any],
+        report: TickReport,
+        *,
+        status: str,
+        binding: TransportBinding | None = None,
+        receipt_id: str | None = None,
+        next_attempt_at: float | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        binding = binding or TransportBinding()
+        # The row may already carry a binding this attempt persisted mid-flight
+        # (see :meth:`_bind`); finishing must never write it back to NULL.
+        def _keep(value: str | None, column: str) -> str | None:
+            return value or (str(row.get(column) or "") or None)
+
+        finished = await self.db.finish_escalation_delivery(
+            row["id"],
+            lease_owner=self._lease_owner,
+            status=status,
+            now=self._clock(),
+            next_attempt_at=next_attempt_at,
+            channel_id=_keep(binding.channel_id, "channel_id"),
+            root_message_id=_keep(binding.root_message_id, "root_message_id"),
+            thread_id=_keep(binding.thread_id, "thread_id"),
+            external_receipt_id=receipt_id,
+            last_error=last_error,
+        )
+        if status == "sent":
+            report.sent += 1
+        elif status == "retry":
+            report.retried += 1
+        else:
+            report.unknown += 1
+        if finished is not None and self._on_status is not None:
+            try:
+                await self._on_status(finished)
+            except Exception:
+                logger.debug("escalation delivery status hook failed", exc_info=True)
+
+    async def _fail(
+        self,
+        row: Mapping[str, Any],
+        report: TickReport,
+        *,
+        binding: TransportBinding,
+        error: TransportError,
+    ) -> None:
+        """Bounded backoff, then honest abandonment to ``unknown``.
+
+        A rejected request skips the backoff: Discord refuses the same request
+        the same way every time, so the retry budget would buy nothing.
+        """
+        attempts = int(row["attempt_count"])
+        last_error = self._describe(error)
+        if not isinstance(error, TransportRejected) and attempts < self._max_attempts:
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                binding=binding,
+                next_attempt_at=self._clock() + backoff_for(attempts),
+                last_error=last_error,
+            )
+            return
+        await self._finish(row, report, status="unknown", binding=binding, last_error=last_error)
+
+    async def _request_replacement(
+        self,
+        facts: EscalationFacts,
+        deliveries: Sequence[Mapping[str, Any]],
+        report: TickReport,
+    ) -> str | None:
+        """Record one new root generation after a deleted post or thread."""
+        current = await self.db.get_escalation(facts.id)
+        if current is None:
+            return None
+        facts = EscalationFacts.from_row(current)
+        planned = plan_replacement(facts, deliveries)
+        if planned is None:
+            return None
+        row, created = await self.db.enqueue_escalation_delivery(
+            facts.id,
+            dedup_key=planned.dedup_key,
+            kind=planned.kind,
+            payload=planned.payload,
+            available_at=self._clock(),
+            priority=planned.priority,
+            generation=planned.generation,
+        )
+        if created:
+            report.enqueued += 1
+            report.replacements = (*report.replacements, planned.dedup_key)
+        return str(row["id"])
+
+    async def _bind(
+        self,
+        row: Mapping[str, Any],
+        *,
+        channel_id: str | None = None,
+        root_message_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Persist a confirmed external ID the moment the platform confirms it.
+
+        A root delivery is several external writes in a row, and §7's restart
+        invariant is that a crash between any two of them must not produce a
+        second post.  Writing the binding under the still-held lease is what
+        makes the next owner of this row see the half that already exists.
+        """
+        try:
+            await self.db.note_escalation_delivery_binding(
+                row["id"],
+                lease_owner=self._lease_owner,
+                now=self._clock(),
+                channel_id=channel_id,
+                root_message_id=root_message_id,
+                thread_id=thread_id,
+            )
+        except Exception:  # pragma: no cover - persistence is best-effort here
+            logger.warning(
+                "could not persist the escalation binding for %s", row["id"], exc_info=True
+            )
+
+    async def _reconcile_marker(
+        self, marker: str, *, channel_id: str, thread_id: str | None
+    ) -> SendOutcome | None:
+        """Did a previous ambiguous attempt already land this exact message?"""
+        try:
+            return await self.transport.find_marker(
+                channel_id=channel_id, thread_id=thread_id, marker=marker
+            )
+        except TransportError:
+            return None
+        except Exception:
+            logger.debug("marker reconciliation failed", exc_info=True)
+            return None
+
+    async def _deliver_one(self, row: MutableMapping[str, Any], report: TickReport) -> None:
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        if incident is None:
+            await self._finish(
+                row, report, status="unknown", last_error="escalation record is gone"
+            )
+            return
+        facts = EscalationFacts.from_row(incident)
+        await self._ensure_project_active(row)
+        if not facts.wants_human_delivery:
+            # Also fences rows queued by an older daemon, including retries
+            # and follow-ups on a root that was posted before the cutover.
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error="supervisor delivery incident is internal-only; nothing was sent",
+            )
+            return
+        channel_id = self._channel_id
+        if not channel_id:
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error="discord.channel_id is not configured; nothing was sent",
+            )
+            return
+        if self._rate_guard is not None and not self._rate_guard():
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                next_attempt_at=self._clock() + backoff_for(int(row["attempt_count"])),
+                last_error="held by the Discord invalid-request rate guard",
+            )
+            return
+
+        deliveries = await self.db.list_escalation_deliveries(facts.id)
+        binding = binding_from_deliveries(deliveries)
+        kind = str(row["kind"])
+        handler = {
+            KIND_ROOT: self._deliver_root,
+            KIND_ACK: self._deliver_thread_text,
+            KIND_RELAY: self._deliver_thread_text,
+            KIND_RESOLUTION: self._deliver_resolution,
+            KIND_STATE: self._deliver_state,
+        }.get(kind)
+        if handler is None:
+            await self._finish(
+                row, report, status="unknown", last_error=f"unknown delivery kind {kind!r}"
+            )
+            return
+        if kind == KIND_STATE and not self._stateful:
+            # Also fences rows a daemon planned before the flag was turned off:
+            # rollback is not "leave a half-applied phase running".
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error="discord.escalations.stateful is off; no state edit was sent",
+            )
+            return
+        await handler(row, report, facts=facts, binding=binding, deliveries=deliveries)
+
+    # -- kinds ----------------------------------------------------------
+    def _last_root_edit(self, deliveries: Sequence[Mapping[str, Any]]) -> tuple[float | None, str | None]:
+        """``(when, which_form)`` for this incident's root post's last write.
+
+        Derived from the delivery rows rather than an in-memory map, so a
+        restart, a second daemon or the §5.6 sweep all see the same floor.  Only
+        ``sent`` rows count: a retry that never wrote anything must not hold up
+        the edit that will.
+
+        The form comes from the *receipt*, never from ``payload``.  ``payload``
+        is the form a row was planned for, and §7.2's "latest state wins" means
+        the two legitimately differ — a row can be recorded ``sent`` having
+        written nothing at all (superseded, or absorbed by a resolution), and
+        trusting its payload would make the dispatcher believe a post shows a
+        form it never received.
+
+        A ``root`` row is deliberately absent: creating a post is not editing
+        it, so §7.2's window starts at the incident's first *edit*.
+        """
+        best: tuple[float, str] | None = None
+        for row in deliveries:
+            if str(row.get("kind")) not in ROOT_EDIT_KINDS:
+                continue
+            if str(row.get("status")) != "sent":
+                continue
+            stamp = float(row["receipt_confirmed_at"] or row["updated_at"] or 0.0)
+            if stamp <= 0.0:
+                continue
+            form = _written_form(row.get("external_receipt_id"))
+            if not form:
+                continue
+            if best is None or stamp >= best[0]:
+                best = (stamp, form)
+        return (best[0], best[1]) if best else (None, None)
+
+    def _superseded_state_key(
+        self,
+        deliveries: Sequence[Mapping[str, Any]],
+        facts: EscalationFacts,
+        *,
+        current_key: str,
+    ) -> str | None:
+        """A newer form of this post is already owed, so this edit can be skipped.
+
+        §7.2's "latest state wins": the edit renders the incident's *current*
+        form rather than the one it was planned for, so a form that was overtaken
+        while queued has nothing to add.  Returning the newer key lets the row
+        say which one replaced it, instead of silently disappearing.
+
+        ``current_key`` is this delivery's own key.  Without it a queued row
+        would supersede *itself* — its planned form is by construction not the
+        current one — and the edit would never go out at all.
+        """
+        generation = binding_from_deliveries(deliveries).generation
+        current = display_state(facts.state, stale=self._stale(facts))
+        for row in deliveries:
+            if str(row.get("kind")) != KIND_STATE or str(row["dedup_key"]) == current_key:
+                continue
+            payload_display = str((row.get("payload") or {}).get("display") or "")
+            if not payload_display or payload_display == current:
+                continue
+            if int(row.get("generation") or 0) >= generation and str(row.get("status")) in {
+                "pending",
+                "sending",
+                "retry",
+            }:
+                return str(row["dedup_key"])
+        return None
+
+    async def _deliver_state(
+        self,
+        row: MutableMapping[str, Any],
+        report: TickReport,
+        *,
+        facts: EscalationFacts,
+        binding: TransportBinding,
+        deliveries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Rewrite the incident's one post in place to show its current form.
+
+        §5.1: every state change edits that post; nothing appends a second root.
+        Four things stand between a state change and that edit, each of which
+        has to be a no-op rather than a second message:
+
+        * **no root yet** — defer until the post exists, so the post is never
+          created twice to show a state it should have shown at creation;
+        * **already collapsed** — a closed incident's post is stamped
+          ``collapsed_at`` on its first collapsed edit, so a replay reads that
+          and sends nothing;
+        * **coalescing** — §7.2 allows one edit per incident per 30 s.  A
+          deferred edit keeps its row and comes back at the window edge; it is
+          not an error and it is not dropped;
+        * **overtaken** — the edit renders the current form, so a newer state
+          that is already owed makes this one redundant.
+        """
+        dedup_key = str(row["dedup_key"])
+        if not binding.has_root:
+            # Bounded like any other wait: an edit that never gets a post to
+            # write to must not defer forever.  ``attempt_count`` is bumped on
+            # claim, so this is a real budget rather than a silent loop.
+            if int(row["attempt_count"]) >= self._max_attempts:
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    last_error=(
+                        "the incident's root post never became deliverable, so its "
+                        "state edit was abandoned rather than deferred forever"
+                    ),
+                )
+                return
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                next_attempt_at=self._clock() + DEFER_SECONDS,
+                last_error="waiting for the incident's root post to edit it in place",
+            )
+            return
+        display = display_state(facts.state, stale=self._stale(facts))
+        if is_collapsed(display):
+            # The resolution delivery owns the collapsed form, so a live form
+            # arriving here means the incident closed between planning and
+            # sending.  That is an ordinary race, not a fault: the post is
+            # correct once the resolution lands, so the row is recorded sent
+            # rather than raising an attention-needed ``unknown`` for a post
+            # that is about to be right.
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"absorbed|{binding.root_message_id}|resolution",
+                last_error=(
+                    f"incident became {display} before its state edit was sent; "
+                    "the resolution delivery owns the collapsed post"
+                ),
+            )
+            return
+        if facts.collapsed_at is not None:
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"collapsed|{binding.root_message_id}",
+                last_error="post is already collapsed; no edit was needed",
+            )
+            return
+        superseded = self._superseded_state_key(deliveries, facts, current_key=dedup_key)
+        if superseded is not None:
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"superseded:{superseded}",
+                last_error=f"latest state wins; {superseded} carries the current form",
+            )
+            return
+        last_edit, last_form = self._last_root_edit(deliveries)
+        if last_form == display:
+            # The post already shows this form: an overtaken edit rendered the
+            # current state on its way through, so there is nothing to write.
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"current|{binding.root_message_id}|{display}",
+                last_error="the post already shows this form; latest state wins",
+            )
+            return
+        now = self._clock()
+        if last_edit is not None and now - last_edit < EDIT_COALESCE_SECONDS:
+            report.coalesced += 1
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                binding=binding,
+                next_attempt_at=last_edit + EDIT_COALESCE_SECONDS,
+                last_error=(
+                    f"coalesced: this incident's post was edited less than "
+                    f"{EDIT_COALESCE_SECONDS:g}s ago (§7.2 allows one edit per 30s)"
+                ),
+            )
+            return
+
+        base_url, dashboard_notice = await self._dashboard()
+        answered_at = await self._answered_at(facts.id)
+        await self._before_write(row)
+        current_incident = await self.db.get_escalation(facts.id)
+        if current_incident is not None:
+            facts = EscalationFacts.from_row(current_incident)
+            display = display_state(facts.state, stale=self._stale(facts))
+        if is_collapsed(display):
+            await self._finish(
+                row, report, status="sent", binding=binding,
+                receipt_id=f"absorbed|{binding.root_message_id}|resolution",
+            )
+            return
+        try:
+            await self.transport.edit_root(
+                channel_id=str(binding.channel_id or self._channel_id),
+                root_message_id=str(binding.root_message_id),
+                content=render_state_root(
+                    facts,
+                    display=display,
+                    base_url=base_url,
+                    dedup_key=dedup_key,
+                    dashboard_notice=dashboard_notice,
+                    answered_at=answered_at,
+                ),
+                buttons=self._buttons(facts, display=display),
+            )
+        except TransportMissing as exc:
+            # The post this edit was going to rewrite is gone.  A live incident
+            # gets a replacement generation; a closed one never does.
+            replacement_id = await self._request_replacement(facts, deliveries, report)
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                binding=binding,
+                last_error=(
+                    f"{self._describe(exc)}; "
+                    + (
+                        f"replacement delivery {replacement_id} recorded"
+                        if replacement_id
+                        else "no replacement (incident is closed or one is already pending)"
+                    )
+                ),
+            )
+            return
+        except TransportError as exc:
+            await self._fail(
+                row, report, binding=binding, error=self._describe(exc), retryable=True
+            )
+            return
+        report.edits += 1
+        await self._finish(
+            row,
+            report,
+            status="sent",
+            binding=binding,
+            receipt_id=f"edit|{binding.root_message_id}|{display}",
+        )
+
+    async def _answered_at(self, escalation_id: str) -> float | None:
+        """When the human last answered in the thread, for §5.2's answered form."""
+        try:
+            messages = await self.db.list_escalation_messages(escalation_id)
+        except Exception:  # pragma: no cover - the form degrades, the edit does not
+            logger.debug("could not read escalation history for the answered form", exc_info=True)
+            return None
+        stamps = [
+            float(row["received_at"])
+            for row in messages
+            if str(row.get("direction")) == "inbound" and row.get("received_at") is not None
+        ]
+        return max(stamps) if stamps else None
+
+    async def _deliver_root(
+        self,
+        row: MutableMapping[str, Any],
+        report: TickReport,
+        *,
+        facts: EscalationFacts,
+        binding: TransportBinding,
+        deliveries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        channel_id = self._channel_id
+        generation = int(row["generation"])
+        if (
+            facts.is_terminal
+            and not binding.has_root
+            and not row.get("root_message_id")
+            and int(row["attempt_count"]) == 1
+        ):
+            # Creation queues the root before any transport runs. A decision
+            # accepted in that interval must retain the never-posted silence
+            # rule; previous attempts still need receipt reconciliation below.
+            await self._finish(
+                row, report, status="unknown",
+                last_error="terminal incident was never posted; delivery withheld",
+            )
+            return
+        if binding.has_root and binding.generation > generation:
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error=f"superseded by generation {binding.generation}",
+            )
+            return
+        dedup_key = str(row["dedup_key"])
+        marker = marker_for(dedup_key)
+        replacement = bool((row.get("payload") or {}).get("replacement"))
+        base_url, dashboard_notice = await self._dashboard()
+        content = (
+            # §3.2's collapsed row carries no link, so it needs no origin.
+            self._collapsed_content(facts, dedup_key=dedup_key)
+            if facts.is_terminal
+            else render_root(
+                facts,
+                mentions=self._mentions(),
+                base_url=base_url,
+                dashboard_notice=dashboard_notice,
+                dedup_key=dedup_key,
+                replacement=replacement,
+            )
+        )
+
+        # A previous attempt may have posted the root and then failed to open
+        # the thread, or died between the request and its response.  Recover
+        # the half that exists before sending anything new.
+        root_id = str(row.get("root_message_id") or "") or None
+        thread_id = str(row.get("thread_id") or "") or None
+        if root_id is None and int(row["attempt_count"]) > 1:
+            found = await self._reconcile_marker(marker, channel_id=channel_id, thread_id=None)
+            if found is not None:
+                root_id = found.root_message_id
+                thread_id = thread_id or found.thread_id
+                await self._bind(
+                    row,
+                    channel_id=found.channel_id or channel_id,
+                    root_message_id=root_id,
+                    thread_id=thread_id,
+                )
+            elif self._ownership_unproven(row):
+                # The previous send may have landed and the history does not
+                # say.  Posting again would be the duplicate §7 forbids.
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    binding=TransportBinding(channel_id=channel_id, generation=generation),
+                    last_error=(
+                        "an earlier send was ambiguous and no matching message was found; "
+                        "delivery ownership is unknown and nothing was reposted"
+                    ),
+                )
+                return
+
+        current = TransportBinding(
+            channel_id=channel_id,
+            root_message_id=root_id,
+            thread_id=thread_id,
+            generation=generation,
+        )
+        if root_id is None:
+            await self._before_write(row)
+            # A reply may have overtaken a queued/retried initial post. Read
+            # again at the write boundary, independently of the stateful flag.
+            current_incident = await self.db.get_escalation(facts.id)
+            if current_incident is not None:
+                facts = EscalationFacts.from_row(current_incident)
+            if facts.state in {"reply_received", "resolving"}:
+                await self._finish(
+                    row, report, status="sent", binding=current,
+                    receipt_id="superseded|human_answer_received",
+                )
+                return
+            try:
+                outcome = await self.transport.post_root(
+                    channel_id=channel_id,
+                    content=content,
+                    buttons=self._buttons(facts),
+                )
+            except TransportError as exc:
+                await self._fail(row, report, binding=current, error=exc)
+                return
+            root_id = outcome.root_message_id or outcome.receipt_id
+            current = TransportBinding(
+                channel_id=outcome.channel_id or channel_id,
+                root_message_id=root_id,
+                thread_id=thread_id,
+                generation=generation,
+            )
+            # Confirmed: record it before the next external write, so an
+            # interruption from here on repairs rather than reposts.
+            await self._bind(
+                row, channel_id=current.channel_id, root_message_id=root_id, thread_id=thread_id
+            )
+
+        # Binding the thread and posting its opener are two separate external
+        # writes.  Creating the thread is idempotent — a Discord message owns
+        # at most one — but the opener is a message like any other, so it goes
+        # through the same reconcile-then-send path as every follow-up.  Only a
+        # thread this very call created is provably empty; a pre-existing one
+        # may already hold an opener from an attempt that timed out after it
+        # landed, and that one must be found rather than repeated.
+        opener_may_exist = True
+        if thread_id is None:
+            await self._before_write(row)
+            try:
+                handle = await self.transport.ensure_thread(
+                    channel_id=current.channel_id or channel_id,
+                    root_message_id=str(root_id),
+                    name=thread_name(facts),
+                )
+            except TransportMissing as exc:
+                # The root we just recovered is gone: a replacement generation
+                # is the only honest way forward, and never for a closed one.
+                replacement_id = await self._request_replacement(facts, deliveries, report)
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    binding=current,
+                    last_error=(
+                        f"{self._describe(exc)}; "
+                        + (
+                            f"replacement delivery {replacement_id} recorded"
+                            if replacement_id
+                            else "no replacement (incident is closed or one is already pending)"
+                        )
+                    ),
+                )
+                return
+            except TransportError as exc:
+                await self._fail(row, report, binding=current, error=exc)
+                return
+            thread_id = handle.thread_id
+            opener_may_exist = not handle.created
+            current = TransportBinding(
+                channel_id=current.channel_id or channel_id,
+                root_message_id=root_id,
+                thread_id=thread_id,
+                generation=generation,
+            )
+            await self._bind(
+                row,
+                channel_id=current.channel_id,
+                root_message_id=root_id,
+                thread_id=thread_id,
+            )
+
+        current_incident = await self.db.get_escalation(facts.id)
+        if current_incident is not None:
+            facts = EscalationFacts.from_row(current_incident)
+        if facts.state in {"reply_received", "resolving"}:
+            # Repair an existing binding so its once-per-reply acknowledgement
+            # can arrive, without replaying the old question/options as an opener.
+            await self._finish(row, report, status="sent", binding=current, receipt_id=str(root_id))
+            return
+
+        opener_key = f"{dedup_key}:thread"
+        base_url, dashboard_notice = await self._dashboard()
+        outcome, error = await self._send_thread_text(
+            row,
+            report,
+            binding=current,
+            content=render_thread_opener(
+                facts,
+                base_url=base_url,
+                dedup_key=opener_key,
+                dashboard_notice=dashboard_notice,
+            ),
+            dedup_key=opener_key,
+            reconcile=opener_may_exist,
+        )
+        if outcome is None and error is None:
+            return  # finished by the sender: ambiguous or superseded opener
+        if error is not None:
+            if isinstance(error, TransportMissing):
+                # The thread vanished between binding it and writing into it.
+                replacement_id = await self._request_replacement(facts, deliveries, report)
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    binding=current,
+                    last_error=(
+                        f"{self._describe(error)}; "
+                        + (
+                            f"replacement delivery {replacement_id} recorded"
+                            if replacement_id
+                            else "no replacement (incident is closed or one is already pending)"
+                        )
+                    ),
+                )
+                return
+            await self._fail(row, report, binding=current, error=error)
+            return
+
+        await self._finish(
+            row, report, status="sent", binding=current, receipt_id=outcome.receipt_id
+        )
+
+    async def _deliver_thread_text(
+        self,
+        row: MutableMapping[str, Any],
+        report: TickReport,
+        *,
+        facts: EscalationFacts,
+        binding: TransportBinding,
+        deliveries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        dedup_key = str(row["dedup_key"])
+        if not binding.has_thread:
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                next_attempt_at=self._clock() + DEFER_SECONDS,
+                last_error="waiting for the incident's thread",
+            )
+            return
+        if str(row["kind"]) == KIND_ACK:
+            content = render_ack(facts, dedup_key=dedup_key)
+        else:
+            content = render_relay(
+                str((row.get("payload") or {}).get("text") or ""), dedup_key=dedup_key
+            )
+        await self._post_in_thread(
+            row,
+            report,
+            facts=facts,
+            binding=binding,
+            deliveries=deliveries,
+            content=content,
+            dedup_key=dedup_key,
+        )
+        if facts.is_terminal:
+            # Posting into an archived thread un-archives it (Discord does this
+            # for any unlocked thread, and the transport asks for it
+            # explicitly).  A closed incident must not be left looking open
+            # because somebody replied late, so restore §7's archived state.
+            # Best effort: the guidance is already delivered either way.
+            await self._before_write(row)
+            try:
+                await self.transport.archive_thread(thread_id=str(binding.thread_id))
+            except TransportError as exc:
+                logger.debug("re-archive after a late-reply post failed: %s", exc)
+
+    async def _post_in_thread(
+        self,
+        row: MutableMapping[str, Any],
+        report: TickReport,
+        *,
+        facts: EscalationFacts,
+        binding: TransportBinding,
+        deliveries: Sequence[Mapping[str, Any]],
+        content: str,
+        dedup_key: str,
+    ) -> None:
+        """Send one follow-up into the incident's thread and record the row."""
+        outcome, error = await self._send_thread_text(
+            row, report, binding=binding, content=content, dedup_key=dedup_key
+        )
+        if outcome is not None:
+            await self._finish(
+                row, report, status="sent", binding=binding, receipt_id=outcome.receipt_id
+            )
+            return
+        if error is None:
+            return  # already recorded (unreconcilable ambiguity)
+        if isinstance(error, TransportMissing):
+            replacement_id = await self._request_replacement(facts, deliveries, report)
+            if replacement_id is not None:
+                await self._finish(
+                    row,
+                    report,
+                    status="retry",
+                    binding=binding,
+                    next_attempt_at=self._clock() + DEFER_SECONDS,
+                    last_error=f"{self._describe(error)}; replacement {replacement_id} recorded",
+                )
+            else:
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    binding=binding,
+                    last_error=f"{self._describe(error)}; no replacement is allowed",
+                )
+            return
+        await self._fail(row, report, binding=binding, error=error)
+
+    async def _send_thread_text(
+        self,
+        row: MutableMapping[str, Any],
+        report: TickReport,
+        *,
+        binding: TransportBinding,
+        content: str,
+        dedup_key: str,
+        reconcile: bool = True,
+    ) -> tuple[SendOutcome | None, TransportError | None]:
+        """Reconcile, then send. Returns ``(outcome, error)``.
+
+        It finishes an ambiguous send with no recoverable receipt, or a root
+        opener overtaken by a human answer. Both return ``(None, None)``.
+
+        ``reconcile=False`` is for the one destination that cannot hold an
+        earlier copy of this message: a thread the current attempt just
+        created.  Searching it would find nothing and turn a retry that has
+        provably sent nothing into a spurious ``unknown``.
+        """
+        marker = marker_for(dedup_key)
+        if reconcile and int(row["attempt_count"]) > 1:
+            found = await self._reconcile_marker(
+                marker, channel_id=self._channel_id, thread_id=binding.thread_id
+            )
+            if found is not None:
+                return found, None
+            if self._ownership_unproven(row):
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    binding=binding,
+                    last_error=(
+                        "an earlier send was ambiguous and no matching message was found; "
+                        "delivery ownership is unknown and nothing was reposted"
+                    ),
+                )
+                return None, None
+        await self._before_write(row)
+        if row["kind"] == KIND_ROOT:
+            current_incident = await self.db.get_escalation(str(row["escalation_id"]))
+            if current_incident is not None and current_incident["state"] in {
+                "reply_received", "resolving",
+            }:
+                await self._finish(
+                    row, report, status="sent", binding=binding,
+                    receipt_id=str(binding.root_message_id),
+                )
+                return None, None
+        try:
+            return (
+                await self.transport.post_thread_message(
+                    thread_id=str(binding.thread_id), content=content
+                ),
+                None,
+            )
+        except TransportError as exc:
+            return None, exc
+
+    async def _deliver_resolution(
+        self,
+        row: MutableMapping[str, Any],
+        report: TickReport,
+        *,
+        facts: EscalationFacts,
+        binding: TransportBinding,
+        deliveries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Post the outcome, edit the root, then archive — strictly in that order."""
+        if not facts.is_terminal:
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                binding=binding,
+                next_attempt_at=self._clock() + DEFER_SECONDS,
+                last_error="incident is no longer terminal; resolution withheld",
+            )
+            return
+        if not binding.has_root:
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                binding=binding,
+                last_error="no root message to resolve",
+            )
+            return
+        dedup_key = str(row["dedup_key"])
+        receipt: str | None = None
+        thread_note: str | None = None
+        base_url, dashboard_notice = await self._dashboard()
+        if binding.has_thread:
+            outcome, error = await self._send_thread_text(
+                row,
+                report,
+                binding=binding,
+                content=render_resolution(
+                    facts,
+                    base_url=base_url,
+                    dedup_key=dedup_key,
+                    dashboard_notice=dashboard_notice,
+                ),
+                dedup_key=dedup_key,
+            )
+            if outcome is not None:
+                receipt = outcome.receipt_id
+            elif error is None:
+                return  # ambiguity already recorded on the row
+            elif isinstance(error, TransportMissing):
+                # The thread is gone.  The outcome still belongs on the root,
+                # and a closed incident is never reposted into a new thread.
+                thread_note = f"thread unavailable ({self._describe(error)})"
+            else:
+                await self._fail(row, report, binding=binding, error=error)
+                return
+
+        await self._before_write(row)
+        try:
+            # A closed incident carries no buttons: §5.2's collapsed row is the
+            # whole post, and a choice row under "Resolved: …" would invite a
+            # second answer to a question that is closed.
+            await self.transport.edit_root(
+                channel_id=str(binding.channel_id or self._channel_id),
+                root_message_id=str(binding.root_message_id),
+                content=self._collapsed_content(facts, dedup_key=f"{dedup_key}:root"),
+                buttons=self._buttons(facts, display=display_state(facts.state)),
+            )
+        except TransportMissing as exc:
+            # The root is gone but the outcome is recorded in the thread and in
+            # the database.  A closed incident is never reposted.
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                binding=binding,
+                last_error=f"{self._describe(exc)}; resolution not shown on the deleted root",
+            )
+            return
+        except TransportError as exc:
+            await self._fail(row, report, binding=binding, error=exc)
+            return
+
+        if binding.has_thread:
+            await self._before_write(row)
+            try:
+                await self.transport.archive_thread(thread_id=str(binding.thread_id))
+            except TransportError as exc:
+                # The resolution is visible; archival is cosmetic.  Record the
+                # send and leave the reason on the row.
+                logger.debug("thread archive failed: %s", exc)
+        report.edits += 1
+        if self._stateful:
+            # Write-once, and only once the post really carries the collapsed
+            # form: it is the audit trail for "when did this stop asking", and
+            # the idempotency check every later replay of this edit relies on.
+            # It is not a countdown — §8 Q3 keeps collapsed posts forever.
+            try:
+                await self.db.record_escalation_collapse(facts.id, now=self._clock())
+            except Exception:  # pragma: no cover - the post is already correct
+                logger.warning(
+                    "could not stamp the collapsed post for %s", facts.id, exc_info=True
+                )
+        await self._finish(
+            row,
+            report,
+            status="sent",
+            binding=binding,
+            receipt_id=receipt or f"edit:{binding.root_message_id}:{facts.revision}",
+            last_error=thread_note,
+        )
+
+    def _collapsed_content(self, facts: EscalationFacts, *, dedup_key: str) -> str:
+        """The closed incident's one-line post, in whichever phase is configured.
+
+        With §7.1's P1 flag off this is the pre-phase wording, unchanged.  With
+        it on it is §5.2's collapsed row, which can tell a question somebody
+        answered from one a §5.5 rule retired.
+        """
+        if not self._stateful:
+            return render_resolved_root(facts, dedup_key=dedup_key)
+        return render_collapsed_root(
+            facts,
+            display=display_state(facts.state, stale=False),
+            dedup_key=dedup_key,
+        )
+
+    @staticmethod
+    def _ownership_unproven(row: Mapping[str, Any]) -> bool:
+        """Could a previous attempt have sent this without the row recording it?
+
+        Two ways: it ended in :class:`TransportAmbiguous`, or it never ended at
+        all -- the row was reclaimed out of ``sending`` because its owner died
+        or lost its lease mid-send.  Either way the marker search is the only
+        evidence there is, and when it comes back empty the honest answer is
+        ``unknown`` rather than a second post.
+        """
+        if str(row.get("last_error") or "").startswith(TransportAmbiguous.__name__):
+            return True
+        return bool(row.get("reclaimed"))
+
+    @staticmethod
+    def _describe(exc: BaseException) -> str:
+        return f"{type(exc).__name__}: {exc}"[:500]

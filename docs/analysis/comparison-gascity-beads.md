@@ -5,6 +5,12 @@ date: 2026-08-19
 
 # Agent Queue vs. Gas City vs. Beads — Architecture Comparison
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Purpose.** A deep, code-grounded comparison of three systems that all try to make
 fleets of AI coding agents do real engineering work durably: **Agent Queue** (this repo),
 **Gas City** (`gastownhall/gascity`, orchestration SDK) and **Beads** (`gastownhall/beads`,
