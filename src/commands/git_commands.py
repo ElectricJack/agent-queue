@@ -8,6 +8,9 @@ surface.  Currently contains:
   callable only by profiles that grant ``pr_merge``.  A merge is also where the daemon
   learns *which branch* the work actually landed on — see
   :meth:`GitCommandsMixin._record_pr_base`.
+- ``task_deliver`` — merge a BLOCKED task's pushed branch into its default
+  branch by hand and complete it; the supervisor's control for work whose
+  close stopped at delivery (a project with no pull-request host).
 """
 
 from __future__ import annotations
@@ -19,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 class GitCommandsMixin:
-    """Mixin that adds git PR commands to CommandHandler."""
+    """Git publication and pull request commands for CommandHandler."""
+
 
     async def _cmd_pr_merge(self, args: dict) -> dict:
         """Merge a PR.  Backs ``aq pr merge`` and the ``pr_merge`` agent tool.
@@ -38,7 +42,7 @@ class GitCommandsMixin:
         Args:
             project_id: ID of the project whose workspace will be used.
             pr_url: Full GitHub PR URL, e.g. ``https://github.com/o/r/pull/42``.
-            method: Merge strategy — ``"squash"`` (default), ``"merge"``,
+            method: Merge strategy — ``"merge"`` (default), ``"squash"``,
                 or ``"rebase"``.
             force: Merge even when ``merge_ci_policy: required`` would
                 refuse. This waives only the CI policy: immutable PR identity
@@ -50,7 +54,7 @@ class GitCommandsMixin:
         """
         project_id = args.get("project_id")
         pr_url = args.get("pr_url")
-        method = str(args.get("method") or "squash")
+        method = str(args.get("method") or "merge")
         force = bool(args.get("force") or False)
 
         if not project_id:
@@ -189,6 +193,7 @@ class GitCommandsMixin:
             except Exception:
                 logger.warning("Could not record the base branch for %s", pr_url, exc_info=True)
         return response
+
 
     async def _check_ci_before_merge(
         self, cwd: str, pr_url: str, *, force: bool, repository=None
