@@ -317,9 +317,11 @@ async def list_tasks_handler(tmp_path):
         await database.close()
 
 
-@pytest.mark.parametrize("display_mode", ["flat", "tree", "compact"])
+@pytest.mark.parametrize("display_mode, limit", [
+    ("flat", None), ("flat", 1), ("tree", None), ("compact", None),
+])
 async def test_the_list_tasks_adapter_accepts_every_display_mode(
-    list_tasks_handler, display_mode
+    list_tasks_handler, display_mode, limit
 ) -> None:
     """A playbook step calling ``list_tasks`` must not get ``contract_violation``.
 
@@ -338,7 +340,7 @@ async def test_the_list_tasks_adapter_accepts_every_display_mode(
     set_handler_provider(lambda: list_tasks_handler)
     try:
         result = await CONTRACTS.require("list_tasks").invoke(
-            ListTasksArgs(project_id="proj", display_mode=display_mode), None
+            ListTasksArgs(project_id="proj", display_mode=display_mode, limit=limit), None
         )
     finally:
         set_handler_provider(None)
@@ -347,7 +349,10 @@ async def test_the_list_tasks_adapter_accepts_every_display_mode(
     value = result.value
     assert value.display_mode == display_mode
     if display_mode == "flat":
-        assert sorted(task["id"] for task in value.tasks) == ["child", "root"]
+        if limit is None:
+            assert sorted(task["id"] for task in value.tasks) == ["child", "root"]
+        else:
+            assert len(value.tasks) == limit
         assert value.total == 2
         assert value.trees == []
     else:

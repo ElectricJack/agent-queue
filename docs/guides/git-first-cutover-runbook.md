@@ -111,9 +111,23 @@ an ancestor of the tip (`development_delivery`) or merging it changes only
 generated artifacts (`content_equivalent`). The latter ignores differences and
 conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
 attributes; other differences or conflicts remain unproven.
-It never writes provenance, moves a ref or edits a task;
-anything unproven is listed and left alone for an explicit decision. A reopened
-task's new completion is not covered by the old row.
+It also inventories completed tasks that never recorded an origin, including
+tasks whose branches are gone. For these tasks, a passing completion's exact
+final reported source is retained as Git provenance only when ancestry proves
+that source on the default target. Dependency admission can then recheck that
+source normally. Re-running repairs previously backfilled rows that lack this
+provenance, using fresh Git proof. Earlier commits and content equivalence do
+not authorize this source binding. Preview writes nothing; apply does not move
+task branches or edit tasks. Anything unproven is listed and left alone for an
+explicit decision. A reopened task's new completion is not covered by the old row.
+
+Completed children whose epic branch was deleted are also inventoried, including
+children with recorded origins. They require strict ancestry of the current
+passing completion's exact final source on the default target. Apply retains
+that source independently of the deleted refs, so dependency admission can
+recheck it normally. An earlier commit, an equivalent tree or an old row cannot
+authorize the binding. Epic cleanup holds the parent ref until reconciliation
+records retained child witnesses; a new child completion restores the hold.
 
 A child of a still-open epic whose exact source is already on the epic branch
 gets retained provenance instead (`epic_branch_provenance`), because the epic's
@@ -136,8 +150,15 @@ Both flags are repeatable and both are refused when git already proves the work
 (the ordinary backfill then records that proof instead), when the task is not
 `COMPLETED`, or when `--apply` has no nonblank `--reason`. A container with no
 branch of its own is decided the same way; `--abandon-epic` is the same decision
-by name for a container, and refuses a task with no children. Nothing is deleted;
-removing the rows restores the previous state.
+by name for a container, and refuses a task with no children. By default, apply
+queues their branches for retirement (verified backup, then deletion).
+
+Add `--keep-branch` to preview and apply when the abandoned source branches must
+remain. The report includes `keep_branch: true`; the recorded decision includes
+`[branches: keep]`, and no retirements are queued for the selected tasks or their
+undelivered descendants. The train still honours the `abandoned` rows. This option
+requires an abandon flag, excludes `--relanded`, and does not cancel previously
+queued retirement or prevent later explicit disposal or proven-merged cleanup.
 
 Re-run the ordinary backfill afterwards: it lists whatever still cannot be
 accounted for, and every such task needs its own decision here.

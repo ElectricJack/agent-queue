@@ -42,7 +42,7 @@ def render(ask, *, base_url, notice=""):
         and _units(complete) <= 600
         and all(c.get("application") == "immediate" and len(c["label"]) <= 80 for c in choices)
     )
-    link = link_line(base_url, f"/focus/asks/{quote(ask['id'], safe='')}", notice=notice)
+    link = link_line(base_url, f"/asks/{quote(ask['id'], safe='')}", notice=notice)
     if not base_url:
         return AskCard(
             f"⚠️ Delivery configuration needs attention: {notice or 'Set dashboard.server.public_url'}"

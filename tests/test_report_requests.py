@@ -124,7 +124,7 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert request["state"] == "reserved"
     assert window["due_at"] == BASE + HOUR + 300
     assert request["brief"]["facts"][0]["delivery"] == "unknown"
-    assert request["brief"]["facts"][0]["source_url"].endswith("/focus/tasks/t1")
+    assert request["brief"]["facts"][0]["source_url"].endswith("/tasks/t1")
     assert request["brief"]["counts"] == {"facts": 1, "completed": 1, "active": 0}
     assert window["payload"]["text"] == request["fallback_text"] == (
         "No report this hour: the supervisor update is unavailable."
@@ -153,7 +153,7 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     # never the assembled digest or the JSON evidence brief.
     assert posted == (
         "Completed t1; delivery to main is pending.\n"
-        f"{request['brief']['dashboard_url']}{marker_for(window['id'])}"
+        f"[Link]({request['brief']['dashboard_url']}){marker_for(window['id'])}"
     )
     marker = marker_for(window["id"])
     assert posted.endswith(marker) and posted.count(marker) == 1
@@ -164,7 +164,7 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert len(transport.messages) == 1
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [
-        "https://queue.example.test/focus/tasks/t1"
+        "https://queue.example.test/tasks/t1"
     ]
 
 
@@ -183,6 +183,9 @@ async def test_submission_budget_includes_footer_and_marker(db, monkeypatch, ext
     )
     brief["dashboard_url"] = footer if footer_kind == "dashboard_url" else ""
     brief["dashboard_notice"] = footer if footer_kind == "dashboard_notice" else ""
+    # The server renders the URL as an explicit hyperlink; its Markdown also
+    # spends the budget. Keep the notice branch as plain text.
+    rendered_footer = f"[Link]({footer})" if footer_kind == "dashboard_url" else footer
     async with db._engine.begin() as conn:
         await conn.execute(
             update(supervisor_report_requests)
@@ -190,7 +193,7 @@ async def test_submission_budget_includes_footer_and_marker(db, monkeypatch, ext
             .values(brief=brief)
         )
     queued = await db.request_report(request["id"], now=clock.now)
-    tail = f"\n{footer}\n{marker_for(window['id'])}"
+    tail = f"\n{rendered_footer}\n{marker_for(window['id'])}"
     text = "x" * (MAX_CHARS - len(tail) + extra)
     with principal_context(TRUSTED_LOCAL):
         result = await Commands(db)._cmd_report_submit(
@@ -209,14 +212,14 @@ async def test_submission_budget_includes_footer_and_marker(db, monkeypatch, ext
     else:
         assert result["success"] is True
         submitted = await db.get_report_request(request["id"])
-        assert submitted["submitted_text"] == f"{text}\n{footer}"
+        assert submitted["submitted_text"] == f"{text}\n{rendered_footer}"
         assert len(submitted["submitted_text"] + f"\n{marker_for(window['id'])}") == (
             MAX_CHARS + extra
         )
         assert (await digest.tick()).sent == 1
         posted = next(iter(transport.messages.values())).content
         # Delivery appends the invisible marker directly, without a separator.
-        assert posted == f"{text}\n{footer}{marker_for(window['id'])}"
+        assert posted == f"{text}\n{rendered_footer}{marker_for(window['id'])}"
         assert len(posted) <= MAX_CHARS
 
 
