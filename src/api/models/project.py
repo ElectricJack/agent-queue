@@ -336,6 +336,19 @@ class RepairWorkspaceCheckoutResponse(BaseModel):
     event_id: int | None = None
 
 
+class RecoverRetainedHolderResponse(BaseModel):
+    success: bool
+    preview: bool | None = None
+    changed: bool = False
+    proof: str | None = None
+    snapshot: dict[str, Any] | None = None
+    evidence: dict[str, Any] | None = None
+    checkpoints: list[dict[str, Any]] = []
+    event_id: int | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
 class ProjectRelocateResponse(BaseModel):
     success: bool
     preview: bool | None = None
@@ -362,6 +375,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "project_doctor": ProjectDoctorResponse,
     "repair_repository_checkout": RepairRepositoryCheckoutResponse,
     "repair_workspace_checkout": RepairWorkspaceCheckoutResponse,
+    "recover_retained_holder": RecoverRetainedHolderResponse,
     "edit_project": EditProjectResponse,
     "bind_project_repository": BindProjectRepositoryResponse,
     "delete_project": DeleteProjectResponse,

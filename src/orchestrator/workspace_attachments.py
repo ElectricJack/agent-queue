@@ -16,7 +16,7 @@ from src.database.tables import task_session_attempts
 from sqlalchemy import or_, select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
-from src.git.manager import is_valid_git_oid
+from src.git.manager import GitError, is_valid_git_oid
 from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 from src.models import (
     SYSTEM_KIND_SCOPE,
@@ -389,6 +389,7 @@ async def mark_stopped_integration_pool_handoff_released(
     *,
     workspace,
     session_instance_token: str,
+    expected_task_status: TaskStatus = TaskStatus.READY,
     confirmed_later_sessions: dict[str, tuple[str, float]] | None = None,
 ) -> bool:
     """Release an exact, stopped pool claim without replaying its task transition.
@@ -397,8 +398,9 @@ async def mark_stopped_integration_pool_handoff_released(
     requeued. In that state ``release_claim`` is deliberately the wrong tool:
     its normal READY transition would need to rediscover the old claim epoch,
     and must never overwrite the successor claim. This is the narrow repair
-    for that stranded attachment. It requires the requeued task to still be
-    unassigned, the stopped session/retired worker/slot to be unchanged, and
+    for that stranded attachment, including a closed task before reopen.
+    It requires the task to retain the expected status and remain unassigned,
+    the stopped session/retired worker/slot to be unchanged, and
     no later session for that worker. It then releases only those old rows;
     the task row (including its newer claim epoch) is left untouched.
     """
@@ -489,7 +491,7 @@ async def mark_stopped_integration_pool_handoff_released(
                 workspace_row["locked_by_task_id"] != owner_row["owner_id"]
                 or workspace_row["locked_by_agent_id"] != agent_id
             ))
-            or task_row["status"] != "READY"
+            or task_row["status"] != expected_task_status.value
             or task_row["assigned_agent_id"] is not None
             or agent_row["state"] != AgentState.RETIRED.value
             or agent_row["current_task_id"] != owner_row["owner_id"]
@@ -748,9 +750,23 @@ async def _probe_workspace_checkout(
         if status:
             return None
 
-        local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
-        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        try:
+            local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
+        except GitError:
+            # A preparation that failed before checkout never created the
+            # branch here: nothing to detach. Release still needs HEAD on a
+            # refreshed origin ref, so a reset cannot drop unpushed commits.
+            if current != "HEAD" or await git._arun_unlocked(
+                ["for-each-ref", branch_ref], cwd=checkout
+            ):
+                return None
+            published = await git._arun_unlocked(
+                ["for-each-ref", "--count=1", "--contains", head, "refs/remotes/origin/"],
+                cwd=checkout,
+            )
+            return head if published else None
+        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         if not local_tip or local_tip != remote_tip:
             return None
         if head != local_tip:
