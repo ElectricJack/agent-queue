@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:7d336be70118c70cacd719a904e4c30806806b3970a470dd6997eaecfe05f80c` |
+| Contract fingerprint | `sha256:046d38497a6075b817c7600117fc8b24f5476f991765c80159190d8a11847e84` |
 
 ## Parameters
 
@@ -27,6 +27,8 @@
 | `source_sha` | `string \| null` | no | `null` | Exact commit to pin; defaults to the source branch tip. |
 | `version` | `string \| null` | no | `null` | Version at the pinned source; required for custom tags. |
 | `notes_reviewed` | `boolean` | no | `false` | Acknowledge reading the notes at the pinned source. |
+| `from_task` | `string \| null` | no | `null` | Completed hotfix task to promote. |
+| `allow_breaking_migration` | `boolean` | no | `false` | Local operator override of non-additive migrations; disables code rollback. |
 
 ## Result
 
@@ -44,8 +46,15 @@
 | `promotions` | `object[]` | — |
 | `evidence_source` | `string \| null` | — |
 | `retry_at` | `number \| null` | — |
+| `version` | `string \| null` | — |
+| `notes_input` | `object \| null` | — |
+| `draft` | `string \| null` | — |
+| `notes` | `string \| null` | — |
+| `policy` | `object \| null` | — |
+| `migration_admission` | `object \| null` | — |
+| `backmerges` | `object[]` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`, `policy`, `migration_admission`, `backmerges`.
 
 ## Outcomes
 
@@ -53,9 +62,20 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 |---|---|---|
 | `already_requested` | success | — |
 | `approval_not_required` | failure | — |
+| `backmerge_ledger_invalid` | failure | — |
 | `backmerge_pending` | failure | — |
+| `breaking_migration_override_forbidden` | failure | — |
+| `hotfix_patch_required` | failure | — |
+| `migration_range_invalid` | failure | — |
+| `migrations_not_additive` | failure | — |
 | `not_found` | failure | — |
 | `notes_not_reviewed` | failure | — |
+| `notes_range_invalid` | failure | — |
+| `notes_range_too_large` | failure | — |
+| `notes_source_missing` | failure | — |
+| `notes_stale` | failure | — |
+| `prepare_in_progress` | failure | — |
+| `promotion_body_too_large` | failure | — |
 | `promotion_flow_changed` | failure | — |
 | `promotion_flow_empty` | failure | — |
 | `promotion_flow_invalid` | failure | — |
@@ -69,6 +89,11 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `promotion_requester_identity_missing` | failure | — |
 | `promotion_review_invalid` | failure | — |
 | `promotion_source_not_on_chain` | failure | — |
+| `promotion_source_pending` | failure | — |
+| `promotion_source_red` | failure | — |
+| `promotion_source_unavailable` | failure | — |
+| `promotion_source_untrusted` | failure | — |
+| `promotion_train_required` | failure | — |
 | `rate_limited` | failure | — |
 | `requested` | success | — |
 | `step_not_found` | failure | — |
@@ -76,6 +101,7 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `tag_exists` | failure | — |
 | `unavailable` | failure | — |
 | `version_mismatch` | failure | — |
+| `version_not_increasing` | failure | — |
 
 ## Declared effects
 
