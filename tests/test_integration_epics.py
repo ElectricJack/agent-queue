@@ -2,7 +2,10 @@
 
 # ruff: noqa: F811 - pytest fixtures intentionally share parameter names
 
-from dataclasses import replace
+import hashlib
+import json
+from dataclasses import asdict, replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,13 +14,14 @@ from sqlalchemy import insert, select, update
 
 from src.database.tables import (
     archived_tasks, integration_outbox, integration_parent_episodes, integration_parent_verifications,
-    integration_review_evidence, task_completion_records, task_dependencies,
-    tasks,
+    integration_review_evidence, playbook_activations, playbook_artifacts, task_completion_records,
+    task_dependencies, tasks,
 )
 from src.integration.epics import (
-    EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks,
+    EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks, playbook_epic_checks_on,
 )
 from src.integration.reviews import ReviewRequirements, TreeReviews
+from src.playbooks.definition import load_definition_json
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from tests.test_integration_git_truth import repository  # noqa: F401 - shared real Git fixture
 
@@ -49,7 +53,7 @@ async def epic_case(repository, reuse_database):
                                   description="", parent_task_id=parent_id, status=status,
                                   branch_name=branch))
     await completion(db, "child")
-    policy = EpicPolicy(("Tests",), "trusted-ci")
+    policy = EpicPolicy(("Tests",), "trusted-ci", checks_required=True)
     policy_reader = AsyncMock(return_value=policy)
     reader = EpicGraphReader(db, policy_on=policy_reader)
     reviews = TreeReviews(db)
@@ -545,3 +549,151 @@ async def test_external_epic_head_is_rechecked_before_completion(epic_case):
         assert (await case.evaluator.complete_on(conn, readiness, snapshot,
                                                 complete=complete))["outcome"] == "changed"
     complete.assert_not_awaited()
+
+
+PARENT_PLAYBOOK = Path(__file__).parent / "fixtures/playbooks/historical-v2/parent-integration"
+
+
+async def require_epic_checks(db, tmp_path, *, names=("Tests",), required=None, project_id="p",
+                              playbook_id="project-parent-integration"):
+    """Activate a project playbook whose parent-check data requires *names*.
+
+    *required* is a whole ``RequiredCheckSet`` mapping, such as a project's
+    stored parent checks, made required by playbook data.
+    """
+    artifact = json.loads((PARENT_PLAYBOOK / "artifact.json").read_text())
+    artifact["integration_policy"]["tables"]["parent_episode"]["required_checks"] = required or {
+        "version": "v1", "names": list(names), "producer_id": "trusted-ci"}
+    data = json.dumps(artifact, sort_keys=True).encode()
+    sha = f"sha256:{hashlib.sha256(data).hexdigest()}"
+    path = tmp_path / f"{sha[7:]}.json"
+    path.write_bytes(data)
+    async with db.immediate() as conn:
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256=sha, playbook_id=playbook_id, scope="project",
+            scope_identifier=project_id, source_digest="sha256:" + "0" * 64,
+            contract_fingerprint="test", compiler_build="test", path=str(path), created_at=1.0))
+        await conn.execute(insert(playbook_activations).values(
+            activation_id="activation-" + playbook_id, playbook_id=playbook_id, scope="project",
+            scope_identifier=project_id, active_artifact_sha256=sha, enabled=True,
+            health="ready", updated_at=1.0))
+    return path
+
+
+def playbook_policy(case):
+    async def policy_on(conn, row, project):
+        explicit = await playbook_epic_checks_on(conn, project["id"])
+        if explicit is None:
+            return case.policy  # the stored set, advisory
+        return replace(case.policy, check_names=explicit.names, check_version=explicit.version,
+                       check_trust=explicit.producer_id, checks_required=True)
+    return policy_on
+
+
+@pytest.mark.parametrize("state", ["red", "pending", "unknown", "unavailable"])
+async def test_advisory_epic_checks_are_shown_but_never_hold_readiness(epic_case, state):
+    case = epic_case
+    case.policy_reader.return_value = replace(case.policy, checks_required=False)
+
+    async def checks(repository_id, oid, policy):
+        if state == "unavailable":
+            raise RuntimeError("provider unavailable")
+        return HeadChecks(repository_id, oid, policy.check_names, policy.check_trust, state)
+    case.checks.side_effect = checks
+    readiness, _ = await evaluate(case)
+    assert readiness.ready, readiness.blockers
+    assert readiness.checks.names == ("Tests",)
+    assert readiness.checks.state == ("unknown" if state == "unavailable" else state)
+
+
+async def test_required_epic_check_without_a_producer_is_named(epic_case):
+    case = epic_case
+    case.policy_reader.return_value = replace(case.policy, check_trust="")
+    readiness, _ = await evaluate(case)
+    assert readiness.state == "waiting"
+    assert ("epic", "checks_producer_missing") in readiness.blockers
+
+
+async def test_shipped_parent_playbooks_require_no_epic_checks(epic_case):
+    from src.integration.runtime_contracts import SubjectKind
+
+    case = epic_case
+    for name in ("parent-integration", "agent-queue-parent-integration"):
+        artifact = load_definition_json(
+            (PARENT_PLAYBOOK.parent / name / "artifact.json").read_text())
+        assert artifact.integration_policy.tables[SubjectKind.PARENT_EPISODE].required_checks is None
+    async with case.db._engine.connect() as conn:
+        assert await playbook_epic_checks_on(conn, "p") is None
+
+
+async def test_playbook_required_epic_check_holds_and_its_removal_applies_live(epic_case,
+                                                                              tmp_path):
+    case = epic_case
+    case.policy_reader.side_effect = playbook_policy(case)
+    case.policy = replace(case.policy, checks_required=False)
+    async def red(repository_id, oid, policy):
+        return HeadChecks(repository_id, oid, policy.check_names, policy.check_trust, "red")
+    case.checks.side_effect = red
+    advisory, _ = await evaluate(case)
+    assert advisory.ready and advisory.checks.state == "red"
+
+    await require_epic_checks(case.db, tmp_path, names=("Tests", "Lint"))
+    required, snapshot = await evaluate(case)
+    assert required.state == "waiting"
+    assert ("epic", "checks_red") in required.blockers
+    assert required.checks.names == ("Tests", "Lint")
+
+    # The operator removes the requirement: the pending epic is ready on its
+    # next visit, with no drain and no daemon restart.
+    async with case.db.immediate() as conn:
+        await conn.execute(update(playbook_activations).where(
+            playbook_activations.c.scope_identifier == "p").values(enabled=False))
+    released, _ = await evaluate(case)
+    assert released.ready, released.blockers
+    complete = AsyncMock()
+    async with case.db.immediate() as conn:
+        # A verdict read under the old requirement is never completed on.
+        assert (await case.evaluator.complete_on(conn, required, snapshot,
+                                                complete=complete))["outcome"] == "changed"
+    complete.assert_not_awaited()
+
+
+async def test_unreadable_or_unready_playbook_adds_no_epic_gate(epic_case, tmp_path):
+    case = epic_case
+    path = await require_epic_checks(case.db, tmp_path)
+    activated = path.read_bytes()
+    path.write_text("{}")  # no longer the activated bytes
+    async with case.db._engine.connect() as conn:
+        assert await playbook_epic_checks_on(conn, "p") is None
+    path.write_bytes(activated)
+    async with case.db._engine.connect() as conn:
+        assert (await playbook_epic_checks_on(conn, "p")).names == ("Tests",)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(playbook_activations).values(health="stale_contract"))
+    async with case.db._engine.connect() as conn:
+        assert await playbook_epic_checks_on(conn, "p") is None
+
+
+async def test_advisory_policy_keeps_the_completion_digest(epic_case):
+    from src.integration.train_sources import epic_graph_digest
+
+    case = epic_case
+    case.policy_reader.return_value = replace(case.policy, checks_required=False)
+    async with case.db._engine.connect() as conn:
+        advisory = await case.reader.read_on(conn, "epic")
+    case.policy_reader.return_value = case.policy
+    async with case.db._engine.connect() as conn:
+        required = await case.reader.read_on(conn, "epic")
+    digest = epic_graph_digest(advisory)
+    assert digest != epic_graph_digest(required)
+    # A completion fenced before epic checks became advisory stays current.
+    data = asdict(advisory)
+    data["dependencies"] = [tuple(edge) for edge in advisory.dependencies]
+    for node in data["nodes"]:
+        node["policy"].pop("checks_required")
+        if node["request"]["task_id"] == "epic":
+            node["request"].update(completion_id=None, completed_at=None, reported_source=None,
+                                   completion_outcome=None, completion_commits=None,
+                                   has_recorded_source=False)
+    assert digest == hashlib.sha256(
+        json.dumps(data, sort_keys=True, default=sorted).encode()).hexdigest()

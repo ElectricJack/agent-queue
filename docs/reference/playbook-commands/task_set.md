@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:9e79778a29300211b6efd4f1053b861684cbd5af24a1e03110c3f0f6ff581dfb` |
+| Contract fingerprint | `sha256:df4d0815968e63fee2a5bdc3e1be35a0fa99777768ce3e235159bc43af62a38d` |
 
 ## Parameters
 
@@ -24,6 +24,7 @@
 | `description` | `string` | no | — | Replace the canonical task description, preserving requirements and adding durable findings. |
 | `expected_description` | `string` | no | — | Exact description previously read; rejects concurrent edits before changing any fields. |
 | `branch` | `string` | no | — | Branch name for this task's work (optional). |
+| `repair_batch` | `string` | no | — | Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch. |
 | `pr_url` | `string` | no | — | Pull-request URL (optional). |
 | `work_dir` | `string` | no | — | Directory the work happens in (optional; recorded as task metadata). |
 | `note` | `string` | no | — | Free-text note appended to the task's context (optional). |
@@ -55,7 +56,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, description, expected_description, branch, pr_url, work_dir, note, labels_add, labels_remove, meta, claim_epoch | — | always |
+| Composite using task_id, description, expected_description, branch, repair_batch, pr_url, work_dir, note, labels_add, labels_remove, meta, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 
