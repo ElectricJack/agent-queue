@@ -25,6 +25,12 @@ A completed epic with no owed children produces no epic target. An already froze
 epic batch containing root-delivered inputs is held with a visible blocker, avoiding
 duplicate builds, repairs and publication until a supervisor aborts it.
 
+A stale epic visit also checks the current epic completion's root delivery before
+refreshing checks or evaluating its collection branch. Proven delivery reports
+`delivered`, even after that branch is retired, without recording another aggregate
+completion. A missing branch alone or an attestation for an older completion does
+not prove delivery and retains the ordinary readiness blockers.
+
 ## Recovery controls
 
 `integration_abort_batch` and `integration_retire_origin` run through CommandHandler,
