@@ -437,7 +437,11 @@ class IntegrationAttestationService:
         self, state: dict[str, Any], binding: GitHubRepositoryBinding
     ) -> IntegrationTrustManifest:
         """Read the trust manifest from the exact subject tree, classifying refusals."""
+        from src.projects.storage_binding import repository_path
+
         store = self._store(state["canonical_repository_id"])
+        if self.db is not None:
+            store = await repository_path(self.db, state["canonical_repository_id"], store)
         destination_ref = "refs/aq/attestation-trust/" + hashlib.sha256(
             f"{state['batch_id']}:{state['revision']}".encode()
         ).hexdigest()

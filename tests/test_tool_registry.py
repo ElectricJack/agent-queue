@@ -115,6 +115,7 @@ def test_registry_has_categories(registry):
         "files",
         "git",
         "ci",
+        "integration",
         "project",
         "agent",
         "supervisor",
@@ -411,6 +412,8 @@ def test_retired_ask_human_is_unknown_without_plugin_backend():
 
     assert handler.has_command("ask_human") is False
     assert asyncio.run(handler.execute("ask_human", {"question": "Continue?"})) == {
+        "success": False,
+        "error_code": "unknown_command",
         "error": "Unknown command: ask_human"
     }
 
