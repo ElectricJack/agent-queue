@@ -25,12 +25,20 @@ async def setup(tmp_path):
     await db.initialize()
     await db.create_project(Project(id="p1", name="test"))
     await db.create_project(Project(id="p2", name="other"))
+    # Formulas name no profiles (mandatory routing); the profiles only give
+    # the project a realistic catalogue.
     for pid in ("coding", "reviewer"):
         await db.create_profile(AgentProfile(id=pid, name=pid))
     vault_root = tmp_path / "vault"
     (vault_root / "formulas").mkdir(parents=True)
     (vault_root / "projects" / "p1" / "formulas").mkdir(parents=True)
-    for name in ("base-review.md", "review-and-fix.md"):
+    for name in (
+        "base-review.md",
+        "review-and-fix.md",
+        "with-subtasks.md",
+        "with-phases.md",
+        "phases-invalid.md",
+    ):
         shutil.copy(FIXTURES / name, vault_root / "formulas" / name)
     registry = FormulaRegistry()
     assert load_from_vault(registry, str(vault_root)) == []
@@ -52,7 +60,7 @@ class TestList:
         h, *_ = setup
         res = await h._cmd_formula_list({"project_id": "p1"})
         names = {f["name"]: f for f in res["formulas"]}
-        assert set(names) == {"base-review", "review-and-fix"}
+        assert set(names) == {"base-review", "review-and-fix", "with-subtasks", "with-phases", "phases-invalid"}
         assert names["review-and-fix"]["extends"] == "base-review"
         assert names["base-review"]["vars"]["branch"] == {"required": True, "default": None, "enum": None}
         assert names["base-review"]["scope"] == "system"
@@ -128,9 +136,97 @@ class TestCook:
         kids = await db.get_children(cid)
         assert {k.title for k in kids} == {"Review branch feat/x (strict)", "Fix findings on feat/x"}
         fix = next(k for k in kids if k.title.startswith("Fix"))
-        assert fix.profile_id == "coding" and fix.is_blocked is True
+        assert fix.is_blocked is True
+        # A formula node carries hints, never a route: the class is the
+        # router's hint and the fixer var lands in a label.
+        assert (fix.profile_id, fix.intelligence_class, fix.route_source, fix.class_hint) == (
+            None, None, "unrouted", "standard-high")
+        assert "fixer:coding" in await db.get_task_labels(fix.id)
         emitted = [c.args for c in h.orchestrator.bus.emit.await_args_list if c.args[0] == "formula.cooked"]
         assert emitted and emitted[0][1]["container_id"] == cid
+
+    async def test_cook_seeds_node_subtasks(self, setup):
+        """Formulas inherit the ``aq-graph`` grammar, so they inherit ``subtasks:``."""
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "with-subtasks", "project_id": "p1",
+                                         "vars": {"branch": "feat/x"}})
+        assert res["success"] is True
+        assert {n["key"]: n["subtasks"] for n in res["nodes"]} == {"ship": 2}
+        node_id = next(n["task_id"] for n in res["nodes"] if n["key"] == "ship")
+        rows = await db.list_task_subtasks(node_id)
+        assert [(r["ordinal"], r["title"]) for r in rows] == [
+            (1, "Rebase feat/x"), (2, "Run the focused tests")]
+        assert (await db.get_task_subtask(node_id, 2))["context"] == "Only the files feat/x touches."
+
+    async def test_cook_files_nodes_into_declared_phases(self, setup):
+        """Formulas inherit the ``aq-graph`` grammar, so they inherit ``phases:``."""
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "with-phases", "project_id": "p1",
+                                         "vars": {"branch": "feat/x"}})
+        assert res["success"] is True, res
+        container = res["container_id"]
+        phases = {p["key"]: p for p in res["phases"]}
+        assert [p["task_id"] for p in res["phases"]] == [f"{container}.1", f"{container}.2"]
+        assert phases["build"]["title"] == "Phase 1 — build feat/x"
+        assert await db.get_task_meta(phases["build"]["task_id"], "phase") == {
+            "order": 1, "label": "build"}
+        node_id = next(n["task_id"] for n in res["nodes"] if n["key"] == "compile")
+        assert node_id == f"{container}.1.1"
+        assert (await db.get_task(node_id)).parent_task_id == phases["build"]["task_id"]
+        assert (await db.get_task(phases["verify"]["task_id"])).is_blocked is True
+
+    async def test_cook_refuses_phases_in_a_hierarchy_mode_project(self, setup):
+        """The creator raises ``HierarchyError``; both graph doors must turn it
+        into the shared refusal rather than an exception (review F1)."""
+        from src.models import RepoConfig, RepoSourceType
+
+        h, db, vault, _registry = setup
+        await db.create_repo(RepoConfig(id="repo", project_id="p1",
+                                        source_type=RepoSourceType.LINK,
+                                        source_path=str(vault / "repo")))
+        await db.update_project("p1", hierarchical_integration_mode="hierarchy",
+                                integration_repository_id="repo")
+        res = await h._cmd_formula_cook({"name": "with-phases", "project_id": "p1",
+                                         "vars": {"branch": "feat/x"}})
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.phases_unsupported_mode"
+        assert await db.list_tasks(project_id="p1") == []
+
+    async def test_cook_refuses_phases_under_an_existing_parent(self, setup):
+        """``graph.phases_need_root`` guards the formula door too (review F3)."""
+        from src.models import Task
+
+        h, db, *_ = setup
+        await db.create_task(Task(id="epic", project_id="p1", title="e", description="e",
+                                  status=TaskStatus.IN_PROGRESS))
+        res = await h._cmd_formula_cook({"name": "with-phases", "project_id": "p1",
+                                         "parent_id": "epic", "vars": {"branch": "feat/x"}})
+        assert res["code"] == "graph.phases_need_root"
+        assert await db.list_tasks(project_id="p1") == [await db.get_task("epic")]
+
+    async def test_phases_need_root_is_decided_before_validation(self, setup):
+        """Both doors answer the structural refusal first, so a planner is told
+        the one thing that matters instead of a finding list it cannot act on."""
+        from src.models import Task
+
+        h, db, *_ = setup
+        await db.create_task(Task(id="epic", project_id="p1", title="e", description="e",
+                                  status=TaskStatus.IN_PROGRESS))
+        at_root = await h._cmd_formula_cook({"name": "phases-invalid", "project_id": "p1"})
+        assert [e["rule"] for e in at_root["errors"]] == ["unresolved_need"]
+
+        res = await h._cmd_formula_cook({"name": "phases-invalid", "project_id": "p1",
+                                         "parent_id": "epic"})
+        assert res["code"] == "graph.phases_need_root"
+
+    async def test_cook_reports_the_parent_refusal_before_phases_need_root(self, setup):
+        """F8: the same input must earn the same refusal at both doors, and
+        ``create_task_graph`` validates the parent before it parses at all."""
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "with-phases", "project_id": "p1",
+                                         "parent_id": "ghost", "vars": {"branch": "feat/x"}})
+        assert res["code"] == "hierarchy.not_found"
+        assert await db.list_tasks(project_id="p1") == []
 
     async def test_cook_dry_run_writes_nothing(self, setup):
         h, db, *_ = setup
@@ -306,3 +402,39 @@ class TestAsCooked:
         }
         res = await h._cmd_formula_show({"as_cooked": other_p1["container_id"]})
         assert res["success"] is True
+
+
+class TestRoutingChoices:
+    """A formula carries hints, never a route (mandatory-routing spec §5.1)."""
+
+    async def test_a_formula_naming_a_profile_does_not_load(self, setup):
+        _h, _db, vault_root, _registry = setup
+        (vault_root / "formulas" / "pinned.md").write_text(
+            "---\nname: pinned\n---\n"
+            "```aq-graph\nversion: 1\n"
+            "nodes:\n  - key: x\n    title: x\n    profile: coding\n    pin: true\n```\n",
+            encoding="utf-8",
+        )
+        registry = FormulaRegistry()
+        errors = load_from_vault(registry, str(vault_root))
+        assert len(errors) == 1 and "formula.graph_parse" in errors[0]
+        assert "chooses a route" in errors[0]
+        assert registry.get("pinned") is None
+
+    async def test_a_formula_loaded_before_the_refusal_cannot_cook_a_route(self, setup):
+        """A registry entry that predates the refusal is refused at cook."""
+        import dataclasses
+
+        h, db, _vault, registry = setup
+        stale = registry.get("base-review")
+        doc = json.loads(json.dumps(stale.graph_doc))
+        doc["defaults"] = {**doc.get("defaults", {}), "profile": "{reviewer}"}
+        registry.upsert(dataclasses.replace(stale, graph_doc=doc))
+
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                         "vars": {"branch": "b"}})
+        assert res["success"] is False
+        assert res["code"] == "routing.choice_forbidden"
+        assert res["refused"] == ["defaults.profile"]
+        assert "routing_choice_forbidden" in {e["rule"] for e in res["errors"]}
+        assert await db.list_tasks("p1") == []

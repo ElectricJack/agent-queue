@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
+import threading
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +26,74 @@ from src.workspace_spec_watcher import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_background_scan_does_not_block_or_overlap_and_shutdown_drains(watcher, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    processed = []
+    calls = 0
+
+    def scan():
+        entered.set()
+        assert release.wait(5)
+        return "change"
+
+    async def check_once():
+        nonlocal calls
+        calls += 1
+        change = await asyncio.to_thread(scan)
+        processed.append(change)
+        return []
+
+    monkeypatch.setattr(watcher, "_check_once", check_once)
+    stopping = None
+    try:
+        watcher.schedule_check()
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.001)
+        for _ in range(3):
+            watcher.schedule_check()
+            await asyncio.sleep(0)
+        assert calls == 1 and not processed
+        stopping = asyncio.create_task(watcher.stop())
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        watcher.schedule_check()
+        release.set()
+        await stopping
+        assert calls == 1 and processed == ["change"]
+        watcher.schedule_check()
+        await asyncio.sleep(0)
+        assert calls == 1
+    finally:
+        release.set()
+        await watcher.stop()
+        if stopping is not None:
+            await stopping
+
+
+@pytest.mark.asyncio
+async def test_background_scan_retries_after_failure_and_serializes_direct_checks(watcher):
+    watcher._check_once = AsyncMock(side_effect=[RuntimeError("scan failed"), []])
+    watcher.schedule_check()
+    await watcher._check_task
+    watcher.schedule_check()
+    await watcher._check_task
+    assert watcher._check_once.await_count == 2
+    await watcher.stop()
+
+    # Holding the same lock used by the background scan blocks a direct
+    # check rather than allowing a second snapshot mutation.
+    async with watcher._check_lock:
+        direct = asyncio.create_task(watcher.check())
+        await asyncio.sleep(0)
+        assert not direct.done()
+        watcher._check_once.side_effect = None
+        watcher._check_once.return_value = []
+    assert await direct == []
 
 
 @dataclass

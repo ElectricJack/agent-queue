@@ -30,10 +30,12 @@ from src.commands.playbook_v2_commands import (
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
 GRAPH_COMMANDS = {
+    "playbook_commands",
     "playbook_v2_graph",
     "playbook_graph_layout_save",
     "playbook_activation_health",
     "playbook_activate",
+    "playbook_source_resync",
     "playbook_artifact_diff",
     "playbook_pending_events",
     "playbook_pending_event_action",
@@ -52,7 +54,16 @@ ARTIFACT_COMMANDS = {"playbook_artifacts"}
 
 IMPORT_COMMANDS = {"playbook_v2_import"}
 
-ALL_V2_COMMANDS = GRAPH_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS
+#: Catalog deletion.  It has a registered response model like every other
+#: typed surface, but deliberately no membership constant in
+#: ``src/commands/playbook_v2_commands.py``: it is neither a graph read, a
+#: compiler review, nor part of the paused-playbook set, and the sets below
+#: are what the handler pauses on.
+DELETE_COMMANDS = {"playbook_delete"}
+
+ALL_V2_COMMANDS = (
+    GRAPH_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS | DELETE_COMMANDS
+)
 
 
 def _v2_models() -> list[type[BaseModel]]:
