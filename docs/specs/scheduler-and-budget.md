@@ -23,7 +23,7 @@ The subsystem is split across two files:
 - `src/scheduler.py` — the core scheduling algorithm
 - `src/tokens/budget.py` — the configured fleet-wide budget plus budget math (target ratios, deficits, exhaustion checks)
 
-> **Removed.** `src/tokens/tracker.py` (`RateLimitWindow`) held a sliding-window token counter per (agent type, limit type). It had no production importer and no test, and it counted against a hand-configured cap rather than any provider's real quota, so it was deleted rather than carried. Provider headroom is an unstarted design (`docs/superpowers/specs/2026-08-24-usage-aware-concurrency.md`); whatever implements it will be sampler-driven and does not build on that dataclass.
+> **Removed.** `src/tokens/tracker.py` (`RateLimitWindow`) held a sliding-window token counter per (agent type, limit type). It had no production importer and no test, and it counted against a hand-configured cap rather than any provider's real quota, so it was deleted rather than carried. The usage-aware concurrency proposal is a historical design, not a description of current admission. Shipped provider availability and launch suppression are documented in [scheduling](../concepts/scheduling.md#provider-availability-and-failover); pool limits and resource shares remain separately configured.
 
 The scheduler is called once per orchestrator tick (roughly every 5 seconds). It produces a list of zero or more `AssignAction` objects, each pairing one idle agent with one ready task. The orchestrator then executes those assignments by updating the database and launching agent processes.
 

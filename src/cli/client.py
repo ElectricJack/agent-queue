@@ -102,7 +102,9 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
-    "task_close": 180.0,
+    # Author close may regenerate a candidate (600s) before returning a wait.
+    "task_close": 900.0,
+    "integration_continue_close": 900.0,
     "message_wait": 90.0,
     # Binding, App token mint and two GitHub reads.
     "integration_trust_manifest": 90.0,
@@ -124,10 +126,17 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_seal_now": 300.0,
     "integration_refresh_epic": 300.0,
     "integration_retire_origin": 300.0,
+    # Repair adoption and root redrive fetch authenticated remote history and
+    # prove exact heads before either preview or apply can return.
+    "integration_fast_forward_pr": 300.0,
+    "integration_redrive_root": 300.0,
     # Recovery confirms the provider and verifies remote Git even in dry runs.
     "integration_release_owner": 300.0,
+    "integration_restore_task_origin": 300.0,
     "integration_pause_batch": 180.0,
     "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
+    "integration_release_withheld_source": 180.0,
     "integration_abort_batch": 180.0,
     "integration_eject": 180.0,
     # Completed-container recovery, preview included, proves the exact head under

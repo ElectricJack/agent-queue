@@ -609,7 +609,7 @@ class TestExplainCommand:
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
 
-    async def test_delivery_of_reason_names_the_target_and_failure(self, handler, db):
+    async def test_delivery_of_requires_git_even_with_a_historical_failure(self, handler, db):
         from sqlalchemy import insert
 
         from src.database.tables import task_delivery_receipts
@@ -618,21 +618,26 @@ class TestExplainCommand:
         await mktask(db, "root", status=TaskStatus.READY)
         await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
 
-        async def detail():
+        async def unavailable():
             res = await handler._cmd_explain_task({"task_id": "root"})
-            return next(
-                r["detail"] for r in res["reasons"] if r["code"] == "blocked_dependency"
-            )
+            return [
+                r for r in res["reasons"]
+                if r["code"] == "delivery_evidence_unavailable" and r["ref"] == "leaf"
+            ]
 
-        assert await detail() == "waiting_for: delivery-of leaf"
+        # Without an observer Git evidence is unloaded, which never withholds work.
+        assert await unavailable() == []
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_delivery_receipts).values(
                 id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
                 repository_id="repo", target_branch="main", disposition="failed",
                 resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
             ))
-        assert await detail() == "waiting_for: delivery-of leaf (delivery failed: squash conflict)"
-        assert (await db.get_task("root")).is_blocked
+        # A historical failed receipt is not Git evidence either.
+        assert await unavailable() == []
+        assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict"}
+        # SQL projects completion; Git admission separately withholds the task.
+        assert not (await db.get_task("root")).is_blocked
 
     async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
         """Explain reports only the exact typed edges that currently block.
@@ -750,12 +755,44 @@ class TestExplainAfterASessionExitedWithoutClose:
 
 
 class TestBuildCapacityReasons:
+    @pytest.mark.parametrize("active,blocked", [(0, False), (1, False), (2, True), (3, True)])
+    def test_project_agent_cap_names_live_count_and_config(self, active, blocked):
+        project = Project(id=PROJECT_ID, name="p", max_concurrent_agents=2)
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(projects=[project], project_active_agent_counts={PROJECT_ID: active})
+
+        reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})
+
+        cap_reasons = [reason for reason in reasons if reason["code"] == "project_agent_cap"]
+        assert bool(cap_reasons) == blocked
+        if blocked:
+            assert reasons[0] == cap_reasons[0]
+            assert f"{active}/2 live sessions" in cap_reasons[0]["detail"]
+            assert "max_concurrent_agents=2" in cap_reasons[0]["detail"]
+            assert cap_reasons[0]["ref"] == PROJECT_ID
+
     def test_no_idle_agent(self):
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
         state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 1})
         codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})]
         assert "no_idle_agent" in codes
+
+    def test_exclusive_constraint_lowers_effective_agent_cap(self):
+        from src.models import ProjectConstraint
+
+        project = Project(id=PROJECT_ID, name="p", max_concurrent_agents=8)
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(
+            projects=[project], project_active_agent_counts={PROJECT_ID: 1},
+            project_constraints={PROJECT_ID: ProjectConstraint(project_id=PROJECT_ID, exclusive=True)},
+        )
+
+        reason = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})[0]
+
+        assert reason["code"] == "project_agent_cap"
+        assert "1/1 live sessions" in reason["detail"]
+        assert "max_concurrent_agents=8, exclusive=True" in reason["detail"]
 
     def test_workspace_locked(self):
         proj = Project(id=PROJECT_ID, name="p")
@@ -944,6 +981,29 @@ class TestProjectReady:
 
 
 class TestBetweenTicks:
+    async def test_project_agent_cap_is_visible_in_command_and_blocker_log(self, handler, db, caplog):
+        await mktask(db, "capped", status=TaskStatus.READY, profile_id="worker")
+        project = await db.get_project(PROJECT_ID)
+        task = await db.get_task("capped")
+        state = make_state(
+            projects=[project], tasks=[task],
+            project_active_agent_counts={PROJECT_ID: project.max_concurrent_agents},
+        )
+        handler.orchestrator._last_scheduler_state = state
+        handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 1}
+        handler.orchestrator._last_scheduler_idle_by_project = {}
+
+        result = await handler._cmd_explain_task({"task_id": task.id})
+
+        reason = next(r for r in result["reasons"] if r["code"] == "project_agent_cap")
+        assert "2/2 live sessions" in reason["detail"]
+        assert handler.orchestrator._describe_task_blocker(task, state, {PROJECT_ID: 1}, {}) == (
+            reason["detail"]
+        )
+        caplog.set_level("INFO", logger="src.orchestrator.core")
+        handler.orchestrator._log_scheduler_blockers(state, [], {PROJECT_ID: 1})
+        assert f"scheduler blocked task=capped reason={reason['detail']}" in caplog.messages
+
     async def test_uses_cached_scheduler_state(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
         # No tick has run — cached snapshot is None; explain should still
@@ -980,6 +1040,54 @@ class TestExplainAfterATerminalClose:
         details = {r["code"]: r["detail"] for r in res["reasons"]}
         assert details["blocked_terminal"].startswith("session_close_hard_failure")
         assert "restart or reopen" in details["blocked_terminal"]
+
+
+class TestExplainABlockedTaskNothingHolds:
+    """A BLOCKED row with no attention, mark or graph blocker is never requeued.
+
+    Pools count only READY, so explain must name the status itself rather
+    than answer with route and pool waits (swift-crest-94).
+    """
+
+    async def test_unheld_blocked_names_the_requeue(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "no recorded blocker" in details["blocked_unheld"]
+        assert "set-status --task-id parked --status READY" in details["blocked_unheld"]
+
+    async def test_failed_slot_reset_names_resume(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("parked", "slot_reset_failure", {
+            "reason": "worktree dirty", "attempt": 5, "retry": "manual",
+        })
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "worktree dirty (attempt 5)" in details["blocked_unheld"]
+        assert "aq task resume --task-id parked" in details["blocked_unheld"]
+
+    @pytest.mark.parametrize("held_by", ["attention", "terminal", "dependency"])
+    async def test_held_blocked_is_not_unheld(self, handler, db, held_by):
+        await mktask(db, "parked", status=TaskStatus.IN_PROGRESS)
+        if held_by == "terminal":
+            await db.transition_task(
+                "parked", TaskStatus.BLOCKED, context="session_close_hard_failure",
+            )
+        else:
+            await db.transition_task("parked", TaskStatus.BLOCKED, context="test")
+        if held_by == "attention":
+            await db.set_task_meta("parked", "needs_attention", "slot_reset_failed")
+        elif held_by == "dependency":
+            await mktask(db, "upstream")
+            await db.add_dependency("parked", "upstream")
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        assert "blocked_unheld" not in res["reason_codes"]
 
 
 async def test_explain_includes_shared_operator_decision(handler, db):
@@ -1019,10 +1127,16 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
     handler, db, monkeypatch, stage,
 ):
     """Successful controls do not turn an incomplete explanation into evidence."""
+    from src.integration import admission
+    from src.integration.status import IntegrationStatusService
+
     await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def stalled(*args, **kwargs):
+        # Control reads share these dependencies; only stall the explanation.
+        if asyncio.current_task() is not request:
+            return await original(*args, **kwargs)
         entered.set()
         try:
             await asyncio.Event().wait()
@@ -1031,11 +1145,14 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
 
     with monkeypatch.context() as fault:
         if stage == "frontier":
-            fault.setattr(db, "claim_frontier_exclusions", stalled)
+            original = db.claim_frontier_exclusions_many
+            fault.setattr(db, "claim_frontier_exclusions_many", stalled)
         elif stage == "admission":
-            fault.setattr("src.integration.admission.observe_admission", stalled)
+            original = admission.observe_admission
+            fault.setattr(admission, "observe_admission", stalled)
         else:
-            fault.setattr("src.integration.status.IntegrationStatusService.task_blockers", stalled)
+            original = IntegrationStatusService.task_blockers
+            fault.setattr(IntegrationStatusService, "task_blockers", stalled)
         request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
         try:
             await asyncio.wait_for(entered.wait(), 10)
