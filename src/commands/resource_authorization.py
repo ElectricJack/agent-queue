@@ -23,7 +23,7 @@ plugin_disable plugin_enable plugin_info plugin_install plugin_list plugin_promp
 plugin_reload plugin_remove plugin_reset_prompts plugin_update policy_apply policy_diff
 policy_export doctor doctor_run observation_snapshot_cleanup db_preflight_hierarchy digest_facts digest_post digest_preview
 digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_index
-list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename
+list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename pool_delete
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
 provider_recheck provider_set_state provider_status provider_held_tasks
 reconcile_agent_cron reconcile_agent_waits reconcile_collaborations cron_delivery_begin
@@ -154,6 +154,8 @@ AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_i
 
 
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name == "object_checkpoint_read":
+        return ("held_session_or_project_playbook_invocation",)
     if name == "playbook_script_run":
         return ("pinned_script_invocation",)
     if name in STATE_COMMANDS:
@@ -238,11 +240,11 @@ async def authorize_resources(
         "promote_approve", "operator_execute", "operator_preflight",
     }:
         return deny("unauthorized")
-    if command in SESSION_COMMANDS | HELD_COMMANDS and principal.kind is PrincipalKind.PLAYBOOK:
+    if (command in SESSION_COMMANDS | HELD_COMMANDS and command != "object_checkpoint_read"
+            and principal.kind is PrincipalKind.PLAYBOOK):
         return deny("session_required")
-    # Typed adapters already implement their domain's ownership language and
-    # outcome protocol. In particular, stale repair inputs, tagged message
-    # recipients and operator preflights must reach those independent gates.
+    # Typed adapters enforce their own ownership and outcome protocols, including stale repair
+    # inputs, tagged message recipients and operator preflights.
     if not generated:
         from src.commands.contracts import CONTRACTS
 

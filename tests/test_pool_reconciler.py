@@ -35,6 +35,26 @@ from tests.db_fixtures import lease_dsn
 PROJECT_ID = "proj"
 
 
+async def test_pool_display_omits_stopped_history_and_keeps_other_instances(orch, db):
+    from src.models import SessionRecord
+
+    for state in ("running", "sleeping", "quarantined", "stopped"):
+        await db.create_session(SessionRecord(
+            id=f"display-{state}", name=f"display-{state}", profile_id="worker",
+            project_id=PROJECT_ID, lifecycle="pool", state=state,
+            harness="codex", provider="fake", work_dir="/tmp", epoch="test",
+            instance_token=f"token-{state}", started_at=1,
+        ))
+    display = await orch._measure_pools(for_display=True)
+    sizing = await orch._measure_pools()
+    assert {s.state for s in display.pool_sessions} == {"running", "sleeping", "quarantined"}
+    assert {s.state for s in sizing.pool_sessions} == {
+        "running", "sleeping", "quarantined", "stopped",
+    }
+    assert display.supply == sizing.supply
+    assert display.demand == sizing.demand
+
+
 @pytest.mark.parametrize("artifact", [False, True])
 async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch, artifact):
     from src.scheduler import PoolKey
@@ -1329,6 +1349,82 @@ class TestReconcilePools:
         updated = await db.get_session(session.id)
         assert updated.state == "stopped"
         assert not os.path.exists(claim_path)
+
+    @pytest.mark.parametrize("mode", [
+        "published", "unpublished", "dirty", "disabled", "owner", "stop_unproved", "successor",
+    ])
+    async def test_drain_frees_only_quiescent_clean_slot_branches(
+        self, orch, db, tmp_path, monkeypatch, mode,
+    ):
+        from src.git.manager import GitManager
+        from src.orchestrator.worktree_manager import WorktreeSlotManager
+        from tests.test_delivery_consumers import Origin, git
+
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        session = (await db.list_sessions(lifecycle="pool"))[0]
+        old = await db.get_workspace_for_agent(session.agent_id)
+        origin = Origin(tmp_path)
+        base = Workspace(
+            id="drain-base", project_id=PROJECT_ID, workspace_path=str(origin.clone),
+            source_type=RepoSourceType.LINK, kind_id="project-repo",
+        )
+        await db.create_workspace(base)
+        kind = await db.resolve_workspace_kind(PROJECT_ID, "project-repo")
+        manager = WorktreeSlotManager(
+            db=db, git=GitManager(), bus=orch.bus, config=orch.config.worktrees,
+            git_mutex=orch._git_mutex,
+        )
+        slot = await manager.create_slot(base, kind, 0)
+        await manager.reset_slot_for_task(slot, await db.get_task("t1"))
+        path = slot.workspace_path
+        if mode == "unpublished":
+            git(path, "commit", "--allow-empty", "-m", "private progress")
+        else:
+            git(path, "push", "origin", "HEAD:refs/heads/aq/t1")
+        if mode == "dirty":
+            from pathlib import Path
+
+            Path(path, "private.txt").write_text("private bytes")
+        head = git(path, "rev-parse", "HEAD")
+        sentinel = manager.read_sentinel(path)
+        await db.update_workspace(old.id, locked_by_agent_id=None)
+        await db.update_workspace(
+            slot.id, locked_by_agent_id=session.agent_id, enabled=mode != "disabled",
+        )
+        await db.update_session(session.id, work_dir=path)
+        orch._worktree_slots = MagicMock(return_value=manager)
+        if mode == "owner":
+            async with db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="drain-owner", repository_id="repo", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="attached",
+                    session_id=session.id, workspace_id=slot.id,
+                    created_at=time.time(), updated_at=time.time(),
+                ))
+        elif mode == "stop_unproved":
+            provider = orch.session_providers.create(session.provider, orch.config)
+            monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("unknown stop")))
+        elif mode == "successor":
+            await db.create_agent(Agent(id="successor", name="successor", profile_id="worker"))
+            detach = manager.detach_idle_slot_branch
+
+            async def acquired_before_detach(workspace):
+                await db.update_workspace(workspace.id, locked_by_agent_id="successor")
+                return await detach(workspace)
+
+            monkeypatch.setattr(manager, "detach_idle_slot_branch", acquired_before_detach)
+
+        await orch._terminate_pool_session(await db.get_session(session.id), reason="drained")
+
+        assert git(path, "rev-parse", "HEAD") == head
+        assert git(path, "rev-parse", "aq/t1") == head
+        assert manager.read_sentinel(path) == sentinel
+        expected = "HEAD" if mode in {"published", "unpublished", "disabled"} else "aq/t1"
+        assert git(path, "rev-parse", "--abbrev-ref", "HEAD") == expected
+        if mode == "dirty":
+            assert Path(path, "private.txt").read_text() == "private bytes"
 
     @pytest.mark.parametrize("stop_confirmed", [False, True])
     @pytest.mark.parametrize("refusal_drain", [False, True])

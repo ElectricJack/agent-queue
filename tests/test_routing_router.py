@@ -244,6 +244,22 @@ async def test_system_filing_without_ordinary_input_keeps_its_routing_origin(han
     assert facts.created_by_kind == "system"
 
 
+async def test_deleted_pool_is_excluded_even_when_applying_an_older_plan(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    plan = await _plan(handler, "t")
+    assert plan["profile_id"] == "standard-high-codex"
+    deleted = await handler.execute("pool_delete", {"profile_id": "standard-high-codex"})
+    assert deleted["success"], deleted
+
+    fresh = await _plan(handler, "t")
+    assert fresh["profile_id"] == "standard-high-claude"
+    assert all(c["profile_id"] != "standard-high-codex" for c in fresh["candidates"])
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
+    assert applied["success"], applied
+    assert (await orch.db.get_task("t")).profile_id == "standard-high-claude"
+
+
 @pytest.mark.parametrize("task_type", [TaskType.TEST, TaskType.BUGFIX])
 async def test_integration_writers_route_like_repairs_off_every_opencode_lane(
     handler, orch, task_type,
