@@ -123,6 +123,9 @@ class FakeDB:
     async def get_task(self, task_id):
         return FakeTask(id=task_id)
 
+    async def get_integration_checkpoint(self, task_id):
+        return None
+
     async def set_task_meta(self, task_id, key, value) -> None:
         self.meta[(task_id, key)] = value
 
@@ -1496,8 +1499,9 @@ class TestMissingSentinelRecovery:
 
 
 class TestResetSlot:
+    @pytest.mark.parametrize("prefetch", [False, True])
     async def test_exact_worker_retry_preserves_published_tip_with_stale_local_branch(
-        self, mgr, base_ws, kind,
+        self, mgr, base_ws, kind, prefetch,
     ):
         slot = await mgr.create_slot(base_ws, kind, 0)
         path = Path(slot.workspace_path)
@@ -1510,9 +1514,12 @@ class TestResetSlot:
         _git(["push", "origin", "aq/tsk-1"], path)
         _git(["reset", "--hard", initial], path)
 
+        if prefetch:
+            await mgr.prefetch_slot_for_task(slot, base_branch=initial, preserve_branch=True)
+            mgr.git.afetch_origin = AsyncMock(side_effect=AssertionError("origin fetch under fence"))
         await mgr.reset_slot_for_task(
             slot, FakeTask(), target_branch="aq/tsk-1", base_branch=initial,
-            preserve_branch=True,
+            preserve_branch=True, fetch_origin=not prefetch,
         )
 
         assert _git(["rev-parse", "HEAD"], path) == published
@@ -2370,6 +2377,92 @@ class TestRestoreSlotAfterTask:
             assert "unfinished" in db.contexts[-1]["content"]
 
 
+class TestRestartedTaskBranch:
+    """sharp-quest-65: a restart left the slot detached at the task's checkpoint.
+
+    ``aq task restart`` of azure-impact-46.2 kept its sentinel naming the
+    task and ``aq/azure-impact-46.2`` while HEAD sat detached at the recorded
+    checkpoint and neither the local nor the remote branch existed.  Every
+    preparation then refused: "branch disagrees with its source sentinel".
+    """
+
+    async def _restarted_slot(self, mgr, base_ws, kind):
+        """A slot detached at unpublished task work whose branch ref is gone."""
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "task progress"], cwd=path)
+        head = _git(["rev-parse", "HEAD"], cwd=path)
+        _git(["switch", "--detach"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-1"], cwd=path)
+        assert mgr.read_sentinel(path).branch == "aq/tsk-1"
+        return slot, path, head
+
+    @staticmethod
+    def _checkpoint(db, monkeypatch, branch, sha):
+        monkeypatch.setattr(db, "get_integration_checkpoint", AsyncMock(
+            return_value={"branch": branch, "checkpoint_sha": sha, "state": "working"},
+        ), raising=False)
+
+    async def test_the_branch_is_recreated_at_the_recorded_checkpoint(
+        self, mgr, base_ws, kind, db, monkeypatch
+    ):
+        from src.git.manager import SlotSourceDisagreement
+
+        slot, path, head = await self._restarted_slot(mgr, base_ws, kind)
+        with pytest.raises(SlotSourceDisagreement, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-1"))
+        self._checkpoint(db, monkeypatch, "aq/tsk-1", head)
+
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")) == "aq/tsk-1"
+
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "aq/tsk-1"
+        _git(["merge-base", "--is-ancestor", head, "HEAD"], cwd=path)
+        assert (path / "work.py").read_text() == "print(1)\n"
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch) == ("tsk-1", "aq/tsk-1")
+
+    async def test_a_pause_checkpoint_head_also_proves_the_branch(self, mgr, base_ws, kind, db):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, head = await self._restarted_slot(mgr, base_ws, kind)
+        db.meta[("tsk-1", CHECKPOINT_META)] = {"head": head, "branch": "aq/tsk-1"}
+
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-1"))
+
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "aq/tsk-1"
+        assert _git(["rev-parse", "HEAD"], cwd=path) == head
+
+    @pytest.mark.parametrize(
+        "refusal", ["unrecorded", "moved", "other_branch", "foreign_task", "retained", "diverged"],
+    )
+    async def test_an_unproved_checkpoint_still_refuses(
+        self, mgr, base_ws, kind, db, monkeypatch, refusal
+    ):
+        from src.git.manager import SlotSourceDisagreement
+
+        slot, path, head = await self._restarted_slot(mgr, base_ws, kind)
+        claimant = FakeTask(id="tsk-other" if refusal == "foreign_task" else "tsk-1")
+        if refusal != "unrecorded":
+            self._checkpoint(
+                db, monkeypatch, "aq/tsk-x" if refusal == "other_branch" else "aq/tsk-1",
+                _git(["rev-parse", "HEAD~1"], cwd=path) if refusal == "moved" else head,
+            )
+        if refusal == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+        if refusal == "diverged":
+            _git(["push", "origin", "HEAD~1:refs/heads/aq/tsk-1"], cwd=path)
+            _git(["fetch", "origin"], cwd=path)
+
+        with pytest.raises(SlotSourceDisagreement, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, claimant)
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+        assert _git(["rev-parse", "HEAD"], cwd=path) == head
+        assert _git(["branch", "--list", "aq/tsk-1"], cwd=path) == ""
+
+
 class TestFinishedTaskSentinel:
     """amber-bridge-75: a finished task's sentinel must not refuse the slot.
 
@@ -2420,6 +2513,92 @@ class TestFinishedTaskSentinel:
 
         sentinel = mgr.read_sentinel(path)
         assert (sentinel.task_id, sentinel.branch) == ("tsk-next", "aq/tsk-next")
+
+    @pytest.mark.parametrize("gone", [False, True])
+    @pytest.mark.parametrize("holder", ["none", "preparing", "assigned"])
+    async def test_attached_stale_terminal_sentinel_is_reclaimed_without_source_changes(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, gone, holder,
+    ):
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        _git(["switch", "-c", "aq/tsk-next"], path)
+        _git(["commit", "--allow-empty", "-m", "unpublished incoming progress"], path)
+        head = _git(["rev-parse", "HEAD"], path)
+        before = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+        monkeypatch.setattr(db, "get_task", AsyncMock(return_value=(
+            None if gone else SimpleNamespace(status="COMPLETED")
+        )))
+        task = FakeTask(id="tsk-next")
+        if holder != "none":
+            slot.locked_by_agent_id = "incoming-agent"
+        if holder == "assigned":
+            task.assigned_agent_id = "incoming-agent"
+        elif holder == "preparing":
+            monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[SimpleNamespace(
+                work_dir=str(path), task_id=task.id, claim_phase="preparing", agent_id="incoming-agent",
+            )]))
+
+        await mgr.ensure_slot_checkout(slot, task)
+
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["branch", "--show-current"], path) == "aq/tsk-next"
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == before
+        await mgr.reset_slot_for_task(slot, task)
+        _git(["merge-base", "--is-ancestor", head, "HEAD"], path)
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
+        assert _git(["rev-parse", "origin/aq/tsk-prev"], path) == head
+
+    @pytest.mark.parametrize("fence", ["dirty", "retained", "live", "agent", "predecessor"])
+    async def test_attached_mismatch_keeps_unproved_source(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, fence,
+    ):
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        _git(["switch", "-c", "aq/tsk-next"], path)
+        self._status(db, monkeypatch, "IN_PROGRESS" if fence == "predecessor" else "COMPLETED")
+        if fence == "dirty":
+            (path / "private.txt").write_text("private progress\n")
+        elif fence == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+        elif fence == "live":
+            monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[SimpleNamespace(
+                work_dir=str(path), task_id="foreign", claim_phase="active", agent_id="foreign",
+            )]))
+        elif fence == "agent":
+            slot.locked_by_agent_id = "foreign"
+        before = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+        head, index = _git(["rev-parse", "HEAD"], path), _git(["write-tree"], path)
+        with pytest.raises(GitError, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == before
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["write-tree"], path) == index
+
+    @pytest.mark.parametrize("stage", ["branch", "setup"])
+    async def test_interrupted_assignment_records_the_branch_before_retry(
+        self, mgr, base_ws, kind, monkeypatch, stage,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        if stage == "branch":
+            prepare = mgr.git.aprepare_child_branch
+
+            async def fail_after_switch(*args, **kwargs):
+                await prepare(*args, **kwargs)
+                raise GitError("interrupted after branch switch")
+
+            monkeypatch.setattr(mgr.git, "aprepare_child_branch", fail_after_switch)
+        else:
+            kind.worktree_setup = ["changed setup"]
+            monkeypatch.setattr(mgr, "_run_setup", AsyncMock(side_effect=TimeoutError()))
+        with pytest.raises((GitError, TimeoutError)):
+            await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next"), kind=kind)
+        assert _git(["branch", "--show-current"], path) == "aq/tsk-next"
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch) == ("tsk-next", "aq/tsk-next")
+        assert sentinel.setup_hash != worktree_setup_hash(kind.worktree_setup) or stage == "branch"
+        monkeypatch.undo()
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next"), kind=kind)
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
 
     @pytest.mark.parametrize("refusal", ["in_progress", "dirty", "retained"])
     async def test_a_live_or_unproved_predecessor_still_refuses(

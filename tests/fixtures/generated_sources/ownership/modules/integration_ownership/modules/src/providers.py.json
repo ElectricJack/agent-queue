@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/providers.py::inflight": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin.set_playbook_activation": {
+      "fingerprint": "dcf0a9f24cd9663ff55ba010117bb1b9c161ccdbb26c87078471232ee49d9b1f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin._referenced_artifact_shas": {
+      "baseline_span": [
+        439,
+        456
+      ],
+      "landing_span": [
+        439,
+        456
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin.collect_playbook_artifacts": {
+      "baseline_span": [
+        457,
+        597
+      ],
+      "landing_span": [
+        457,
+        597
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/playbook_artifact_queries.py::import from src.database.tables import integration_operation_artifact_pins, integration_outbox_artifact_pins, integration_subject_journal, integration_subjects, playbook_activations, playbook_artifacts, playbook_pending_events, playbook_v2_runs": {
+      "baseline_span": [
+        16,
+        26
+      ],
+      "landing_span": [
+        16,
+        26
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

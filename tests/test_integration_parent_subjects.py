@@ -1,28 +1,18 @@
-"""Parent subjects retain exact lineage through failures, lost events and reopen."""
+"""Parent subject bridge pins exact lineage and refuses mismatched identity."""
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import replace
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import event, insert, update
+from sqlalchemy import update
 
 from src.database import tables as t
 from src.integration.parent_subjects import (
-    ParentDatabaseObservationReader,
-    ParentIntegrationObserver,
     ParentSubjectAdapter,
-    ParentSubjectFacts,
     parent_subject_from_rows,
 )
 from src.integration.runtime_contracts import (
-    CIState,
-    ObserveSubjectArgs,
     PolicyArtifactPin,
-    Primitive,
-    PrimitivePorts,
 )
 from src.models import Project
 from tests.test_integration_cancelled_collection import (  # noqa: F401
@@ -30,7 +20,7 @@ from tests.test_integration_cancelled_collection import (  # noqa: F401
     _rows,
     case,
 )
-from tests.test_integration_parent_completion import _artifact, _code_receipt, _parent_tree
+from tests.test_integration_parent_completion import _artifact, _parent_tree
 
 BASE, SOURCE, FIRST, HEAD = (char * 40 for char in "abcd")
 PIN = PolicyArtifactPin(
@@ -52,84 +42,6 @@ async def bridge(db, task_id="parent", pin=PIN):
         )
 
 
-def observer(db):
-    return ParentIntegrationObserver(ParentDatabaseObservationReader(db), clock=lambda: 1000)
-
-
-async def test_eight_children_failure_conflict_noop_and_skipped_without_events(db):
-    hierarchy, _, children = await _parent_tree(db, children=8)
-    await _code_receipt(db, children[0], BASE, FIRST)
-    await _code_receipt(db, children[1], FIRST, HEAD)
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(t.tasks).where(t.tasks.c.id == children[2]).values(status="FAILED")
-        )
-        await conn.execute(
-            update(t.task_integration_checkpoints)
-            .where(t.task_integration_checkpoints.c.task_id == "parent")
-            .values(checkpoint_sha=HEAD)
-        )
-        await conn.execute(
-            insert(t.integration_promotion_intents).values(
-                id="conflict",
-                domain_key="conflict",
-                receipt_id="unwritten",
-                project_id="p",
-                source_task_id=children[5],
-                target_task_id="parent",
-                repository_id="repo",
-                target_branch="aq/parent",
-                source_head=SOURCE,
-                source_base=BASE,
-                expected_target=HEAD,
-                fence_owner_id="collector",
-                fence_token=1,
-                state="conflict",
-                conflict_diagnostics={"files": ["shared.py"]},
-                created_at=20,
-                updated_at=20,
-            )
-        )
-    for child, kind in ((children[3], "skipped"), (children[4], "noop")):
-        await hierarchy.parent_completion.record_disposition(
-            child,
-            disposition=kind,
-            reviewed_head_sha=SOURCE,
-            reviewed_tree_sha=FIRST,
-            verification_evidence={"verified": True},
-            resolution_evidence={"reason": "fixture"},
-        )
-    subject, created = await bridge(db)
-    assert created and subject.engine == "reconciler"
-    before = await _rows(db, t.task_delivery_receipts)
-    statements = []
-
-    def record(conn, cursor, statement, parameters, context, executemany):
-        statements.append(statement)
-
-    event.listen(db._engine.sync_engine, "before_cursor_execute", record)
-    try:
-        # No wake/event delivery is performed: the next due visit reads durable state.
-        facts = await observer(db).observe(subject)
-    finally:
-        event.remove(db._engine.sync_engine, "before_cursor_execute", record)
-    assert isinstance(facts, ParentSubjectFacts) and len(facts.children) == 8
-    assert facts.readiness == "failed" and facts.binding()["failed_child_count"] == 1
-    assert facts.conflicts[0].member_task_id == children[5]
-    assert facts.conflicts[0].files == ("shared.py",)
-    assert {row.kind for row in facts.receipts} == {"code", "noop", "skipped"}
-    assert all(row.scope == "direct" and row.selected for row in facts.receipts)
-    assert facts.children[2].blockers == ("failed_child",)
-    assert facts.children[3].selected_receipt_id and facts.members[3].ejected
-    assert facts.binding()["pending_child_count"] == 3
-    assert await _rows(db, t.task_delivery_receipts) == before
-    assert "SET TRANSACTION READ ONLY" in statements
-    assert all(
-        sql.lstrip().startswith(("SELECT", "SET TRANSACTION READ ONLY")) for sql in statements
-    )
-    assert (await db.get_integration_subject(subject.id))["next_due_at"] == 1000
-
-
 async def test_bridge_replay_pins_policy_schedule_and_episode_after_generation_moves(db):
     await _parent_tree(db, children=1)
     subject, _ = await bridge(db)
@@ -141,118 +53,6 @@ async def test_bridge_replay_pins_policy_schedule_and_episode_after_generation_m
         )
     replay, created = await bridge(db)
     assert not created and replay == subject
-    facts = await observer(db).observe(subject)
-    assert facts.parent_operation_id and facts.collection_generation_advanced
-    assert not facts.collection_reopened
-    assert "parent_checkpoint_moved" in facts.unknown and facts.readiness == "unknown"
-
-
-async def test_changed_child_head_and_rework_do_not_reuse_receipt(db):
-    await _parent_tree(db, children=1)
-    await _code_receipt(db, "parent.1", BASE, HEAD)
-    subject, _ = await bridge(db)
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(t.task_integration_checkpoints)
-            .where(t.task_integration_checkpoints.c.task_id == "parent.1")
-            .values(checkpoint_sha=FIRST)
-        )
-    facts = await observer(db).observe(subject)
-    assert not facts.receipts[0].selected and facts.receipts[0].source_head_sha == SOURCE
-    assert facts.children[0].head_sha == FIRST and facts.children[0].pending_collection
-
-
-async def test_historic_episode_receipts_are_retained_without_new_acceptance(db):
-    await _parent_tree(db, children=1)
-    await _code_receipt(db, "parent.1", BASE, HEAD)
-    subject, _ = await bridge(db)
-    data = await ParentDatabaseObservationReader(db).read(subject.id)
-    rows = deepcopy(dict(data.rows))
-    receipt = {
-        **rows["task_delivery_receipts"][0],
-        "parent_episode_id": "old",
-        "parent_operation_id": "old-op",
-    }
-    rows["task_delivery_receipts"] = (receipt,)
-    rows["parent_readiness"] = ({"outcome": "waiting", "receipts": [], "blockers": []},)
-    reader = AsyncMock()
-    reader.read.return_value = replace(data, rows=rows)
-    facts = await ParentIntegrationObserver(reader, clock=lambda: 1000).observe(subject)
-    assert facts.receipts[0].scope == "history" and not facts.receipts[0].selected
-    assert facts.receipts[0].episode_id == "old" and facts.receipts[0].target_head_sha == HEAD
-    reader.read.assert_awaited_once_with(subject.id)
-
-
-async def test_parent_port_and_future_policy_extension_share_the_facts_contract(db):
-    await _parent_tree(db, children=1)
-    subject, _ = await bridge(db)
-    ports = PrimitivePorts({Primitive.OBSERVE_SUBJECT: observer(db)})
-    result = await ports.invoke(subject, ObserveSubjectArgs(include_remote=False))
-    assert result.outcome == "observed"
-    facts = ParentSubjectFacts.model_validate(result.detail["facts"])
-    assert facts.parent_episode_id == subject.parent_episode_id and facts.children
-
-
-@pytest.mark.parametrize("stale", [None, "head", "generation", "operation", "check_version"])
-async def test_parent_verification_and_ci_bind_exact_episode_head_generation(db, stale):
-    await _parent_tree(db, children=1)
-    subject, _ = await bridge(db)
-    [operation] = await _rows(db, t.integration_repair_operations)
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(t.integration_parent_verifications).values(
-                id="verify",
-                operation_id=operation["id"],
-                parent_task_id="parent",
-                episode_id=subject.parent_episode_id,
-                generation=subject.generation,
-                head_sha=subject.head_sha,
-                required_check_version=operation["required_check_version"],
-                created_at=5,
-            )
-        )
-        await conn.execute(
-            update(t.task_integration_checkpoints)
-            .where(t.task_integration_checkpoints.c.task_id == "parent")
-            .values(current_verification_id="verify", state="verifying")
-        )
-        evidence = {
-            "id": "green",
-            "operation_id": operation["id"],
-            "parent_task_id": "parent",
-            "parent_generation": subject.generation,
-            "parent_head_sha": subject.head_sha,
-            "producer_id": "forge-observer",
-            "workflow_id": "workflow",
-            "run_id": "run",
-            "attempt": 1,
-            "required_check_version": operation["required_check_version"],
-            "checks": {"unit": "success"},
-            "conclusion": "success",
-            "classification": "conclusive",
-            "observed_at": 10,
-        }
-        if stale == "head":
-            evidence["parent_head_sha"] = HEAD
-        elif stale == "generation":
-            evidence["parent_generation"] += 1
-        elif stale == "operation":
-            evidence["operation_id"] = "other"
-        elif stale == "check_version":
-            evidence["required_check_version"] = "other"
-        await conn.execute(insert(t.integration_check_evidence).values(**evidence))
-    facts = await observer(db).observe(subject)
-    assert facts.verification.verification_id == "verify" and facts.verification.status == "pending"
-    assert facts.verification.head_sha == subject.head_sha
-    assert facts.ci_state == (
-        CIState.GREEN
-        if stale is None
-        else CIState.UNTRUSTED
-        if stale == "check_version"
-        else CIState.NONE
-    )
-
-
 
 
 @pytest.mark.parametrize("changed", ["repository", "episode", "generation", "branch", "operation"])

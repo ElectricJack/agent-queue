@@ -103,3 +103,33 @@ completions; partial windows preserve cadence and prerequisite fences; stacked
 refresh cancellation still records a pushed completion; existing frozen repairs
 are not delayed by the new frontier. Production activation requires normal
 native delivery and deployment; a worker checkpoint does not clear the incident.
+
+## Red-source isolation (2026-10-21)
+
+A root refused for genuinely red PR checks, including an exhausted or unchanged
+automatic recovery, must not spend the cooperative candidate-selection quantum.
+Exclude the time spent evaluating that refused candidate so later roots can
+reach their own admission gates in the same visit. Preserve the refusal and
+cursor, the outer visit deadline, and the ordinary budget for other candidates.
+This grants no admission to a red source or its dependents: paired repair,
+prerequisite, exact-head and publication checks still apply. Deterministic tests
+must cover a slow red prefix followed by green independent work, and show that
+the green work still spends the quantum and that red prerequisites stay withheld.
+
+## PR admission cache (2026-10-23, smart batch selection A4)
+
+Reuse successful PR/check/review observations for up to ten minutes for the exact
+PR, source SHA, source base, task branch, policy generation and fetched target
+SHA. Bound the in-memory cache to 2048 roots; restart discards it. New source or
+target tips and changed policy/PR identity require another observation immediately,
+including bypassing a refusal's backoff. A failed refresh never retains an old
+success. Repaired-source admission still performs its separate authorization.
+Calls without a fetched target observation cannot reuse a successful admission.
+
+Each visit reports `candidates_eligible` (the pending selection window before
+candidate proofs), `candidates_evaluated` (attempted proofs, including refusals),
+and PR gate cache hits/misses in its existing selection timing counts. Warm
+unchanged observations should let a visit evaluate the whole eligible window;
+the cooperative quantum and final candidate/publication gates remain in force.
+Deterministic tests cover reuse of checks and reviews, refresh on expiry and
+identity changes, target-tip invalidation of refusals, and warm-frontier coverage.
