@@ -25,6 +25,7 @@ const api = vi.hoisted(() => ({
   getProviderAllocationApiProvidersAllocationGet: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
+vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));
 
 /** Mirrors one nested project breakdown (src/api/models/task.py PoolProjectStatus). */
 function project(over: Partial<PoolProjectStatus> = {}): PoolProjectStatus {

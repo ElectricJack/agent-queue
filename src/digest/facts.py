@@ -145,3 +145,4 @@ class DigestInputs:
     reported_keys: frozenset[str] = frozenset()
     reported_highlights: frozenset[str] = frozenset()
     project_names: dict[str, str] = field(default_factory=dict)
+    waiting_on_delivery: tuple[dict, ...] = ()
