@@ -1,16 +1,14 @@
 """Read-only safety checks for removing a task with integration history.
 
-Archive preserves an identity in ``archived_tasks``; hard delete does not.
-The checks in this module deliberately run before the hierarchy-mode gate so
-an old integration record cannot become unsafe merely because a project was
-switched to development or disabled.
+Archive preserves identity in archived_tasks; hard delete does not. Checks precede
+mode gating so changing a project's mode cannot make old records unsafe.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import exists, func, literal, or_, select
+from sqlalchemy import exists, or_, select
 
 from src.database.queries.task_references import (
     describe_integration_references,
@@ -25,24 +23,20 @@ from src.database.tables import (
     integration_repair_stages,
     projects,
     repos,
-    task_branch_origins,
-    task_delivery_receipts,
     task_gates,
-    task_integration_checkpoints,
     task_labels,
     tasks,
 )
-from src.models import TaskStatus
 
 HIERARCHY_MODES = frozenset({"hierarchy", "train"})
+#: How an operator resolves completed work that has not reached the default
+#: branch before it is abandoned or archived: keep it for the train to
+#: deliver, or archive it as obsolete (with a note) or retired. An archive
+#: always retires the subtree's branches through the audited path, which
+#: bundles each unmerged tip before deleting it.
+DELIVERY_DISPOSITIONS = ("deliver", "obsolete", "retire")
 _ACTIVE_BATCH_STATES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
+    "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
     "cleanup_pending",
 )
 
@@ -68,25 +62,24 @@ async def _sealed_member_on(conn, root_id: str, ids: Sequence[str]) -> dict | No
             break
         scope.add(str(row))
         current = str(row)
-    row = (
-        await conn.execute(
-            select(
-                integration_batch_members.c.task_id,
-                integration_batches.c.id.label("batch_id"),
-                integration_batches.c.lifecycle,
-            )
-            .select_from(
-                integration_batch_members.join(
-                    integration_batches,
-                    integration_batches.c.id == integration_batch_members.c.batch_id,
-                )
-            )
-            .where(integration_batch_members.c.task_id.in_(sorted(scope)))
-            .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
-            .order_by(integration_batch_members.c.task_id, integration_batches.c.id)
-            .limit(1)
+    _delivery_query = (
+        select(
+            integration_batch_members.c.task_id,
+            integration_batches.c.id.label("batch_id"),
+            integration_batches.c.lifecycle,
         )
-    ).mappings().one_or_none()
+        .select_from(
+            integration_batch_members.join(
+                integration_batches,
+                integration_batches.c.id == integration_batch_members.c.batch_id,
+            )
+        )
+        .where(integration_batch_members.c.task_id.in_(sorted(scope)))
+        .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
+        .order_by(integration_batch_members.c.task_id, integration_batches.c.id)
+        .limit(1)
+    )
+    row = (await conn.execute(_delivery_query)).mappings().one_or_none()
     return dict(row) if row else None
 
 
@@ -141,18 +134,18 @@ async def _cleanup_blockers_on(db, conn, ids: Sequence[str]) -> list[dict]:
     return blockers
 
 
-async def _development_undelivered_on(conn, ids: Sequence[str], delivery=None) -> list[dict]:
+async def _development_undelivered_on(
+    conn, ids: Sequence[str], delivery=None, *, hierarchical=False,
+) -> list[dict]:
     """The COMPLETED tasks in *ids* whose work git has not proven on the target.
 
-    *delivery* is the :class:`~src.integration.delivery_observer.DeliveryView`
-    the caller took before this transaction; each identity is rechecked here.
-    Evidence that is missing, stale or unknown holds the task exactly as
-    pending work does, so an archive never trusts a row or a guess.
+    Revalidate the caller's pre-transaction DeliveryView identities. Missing,
+    stale or unknown evidence holds work pending and prevents archive.
     """
     from src.integration.delivery_observer import delivery_sensitive_ids
     from src.integration.delivery_truth import DeliveryState
 
-    sensitive = await delivery_sensitive_ids(conn, ids)
+    sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=hierarchical)
     verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
     rows = sorted(
         task_id for task_id in sensitive
@@ -162,25 +155,23 @@ async def _development_undelivered_on(conn, ids: Sequence[str], delivery=None) -
         return []
     result: list[dict] = []
     for task_id in rows:
-        holder = (
-            await conn.execute(
-                select(task_labels.c.label)
-                .where(task_labels.c.task_id == task_id, task_labels.c.label.like("hold:%"))
-                .order_by(task_labels.c.label)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        _delivery_query = (
+            select(task_labels.c.label)
+            .where(task_labels.c.task_id == task_id, task_labels.c.label.like("hold:%"))
+            .order_by(task_labels.c.label)
+            .limit(1)
+        )
+        holder = (await conn.execute(_delivery_query)).scalar_one_or_none()
         if holder:
             result.append({"task_id": task_id, "holder": "hold_label", "detail": holder})
             continue
-        open_gate = (
-            await conn.execute(
-                select(gates.c.id)
-                .select_from(task_gates.join(gates, gates.c.id == task_gates.c.gate_id))
-                .where(task_gates.c.task_id == task_id, gates.c.status == "open")
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        _delivery_query = (
+            select(gates.c.id)
+            .select_from(task_gates.join(gates, gates.c.id == task_gates.c.gate_id))
+            .where(task_gates.c.task_id == task_id, gates.c.status == "open")
+            .limit(1)
+        )
+        open_gate = (await conn.execute(_delivery_query)).scalar_one_or_none()
         if open_gate:
             result.append({"task_id": task_id, "holder": "open_gate", "detail": str(open_gate)})
             continue
@@ -196,113 +187,26 @@ async def _development_undelivered_on(conn, ids: Sequence[str], delivery=None) -
     return result
 
 
-async def _hierarchy_undelivered_on(
-    conn, root_id: str, ids: Sequence[str], project_id: str
-) -> tuple[str, list[dict]]:
-    """Return default branch and the root's undelivered holder(s), if any."""
-    repository = (
-        await conn.execute(
-            select(repos.c.id, repos.c.default_branch)
-            .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
-            .where(projects.c.id == project_id)
-        )
-    ).mappings().one_or_none()
-    if repository is None:
-        return "default branch", []
-    root = (
-        await conn.execute(
-            select(tasks.c.status, tasks.c.parent_task_id, tasks.c.repo_id, tasks.c.pr_url)
-            .where(tasks.c.id == root_id)
-        )
-    ).mappings().one_or_none()
-    if root is None or root["parent_task_id"] is not None:
-        return str(repository["default_branch"]), []
-    delivered = (
-        await conn.execute(
-            select(task_delivery_receipts.c.id)
-            .where(
-                task_delivery_receipts.c.source_task_id == root_id,
-                task_delivery_receipts.c.target_task_id.is_(None),
-                task_delivery_receipts.c.repository_id == repository["id"],
-                func.regexp_replace(task_delivery_receipts.c.target_branch, "^refs/heads/", "")
-                == func.regexp_replace(literal(repository["default_branch"]), "^refs/heads/", ""),
-                task_delivery_receipts.c.disposition == "code",
-            )
-            .limit(1)
-        )
-    ).first()
-    if delivered:
-        return str(repository["default_branch"]), []
-    collected = (
-        await conn.execute(
-            select(task_delivery_receipts.c.id)
-            .where(
-                task_delivery_receipts.c.source_task_id.in_(list(ids)),
-                task_delivery_receipts.c.target_task_id.in_(list(ids)),
-                task_delivery_receipts.c.disposition == "code",
-            )
-            .limit(1)
-        )
-    ).first()
-    candidate = bool(
-        root["status"] == TaskStatus.COMPLETED.value
-        and root["repo_id"] == repository["id"]
-        and str(root["pr_url"] or "").strip()
-        and (
-            await conn.execute(
-                select(task_integration_checkpoints.c.task_id).where(
-                    task_integration_checkpoints.c.task_id == root_id,
-                    task_integration_checkpoints.c.repository_id == repository["id"],
-                )
-            )
-        ).first()
-        and (
-            await conn.execute(
-                select(task_branch_origins.c.id).where(
-                    task_branch_origins.c.task_id == root_id,
-                    task_branch_origins.c.repository_id == repository["id"],
-                    task_branch_origins.c.retired_at.is_(None),
-                )
-            )
-        ).first()
-    )
-    if not collected and not candidate:
-        return str(repository["default_branch"]), []
-    label = (
-        await conn.execute(
-            select(task_labels.c.label)
-            .where(task_labels.c.task_id == root_id, task_labels.c.label.like("hold:%"))
-            .order_by(task_labels.c.label)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    holder = "hold_label" if label else ("collected_not_promoted" if collected else "awaiting_train")
-    return str(repository["default_branch"]), [
-        {"task_id": root_id, "holder": holder, "detail": label or holder}
-    ]
-
-
 async def undelivered_removal_holders(
     conn, *, root_id: str, ids: Sequence[str], project_id: str, mode: str | None,
-    delivery=None,
+    delivery=None, git_first=False,
 ) -> tuple[str, list[dict]]:
     """Return the delivery holders an archive would otherwise refuse.
 
-    The explicit abandon path records these same holders in its durable
-    comment, so it cannot silently bypass a different delivery predicate.
-    Development delivery is git's answer (*delivery*, see
-    :func:`_development_undelivered_on`).
+    Explicit abandonment records these holders in its durable comment using the
+    same predicate. Development delivery uses revalidated Git evidence.
     """
-    if mode == "development":
-        branch = (
-            await conn.execute(
-                select(repos.c.default_branch)
-                .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
-                .where(projects.c.id == project_id)
-            )
-        ).scalar_one_or_none() or "default branch"
-        return str(branch), await _development_undelivered_on(conn, ids, delivery)
-    return await _hierarchy_undelivered_on(conn, root_id, ids, project_id)
+    if mode == "development" or mode in HIERARCHY_MODES:
+        _delivery_query = (
+            select(repos.c.default_branch)
+            .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
+            .where(projects.c.id == project_id)
+        )
+        branch = (await conn.execute(_delivery_query)).scalar_one_or_none() or "default branch"
+        return str(branch), await _development_undelivered_on(
+            conn, ids, delivery, hierarchical=mode in HIERARCHY_MODES,
+        )
+    return "default branch", []
 
 
 async def assert_integration_permits_removal(
@@ -320,10 +224,8 @@ async def assert_integration_permits_removal(
 ) -> None:
     """Raise the first ordered integration refusal for a removal.
 
-    The caller owns the project's hierarchy advisory lock. This module makes
-    no writes so a refusal leaves the archive/delete transaction untouched.
-    *delivery* is the git view taken before the transaction; without one,
-    development work that needs proof is held as unknown.
+    The caller holds the hierarchy advisory lock. Refusals make no writes;
+    missing pre-transaction Git evidence holds development work as unknown.
     """
     sealed = await _sealed_member_on(conn, root_id, ids)
     if sealed:
@@ -346,22 +248,13 @@ async def assert_integration_permits_removal(
     )
     if owner is not None:
         state = owner["state"]
-        if state == "human_required":
-            control = (
-                f"Run `aq integration resume {owner['operation_id']}` to let it finish, or "
-                f"`aq integration abort {owner['operation_id']} --reason \"...\"`"
-            )
-        else:
-            control = (
-                f"Wait for it, or cancel obsolete work with `aq integration cancel-preserving "
-                f"{owner['operation_id']} --reason \"...\"`"
-            )
+        control = "Inspect the owning Subject and its gate; wait for it to settle"
         task_id = owner.get("task_id") or root_id
         raise _error(
             "integration_owned",
             f"integration operation {owner['operation_id']} is {state} and owns {task_id} as its "
             f"{owner['role']}; {mutation} is refused while it runs. {control}, then "
-            f"`{RELEASE_COMMAND}`.",
+            f"the daemon performs {RELEASE_COMMAND}.",
             {"integration_operation": owner},
         )
 
@@ -399,15 +292,19 @@ async def assert_integration_permits_removal(
 
     if abandon_undelivered:
         return
+    from src.integration.delivery_observer import prerequisite_observer
+
     branch, undelivered = await undelivered_removal_holders(
-        conn, root_id=root_id, ids=ids, project_id=project_id, mode=mode, delivery=delivery
+        conn, root_id=root_id, ids=ids, project_id=project_id, mode=mode, delivery=delivery,
+        git_first=prerequisite_observer(db) is not None,
     )
     if undelivered:
         raise _error(
             "integration_undelivered",
             f"{len(undelivered)} task(s) under {root_id} have work that has not reached "
-            f"{branch}: {undelivered[0]['task_id']} ({undelivered[0]['holder']}). Deliver it, "
-            f"or abandon it with `aq task archive --task-id {root_id} "
-            "--abandon-undelivered --reason \"...\"`.",
+            f"{branch}: {undelivered[0]['task_id']} ({undelivered[0]['holder']}). Choose a "
+            f"disposition with `aq task archive --task-id {root_id} --disposition ...`: "
+            "`deliver` keeps it for the train, `obsolete --reason \"<note>\"` or "
+            "`retire --reason \"...\"` archives it and retires its branches after a backup.",
             {"mode": mode or "disabled", "default_branch": branch, "undelivered": undelivered},
         )

@@ -13,7 +13,6 @@ from src.api.auth import SessionTokenStore
 from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
-from src.database import Database
 from src.event_bus import EventBus
 from src.intelligence_classes import IntelligenceClass
 from src.messages.session_lens import SessionLens
@@ -33,7 +32,6 @@ from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import Cap, SessionHandle
 from src.sessions.spec import SessionSpecBuilder
-from tests.db_fixtures import lease_dsn
 
 
 class InteractiveFake(FakeProvider):
@@ -41,9 +39,8 @@ class InteractiveFake(FakeProvider):
 
 
 @pytest.fixture
-async def handler(tmp_path):
-    db = Database(lease_dsn("terminals.db"))
-    await db.initialize()
+async def handler(tmp_path, reuse_database):
+    db = await reuse_database("terminals.db")
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"),
@@ -96,7 +93,6 @@ async def handler(tmp_path):
     result = CommandHandler(orch, config)
     yield result
     result._current_scope = None
-    await db.close()
 
 
 async def start(handler, agent_id="worker-a", project_id=None):
@@ -218,7 +214,7 @@ async def test_supervisor_restart_failed_stop_preserves_prior_token(handler, mon
 
 
 async def test_supervisor_restart_project_session_preserves_scope(handler):
-    await handler.db.create_project(Project(id="p", name="P"))
+    await handler.db.create_project(Project(id="p", name="P", supervisor_enabled=True))
     lens = handler.orchestrator.session_lens
     assert await lens.ensure_started(kind="session", target_id="supervisor-p", project_id="p")
     result = await handler.execute("supervisor_restart", {"name": "supervisor-p", "resume": True})
@@ -496,7 +492,10 @@ async def test_terminal_provider_start_failure_releases_agent_reservation(handle
     assert not fake.sessions
     assert await handler.orchestrator.token_store.validate(attempted[0].env["AQ_API_TOKEN"]) is None
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
-    assert await handler.db.list_sessions() == []
+    rows = await handler.db.list_sessions()
+    assert len(rows) == 1
+    assert rows[0].state == rows[0].desired_state == "stopped"
+    assert rows[0].end_reason == "launch_failed"
 
 
 async def test_cleanup_does_not_release_newer_reservation(handler):
@@ -949,7 +948,9 @@ async def test_real_provider_missing_cli_is_actionable_without_launch(
     assert "claude" in result["error"] and "PATH" in result["error"]
     assert "aqs_" not in result["error"] and str(tmp_path) not in result["error"]
     assert (await handler.db.get_agent(agent_id)).state == AgentState.IDLE
-    assert await handler.db.list_sessions() == []
+    failed = await handler.db.list_sessions()
+    assert len(failed) == 1 and failed[0].state == "stopped"
+    assert failed[0].end_reason == "launch_failed"
     assert fake.starts == []
     # Message/reconciler callers keep the existing bool-return contract.
     if agent_id == "supervisor-global":
