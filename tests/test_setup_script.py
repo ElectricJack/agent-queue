@@ -115,16 +115,16 @@ def test_setup_sh_asks_no_question_it_cannot_survive_the_answer_to() -> None:
 
 
 def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> None:
-    """Run the setup prologue from a script file with no terminal on stdin."""
+    """Run the setup prefix as a script with no terminal and both prompt defaults."""
     import subprocess
 
     helper = SETUP_SH.read_text().split("# --- Detect Python 3.12+ ---")[0]
     script = helper + '\nif ask "Add it?" Y; then echo YES; else echo NO; fi\n'
+    # BASH_SOURCE[0] is not defined for bash -c on every supported Bash version.
+    # A real script preserves checkout initialization under set -u.
     script_path = tmp_path / "setup-prompt.sh"
     for default, expected in (("Y", "YES"), ("N", "NO")):
         body = script.replace('ask "Add it?" Y', f'ask "Add it?" {default}')
-        # The prologue resolves its directory through BASH_SOURCE[0], which
-        # is not defined for bash -c on every supported Bash version.
         script_path.write_text(body, encoding="utf-8")
         result = subprocess.run(
             ["bash", str(script_path)],
@@ -134,4 +134,5 @@ def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> No
             check=False,
         )
         assert result.returncode == 0, result.stderr
+        assert result.stderr == "", result.stderr
         assert expected in result.stdout, result.stdout

@@ -109,6 +109,12 @@ class MessageDeliveryEngine:
         if self._delivery_lock.locked():
             return result
         async with self._delivery_lock:
+            # Recover intake committed before the service subscribed (or before
+            # the global session existed), without depending on a scheduler tick.
+            try:
+                await self._db.route_queued_conversation_inputs()
+            except Exception:
+                logger.exception("Conversation input recovery failed; continuing inbox delivery")
             await self._db.expire_finished_task_notices()
             await self._db.redirect_disabled_supervisor_messages()
             alert = await self._db.alert_global_supervisor_backlog()
