@@ -77,11 +77,27 @@ class CategoryMeta:
 
 # Category definitions with human-readable descriptions
 CATEGORIES: dict[str, CategoryMeta] = {
+    "operator": CategoryMeta(name="operator", description="Scoped operator setup and preflight"),
+    "policy": CategoryMeta(
+        name="policy", description="Portable project policy profiles: export, diff and selective import"
+    ),
+    "cron": CategoryMeta(
+        name="cron",
+        description="Session-owned recurring prompts: register, inspect and cancel wake-ups.",
+    ),
     "git": CategoryMeta(
         name="git",
         description=(
             "Branch, commit, push, PR, merge, and remote URL operations for project repositories"
         ),
+    ),
+    "ci": CategoryMeta(
+        name="ci",
+        description="Required CI evidence and completed task audits",
+    ),
+    "integration": CategoryMeta(
+        name="integration",
+        description="Author-assisted close continuations and bound batch repair",
     ),
     "project": CategoryMeta(
         name="project",
@@ -158,6 +174,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "Durable supervisor-owned human escalations — create, inspect, reply, "
             "update, and apply verified reply evidence"
         ),
+    ),
+    "decision": CategoryMeta(
+        name="decision",
+        description="Durable operator decisions shared by all supervisors",
     ),
     "supervisor_inbox": CategoryMeta(
         name="supervisor_inbox",

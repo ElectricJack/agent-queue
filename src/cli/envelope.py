@@ -51,6 +51,9 @@ _LEGACY_WARNING = (
 # `emit(..., entity=...)`. Centrally defined so no command hand-rolls its
 # own trimming.
 BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
+    "ask": ("success", "view", "identity_hash", "items", "count", "snapshot_at", "next_cursor", "source_health",
+            "ask", "expected", "actions", "preview", "decision_id", "application_state",
+            "input_id", "receipt", "created"),
     "task": ("id", "title", "status", "priority", "project_id", "assigned_agent"),
     "session": ("id", "task_id", "state", "harness", "last_activity"),
     "gate": ("id", "gate_type", "status", "task_id"),
@@ -98,6 +101,8 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "blockers",
         "blocker_digest",
         "warnings",
+        "promotion_flow",
+        "ci_source",
         "state",
         "stage",
         "count",
@@ -175,6 +180,25 @@ def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
                     value = candidate_value
                     break
         projected[field] = value
+    # Human instructions remain actionable even in compact task/batch views.
+    if entity in {"task", "integration"} and isinstance(item, Mapping):
+        if "operator_decisions" in item:
+            projected["operator_decisions"] = item["operator_decisions"]
+        if entity == "integration" and "github" in item:
+            projected["github"] = item["github"]
+        if entity == "integration":
+            for field in ("intent", "dry_run", "task_id", "replacement_batch_id"):
+                if field in item:
+                    projected[field] = item[field]
+            if "batches" in item:
+                projected["batches"] = [
+                    {key: batch[key] for key in ("id", "intent", "target_ref", "member_disposition")
+                     if key in batch}
+                    for batch in item["batches"]
+                ]
+            for name in ("epics", "task_id", "ahead", "behind", "target_sha", "default_sha"):
+                if name in item:
+                    projected[name] = item[name]
     return projected
 
 
