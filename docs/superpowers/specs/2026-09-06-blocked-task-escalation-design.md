@@ -1,8 +1,17 @@
 # Blocked-task escalation playbook
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-06
-**Status:** shipped (default playbook, enabled)
-**Source:** `src/prompts/default_playbooks/blocked-task-escalation.md`
+**Status:** retired; the original shipped behavior below is historical. It is not
+in the initial installation or required-policy sets. Current failure notification
+uses `supervisor-failure-triage`; stateful stuck-task watches are optional. See
+[current policy](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+**Former source (removed):** `src/prompts/default_playbooks/blocked-task-escalation.md`
 **Reviewed bundle:** `tests/fixtures/playbooks/v2/blocked-task-escalation/`
 
 ## Problem
@@ -18,7 +27,7 @@ Two unrelated facts share the word:
 
 | Fact | Bus event | Meaning | Escalate? |
 |---|---|---|---|
-| A session close left the task `BLOCKED` | `task.failed` with `status: BLOCKED` | the agent could not finish: hard failure, retry budget spent, pipeline stopped short, attempt timed out | **yes** |
+| A session close left the task `BLOCKED` | `task.failed` with `status: BLOCKED` | the agent could not finish: hard failure, retry budget spent, pipeline stopped short, attempt timed out | supervisor triage; human only if a real decision remains |
 | The dependency graph's blocked projection flipped | `task.blocked` / `task.unblocked` | an upstream task is unfinished | no: there is no session to read |
 
 The playbook triggers on the first and deliberately ignores the second. The
@@ -43,8 +52,10 @@ agent, and instructs the supervisor to:
 
 1. find the task's session in `aq session list` and read `aq session logs <session-id> -n 200`;
 2. read `aq task show` and `aq task explain` for the task;
-3. decide: retry with concrete feedback (`aq task recover`), hold, spawn a
-   follow-up, or ask the human via `aq message send --to user:dashboard`.
+3. check whether an integration operation owns the repair/verification and preserve its controls
+   and budgets;
+4. decide: retry with concrete feedback (`aq task recover`), hold, or spawn a follow-up; create a
+   source-bound durable escalation only when a real human decision remains.
 
 Why a message rather than a task or an inline LLM step:
 
@@ -72,8 +83,9 @@ playbook's principal is what dispatch authorizes.
 
 ## Cardinality and failure
 
-One message per blocked event, no dedup: each terminal close is a distinct
-fact and the supervisor's inbox coalesces delivery. A failed step (messages
+One triage message per blocked event: each terminal close is a distinct fact
+and the supervisor's inbox coalesces delivery. Replayed human incidents reuse
+the stable task-recovery source/incident key. A failed step (messages
 substrate disabled, project missing) ends the run `failed` for the overlay; the
 next blocked task starts a fresh run.
 
@@ -84,3 +96,62 @@ Like the other reviewed defaults: the source is copied to
 imported and activated per install
 (`aq playbook v2-import --path tests/fixtures/playbooks/v2/blocked-task-escalation`,
 then `aq playbook activate --playbook-id blocked-task-escalation --artifact-sha256 <hash>`).
+
+## Amendment — 2026-09-11 (software-factory policy simplification, Recovery)
+
+The separate triage message above is retired. It and the periodic recovery scan
+(`queue_task_recovery_notifications`) could both notify about one failure with
+no shared identity (policy audit F8). The step now calls the contracted,
+idempotent `task_recovery_notify` (outcomes `queued`, `existing`,
+`not_actionable`, `retired`; plus `rejected`). It wakes the same durable
+`supervisor_recovery_incident` the scan reconciles, so the event, a replay and
+the scan produce one incident and one supervisor notice. The scan now also covers
+terminal close legs (`blocked_terminal`, except an operator's `stop_task`). The
+incident carries its owner (the supervisor, or the live integration operation
+with that stage's attempts and deadline), the remaining worker-retry and
+supervisor-recovery budget, `deadline_kind`, and the next action. Generic
+recovery refuses integration-owned tasks. A delegate of an ended operation is
+retired by `retire_terminal_delegates`, and its pending incident is superseded.
+The command is daemon-internal: it is excluded from MCP, the CLI and the HTTP
+API. The reviewed bundle was rebuilt with
+`scripts/rebuild-reviewed-playbook-artifacts.py`. Installs pick the change up
+by re-importing and activating it.
+
+## Amendment — 2026-10-02 (integration delegate recovery notifications)
+
+A delegate owned by an active, escalated or human-required integration repair
+operation retains its durable recovery incident and stage-budget diagnostics,
+but creates no `Task recovery: <delegate>` supervisor message. Recovery belongs
+to that operation's bounded stage and its operation-level escalation. The first
+notification returns `not_actionable` with the incident and operation ids;
+event replays and periodic scans return `existing` without redelivery. They
+archive any notice queued by an earlier version before it can be redelivered.
+Integration parents and ordinary tasks retain their existing notifications.
+Ended-operation delegates retain the existing retirement and incident
+supersession behavior.
+
+## Amendment — 2026-10-12 (reopened recovery holds)
+
+A recovery hold belongs to its recorded execution attempt and claim epoch.
+The claim frontier, demand counts and diagnostics ignore a hold whose recorded
+attempt or epoch has changed. A status projection to READY alone does not release
+a current hold. Legacy incidents lacking an identity field retain their hold
+until an explicit control supersedes it.
+
+`restart_task` refuses a decided hold unless `override_hold` and a nonempty `reason`
+are supplied by a local operator or live global supervisor. It fences the exact
+incident and hold timestamp in the READY transaction, preserves decision history,
+and records the releasing actor and reason in the incident and a task comment.
+`task_explain` reports the active hold, its owner and diagnosis. A refused restart
+keeps the hold; an undecided incident does not require an override.
+
+When restart first resumes a manual pause, the resume transaction fences the
+same exact hold and preserves it for the final restart transaction to release
+and audit. A replacement hold refuses resume without removing the manual pause.
+
+An accepted `reopen_with_feedback` or authorized `restart_task` supersedes the previous
+incident in the READY transaction, including a READY-to-READY restart. It keeps
+the incident identity and previous decision in its audit history and archives
+the obsolete incident notice. A refused transition or repair reservation keeps
+the old hold. Supervisor recovery budgets are preserved; guarded `task recover`
+continues to require the exact current failure and an explicit fenced hold release.

@@ -46,9 +46,17 @@ from src.playbooks.definition import (
 from src.playbooks.expressions import V2Base
 from tests.playbook_v2_helpers import GOLDEN, GOLDEN_V6, source, twin
 
+
+def test_daily_cron_trigger_accepts_only_valid_local_times():
+    assert D.Trigger(event_type="cron.02:00").event_type == "cron.02:00"
+    for invalid in ("cron.24:00", "cron.02:60", "cron.2:00"):
+        with pytest.raises(ValidationError):
+            D.Trigger(event_type=invalid)
+
 #: §4.7 — pinned so a Pydantic upgrade that reorders dumps fails loudly rather
 #: than silently invalidating every stored artifact hash.
-GOLDEN_DIGEST = "sha256:eaac637309b22ef461f6b0ec4af0607c6baaac204f1c5369c8ef4b39866e6b6d"
+# Refreshed with the combined list_tasks observation and gate_create contract changes in the golden.
+GOLDEN_DIGEST = "sha256:b894e6bc791942583a9ab4afa8a0731d9f036d20e7f0136bbc00103933cb2bd9"
 
 
 @pytest.fixture
@@ -546,6 +554,20 @@ def _run_generator(*args: str) -> subprocess.CompletedProcess[str]:
 
 class TestGeneratedSchema:
     """§8 — the published schema and the accepting loader are one source."""
+
+    def test_agent_task_schema_allows_hints_and_only_optional_role_profiles(self, golden):
+        from src.routing.sources import ROLE_PROFILE_IDS
+
+        schema = json.loads(SCHEMA_FILE.read_text())["$defs"]["AgentTaskStep"]
+        assert "profile_id" not in schema["required"]
+        assert "pin_provider" not in schema["properties"]
+        assert {"intelligence_class", "task_type"} <= schema["properties"].keys()
+        # Every control-plane role, including the shipped fidelity-reviewer,
+        # is available to agent_task steps; worker routes remain excluded.
+        assert set(schema["properties"]["profile_id"]["anyOf"][0]["enum"]) == ROLE_PROFILE_IDS
+        step = golden.steps["escalate"].model_dump()
+        step.pop("profile_id")
+        assert D.AgentTaskStep.model_validate(step).profile_id is None
 
     def test_generated_schema_matches_checked_in_file(self):
         """T-15 — the CI guard, mirroring V1's ``test_schema_file_matches_generated``."""

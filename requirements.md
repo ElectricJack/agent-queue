@@ -1,5 +1,10 @@
 # Agent Queue — Requirements
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](docs/README.md); see [historical material](docs/history/README.md).
+
 ## Task Lifecycle
 
 - Tasks must flow through a well-defined state machine with clear transitions — no ambiguous or stuck states

@@ -10,10 +10,25 @@ line): unsubmitted text sits at/after it, a transcript echo sits above.
 
 from __future__ import annotations
 
+from src.sessions.provider import SessionHandle
 from src.sessions.tmux import TmuxProvider, _submit_pending
 
 NBSP = " "
 MARKER = 'Reply with `aq reply msg-1 "…"`.'
+
+
+async def test_instance_stop_proof_accepts_same_named_successor(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    provider = TmuxProvider()
+    tmux = AsyncMock(side_effect=["n-supervisor--global\n", "AQ_INSTANCE_TOKEN=new-token\n"])
+    monkeypatch.setattr(provider, "_tmux", tmux)
+    old = SessionHandle("n-supervisor--global", "tmux", "old-token")
+    assert await provider.confirm_instance_stopped(old)
+
+    tmux.reset_mock(side_effect=True)
+    tmux.side_effect = ["n-supervisor--global\n", "AQ_INSTANCE_TOKEN=old-token\n"]
+    assert not await provider.confirm_instance_stopped(old)
 
 
 class TestSubmitPending:
@@ -77,6 +92,23 @@ class TestSubmitPending:
         """No visible prompt line + visible marker → assume pending."""
         tail = f"  {MARKER}\n  more wrapped paste"
         assert _submit_pending(tail, MARKER, "❯ ") is True
+
+    def test_a_marker_split_by_the_composers_own_wrap_is_pending(self):
+        """Codex and Claude wrap long input onto rows of their own, breaking
+        at a space and indenting the continuation.  Row-by-row matching read
+        such a nudge as never typed (the stall reminder sat unsubmitted in
+        every 80-column Codex pane, 2026-09-27) and, after Enter, as sent."""
+        rows = [
+            "› No progress for 12 min. if you are blocked, say so with `aq message send --to",
+            '  user:dashboard --body "Blocked: <question>"`.',
+            "",
+            "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3",
+        ]
+        marker = 'message send --to user:dashboard --body "Blocked: <question>"`.'[-48:]
+        assert all(marker not in row for row in rows)
+        assert _submit_pending("\n".join(rows), marker, "› ") is True
+        rows += ["• Working (1s • esc to interrupt)", "", "› Ask Codex to do anything"]
+        assert _submit_pending("\n".join(rows), marker, "› ") is False
 
 
 class TestCaptureTailTrims:

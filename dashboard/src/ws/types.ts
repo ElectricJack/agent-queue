@@ -20,6 +20,27 @@ interface BaseEvent {
   project_id?: string | null;
 }
 
+export interface PoolRenamedEvent extends BaseEvent {
+  event_type: "pool.renamed";
+  profile_id: string;
+  old_name: string;
+  name: string;
+  backup_path: string;
+}
+
+export interface PoolDeletedEvent extends BaseEvent {
+  event_type: "pool.deleted";
+  profile_id: string;
+  depth: "profile" | "directory";
+  sessions: string[];
+  warnings: string[];
+}
+
+export interface ProjectPauseChangedEvent extends BaseEvent {
+  event_type: "project.paused" | "project.resumed";
+  project_id: string;
+}
+
 // --- Task lifecycle ---
 
 export interface TaskStartedEvent extends BaseEvent {
@@ -336,6 +357,7 @@ export interface TaskGraphChangedEvent extends BaseEvent {
   event_type: "task.created" | "task.reparented" | "task.updated" | "task.deleted" | "task.archived" | "task.ready" | "task.claimed";
   task_id: string;
   title?: string;
+  status?: string;
   old_parent?: string | null;
   new_parent?: string | null;
 }
@@ -384,7 +406,61 @@ export interface ProposalStatusChangedEvent extends BaseEvent {
   event_type: "proposal.status_changed";
   project_id: string;
   proposal_id: string;
-  status: "committed" | "discarded";
+  status: "held" | "committed" | "discarded";
+}
+
+export interface BatchEvent extends BaseEvent {
+  event_type: "batch.held" | "batch.receipt_recorded" | "batch.needs_scope" | "batch.released";
+  project_id: string;
+  batch_id: string;
+  structure_revision: number;
+  structure_digest: string;
+  reviewer_task_id: string | null;
+}
+
+// --- Document review lifecycle ---
+
+export interface ReviewSubmittedEvent extends BaseEvent {
+  event_type: "review.submitted";
+  review_id: string;
+  title?: string;
+  kind?: string;
+  revision?: number;
+  author_task_id?: string;
+  changes_note?: string;
+  decider?: string;
+}
+
+export interface ReviewRevisedEvent extends BaseEvent {
+  event_type: "review.revised";
+  review_id: string;
+  title?: string;
+  kind?: string;
+  revision?: number;
+  author_task_id?: string;
+  changes_note?: string;
+  decider?: string;
+}
+
+export interface ReviewDecidedEvent extends BaseEvent {
+  event_type: "review.decided";
+  review_id: string;
+  revision?: number;
+  decision?: string;
+  decided_by?: string;
+  unblocked_task_ids?: string[];
+}
+
+export interface ReviewWithdrawnEvent extends BaseEvent {
+  event_type: "review.withdrawn";
+  review_id: string;
+}
+
+export interface ReviewCommentedEvent extends BaseEvent {
+  event_type: "review.commented";
+  review_id: string;
+  revision?: number;
+  comment_id?: string;
 }
 
 // --- Fleet metrics (Metrics tab) ---
@@ -396,6 +472,24 @@ export interface ProposalStatusChangedEvent extends BaseEvent {
  */
 export interface MetricsTickEvent extends BaseEvent, MetricsSample {
   event_type: "metrics.tick";
+  /** Null before wait schema migration; shares the generated history shape. */
+  waits?: MetricsSample["waits"];
+}
+
+// --- Durable dashboard state ---
+
+/** A value-free invalidation frame. Persisted replay may wrap these fields in
+ * `payload`; useEventStream normalizes both wire shapes before acting on it. */
+export interface DashboardStateChangedEvent extends BaseEvent {
+  event_type: "dashboard_state.changed.v1";
+  version: 1;
+  scope: "workspace" | "user";
+  owner_id: string;
+  namespace: string;
+  subject: string | null;
+  revision: number;
+  change: "write" | "reset";
+  updated_at: number;
 }
 
 // --- Union type ---
@@ -443,4 +537,14 @@ export type NotifyEvent =
   | AgentWaitingQuestionEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent
-  | MetricsTickEvent;
+  | BatchEvent
+  | ReviewSubmittedEvent
+  | ReviewRevisedEvent
+  | ReviewDecidedEvent
+  | ReviewWithdrawnEvent
+  | ReviewCommentedEvent
+  | MetricsTickEvent
+  | DashboardStateChangedEvent
+  | ProjectPauseChangedEvent
+  | PoolRenamedEvent
+  | PoolDeletedEvent;

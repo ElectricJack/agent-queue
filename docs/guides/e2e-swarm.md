@@ -15,8 +15,9 @@ It comes in two tiers.
 |---|---|---|
 | `sessions.provider` | `fake` | `tmux` |
 | Who is the worker | `scripts/e2e-smoke.sh` | a real `claude` process |
-| Playbooks / messages / supervisor | off | on (a live agent needs them) |
-| Runtime | ~2½ minutes | as long as the model takes |
+| Command-only playbooks / supervisor | on / off | on / on (a live agent needs the supervisor) |
+| Durable messages | local sink only | on |
+| Runtime | several minutes; varies with PostgreSQL and host load | as long as the model takes |
 | Deterministic | yes | no |
 | Costs tokens | no | yes |
 | Use it for | every change to claims / pools / formulas / hierarchy | before shipping a change to the bootstrap prompt or the harness |
@@ -34,11 +35,16 @@ vault, different database, different API port (8099), different tmux socket
 
 ```bash
 docker compose up -d postgres          # the dev PostgreSQL on :5533
+docker compose up -d postgres-test     # managed validation's disposable test server on :5534
 pip install -e ".[dev,cli]"            # and packages/aq-client
 git --version                          # any recent git
 ```
 
 Tier 2 additionally needs `tmux` and a `claude` binary on `PATH`.
+
+The generated config enables managed jobs for development validation. Its test
+maintenance DSN uses `POSTGRES_TEST_DSN` when supplied, otherwise the compose
+`postgres-test` server on `:5534`; it is separate from the e2e daemon database.
 
 ## Tier 1 — the scripted run
 
@@ -58,7 +64,118 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-A clean run:
+The default run executes all 21 scenarios. `S1`–`S8` cover swarm composition;
+`S9`–`S14` cover the wider stateful CLI surface; `S16` runs a whole provider
+outage against two fake providers; `S17` cooks and works a phased graph; and
+`S18` proves the reviewed supervisor failure-triage playbook against a real
+terminal worker close. `S19` uses a planner's authenticated session token to
+file a graph, prove root/cross-project/foreign-parent denials, race two graph
+batches at quota, and work a graph-seeded checklist through prime and close.
+`S21` snapshots an implementation approval, materializes held work through its
+assigned ingester, verifies the hold against a pool claim, records the assigned
+reviewer's fidelity receipt and releases the leaf. Reconstructing client
+authentication and replaying materialization, reviewer dispatch and release
+proves that a lost response cannot duplicate work or change release evidence.
+Every CLI subprocess is
+forced back to this disposable data directory and database even when the
+caller is a worker carrying production-refusal sentinels.
+
+S19 pauses scheduling in its disposable project before filing the checklist
+graph, writes the operator override to the fixture pool, and releases that
+pause in `finally` before claiming the child. Graph filing can dispatch the
+router immediately; its routing gate alone cannot hold the child until the
+override. Production still refuses overrides of claimed or running tasks.
+
+S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
+(the `provb` worker, the probation canary and the pinned task) retry
+`no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
+skip a READY fixture while another transaction holds its row. Each claim waits
+one second so an unlock without a `task.ready` event cannot consume the retry
+budget in a few long polls. `claim_in_progress` for an expected fixture resumes
+the same preparation on the next call. S16 requests its three exact fixtures
+with `aq task claim TASK_ID`: `--next` may skip a locked fixture and claim other
+queued work, even when the fixture has higher priority. An untargeted conflict
+fails immediately; S16 retries a targeted conflict only while the fixture is
+still READY, unclaimed and unblocked. Other claim outcomes and claims or
+preparations of an unexpected task fail immediately. S2 and S3 accept only the
+remaining S1 fixtures, including when separate pytest items run them in different
+subprocesses. A timeout reports the last claim and the fixture state.
+
+CI covers all 20 scenarios as **21 individually reported pytest items** in four
+parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
+S17, S20), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S15, S16a).
+S16a covers outage detection/rerouting; S16b prepares a separate outage through
+public commands and covers recovery/undo/all-down. Select `S16` in the shell
+runner to run the original full serial transcript.
+
+Each shard uses one module-scoped disposable world. S1–S3 explicitly share state;
+selecting S2 or S3 alone prepares its missing predecessors. Other item boundaries
+remove tasks (including terminal rows) and sessions and restore swarm/provider/
+playbook switches. Failed cleanup prevents further use of that world, and fixture
+teardown always destroys its owned resources. No daemon is shared across workers.
+
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
+
+Each item has its own 540-second pytest limit. The scenario step has an
+eleven-minute deadline and a cache-miss dependency install has a separate
+twelve-minute deadline; the 26-minute job budget is their sum plus setup and
+post-job cleanup. The original hosted graph scenarios consumed 261 seconds; a
+five-minute total cancelled that passing run during cleanup. Run 36830122857
+spent 439 seconds installing from a slow PyPI and a shared ten-minute total then
+cancelled the passing `cli` group, so neither phase can spend the other's time.
+To reproduce a shard or selected scenario:
+
+
+```bash
+# One shard, matching CI:
+aq test tests/test_e2e_cli_stateful.py -k 'claims-' -m integration -s
+# One scenario, with independent setup and teardown:
+aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_scenario[graphs-S16b]' -m integration -s
+# Four parallel shards; loadgroup preserves fixture reuse:
+aq test tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -s
+```
+
+The shard selector includes the trailing hyphen from the scenario IDs (for
+example, `cli-S5`). Using `-k cli` also matches the module's name and selects
+every scenario instead of just the CLI shard.
+
+Pytest uses a one-second periodic scheduler backstop, a half-second config
+watcher, one-second graph sweeps and quarter-second condition polls.
+`AQ_E2E_CYCLE_SECONDS` and `AQ_E2E_CONFIG_POLL_SECONDS` override the test launcher;
+operator and tmux cadence use the production scheduling configuration defaults. Negative provider assertions
+observe two **completed** scheduler cycles rather than assume elapsed time implies
+scheduling. `src.main` daemons started manually retain the original 12-second
+observation window.
+
+Pytest preloads the full CLI once in a private Unix-socket launcher and forks a
+separate CLI process for each ordinary command. Click parsing, command routing,
+REST, per-invocation environment, output formatting and process exit codes all run.
+Claim/graph races, waits, plugin startup probes, help and version use fresh
+interpreters. This optimization is POSIX-only and opt-in through
+`AQ_E2E_CLI_SOCKET`; the standalone shell runner continues to launch fresh
+interpreters. Fixture registration, cleanup and polling use the public command API.
+
+`TIMING` JSON rows report lifecycle, CLI call counts/durations, condition waits and
+provider recovery. Set `AQ_E2E_TIMINGS_DIR` to keep per-shard JSONL files outside
+the disposable home; CI uploads these with JUnit results. Condition durations
+include their predicate cost and may overlap CLI time. The
+[measurement and lifecycle audit](../reports/2026-09-30-e2e-shared-fixtures.md)
+records comparable before/after results and the remaining startup coverage.
+
+Scenarios S5 and S18 wait for their exact fixture to be claimed, rather than
+assuming a `READY` task is available to one claim attempt. PostgreSQL's
+`SKIP LOCKED` can temporarily return `no_ready_work` while another transaction
+holds the task row. These scenarios retry that result within the convergence
+budget; other claim outcomes and a claim of a different task fail immediately.
+Timeouts report the last claim response and the fixture's current route and
+status. S18 still requires the terminal failure, completed triage playbook and
+durable supervisor notice after claiming its fixture.
+
+A historical clean transcript (before S19 and S20 were added; current runs
+report all 20 scenarios):
 
 ```
 swarm e2e (Tier 1) — daemon at http://127.0.0.1:8099
@@ -79,30 +196,105 @@ PASS S7 PostgreSQL claim race (26.4s)
      outcomes ['no_ready_work', 'claimed'] — one winner, loser said no_ready_work
 PASS S8 project onboarding (1.2s)
      real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
+PASS S9 task lifecycle (...)
+     partial flags exited 2 without persistence; full JSON receipt yielded [...]; update persisted; priority failure rolled back; task deleted
+PASS S10 workspace + file/git/note writes (...)
+     workspace/file/git/note CRUD persisted across processes; refusals rolled back
+PASS S11 messages (...)
+     queued/injected/replied through database-only sink; bad target refused
+PASS S12 MCP registry (...)
+     registry create/read/delete passed; loopback:1 probe = dependency-unavailable
+PASS S13 plugin extensions (...)
+     disposable entry point loaded when present and was an exit-2 unknown command when absent
+PASS S14 graph + vault (...)
+     layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
+     local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
+PASS S16 provider failover (206.1s)
+     prova tripped in 2 launch(es); moved …,… to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned …; all-down held everything, claim=drain_requested, critical escalation
+PASS S17 phased graph (...)
+     dry-run/cook phase graph; phase 2 withheld then released after phase 1 COMPLETED; prime rendered and close skipped 3 checklist rows
 
-8/8 scenarios passed
+PASS S18 supervisor failure triage (...)
+     task.failed completed the reviewed playbook run and queued one durable supervisor notice
+
+18/18 scenarios passed
 ```
 
-The runner exits non-zero if any scenario fails.
+The runner exits non-zero if any scenario fails. It then prints a capability
+report whose statuses are deliberately finite: `passed`, `broken`,
+`unsupported`, `dependency-unavailable`, and `explicitly-untested`. This keeps
+an absent optional service or retired surface from being reported as either a
+false pass or a product regression.
 
 Tier 1 keeps assignment deterministic without an LLM: its generated execution
-profiles carry fixed `default_class` values, and the runner and formula fixtures
-write those intelligence classes explicitly onto tasks. This mirrors a completed
-assignment-routing decision and makes pool claims exercise the live session's
+profiles carry fixed `default_class` values, and the runner files each task
+with hints only, then writes the route the project's router would write — a
+`router` route whose candidates are every enabled profile of the class —
+straight onto the row (`route_task` in `scripts/e2e/smoke.py`). S3, S16 and S19
+use the operator's audited `aq task route-override` instead. This mirrors a
+completed routing decision and makes pool claims exercise the live session's
 class and model constraints.
+
+### Deliberate policy installation and project setup
+
+The separate policy acceptance runner uses the real daemon, CLI/HTTP commands
+and PostgreSQL. Choose a unique home, port and database before running the kit:
+
+```bash
+export AQ_E2E_HOME=/tmp/aq-e2e-policy-my-run
+export AQ_E2E_PORT=8199
+export E2E_DB_NAME=agent_queue_e2e_policy_my_run
+export AQ_E2E_TMUX_SOCKET=aq-e2e-policy-my-run
+scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+scripts/e2e-policy.sh
+```
+
+Use an unused port and your own suffix. The policy runner owns four marked child
+homes under `$AQ_E2E_HOME/policy-cases/`, unique derived databases and dynamically
+chosen ports. It stops only its child daemons, including after failure. The parent
+smoke daemon and operator installation are independent. Child fixtures use fake
+sessions, disable real provider probes and reject direct LLM calls before traffic
+can leave the process. An attempted call records `llm-forbidden.jsonl` and fails
+acceptance. Notifications use the local database sink.
+
+`e2e-env.sh` deliberately installs initial playbooks **before** writing its fixture
+profiles/formulas. The runner records that builder inventory and pending receipt,
+then separately prepares absent, empty, existing nonempty and failed-first-import
+startup states. Ordinary restarts invoke only `e2e-daemon.sh`; they never rerun
+the builder. This distinction catches startup ordering failures that a kit with
+preloaded fixture profiles can conceal.
+
+The scenario checks the exact six-item source/bundle inventory and five initial
+activations, inactive morning reporting, deletion of a source/bundle/whole vault
+with a retained receipt, existing-vault preservation, missing/disabled/stale
+required rows, read-only doctor checks, explicit required and installed-bundle
+repairs, and consumed first-attempt failure recovery. Project create/onboard
+exercise default/exported/none, noninteractive omission, cancellation retention,
+preview acknowledgement, pending review, approval without activation, and
+unchanged existing project configuration.
+
+The complete command transcript, exit statuses, inventories, activation rows and
+tested HEAD are written to `$AQ_E2E_HOME/policy-acceptance.json` even on failure;
+`--output PATH` selects another evidence file. Child `daemon.log` files retain
+startup diagnostics. The [policy contract](../specs/design/policy-profiles.md) and
+[receipt/repair guidance](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility)
+explain the operator behavior these checks verify.
 
 ### What the pieces are
 
 | File | What it does |
 |---|---|
 | `scripts/e2e-common.sh` | shared paths, ports and DSNs; every value overridable from the environment |
-| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, an operator-owned onboarding root, vault fixtures, `bin/aq`, `config.yaml`, and the database. `--reset` drops all of it first; `--register` registers the projects against a running daemon |
+| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, an onboarding root, an opt-in plugin entry point, vault fixtures, `bin/aq`, config, and database |
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
+| `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the eight scenarios |
+| `scripts/e2e/smoke.py` | the 20 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
+| `scripts/e2e/probe.py` | asks `/ready` whether the daemon can actually use its schema — the readiness gate `e2e-daemon.sh` and `e2e-smoke.sh` refuse on |
 | `scripts/e2e-dashboard.sh` | the React dashboard pointed at the e2e daemon, for watching a run |
 
 ### Watching a run in the dashboard
@@ -158,10 +350,14 @@ supervisor token can reach it.
 ### What each scenario proves
 
 **S1 — pool sizing.** Three READY tasks routed to the `worker` pool profile.
-Within a few 5s cascades `aq pool status` shows exactly two live sessions —
-`max_active`, not "one per task" — and
-`aq system get-recent-events --event-type pool.scaled` carries the audit row
-for the scale-up. *Regression it catches: a sizer that ignores its bounds, or
+Within a few 5s cascades `aq pool status` reports supply of exactly two and
+`aq session list --lifecycle pool` has exactly two live session rows, bounded
+by `max_active`. The wait includes
+`aq system get-recent-events --event-type pool.scaled` carrying the scale-up
+audit row: `starting` includes reservations before session rows exist, and
+the audit follows completion of the launch batch. Every sampled supply and
+session count must stay at or below two, including during startup.
+*Regression it catches: a sizer that ignores its bounds, or
 one that never fires at all.*
 
 **S2 — the claim loop.** The whole worker lifecycle through one session's own
@@ -180,14 +376,16 @@ are observable: the session row goes terminal, `pools.orphan_agents` stays
 clean — that check *does* read agent rows and would flag one left behind —
 and a replacement session appears.
 
-**S3 — worker-filed work.** A worker holding a task files another. It lands
-with a DEFINED creation result, pinned to the session's project, and inherits
-the caller's profile as its capability ceiling. Its `discovered-from` edge and
-open `routing` gate keep `is_blocked` true; with this fixture's non-authoritative
-blocked-state projection, its status may promote to READY before the next read.
-`aq task route` — the only resolver for a routing gate, and what a triage agent
-would call — then writes the explicit intelligence class and resolves the gate;
-`aq task explain` stops reporting the task as gate-blocked.
+**S3 — worker-filed work.** A worker holding a task files another, as a root
+filing. It lands with a DEFINED creation result, pinned to the session's
+project, and carries no profile and no class: filing takes hints only and the
+filer's own route never carries over, so the filing is `unrouted` like any new
+task. Its `discovered-from` edge and open `routing` gate keep `is_blocked` true;
+with this fixture's non-authoritative blocked-state projection, its status may
+promote to READY before the next read. `aq task route-override` — standing in
+for the router, which Tier 1 runs without an LLM, and the only other writer
+that resolves a routing gate — then writes the profile and class and resolves
+the gate; `aq task explain` stops reporting the task as gate-blocked.
 *Regression it catches: filings escaping their project, arriving unrouted-but-
 runnable, or losing their provenance.*
 
@@ -205,7 +403,11 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
-`aq prime` a task in project `other`. *Regression it catches: a token being
+`aq prime` a task in project `other`. Before those assertions, the holder
+retries `no_ready_work` and observes fixture preparation within the convergence
+budget, then must claim the exact fixture: even a routed `READY` row can be skipped
+while another transaction locks it. A timeout reports the last claim and fixture
+state; other claim failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and
@@ -218,8 +420,8 @@ reload.*
 **S7 — the PostgreSQL race.** Two workers claim `--next` concurrently, as two
 real processes, against one READY task. Exactly one gets `claimed`; the other
 gets `no_ready_work` or `claim_conflict`. *Regression it catches: the
-`FOR UPDATE SKIP LOCKED` work query losing its exclusivity — the failure that
-unit tests on SQLite cannot see.*
+`FOR UPDATE SKIP LOCKED` work query losing its exclusivity, which only two
+real processes against one real database can demonstrate.*
 
 **S8 — project onboarding.** The real `aq project onboard` CLI links a seeded
 repository beneath the configured disposable root and initializes a second
@@ -229,6 +431,199 @@ verify that each operation created exactly one project and one enabled primary
 byte-for-byte clean and both standard vault trees exist. *Regression it catches:
 the public CLI, configured-root authorization, saga registration, Git setup, and
 vault setup working separately but failing when composed through a real daemon.*
+
+**S9 — task lifecycle.** A partial noninteractive `aq --json task create`
+invocation must exit 2, name its missing flag, and leave no task behind; the
+full noninteractive flag set, including a workspace requirement, then creates
+a real task. Its id comes from the JSON receipt, not terminal scraping.
+Separate reads prove persistence; `task set` proves update semantics; invalid
+priority proves nonzero exit plus rollback; deletion proves the final edge.
+
+**S10 — workspace, file, git and notes.** A clone reserved by `e2e-env.sh` is
+registered and removed through the workspace CLI. Duplicate registration and
+an out-of-workspace file write are refused without residue. File write/read/edit,
+git branch/commit/push/log, and note write/append/read/delete are all exercised
+against disposable disk and a bare local remote.
+
+**S11 — messages.** The durable queue sends, reads, injects and replies to a
+synthetic `profile:e2e-sink-*` mailbox. Profile mailboxes are pull-only, and
+`messaging_platform: none` is a second hard network fence: no Discord, webhook
+or human receives anything. A malformed recipient verifies the CLI's nonzero
+failure contract.
+
+**S12 — MCP registry.** Project-scoped create/read/delete goes through the
+daemon and vault watcher. The only probe targets `127.0.0.1:1`, deliberately
+proving `dependency-unavailable` reporting without contacting a real MCP
+service.
+
+**S13 — plugin extensions.** `e2e-env.sh` creates a tiny distribution metadata
+fixture without installing it. One subprocess opts in with `PYTHONPATH` and
+runs its command; another omits the path and must receive Click's exit-2
+unknown-command response. No package manager or interpreter environment is
+modified.
+
+**S14 — graph and vault.** Layout rebuild and tidy run through the daemon,
+including a missing-project refusal. Vault migration is invoked only with
+`--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
+control remain explicitly untested.
+
+**S15 — integration surface cleanup.** The runner parses `aq integration
+--help`, requires the current `status` command, and verifies that `adopt`,
+`adopt-legacy-deliveries`, `develop`, `migrate-provenance` and `sweep` are absent.
+It replaces the old development integration scenario retired with that engine
+on 2026-10-04. S20 now exercises ordinary train-mode delivery; the focused root
+Git scenarios also live in `tests/test_integration_root_scenarios.py`.
+
+**S16 — provider failover.** The end-to-end check of
+[provider failover](../specs/provider-failover.md) (D23), against the fake
+provider kit below. It queues six router-routed (`class_only`) tasks on
+`prova` — five at `std-high`, one at `solo-high` — and one pinned there with
+`aq task route-override`, then logs `prova` out.
+It asserts that `prova` turns `unauthenticated` within two launches and that
+nothing launches against it afterwards (counted from the provider's own
+`startup_dialog` evidence, because a startup death leaves no session row);
+that `aq provider held-tasks` and `aq task explain` name every hold
+(`provider_pinned`, `no_equivalent_rung`, and `failover_inactive` for the rest,
+because S16 temporarily pauses the automatic provider-failover playbook while
+it exercises the same policy through the operator commands); and that `aq provider reroute --dry-run`
+plans exactly what the live sweep then does. The live sweep is the command the
+`provider-failover` playbook calls. The sweep moves one task at a time into
+`provb`'s `max_active: 1` — the runner works it as the `provb` session, and
+the top-up sweep joins the same batch — and `provb` never runs two sessions.
+It then checks one outage notice to `user:dashboard`, one batch notice to
+`supervisor-e2e`, one `high` escalation, and the status counts. Recovery comes
+next: the script restores `prova`, `aq provider recheck` puts it on probation,
+the single canary launch claims a held task and turns `prova` `available`, the
+pinned task runs on `prova`, the moved-and-queued task stays on `provb` until
+`aq provider reroute-undo` returns it, and the escalation resolves. Finally
+every provider goes down (`prova` logged out, the others disabled by override):
+the sweep moves nothing and holds everything as `all_providers_unavailable`, a
+live claude session's claim answers `drain_requested`, the escalation turns
+`critical`, and `providers.availability` reports `error`. Cleanup restores
+every provider whatever happened. *Regression it catches: a provider outage
+that keeps launching, work that moves past a pool's bound or across a class, a
+pin that moves, a hold with no reason, or a recovery that never completes.*
+
+**S17 — phased graph.** A disposable development-mode project is onboarded
+through the real CLI, then a vault spec with two declared phases, three nodes,
+and a graph-seeded three-row checklist is cooked through
+`aq task create --from-spec`. Its dry run reports both phases and all three
+checklist rows without persistence. The runner verifies phase 2 and its node
+are withheld, claims both phase-1 nodes as pool workers, and reads the
+checklist from the real `aq prime` output. A close without
+`--skip-open-subtasks` must refuse with `subtasks.open`; the override then
+closes the task and leaves every row `skipped` with the `skipped at close`
+note. Once the branchless phase-1 container settles `COMPLETED`, phase 2
+unblocks and a replacement worker can claim it — no development publication
+sweep occurs between those observations. The scenario closes and deletes the
+epic so it is re-runnable. *Regression it catches: a graph writer that loses
+phase/checklist data, a later phase escaping its parent gate, development
+delivery accidentally treating a phase container as a branch owner, or a
+checklist bypassing the close fence.*
+
+**S18 — supervisor failure triage.** Tier 1 enables only the deterministic
+command-bearing system playbooks; it still starts no model process or
+supervisor session. The scenario gives a disposable pool worker one explicit
+assignment, closes it with a hard failure, then verifies the resulting
+`task.failed` event completed the reviewed `supervisor-failure-triage` run for
+that task and created a durable notice retaining project `e2e`. The recipient
+is `supervisor-global` by default, or `supervisor-e2e` when that project has
+opted in to a project supervisor. It deletes the terminal fixture afterward.
+*Regression it catches: a reviewed
+failure-triage bundle that is not activated, does not receive terminal worker
+events, calls the wrong command, or fails to persist its supervisor incident.*
+
+### The fake provider kit
+
+`tests/fixtures/provider_failover/` holds everything S16 needs, and
+`e2e-env.sh` copies it into the vault:
+
+| File | What it is |
+|---|---|
+| `harnesses/prova.md`, `harnesses/provb.md` | Two vendorless fake harnesses, each declaring a `login-required` (`signal: auth`) and a `usage-limit` (`signal: usage`) quarantine dialog. Their provider keys are their ids. |
+| `intelligence-classes/std-high.md` | A class with a slice for both harness ids, so `std-high-prova` and `std-high-provb` are equivalent rungs. |
+| `intelligence-classes/solo-high.md` | A class with a `prova` slice only — the `astra-high` analogue. A task on it holds with `no_equivalent_rung`. |
+| `agent-types/std-high-prova`, `std-high-provb`, `solo-high-prova` | Hand-authored pool profiles, `max_active: 1`. `WORKER_PROVIDERS` is fixed, so the kit authors rungs rather than deriving them; this also proves that an operator-authored profile fails over. |
+
+Nothing ever runs a `prova` binary. `sessions.fake_script_file` (Tier 1 only;
+`$AQ_E2E_HOME/fake-provider-script.json`) maps each fake harness to a mode, and
+the fake session provider re-reads it on every start
+([`src/sessions/fake_script.py`](../../src/sessions/fake_script.py)):
+
+| Mode | A start… |
+|---|---|
+| `ok` | succeeds (also the default for a harness the file does not name) |
+| `login_required` | dies on the `login-required` dialog — a logged-out CLI |
+| `usage_limit` | dies on the `usage-limit` dialog — an exhausted account |
+| `crash` | dies with no dialog — an unattributed startup death |
+| `rate_limit_midtask` | succeeds, then exits `after_s` seconds later with a usage-limit line in its pane |
+
+The same file answers the daemon's login probe for the harnesses it names
+(`login_required` is *not signed in*, anything else *signed in*), and a
+fake-session daemon with a script probes no real CLI at all. So you can drive
+an outage by hand against a running kit:
+
+```bash
+echo '{"prova": "login_required", "provb": "ok"}' > "$AQ_E2E_HOME/fake-provider-script.json"
+# queue work on std-high-prova, then:
+aq provider status --provider prova
+aq provider reroute --dry-run
+echo '{"prova": "ok", "provb": "ok"}' > "$AQ_E2E_HOME/fake-provider-script.json"
+aq provider recheck --provider prova
+```
+
+Keep S16's cleanup order in mind if you do: `aq provider set-state … --state auto`
+puts a still-unavailable provider on probation. Probation admits one canary
+launch, and a canary nobody works holds that provider's launches for
+`CANARY_TIMEOUT_SECONDS` (10 minutes). So clear the queued work first.
+
+### Readiness is not liveness
+
+`GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
+
+The kit gates on `/ready`, through `scripts/e2e/probe.py`:
+
+* `e2e-daemon.sh start` waits for *ready*, not for a listening port, and fails
+  — printing the database error and the log tail — if readiness never arrives;
+* `e2e-daemon.sh status` exits non-zero when the daemon is answering but cannot
+  reach its schema, which is what stops `e2e-smoke.sh` from reusing it;
+* `e2e-smoke.sh` re-probes immediately before the first scenario.
+
+This exists because the failure it catches is invisible otherwise. A daemon
+whose schema setup died, or whose database was dropped out from under it, keeps
+serving `/api/health`; the scenarios then run against an empty database
+and every one fails with `relation "projects" does not exist`, which reads like
+twenty product regressions rather than one broken environment.
+
+### Running two kits at once
+
+`AQ_E2E_HOME`, `AQ_E2E_PORT` and `E2E_DB_NAME` default to per-box values, not
+per-worktree ones, so two checkouts running the kit share one home, one port
+and one database unless you say otherwise:
+
+```bash
+export AQ_E2E_HOME=~/.agent-queue-e2e-$(basename "$PWD") \
+       AQ_E2E_PORT=8123 \
+       E2E_DB_NAME=agent_queue_e2e_myslot
+scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh
+```
+
+Without that, one checkout's `e2e-env.sh --reset` terminates the other's
+database connections, drops its database and deletes its home — including the
+log file, which the running daemon keeps writing to an unlinked inode, so
+`e2e-daemon.sh logs` shows nothing.
+
+`--reset` refuses to do this to a daemon it does not own: if something is
+answering on `$AQ_E2E_API_URL` and `$AQ_E2E_HOME/daemon.pid` does not name a
+live process, it exits 2 and points here. When the pid file *does* name one,
+the reset stops it first rather than orphaning it.
 
 ### Reading a failure
 
@@ -258,9 +653,10 @@ These are not bugs the kit hides; they are places where the CLI cannot yet
 express what the runner needs, and it falls back to `POST /api/execute` —
 just as public a surface.
 
-- `aq task create` has no `--json` envelope (it prints human text and never
-  routes through `emit`), so the runner calls `create_task` over REST to get
-  the new task id back.
+- S1–S7 retain a small REST helper for fixture setup and commands whose
+  generated Click schema cannot carry their arguments. S9 is the acceptance
+  path for task creation itself: `aq --json task create ...` returns the new
+  id at `.data.created` (design §4.2.1), and the runner consumes that receipt.
 - `gate_list` / `explain_task` / `list_agents` carry codegen-only input
   schemas, so their auto-generated Click commands take no options.
 - `agents.state` has no public reader at all — see S2 above.
@@ -284,14 +680,11 @@ export AQ_E2E_HOME=~/.agent-queue-e2e-live AQ_E2E_PORT=8098 \
 scripts/e2e-env.sh --reset && scripts/e2e-daemon.sh start
 ```
 
-That switch does more than change the provider. A live agent needs three
-subsystems Tier 1 deliberately runs without, and `e2e-env.sh` turns all
-three on when the provider is not `fake`:
+That switch does more than change the provider. Tier 1 already runs the
+deterministic command-only playbooks for S18, but a live agent needs the
+following additional subsystems, which `e2e-env.sh` turns on when the provider
+is not `fake`:
 
-- `playbooks.enabled` — the default pipeline's worker-filed triage is what
-  routes a task an agent files. Without it a filing sits DEFINED behind its
-  routing gate forever (which is exactly what S3 asserts, and exactly what
-  you do *not* want when watching a live run).
 - `messages.enabled` + `supervisor_agent.enabled` — the per-project
   supervisor sessions the dashboard's chat talks to.
 
@@ -299,13 +692,17 @@ Separately — and for *both* tiers, since it costs nothing when no dialog
 appears — the generated config sets `sessions.dialog_budget_seconds: 45`.
 Only Tier 2 can ever hit it; see below.
 
-Then create the demand by hand and watch:
+Then create the demand by hand and watch. Filing takes hints only, never a
+profile: give each task a kind and the `worker` pool's class, `fast-high`, and
+the project's router routes it (both hints given, so no classification call).
+`aq task show <id>` names the route, and `aq task explain` says why a task is
+still unrouted:
 
 ```bash
 export AQ_API_URL=http://127.0.0.1:8099
-aq task create -p e2e -t "Fix the failing test in tests/test_math.py" -P worker
-aq task create -p e2e -t "Add a docstring to e2e_pkg.add" -P worker
-aq task create -p e2e -t "Note the package layout in README.md" -P worker
+aq task create -p e2e -t "Fix the failing test in tests/test_math.py" --type bugfix --intelligence-class fast-high
+aq task create -p e2e -t "Add a docstring to e2e_pkg.add" --type docs --intelligence-class fast-high
+aq task create -p e2e -t "Note the package layout in README.md" --type docs --intelligence-class fast-high
 
 aq pool status
 aq session list --lifecycle pool
@@ -343,9 +740,9 @@ and then sits idle holding a workspace.
 ### Two things that will bite you first
 
 **`aq` inside the session must be *this* worktree's.** The pip-installed
-`aq` resolves `src` through the editable install — usually a different
-checkout, with no `aq task claim` in it at all — so a worker fails its very
-first command with "No such command". `e2e-env.sh` writes
+`aq` resolves `src` through the editable install, which may point to a different
+checkout and expose a different claim protocol or command surface.
+`e2e-env.sh` writes
 `$AQ_E2E_HOME/bin/aq` (a wrapper around `scripts/e2e/aq.py`) and
 `e2e-daemon.sh start` puts that directory first on the daemon's PATH, which
 tmux sessions inherit. Verify before blaming the agent:
@@ -384,13 +781,36 @@ talks to.
 ### Teardown
 
 ```bash
-scripts/e2e-daemon.sh stop
-tmux -L aq-e2e kill-server           # Tier 2 only
-scripts/e2e-env.sh --reset           # drops the DB, repos, vault and config
+scripts/e2e-clean.sh
 ```
 
-`kill-server` on the `aq-e2e` socket cannot touch your real sessions — those
-live on the `aq` socket.
+The cleanup command refuses broad/protected paths, any directory without
+the `.aq-e2e` ownership marker, and the operator/default tmux sockets (`aq`
+and `default`) before it stops a daemon or invokes any destructive command.
+It then drops only `E2E_DB_NAME`. The daemon's
+Tier-2 sessions use the `aq-e2e` tmux socket; cleanup of the marked e2e home
+and daemon cannot target the operator's default data directory or database.
+
+### Automated gates
+
+Fast fixture/contract checks use the normal default marker set:
+
+```bash
+POSTGRES_TEST_DSN=<admin-dsn> aq test \
+  tests/test_e2e_kit_fixtures.py tests/test_script_modes.py -q
+```
+
+The real daemon/PostgreSQL run is explicitly marked `integration`, so a normal
+`aq test` never starts it. Run it deliberately through the global test gate:
+
+```bash
+POSTGRES_TEST_DSN=<admin-dsn> aq test \
+  tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -q
+```
+
+The test chooses a unique database, port and temporary home, uses fake
+sessions, and calls `e2e-clean.sh` in `finally`. Tmux/real-provider testing
+remains Tier 2 and is never part of the default suite.
 
 ## Extending the kit
 
@@ -399,10 +819,81 @@ Add a scenario as a function in `scripts/e2e/smoke.py` taking the shared
 `SCENARIOS`. Raise `Failure("…")` (or use `check(cond, "…")`) for an
 assertion — the message is what the operator reads at 3am, so name what was
 expected and what was actually there. Use `wait_for(pred, what="…")` rather
-than `sleep`; every wait is on the 5s cascade and its `what` becomes the
-timeout message.
+than `sleep`; the production-style shell kit defaults to a five-second cycle,
+while pytest uses the one-second backstop described above. The wait's `what`
+becomes the timeout message.
 
 Assertions must go through a public surface — `aq …` with `--json`, or
 `POST /api/execute`. Reading the database directly would let the kit pass
 while the surface an agent actually uses is broken, which is the whole thing
 it exists to prevent.
+
+## Running the kit with the git-first protocol active
+
+The kit defaults to `integration.git_first: active`, so the reduced train is
+its delivery path. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment
+verbatim and replaces that default; callers must select `active` in their
+fragment when exercising delivery.
+
+```bash
+scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+```
+
+`--reset` drops the database, so it cannot be combined with `--register`;
+`scripts/e2e-daemon.sh start` registers the projects for you. The daemon must
+report `projection_kind: train` from `aq integration status`; if it does not,
+the selector did not take effect and the run proves nothing about the cutover.
+
+This run is a prerequisite of the operator canary in
+[the git-first cutover runbook](git-first-cutover-runbook.md), together with
+`aq test tests/test_integration*.py tests/test_config.py`. Both must be green
+before `active` is selected on a real install. A development-mode delivery here
+does not prove hosted-train operation, and vice versa: the project's actual
+configured mode is proven only by the live canary.
+
+`S20` closes an ordinary root task in `train` mode against a disposable bare
+repository, verifies its immutable completion provenance, and under `active`
+waits for the train to publish the exact source and file onto `main`. It pins
+local validation before selecting train mode, so it needs neither hosted CI nor
+an LLM. Its canonical `aq/epic/` source changes a path whose earlier target diff
+exceeds the 1 MiB command stdin limit, exercising whole-source patch streaming
+and rejecting unknown-delivery blockers before publication. The fake daemon
+substitutes GitHub credentials for remotes inside its
+marked disposable home; candidate construction, fenced pushes and Git delivery
+remain real. With `shadow`, it checks completion provenance and explicitly reports
+delivery as untested. The default and CI `cli` shard select `active` to run the full proof.
+
+## The App-mode train proof
+
+`scripts/e2e-app-train.sh` builds on this kit's isolation to run the App-mode
+spec's live proof (§10, S1-S10) against a disposable GitHub repository. It
+adds four things:
+- its own PostgreSQL container;
+- the `integration.github_app` block, appended through `AQ_E2E_EXTRA_CONFIG`;
+- pool profiles for the train;
+- a daemon started with an empty `GH_CONFIG_DIR` and no GitHub token.
+
+`scripts/e2e/app_train.py` holds one resumable step per scenario. Every step
+from `s1` on mutates the repository and refuses to run until the operator's
+approval is written to `$AQ_E2E_HOME/APPROVED`. The first run is recorded in
+[app-mode-train-2026-09-28.md](../gates/app-mode-train-2026-09-28.md).
+
+The `hotfix` step exercises a prepared one-step `dev -> main` promotion flow
+with `after.backmerge: true`. It files and routes a bugfix off `main`, completes
+the fixture worker, opens the exact-head promotion PR onto `main`, applies the
+configured human approval, then authors the backmerge's own PR onto `dev` and
+waits for Git containment. Versioned flows need the PATCH version and notes in
+the supplied file changes, for example:
+
+```bash
+bash scripts/e2e-app-train.sh run hotfix --scenario hotfix-main-dev \
+  --version 0.0.2 --copy pyproject.toml=/tmp/fixture-pyproject.toml \
+  --copy notes/0.0.2.md=/tmp/fixture-notes.md
+```
+
+The paths must match the prepared fixture's version and notes configuration.
+The step records resumable evidence in the fixture home and requires its
+existing `APPROVED` file. The isolated PostgreSQL/Git proof also runs in
+`tests/test_promotion_backmerge.py`, including both integration modes, a held
+lower-branch PR, a new frozen batch, and delivery of the hotfix source to `dev`.
