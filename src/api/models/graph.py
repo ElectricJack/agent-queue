@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.api.models.task import TaskDisplayFields
+from src.api.models.task import HeldBatchSummary, TaskDisplayFields
 
 
 class GraphTaskNode(TaskDisplayFields):
@@ -20,6 +20,7 @@ class GraphTaskNode(TaskDisplayFields):
     pr_url: str | None = None
     playbook_run_id: str | None = None
     parent_task_id: str | None = None
+    held_batch: HeldBatchSummary | None = None
 
 
 class GraphEdge(BaseModel):

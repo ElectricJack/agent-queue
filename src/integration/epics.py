@@ -7,29 +7,94 @@ actions. No episode, verification generation, receipt or delegate audit is read.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Literal
+from functools import lru_cache
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import and_, literal, or_, select
 
 from src.database.tables import (
-    archived_tasks, gates, projects, repos, task_dependencies,
-    task_gates, task_labels, task_metadata, tasks,
+    archived_tasks, events, gates, playbook_activations, playbook_artifacts, projects, repos,
+    task_dependencies, task_gates, task_labels, task_metadata, tasks,
 )
 from src.git.manager import GitError
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState, load_delivery_requests
 from src.integration.git_truth import GitDeliveryEvidence, GitTruthSnapshot
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews, TreeVerdict
 
+if TYPE_CHECKING:
+    from src.integration.models import RequiredCheckSet
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class EpicPolicy:
+    """Current epic inputs; head checks gate readiness only when required.
+
+    Epic-level checks are advisory by default (fast-smooth integration 6.4):
+    they are read and shown, and a red, missing or unavailable result never
+    delays readiness. ``checks_required`` is set only by a project playbook's
+    explicit parent-check data, read on every visit, so removing it applies to
+    pending epics at once. It is a current fact, not a frozen policy field.
+    """
+
     check_names: tuple[str, ...]
     check_trust: str
     reviews: ReviewRequirements = ReviewRequirements()
     check_version: str = ""
+    checks_required: bool = False
+
+
+@lru_cache(maxsize=64)
+def _artifact_parent_checks(artifact_sha256: str, path: str) -> RequiredCheckSet | None:
+    """An immutable artifact's ``parent_episode`` check data; failures are not cached."""
+    from src.integration.runtime_contracts import SubjectKind
+    from src.playbooks.definition import load_definition_json
+
+    data = Path(path).read_bytes()
+    if f"sha256:{hashlib.sha256(data).hexdigest()}" != artifact_sha256:
+        raise ValueError(f"artifact at {path} does not match {artifact_sha256}")
+    policy = load_definition_json(data.decode("utf-8")).integration_policy
+    table = policy.tables.get(SubjectKind.PARENT_EPISODE) if policy is not None else None
+    return table.required_checks if table is not None else None
+
+
+async def playbook_epic_checks_on(conn, project_id: str) -> RequiredCheckSet | None:
+    """Epic checks a project's enabled playbook explicitly requires, else ``None``.
+
+    This is the only opt-in to an epic-level CI gate (fast-smooth integration
+    6.4): project-scoped, ready activations whose active artifact carries
+    ``tables.parent_episode.required_checks``. It is read on every visit, so an
+    edit or disable that removes the requirement applies to pending epics at
+    once. Shipped defaults require none. An unreadable artifact is retried on
+    the next visit and, meanwhile, adds no gate (default to proceed).
+    """
+    rows = (await conn.execute(select(
+        playbook_artifacts.c.artifact_sha256, playbook_artifacts.c.path,
+    ).join(playbook_activations, playbook_activations.c.active_artifact_sha256
+           == playbook_artifacts.c.artifact_sha256).where(
+        playbook_activations.c.scope == "project",
+        playbook_activations.c.scope_identifier == project_id,
+        playbook_activations.c.enabled.is_(True),
+        playbook_activations.c.health == "ready",
+    ).order_by(playbook_activations.c.playbook_id))).all()
+    for artifact_sha256, path in rows:
+        try:
+            checks = await asyncio.to_thread(_artifact_parent_checks, artifact_sha256, path)
+        except (OSError, ValueError) as exc:
+            logger.warning("Project %s playbook artifact %s is unreadable for epic checks: %s",
+                           project_id, artifact_sha256, exc)
+            continue
+        if checks is not None:
+            return checks
+    return None
 
 
 @dataclass(frozen=True)
@@ -127,6 +192,36 @@ class EpicReadiness:
         return tuple(source for source in self.sources if source.state == DeliveryState.PENDING)
 
 
+async def abandoned_archive_ids(conn, rows, *, project_id: str) -> set[str]:
+    """Archived lineage explicitly retired from delivery, retaining its history.
+
+    Plain delivery archives and active work remain required. A subtree archive
+    records one decision at its root, atomically with the archived rows. Older
+    commands wrote the same event after commit, so retained decisions work too.
+    """
+    abandoned = set()
+    for task_id, payload in await conn.execute(select(events.c.task_id, events.c.payload).where(
+        events.c.project_id == project_id, events.c.task_id.in_([row["id"] for row in rows]),
+        events.c.event_type == "task.delivery_abandoned",
+    )):
+        try:
+            decision = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decision, dict) and decision.get("disposition") in {"obsolete", "retire"}:
+            abandoned.add(task_id)
+    by_id = {row["id"]: row for row in rows}
+    excluded = set()
+    for initial in rows:
+        row = initial
+        while row is not None and row["archived"]:
+            if row["id"] in abandoned:
+                excluded.add(initial["id"])
+                break
+            row = by_id.get(row["parent_task_id"])
+    return excluded
+
+
 class EpicGraphReader:
     """Read ordinary current task/completion/hold inputs in one caller transaction.
 
@@ -184,6 +279,7 @@ class EpicGraphReader:
             if parent["id"] not in {row["id"] for row in rows}:
                 rows.append(parent)
         ids = [row["id"] for row in rows]
+        abandoned = await abandoned_archive_ids(conn, rows, project_id=root["project_id"])
         holds: dict[str, list[str]] = {task_id: [] for task_id in ids}
         containers = {row["parent_task_id"] for row in rows if row["parent_task_id"]}
         for task_id, label in await conn.execute(select(task_labels.c.task_id,
@@ -197,7 +293,7 @@ class EpicGraphReader:
                 task_metadata.c.key.in_(("manual_pause", "container")))):
             if key == "manual_pause":
                 holds[task_id].append("manual_pause")
-            elif json.loads(value) is True:
+            elif key == "container" and json.loads(value) is True:
                 containers.add(task_id)
         for task_id, gate_id in await conn.execute(select(task_gates.c.task_id, gates.c.id)
                                                   .join(gates, gates.c.id == task_gates.c.gate_id)
@@ -212,7 +308,9 @@ class EpicGraphReader:
         )
         for row in rows:
             request = requests[row["id"]]
-            required = await self.required_on(conn, row) if self.required_on else True
+            required = row["id"] not in abandoned and (
+                await self.required_on(conn, row) if self.required_on else True
+            )
             base = await self.source_base_on(conn, row) if self.source_base_on else None
             nodes.append(EpicNode(
                 request, row["parent_task_id"], "refs/heads/" + row["branch_name"].removeprefix(
@@ -256,7 +354,7 @@ class EpicReadinessEvaluator:
         target = snapshot.for_target(node.branch_ref)
         if target.observation.error or not target.target_oid:
             return EpicReadiness(graph, task_id, "unknown", blockers=(
-                (task_id, target.observation.error or "missing_target"),))
+                (task_id, target.observation.error or "target_ref_missing"),))
         for prerequisite_id in graph.authorization(task_id):
             prerequisite = next((item for item in graph.nodes
                                  if item.task_id == prerequisite_id), None)
@@ -318,15 +416,21 @@ class EpicReadinessEvaluator:
         head, tree, checks, verdict = target.target_oid, None, None, None
         try:
             tree = await snapshot.truth.git.atree_sha(observation.store, head)
-            checks = await self.checks(graph.repository_id, head, node.policy)
-            if (checks.repository_id, checks.head_sha, checks.names, checks.trust) != (
-                graph.repository_id, head, node.policy.check_names, node.policy.check_trust,
-            ):
-                unknown = True
-                blockers.append((task_id, "checks_scope_changed"))
-            elif checks.state != "green":
-                unknown |= checks.state == "unknown"
-                blockers.append((task_id, "checks_" + checks.state))
+            if not node.policy.checks_required:
+                checks = await self._advisory_checks(graph.repository_id, head, node.policy)
+            elif not node.policy.check_trust:
+                # Required names the configured local runner has no command for.
+                blockers.append((task_id, "checks_producer_missing"))
+            else:
+                checks = await self.checks(graph.repository_id, head, node.policy)
+                if (checks.repository_id, checks.head_sha, checks.names, checks.trust) != (
+                    graph.repository_id, head, node.policy.check_names, node.policy.check_trust,
+                ):
+                    unknown = True
+                    blockers.append((task_id, "checks_scope_changed"))
+                elif checks.state != "green":
+                    unknown |= checks.state == "unknown"
+                    blockers.append((task_id, "checks_" + checks.state))
             verdict = await self.reviews.verdict(ReviewSubject(
                 graph.project_id, graph.repository_id, task_id, tree,
             ), node.policy.reviews)
@@ -340,6 +444,15 @@ class EpicReadinessEvaluator:
             "waiting" if blockers else "ready")
         return EpicReadiness(graph, task_id, state, head, tree, tuple(blockers), tuple(sources),
                              tuple(nested), checks, verdict)
+
+    async def _advisory_checks(self, repository_id: str, head: str,
+                               policy: EpicPolicy) -> HeadChecks:
+        """Read optional epic checks to show them; no result here holds readiness."""
+        try:
+            return await self.checks(repository_id, head, policy)
+        except Exception:  # noqa: BLE001 - an unavailable advisory result is shown as unknown
+            return HeadChecks(repository_id, head, policy.check_names, policy.check_trust,
+                              "unknown")
 
     async def current_on(self, conn, readiness: EpicReadiness,
                          snapshot: GitTruthSnapshot) -> bool:
