@@ -81,6 +81,11 @@ LAUNCH_BACKOFF = 60.0
 POOL_WATCHDOG_INTERVAL = 30.0
 POOL_STALL_TICKS = 3
 POOL_RECONCILE_TIMEOUT = 30.0
+# Continuation funding runs first so a resume can claim its seat, but it is
+# wait reconciliation: it may block on the wait graph. It gets this head start,
+# then finishes off the pool budget under its own bound (2026-10-22 wedges).
+RESUME_HEAD_START = 5.0
+RESUME_PENDING_TIMEOUT = 60.0
 
 
 #: How much of a dead session's captured startup output to carry into the
@@ -220,7 +225,9 @@ class PoolsMixin:
     ) -> set[str]:
         return set(await self._pool_profiles(project_id, system_profiles=system_profiles))
 
-    async def _delivery_admission(self, task_ids, *, cached_only=False):
+    async def _delivery_admission(
+        self, task_ids, *, cached_only=False, hierarchy_modes=None, router_ready_projects=None,
+    ):
         from src.integration.admission import observe_admission
         from src.integration.development import DevelopmentPrimitives
 
@@ -233,6 +240,7 @@ class PoolsMixin:
             service,
             cached_only=cached_only,
             default_mode=self.config.integration.default_mode,
+            hierarchy_modes=hierarchy_modes, router_ready_projects=router_ready_projects,
         )
 
     async def _measure_pools(
@@ -290,7 +298,9 @@ class PoolsMixin:
             for p in system_profiles
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
-        measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        measurement.pool_sessions = await self.db.list_sessions(
+            lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
+        )
         from src.waits.occupancy import continuation_occupancy, evictable_sessions
         evictable = await evictable_sessions(self.db, self.config)
         resuming, reserved = await continuation_occupancy(self.db, self.config)
@@ -333,21 +343,29 @@ class PoolsMixin:
             from src.integration.admission import structural_candidates
 
             allowed = None
-            if getattr(project, "_source_admission_required", True):
+            batch = None
+            if (getattr(project, "_source_admission_required", True)
+                    or project.hierarchical_integration_mode in {"hierarchy", "train"}):
                 batch = await self._delivery_admission(
                     await structural_candidates(self.db, project.id),
+                    hierarchy_modes=hierarchy_modes, router_ready_projects=ready_projects,
                     **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
             # Demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
-            demand_by_profile = await self.db.count_ready_by_profile(
-                project.id,
-                allowed_task_ids=allowed,
+            policy = dict(
                 router_ready=project.id in ready_projects,
-                hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
                 pool_profiles=pool_profiles, include_repair_counts=True, by_workspace_kind=True,
+            )
+            demand_by_profile = (
+                await batch.counts(project.id, **policy) if batch is not None else
+                await self.db.count_ready_by_profile(
+                    project.id, allowed_task_ids=allowed,
+                    hierarchy_mode=hierarchy_modes.get(project.id)
+                    or ProjectIntegrationMode.of(project), **policy,
+                )
             )
             workspaces = [w for w in workspace_snapshot if w.project_id == project.id]
             kinds_by_path = {w.workspace_path: w.kind_id or "project-repo" for w in workspaces}
@@ -503,6 +521,28 @@ class PoolsMixin:
                     POOL_RECONCILE_TIMEOUT,
                 )
 
+    async def _resume_pending_first(self, service) -> None:
+        """Fund continuations ahead of the pool, never at the pool's expense.
+
+        A still-running pass from an earlier tick is awaited, not duplicated,
+        and its failure is logged rather than aborting this tick's placement.
+        """
+        task = self.__dict__.get("_resume_pending_task")
+        if task is None or task.done():
+
+            async def bounded():
+                try:
+                    async with asyncio.timeout(RESUME_PENDING_TIMEOUT):
+                        await service.lifecycle.resume_pending()
+                except TimeoutError:
+                    logger.warning("Continuation resume pass exceeded %.0fs; retrying "
+                                   "on a later tick", RESUME_PENDING_TIMEOUT)
+                except Exception:
+                    logger.exception("Continuation resume pass failed")
+
+            task = self._resume_pending_task = asyncio.create_task(bounded())
+        await asyncio.wait({task}, timeout=RESUME_HEAD_START)
+
     def _pool_reconcile_lock(self) -> asyncio.Lock:
         return self.__dict__.setdefault("_pool_reconciliation_lock", asyncio.Lock())
 
@@ -611,7 +651,7 @@ class PoolsMixin:
         # pool, using the same admission reader and durable reservation fence.
         service = getattr(self, 'wait_service', None)
         if service and service.enabled:
-            await service.lifecycle.resume_pending()
+            await self._resume_pending_first(service)
 
         measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
         # A drained holder's seat is counted from the next tick on.
@@ -1516,6 +1556,15 @@ class PoolsMixin:
             await self.db.update_session(
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
+        if not other_live and still_owned:
+            slot = await self._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().detach_idle_slot_branch(slot)
+                except Exception:
+                    logger.warning(
+                        "pool session %s: branch release deferred", session.id, exc_info=True,
+                    )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(

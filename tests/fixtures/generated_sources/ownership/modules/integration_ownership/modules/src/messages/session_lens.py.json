@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/messages/session_lens.py::SessionLens": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
