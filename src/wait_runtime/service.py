@@ -24,6 +24,9 @@ from src.wait_runtime.scheduler import SchedulerWaitService
 logger = logging.getLogger(__name__)
 
 
+BRIDGE_TICK_BUDGET_SECONDS = 10.0
+
+
 class WaitService:
     def __init__(self, orch, *, clock=time.time, owner=None, connect=None):
         self.orch = orch
@@ -187,8 +190,9 @@ class WaitService:
 
     async def tick(self):
         if await self.processing_enabled():
+            await self.observe_sources_once()
             if self.enabled:
-                await self.startup_bridge()
+                await self._bounded_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
@@ -203,10 +207,12 @@ class WaitService:
         try:
             async with asyncio.TaskGroup() as group:
                 maintenance = group.create_task(self.maintain())
+                observations = group.create_task(self.observe_sources())
                 try:
                     await self.listener.run()
                 finally:
                     maintenance.cancel()
+                    observations.cancel()
         finally:
             await self.lifecycle.stop()
 
@@ -219,6 +225,37 @@ class WaitService:
             except Exception:
                 logger.exception("Wait continuation maintenance failed")
             await asyncio.sleep(self.listener.renewal_seconds)
+
+    async def observe_sources_once(self):
+        """Keep remote observations moving even when a train visit is paused."""
+        watcher = getattr(self.orch, "wait_ci_watcher", None)
+        if watcher is not None:
+            await watcher.tick()
+
+    async def observe_sources(self):
+        # Separate from continuation maintenance: slow GitHub calls must not
+        # delay checkpoint/stop/resume recovery. CheckWatcher serializes ticks.
+        while True:
+            try:
+                if await self.processing_enabled():
+                    await self.observe_sources_once()
+            except Exception:
+                logger.exception("Wait source observation failed")
+            await asyncio.sleep(self.listener.renewal_seconds)
+
+    async def _bounded_bridge(self):
+        """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
+        task = getattr(self, "_bridge_task", None)
+        if task is None or task.done():
+            self._bridge_task = asyncio.create_task(self._run_bridge())
+        # A slow pass keeps running; the scheduler continues after the budget.
+        await asyncio.wait({self._bridge_task}, timeout=BRIDGE_TICK_BUDGET_SECONDS)
+
+    async def _run_bridge(self):
+        try:
+            await self.startup_bridge()
+        except Exception:
+            logger.exception("Wait startup bridge failed")
 
     async def startup_bridge(self):
         """Durable project receipts permit restart and newly enabled canary recovery."""

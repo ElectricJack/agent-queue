@@ -38,6 +38,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, GitManager, RemoteRefState, _validate_ref
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
+from src.integration.row_query import select_row
 from src.integration.runtime_contracts import (
     CIEvidence,
     CIState,
@@ -690,14 +691,14 @@ def _writer(
     budget = subject.budget
     if budget is None and stage and stage.get("started_at") is not None:
         data = (stage.get("dossier") or {}).get("budget", {})
-        if stage.get("intelligence_class") and stage.get("deadline_at") is not None:
+        if stage.get("intelligence_class"):
             budget = WriterBudget(
                 ordinal=stage["ordinal"],
                 intelligence_class=stage["intelligence_class"],
                 started_at=stage["started_at"],
                 deadline_at=stage["deadline_at"],
                 attempts=stage["attempts"],
-                attempt_limit=data.get("attempt_limit"),
+                attempt_limit=data.get("attempt_limit") or None,
             )
     if task_id is None:
         return WriterLease(), budget
@@ -1404,13 +1405,11 @@ class ParentReadiness:
         additional_extension: dict[str, Any] | None = None,
         receipt_covered_extensions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        episode = (
-            await conn.execute(
-                select(integration_parent_episodes).where(
-                    integration_parent_episodes.c.id == checkpoint["episode_id"]
-                )
-            )
-        ).mappings().one_or_none()
+        episode = await select_row(
+                      conn,
+                      integration_parent_episodes,
+                      integration_parent_episodes.c.id == checkpoint['episode_id'],
+                  )
         if episode is None or episode["parent_task_id"] != parent["id"]:
             raise HierarchyError("invariant_error", "parent episode is missing")
 
@@ -1728,18 +1727,14 @@ class ParentReadiness:
 
 
     async def _locked_context_on(self, conn, task_id: str):
-        parent = (
-            await conn.execute(select(tasks).where(tasks.c.id == task_id))
-        ).mappings().one_or_none()
+        parent = await select_row(conn, tasks, tasks.c.id == task_id)
         archived_parent = False
         if parent is None:
             # A verifier can replay its close after the completed parent has
             # legitimately archived.  Preserve the historical identity just
             # long enough to confirm that exact completed operation below;
             # no active hierarchy mutation may proceed against this row.
-            parent = (
-                await conn.execute(select(archived_tasks).where(archived_tasks.c.id == task_id))
-            ).mappings().one_or_none()
+            parent = await select_row(conn, archived_tasks, archived_tasks.c.id == task_id)
             archived_parent = parent is not None
         if parent is None:
             raise HierarchyError("invariant_error", "parent task does not exist")
@@ -1749,25 +1744,21 @@ class ParentReadiness:
         if project["hierarchical_integration_mode"] not in {"hierarchy", "train"}:
             raise HierarchyError("invariant_error", "hierarchical integration is disabled")
         await self.db.lock_hierarchy_project(conn, project["id"])
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        checkpoint = await select_row(
+                         conn,
+                         task_integration_checkpoints,
+                         task_integration_checkpoints.c.task_id == task_id,
+                         lock=True,
+                     )
         if checkpoint is None or checkpoint["episode_id"] is None:
             raise HierarchyError("invariant_error", "parent has no active integration episode")
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations)
-                .where(
-                    integration_repair_operations.c.parent_task_id == task_id,
-                    integration_repair_operations.c.episode_id == checkpoint["episode_id"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        operation = await select_row(
+                        conn,
+                        integration_repair_operations,
+                        integration_repair_operations.c.parent_task_id == task_id,
+                        integration_repair_operations.c.episode_id == checkpoint['episode_id'],
+                        lock=True,
+                    )
         if operation is None:
             raise HierarchyError("invariant_error", "parent episode operation is missing")
         if archived_parent and operation["state"] != "completed":

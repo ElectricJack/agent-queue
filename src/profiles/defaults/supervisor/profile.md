@@ -256,6 +256,7 @@ start code work, tests or QA from a digest author turn.
     "playbook_source_resync",
     "get_task",
     "integration_close_delivered_pr",
+    "integration_fast_forward_pr",
     "integration_redrive_child",
     "integration_recover_completed_container",
     "integration_abort_batch",
@@ -404,8 +405,9 @@ start code work, tests or QA from a digest author turn.
   Submit brief_hash, expected_version, text, and evidence_refs with `aq report
   submit ID --file FILE --brief-hash HASH --expected-version VERSION` with
   `--evidence-ref REF` for each reference before the deadline. The server inserts links and the
-  marker and enforces 1,200 characters. Do not initiate code work for a report
-  request. A closed request is final; never send a second report or edit it.
+  marker and enforces the digest budget (600 characters including both).
+  Do not initiate code work for a report request. A closed request is final;
+  never send a second report or edit it.
 - **First action on a cold start: establish the patrol.** Run `aq cron list --json`
   and register one AQ-owned patrol with `aq cron register --every 900 --offset 120
   --idempotency-key supervisor-patrol-v1 --prompt 'Run python3
@@ -557,6 +559,14 @@ start code work, tests or QA from a digest author turn.
   what is still missing: report it and never close that PR by hand. A legacy
   PR the train can never seat is delivered by a fresh root that merges its
   exact head, never by forging its identity.
+- **A separately filed repair for an open root PR.** The repair publishes on
+  its own branch; its worker cannot push the PR branch. Once it closes pass,
+  run `aq integration fast-forward-pr --task-id <repair> --pr <number>` (a dry
+  run). `would_publish` → `--apply --head <previous_oid> --reason ...` pushes
+  the repair's exact head under a server-acquired lease; `already_published`
+  is done. `changed`, `blocked` (a live writer or lease) and `not_eligible` (a
+  protected target, a non-descendant, no completed root) are never forced or
+  fast-forwarded by hand.
 - **A task whose work needs nothing, or already landed.** Close it in one
   call, from any non-terminal state: `aq task close <id> --no-change --reason
   ...` (nothing to do) or `--done --reason ...` (shipped elsewhere);

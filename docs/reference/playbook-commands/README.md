@@ -97,6 +97,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
+| [`integration_fast_forward_pr`](integration_fast_forward_pr.md) | Integration Fast Forward Pr | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
@@ -423,6 +424,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`policy_apply`](policy_apply.md) | Policy Apply | Execute the policy_apply command. |
 | [`policy_diff`](policy_diff.md) | Policy Diff | Execute the policy_diff command. |
 | [`policy_export`](policy_export.md) | Policy Export | Execute the policy_export command. |
+| [`pool_delete`](pool_delete.md) | Pool Delete | Delete a global pool, stopping its sessions and invalidating its routes. |
 | [`pool_rename`](pool_rename.md) | Pool Rename | Rename a pool's display name, preserving its stable profile ID. |
 | [`pool_scale`](pool_scale.md) | Pool Scale | Set global pool bounds, optionally stopping surplus idle workers now. |
 | [`pool_set_enabled`](pool_set_enabled.md) | Pool Set Enabled | Set the global pool profile's operator kill-switch. |
@@ -575,6 +577,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_route_override`](task_route_override.md) | Task Route Override | Pin one task to a worker profile in an emergency (spec §7, D2). |
 | [`task_set`](task_set.md) | Task Set | Work-state contract writes. Never performs status transitions. |
 | [`task_show`](task_show.md) | Task Show | Full task detail in one round trip: fields + deps + context + labels. |
+| [`task_split`](task_split.md) | Split task acceptance | Keep code on its existing delivery path and relocate explicit remaining acceptance. |
 | [`task_subtask_add`](task_subtask_add.md) | Task Subtask Add | Execute the task_subtask_add command. |
 | [`task_subtask_get`](task_subtask_get.md) | Task Subtask Get | Execute the task_subtask_get command. |
 | [`task_subtask_update`](task_subtask_update.md) | Task Subtask Update | Execute the task_subtask_update command. |

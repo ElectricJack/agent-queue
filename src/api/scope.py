@@ -230,6 +230,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_fast_forward_pr",
         "integration_transfer_owner",
     }
 )
