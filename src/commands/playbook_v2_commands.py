@@ -8,9 +8,9 @@ exact executable edges, a semantic artifact diff, explicit activation by hash,
 pending-event operator actions, and run overlays pinned to the artifact the run
 actually executed.
 
-**Surface, not semantics.** Every command here is a projection or one of two
-narrow operator writes.  None of them compiles, validates, executes or repairs
-anything — §3.3 of the child plan.  The child plan's §2 reconciliation records
+**Surface, not semantics.** The original graph commands are projections and
+narrow operator writes. Later additions provide reviewed artifact import and
+explicit source recovery. The child plan's §2 reconciliation records
 why these are ``CommandHandler`` commands rather than hand-written FastAPI
 routes: ``src/api/codegen.py`` turns every categorised command into
 ``POST /api/playbook/<stripped-name>``, an ``aq playbook <verb>`` CLI verb and
@@ -200,6 +200,7 @@ PLAYBOOK_V2_COMMANDS: frozenset[str] = frozenset(
         "playbook_graph_layout_save",
         "playbook_activation_health",
         "playbook_activate",
+        "playbook_source_resync",
         "playbook_artifact_diff",
         "playbook_pending_events",
         "playbook_pending_event_action",
@@ -543,6 +544,56 @@ class PlaybookV2CommandsMixin:
             "diagnostics": [_diagnostic_dict(diagnostic) for diagnostic in diagnostics],
         }
 
+    async def _v2_script_pins(self, source):
+        """Resolve source programs using server-configured storage and scoped roots."""
+        import asyncio
+        from src.playbooks.definition import scope_from_v1, source_digest
+        from src.git.manager import GitManager
+        from src.playbooks.proposal import pin_source_scripts
+        from src.playbooks.script_inputs import InputStore, RuntimeManifest, read_file
+        from src.playbooks.script_policy import ScriptError, ScriptLimits, ScriptProgram
+
+        programs = source.frontmatter.get("scripts", {})
+        if not programs:
+            return {}
+        settings = self.config.resources.scripts.resolved(self.config.data_dir)
+        runtimes = None
+        if settings.runtime_manifest:
+            manifest_path = Path(settings.runtime_manifest)
+            manifest = RuntimeManifest.model_validate_json(await asyncio.to_thread(
+                read_file, manifest_path.parent, manifest_path.name, settings.runtime_bytes))
+            runtimes = {manifest.runtime: manifest}
+        store = InputStore(Path(settings.input_root), quota_bytes=settings.input_storage_bytes)
+        scope = scope_from_v1(source.frontmatter["scope"])
+        vault = self._v2_vault_root()
+        root = (vault / "projects" / scope.project_id if scope.type == "project" else
+                vault / "agent-types" / scope.agent_type if scope.type == "agent_type" else
+                vault / "system")
+        result = {}
+        for step_id, body in programs.items():
+            program = ScriptProgram.model_validate(body)
+            program.limits.narrow(ScriptLimits(wall_seconds=settings.wall_seconds,
+                stdout_bytes=settings.stdout_bytes, stderr_bytes=settings.stderr_bytes))
+            source_root, revision = root, source_digest(source.raw)
+            if program.source_kind == "repository":
+                if scope.type != "project":
+                    raise ScriptError("script_repository_requires_project_scope")
+                repos = await self.db.list_repos(scope.project_id)
+                if len(repos) != 1:
+                    raise ScriptError("script_repository_ambiguous")
+                repo = repos[0]
+                source_root = Path(repo.source_path or repo.checkout_base_path)
+                revision = (await GitManager()._arun(
+                    ["rev-parse", "--verify", f"{repo.default_branch}^{{commit}}"],
+                    cwd=str(source_root))).strip()
+            from dataclasses import replace
+
+            one = replace(source, frontmatter={**source.frontmatter, "scripts": {step_id: body}})
+            result.update(await pin_source_scripts(one, source_root=source_root,
+                source_revision=revision, store=store, runtimes=runtimes,
+                max_bytes=settings.input_bytes))
+        return result
+
     async def _cmd_playbook_v2_propose(self, args: dict) -> dict:
         if not self._v2_compiler_enabled():
             return {"success": False, "error": V2_COMPILER_DISABLED_ERROR}
@@ -584,9 +635,11 @@ class PlaybookV2CommandsMixin:
         except (OSError, ValueError, DuplicateSemanticKey, json.JSONDecodeError) as exc:
             return _command_error(f"invalid semantic body: {exc}", field="semantic_body_path")
         contracts, profiles, events = await self._v2_lookups()
+        script_pins = await self._v2_script_pins(source)
         proposal = propose(
             source,
             body,
+            script_pins=script_pins,
             baseline=baseline,
             contracts=contracts,
             profiles=profiles,
@@ -610,6 +663,56 @@ class PlaybookV2CommandsMixin:
                 else None
             ),
         }
+
+    async def _cmd_playbook_source_resync(self, args: dict) -> dict:
+        """Restore a system source from its pinned active artifact, keeping a backup."""
+        from src.commands.principal import PrincipalKind, current_principal
+        from src.playbooks.artifact_store import resync_system_source
+        from src.playbooks.run_state import PlaybookStorageError
+
+        principal = current_principal()
+        if principal is not None and not (
+            principal.kind is PrincipalKind.LOCAL or principal.elevated
+        ):
+            return {"success": False, "error": "source resync requires elevated capability scope"}
+        if not self._v2_api_enabled():
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
+        if not self._v2_activation_writes_enabled():
+            return {"success": False, "error": V2_WRITES_DISABLED_ERROR}
+        playbook_id = _clean_str(args, "playbook_id")
+        sha = _clean_str(args, "artifact_sha256")
+        expected = _clean_str(args, "expected_source_hash")
+        if not playbook_id or not sha or not expected:
+            return {
+                "success": False,
+                "error": "playbook_id, artifact_sha256 and expected_source_hash are required",
+            }
+        for value, field in ((sha, "artifact_sha256"), (expected, "expected_source_hash")):
+            error = _validate_sha(value, field)
+            if error:
+                return {"success": False, "error": error}
+        if not self._v2_storage_ready("list_playbook_activations"):
+            return {"success": False, **self._v2_storage_unavailable()}
+        rows = await self.db.list_playbook_activations(enabled_only=False)
+        if not any(
+            row["playbook_id"] == playbook_id
+            and row["scope"] == "system"
+            and not row.get("scope_identifier")
+            and row.get("active_artifact_sha256") == sha
+            for row in rows
+        ):
+            return {"success": False, "error": "artifact is not the active system artifact"}
+        try:
+            return await asyncio.to_thread(
+                resync_system_source,
+                self._v2_engine().services.artifact_store,
+                self._v2_vault_root(),
+                playbook_id,
+                sha,
+                expected,
+            )
+        except (OSError, ValueError, UnicodeError, PlaybookStorageError) as exc:
+            return {"success": False, "error": str(exc)}
 
     async def _cmd_playbook_v2_import(self, args: dict) -> dict:
         """Persist one mechanically validated V2 artifact bundle without activation.

@@ -16,7 +16,7 @@ from src.doctor.playbook_v2_checks import _check_activation_invalid
 from src.playbooks import features
 from src.playbooks.activation import ActivationHealth, load_activation_health
 from src.playbooks.artifact_diff import diff_artifacts
-from src.playbooks.authoring import PlaybookSource
+from src.playbooks.authoring import PlaybookSource, SourceError
 from src.playbooks.definition import (
     PlaybookDefinition,
     TrustedExecutionMetadata,
@@ -57,12 +57,15 @@ def proposal(tmp_path, *, body=None, frontmatter="", contracts=None):
 
 
 def test_legacy_golden_digest_and_empty_metadata_are_unchanged():
-    legacy = load_definition_json(GOLDEN.read_text())
+    # Frozen before the live golden acquired the list_tasks observation contract.
+    # Contract refreshes must not replace this evidence of legacy serialization.
+    payload = GOLDEN.with_name("review-pipeline.legacy.artifact.json").read_text()
+    legacy = load_definition_json(payload)
     # A stored, pre-B3 digest, not a freshly generated expectation.
     expected = "sha256:7563817097f26dc9246d6507c25f148b63876c5f387f264944e060ff057fa131"
     for metadata in (None, {}):
         explicit = PlaybookDefinition.model_validate({
-            **json.loads(GOLDEN.read_text()), "required_features": [],
+            **json.loads(payload), "required_features": [],
             "trusted_execution": metadata,
         })
         assert canonical_bytes(explicit) == canonical_bytes(legacy)
@@ -177,7 +180,7 @@ def test_generated_requirements_come_from_server_contracts(tmp_path):
 
 
 @pytest.mark.parametrize("name,expected,supported", [
-    ("playbook_state_get", "state_v1", True), ("playbook_script_run", "script_v1", False),
+    ("playbook_state_get", "state_v1", True), ("playbook_script_run", "script_v1", True),
 ])
 def test_command_hooks_require_complete_feature_support(name, expected, supported):
     raw = twin()
@@ -204,8 +207,14 @@ def test_state_metadata_is_source_derived_and_supported(tmp_path):
 
 @pytest.mark.parametrize("value", ["true", "0", "-1", '"2"', "1.5", "null"])
 def test_source_state_version_is_strict(tmp_path, value):
-    result = proposal(tmp_path, frontmatter=f"state_schema_version: {value}\n")
-    assert result.artifact is None
+    path = tmp_path / "source.md"
+    path.write_text(
+        "---\nid: demo\nscope: system\ntriggers: [task.completed]\n"
+        f"state_schema_version: {value}\n---\nReviewed source.\n"
+    )
+    result = PlaybookSource.load(path, vault_root=tmp_path)
+    assert isinstance(result, SourceError)
+    assert "state_schema_version must be a positive integer" in result.errors
 
 
 def test_trusted_metadata_cannot_carry_authority():
@@ -367,3 +376,22 @@ def test_execution_metadata_changes_are_visible_in_both_review_diffs(updates):
     assert projected["executable_change"]
     row = next(row for row in projected["rules"] if row["rule_id"] == "execution-metadata")
     assert row["field_changes"][0]["executable"]
+
+
+def test_feature_check_avoids_schema_projection_and_reads_live_registration(monkeypatch):
+    lookup = RegistryContractLookup()
+    expected = {name: lookup.get(name).required_features for name in ("doctor", "ensure_task")}
+    monkeypatch.setattr(lookup, "get", lambda name: pytest.fail("built a schema for feature metadata"))
+    raw = twin()
+    for name, required in expected.items():
+        raw["steps"]["act"]["command"] = name
+        artifact = PlaybookDefinition.model_validate(raw)
+        assert features.infer_required_features(artifact, contracts=lookup) == required
+    assert lookup.required_features("missing-command") == ()
+
+    execution = SimpleNamespace(schema_generation=1)
+    registration = SimpleNamespace(contract=SimpleNamespace(execution=execution))
+    live = RegistryContractLookup(SimpleNamespace(get=lambda name: registration))
+    assert live.required_features("plugin") == ()
+    execution.schema_generation = 2
+    assert live.required_features("plugin") == ("generated_commands_v1",)
