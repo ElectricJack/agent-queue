@@ -736,6 +736,46 @@ async def test_resume_stall_notice_retains_outcome_and_deduplicates_across_resta
     assert wait['outcome'] == 'satisfied' and wait['cleared_at'] is None
 
 
+async def test_restart_retries_resume_while_startup_bridge_is_stalled(env):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    before = await intent(env)
+    # Construct a fresh service twice over the same durable RESUME_PENDING row.
+    # Each process must retry refusals without waiting for legacy adoption.
+    for _ in range(2):
+        service = runtime(env, registry=build_registry())
+        service.listener.renewal_seconds = 0.01
+        bridge_started, attempted = asyncio.Event(), asyncio.Event()
+
+        async def bridge():
+            bridge_started.set()
+            await asyncio.Event().wait()
+
+        async def dispatch(name, args):
+            assert name == 'wait_resume_dispatch'
+            assert args == {'continuation_id': 'c', 'generation': 1}
+            if service.command.await_count >= 2:
+                attempted.set()
+            return {'success': False, 'error_code': 'wait.graph_busy'}
+
+        service.startup_bridge = bridge
+        service.listener.run = AsyncMock(side_effect=asyncio.Event().wait)
+        service.command = AsyncMock(side_effect=dispatch)
+        runner = asyncio.create_task(service.run())
+        try:
+            async with asyncio.timeout(5):
+                await bridge_started.wait()
+                await attempted.wait()
+            assert await intent(env) == before
+        finally:
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+        assert not service.lifecycle._resume_tasks
+
+
 async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried(env):
     from tests.test_wait_dispatch import runtime
 
@@ -825,9 +865,8 @@ async def test_listener_batches_cannot_starve_queued_resume_dispatch(env, monkey
     service.lifecycle.resume.fresh_workspace = AsyncMock(return_value='/tmp/fresh')
     service.orch._launch_session_for_task_locked = AsyncMock()
     service.command = AsyncMock(wraps=service.command)
-    # A backlog of single-event transactions repeatedly tries to reclaim the
-    # actual PostgreSQL graph lock, with the first batch held until resume queues.
-    service.listener.batch_size = 1
+    # Use the production batch size: even a backlog of fast events must release
+    # the graph fence after the first event, before the renewal interval elapses.
     for n in range(12):
         await env.db.wait_source_commit(source_key='test:backlog', generation=0,
             revision=str(n), outcome_ref=f'test:{n}', payload={})
@@ -2398,6 +2437,49 @@ async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
         assert (await service.orch._command_handler.execute('wait_decide', args))['success']
     row = await intent(env)
     assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+
+
+@pytest.mark.parametrize('failure', ['graph_busy', 'cancel_after_write'])
+async def test_refused_or_cancelled_requeue_preserves_generation_and_hold(env, monkeypatch, failure):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.wait_runtime import resume
+    from src.waits.graph import lock_graph
+
+    service, _, _ = await workspace_resume(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_workspace_failed'))
+    held = await intent(env)
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=1, note='Setup repaired')
+    handler = service.orch._command_handler
+    with principal_context(TRUSTED_LOCAL):
+        with monkeypatch.context() as patch:
+            if failure == 'graph_busy':
+                async def short_lock(conn, **kwargs):
+                    assert kwargs == {'queued': True}
+                    await lock_graph(conn, queued=True, timeout=0.05)
+                patch.setattr(resume, 'lock_graph', short_lock)
+                async with env.db._engine.begin() as blocker:
+                    await lock_graph(blocker)
+                    result = await handler.execute('wait_decide', args)
+                    assert result['error_code'] == 'wait.graph_busy'
+            else:
+                # The audit insert follows the continuation UPDATE. Interrupt
+                # here to prove both writes belong to one rollback boundary.
+                def cancelled_insert(*args, **kwargs):
+                    raise asyncio.CancelledError()
+                patch.setattr(resume, 'insert', cancelled_insert)
+                with pytest.raises(asyncio.CancelledError):
+                    await handler.execute('wait_decide', args)
+        assert await intent(env) == held
+        # A retry uses the exact same expected generation, without a stale error.
+        result = await handler.execute('wait_decide', args)
+        assert result['success'] and result['generation'] == 1
+    repaired = await intent(env)
+    assert repaired['suspension_generation'] == held['suspension_generation']
+    assert repaired['version'] == held['version'] + 1
+    assert repaired['saved_head'] == held['saved_head']
 
 
 async def test_workspace_retry_recovers_actual_staged_checkout(env, tmp_path):
