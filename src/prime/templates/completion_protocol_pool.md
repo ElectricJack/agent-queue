@@ -4,6 +4,8 @@ This is a pool session. Close the held task and inspect the next-claim result:
 
 On claimed, run `aq prime`. On no_ready_work/claim_conflict, retry
 `aq task claim --next --wait 60`.
+On claim_in_progress, claim again now in this same turn; it is progress, not a
+retained preparation, and nothing is delivered to an ended turn.
 On prepare_failed/not_admissible, respect retry_after and the returned instructions.
 On a repeated identical refusal (or refusal_count >= 2), report the blocker ONCE to
 the project supervisor. If idle with no held claim or preparation, run

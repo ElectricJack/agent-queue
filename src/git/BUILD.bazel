@@ -20,6 +20,7 @@ filegroup(name = "sources", srcs = [
         "locks.py",
         "manager.py",
         "process.py",
+        "repository_lock.py",
     ])
 exports_files([
         "__init__.py",
@@ -38,6 +39,7 @@ exports_files([
         "locks.py",
         "manager.py",
         "process.py",
+        "repository_lock.py",
     ])
 filegroup(name = "resources", srcs = [
     ])
@@ -60,6 +62,7 @@ py_library(
         "locks.py",
         "manager.py",
         "process.py",
+        "repository_lock.py",
     ],
     imports = ["../.."],
     deps = all_requirements,

@@ -299,6 +299,74 @@ def test_s4_child_close_reports_a_no_op_work_outcome(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("ack_ok", [True, False])
+def test_s3_waits_for_worker_stop_before_returning(monkeypatch, ack_ok):
+    smoke = _load_smoke()
+    worker = smoke.Worker("s3-worker", "token", claim_epoch=1, task_id="s1-remaining")
+    clock = SimpleNamespace(now=0.0)
+    calls = []
+    routed = False
+    states = ["running", "draining", "stopped"]
+
+    def api(command, args, **kwargs):
+        calls.append(command)
+        if command == "create_task":
+            return {"created": "discovered", "status": "DEFINED"}
+        if command == "explain_task":
+            return {"reasons": [] if routed else [{
+                "code": "blocked_gate", "detail": "routing gate", "ref": "routing-1",
+            }]}
+        if command == "gate_show":
+            return {"gate": {"status": "resolved"}}
+        assert command == "session_show" and args == {"session_id": worker.session_id}
+        # Neither close nor the ack response proves the process has stopped.
+        assert "drain-ack" in calls
+        return {"session": {"state": states.pop(0), "end_reason": "drained"}}
+
+    def aq(*args, **kwargs):
+        nonlocal routed
+        calls.append(args[1])
+        if args[:2] == ("task", "deps"):
+            return {"provenance": [{"dep_type": "discovered-from", "id": worker.task_id}]}
+        if args[:2] == ("task", "route-override"):
+            routed = True
+            return {"success": True, "resolved_gate_ids": ["routing-1"],
+                    "route_source": "override"}
+        if args[:2] == ("task", "close"):
+            return {"success": True}
+        assert args[:2] == ("session", "drain-ack")
+        assert "close" in calls and kwargs["check_ok"] is False
+        # Teardown can revoke the token before the ack response arrives.
+        return {"success": True} if ack_ok else {"_error": "token revoked"}
+
+    def task_show(task_id):
+        assert task_id == "discovered"
+        return {"status": "READY" if routed else "DEFINED", "is_blocked": True,
+                "project_id": smoke.PROJECT, "profile_id": smoke.POOL_PROFILE if routed else None,
+                "intelligence_class": smoke.POOL_CLASS if routed else None}
+
+    monkeypatch.setattr(smoke, "aq", aq)
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "task_show", task_show)
+    monkeypatch.setattr(smoke, "idle_worker", lambda: worker)
+    monkeypatch.setattr(smoke, "_open_pool_tasks", lambda: [
+        {"id": worker.task_id, "title": "S1 worker task 3"},
+    ])
+    monkeypatch.setattr(smoke, "claim_fixture", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+
+    result = smoke.s3_worker_filed_work({})
+
+    assert "discovered DEFINED + discovered-from s1-remaining" in result
+    assert calls.count("close") == calls.count("drain-ack") == 1
+    assert calls.count("session_show") == 3
+    assert not states
+    assert clock.now > 0
+
+
 def _vault_fixture_section() -> str:
     """The ``3. Vault fixtures`` block of e2e-env.sh, as bash source."""
     text = E2E_ENV.read_text()

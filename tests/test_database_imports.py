@@ -53,7 +53,16 @@ def test_leaf_import_does_not_load_application(statement):
         assert not loaded, loaded
         assert 'src.database.adapters.postgresql' not in sys.modules
         assert 'src.database.queries.job_queries' not in sys.modules
+        if {statement!r} == 'import tests.conftest':
+            assert 'tests.db_fixtures' not in sys.modules
     """)
+
+
+def test_root_lease_forwarder_uses_the_current_pool(monkeypatch):
+    from tests import conftest, db_fixtures
+
+    monkeypatch.setattr(db_fixtures, "lease_dsn", lambda name: "leased:" + name)
+    assert conftest.lease_dsn("fixture") == "leased:fixture"
 
 
 def test_public_database_exports_preserve_identity():

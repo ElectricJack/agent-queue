@@ -28,10 +28,16 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import yaml
+
+try:
+    from scripts.bazel.dependency_paths import repository_files
+except ModuleNotFoundError:  # Direct script invocation has scripts/bazel on sys.path.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.bazel.dependency_paths import repository_files
 
 ROOT = Path(__file__).resolve().parents[2]
 RESOURCES = {
@@ -64,7 +70,7 @@ def relative(path: Path, root: Path) -> str:
         return "site-packages/" + parts[-1] if len(parts) > 1 else path.name
 
 
-@lru_cache(maxsize=None)
+@cache
 def function_info(func, root: Path) -> dict:
     func = inspect.unwrap(func)
     try:
@@ -102,9 +108,23 @@ class Collector:
 
     def __init__(self, root: Path):
         self.root = root
+        self.source_files = repository_files(root)
         self.nodes = []
         self.fixtures = {}
         self.collection_reports = []
+
+    def pytest_ignore_collect(self, collection_path, config):
+        """Do not collect ignored or untracked local test modules."""
+        try:
+            path = collection_path.relative_to(self.root).as_posix()
+        except ValueError:
+            return None
+        if collection_path.is_file():
+            return True if path not in self.source_files else None
+        if path == ".":
+            return None
+        prefix = path.rstrip("/") + "/"
+        return None if any(source.startswith(prefix) for source in self.source_files) else True
 
     def fixture(self, definition) -> str:
         info = function_info(definition.func, self.root)
@@ -295,8 +315,8 @@ def select_nodes(nodes: list[dict], command: str, default_marker: str) -> list[s
     return [n["nodeid"] for n in nodes
             if (not paths or any(n["nodeid"].startswith(p) for p in paths))
             and not any(n["module"].startswith(p) for p in ignored)
-            and (not marker_text or marker.evaluate(lambda name: name in n["markers"]))
-            and (not keyword_text or keyword.evaluate(lambda name: any(
+            and (not marker_text or marker.evaluate(lambda name, n=n: name in n["markers"]))
+            and (not keyword_text or keyword.evaluate(lambda name, n=n: any(
                 name.lower() in k.lower() for k in n["keywords"])))]
 
 
@@ -423,8 +443,9 @@ def main() -> int:
             plugin.document["source_head"] = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
             plugin.document["source_files"] = {
-                relative(p, ROOT): fingerprint(p)
-                for p in sorted((ROOT / "tests").rglob("*.py"))
+                path: fingerprint(ROOT / path)
+                for path in sorted(plugin.source_files)
+                if path.startswith("tests/") and path.endswith(".py")
             }
             plugin.document["pytest_version"] = pytest.__version__
             plugin.document["python_version"] = sys.version

@@ -27,6 +27,7 @@ from src.integration.delivery_truth import DeliveryRequest
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.gitops import ZERO, GitOperations, RetainedRepository, branch
 from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.integration.visit_carry import carried
 from src.operator_decisions import withheld_release
 
 logger = logging.getLogger(__name__)
@@ -691,7 +692,7 @@ class BatchStore:
                 "operator_id": "service:integration-train",
                 "reason": "pre-existing target failures; admit green pending baseline fix",
             }
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted", ejection_record=instruction,
                      human_abort_reason=instruction["reason"], cleanup_state="pending",
@@ -732,8 +733,11 @@ class BatchStore:
             if dry_run:
                 return
             values = {"intent": intent, "updated_at": self.clock()}
-            if operator_id is not None and row["fixer_queue"]:
-                values["fixer_queue"] = {**row["fixer_queue"], "status": "operator_decision"}
+            if intent == "aborted" or (operator_id is not None and row["fixer_queue"]):
+                # Explicit withdrawal is distinct from automatic defer_on(),
+                # even before a fixer or deferred queue has been allocated.
+                values["fixer_queue"] = {**(row["fixer_queue"] or {}),
+                                         "status": "operator_decision"}
             if intent == "aborted":
                 # Compatibility guards still read lifecycle. Commit the terminal
                 # projection with intent so members can be revised immediately.
@@ -1099,9 +1103,14 @@ class BatchService:
 
                 assembly_members = await assembly_inputs(
                     self.store.db, self.gitops, repo, batch, assembly_members)
-                result = await self.gitops.merge_sources(repo, assembly_base,
-                                                        assembly_members,
-                                                        created_at=batch.created_at)
+                # Assembly from frozen inputs writes only objects, so a large
+                # build outlives a timed-out train visit for the next to adopt.
+                result = await carried(
+                    "build_candidate",
+                    (batch.id, str(repo.store), assembly_base, assembly_members,
+                     batch.created_at),
+                    lambda: self.gitops.merge_sources(repo, assembly_base, assembly_members,
+                                                      created_at=batch.created_at))
                 if result["outcome"] != "merged":
                     logger.warning("integration batch %s build %s on %s: %s",
                                    batch.id, result["outcome"], batch.target_ref, result)

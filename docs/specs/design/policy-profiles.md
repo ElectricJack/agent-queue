@@ -106,8 +106,8 @@ review/delivery modes, the required engine selector, train policy (including
 cadence, repair and admission), repository binding and promotion flow. Repository
 ids, branches, required check sets and producers are placeholders; target project
 bindings provide defaults. Source activation/artifact identities and task-specific
-admission grants are never transferred. Existing target routes are retained;
-missing routes must be configured through the normal reviewed activation workflow.
+admission grants are never transferred. An existing target-local legacy route is
+retained; a missing one is never fabricated, and the git-first train does not need it.
 The installation engine selector is a prerequisite, never an imported global change.
 Global placement saves a template. Project placement applies active settings through
 the supported project configuration path shared with cutover: engine validation,
