@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 
+from src.database.migration_guard import SchemaAheadPolicy
+
 from src.database.engine import (
     create_postgres_engine,
     run_schema_setup,
@@ -24,9 +26,13 @@ from src.database.engine import (
 from src.database.queries.activity_queries import ActivityQueryMixin
 from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.agent_wait_queries import AgentWaitQueriesMixin
+from src.database.queries.agent_cron_queries import AgentCronQueriesMixin
 from src.database.queries.agent_question_queries import AgentQuestionQueriesMixin
 from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
+from src.database.queries.ask_queries import AskQueriesMixin
+from src.database.queries.ask_delivery_queries import AskDeliveryQueriesMixin
+from src.database.queries.ask_input_queries import AskInputQueriesMixin
 from src.database.queries.assignment_route_queries import AssignmentRouteQueryMixin
 from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
@@ -36,7 +42,10 @@ from src.database.queries.collaboration_lifecycle_queries import CollaborationLi
 from src.database.queries.conversation_queries import ConversationQueriesMixin
 from src.database.queries.dashboard_state_queries import DashboardStateQueriesMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
-from src.database.queries.digest_queries import DigestQueryMixin
+from src.database.queries.digest_queries import (
+    DigestQueryMixin,
+    DigestSupervisorQueriesMixin,
+)
 from src.database.queries.escalation_queries import EscalationQueriesMixin
 from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
@@ -48,8 +57,11 @@ from src.database.queries.integration_reconciliation_queries import (
 )
 from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
+from src.database.queries.integration_subject_queries import IntegrationSubjectQueriesMixin
 from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin
 from src.database.queries.job_queries import JobQueriesMixin
+from src.database.queries.knowledge_queries import KnowledgeQueryMixin
+from src.database.queries.record_queries import RecordQueryMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.lifecycle_queries import LifecycleQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
@@ -85,11 +97,19 @@ from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
+from src.database.queries.wait_source_queries import WaitSourceQueriesMixin
 
 logger = logging.getLogger(__name__)
 
 
 class PostgreSQLDatabaseAdapter(
+    WaitSourceQueriesMixin,
+
+    AskQueriesMixin,
+    AskDeliveryQueriesMixin,
+    AskInputQueriesMixin,
+    RecordQueryMixin,
+    KnowledgeQueryMixin,
     JobQueriesMixin,
     IntegrationControlQueriesMixin,
     IntegrationTrainQueriesMixin,
@@ -97,6 +117,7 @@ class PostgreSQLDatabaseAdapter(
     IntegrationReconciliationQueriesMixin,
     IntegrationScheduleQueriesMixin,
     IntegrationStateQueriesMixin,
+    IntegrationSubjectQueriesMixin,
     HierarchyQueryMixin,
     LayoutQueryMixin,
     AssignmentRouteQueryMixin,
@@ -117,6 +138,7 @@ class PostgreSQLDatabaseAdapter(
     AgentQueryMixin,
     AgentQuestionQueriesMixin,
     AgentWaitQueriesMixin,
+    AgentCronQueriesMixin,
     CollaborationQueriesMixin,
     CollaborationLifecycleQueriesMixin,
     WorkspaceQueryMixin,
@@ -128,6 +150,7 @@ class PostgreSQLDatabaseAdapter(
     ActivityQueryMixin,
     DashboardStateQueriesMixin,
     DigestQueryMixin,
+    DigestSupervisorQueriesMixin,
     ReportQueriesMixin,
     OutboundQueriesMixin,
     TokenQueryMixin,
@@ -171,6 +194,7 @@ class PostgreSQLDatabaseAdapter(
         *,
         pre_ping: str = "local",
         pool_recycle: int = 1800,
+        schema_ahead_policy: SchemaAheadPolicy | None = None,
     ):
         try:
             import asyncpg  # noqa: F401
@@ -184,6 +208,7 @@ class PostgreSQLDatabaseAdapter(
         self._pool_max = pool_max
         self._pre_ping = pre_ping
         self._pool_recycle = pool_recycle
+        self._schema_ahead_policy = schema_ahead_policy
         self._engine = None
 
     async def initialize(self) -> None:
@@ -195,7 +220,10 @@ class PostgreSQLDatabaseAdapter(
             pre_ping=self._pre_ping,
             pool_recycle=self._pool_recycle,
         )
-        await run_schema_setup(self._engine)
+        if self._schema_ahead_policy is None:
+            await run_schema_setup(self._engine)
+        else:
+            await run_schema_setup(self._engine, schema_ahead_policy=self._schema_ahead_policy)
         await run_startup_data_migrations(self._engine)
 
     async def close(self) -> None:

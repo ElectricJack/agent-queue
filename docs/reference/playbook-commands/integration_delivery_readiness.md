@@ -94,8 +94,8 @@ here needs playbook, service or local authority.
    ([`src/commands/integration_commands.py:1174`](../../../src/commands/integration_commands.py))
    validates the request, loads the parent (`invariant_error` when missing) and
    authorizes against its project, allowing a same-project session read.
-2. `ParentCompletion.readiness`
-   ([`src/integration/parent_completion.py:229`](../../../src/integration/parent_completion.py))
+2. `ParentEpisodeRecords.readiness`
+   ([`src/integration/records.py:229`](../../../src/integration/records.py))
    opens an immediate transaction, locks the parent's context — task, project,
    checkpoint and operation — and delegates to `readiness_on` (line 370).
 3. `readiness_on` loads the episode named by the checkpoint (a missing or
@@ -133,7 +133,7 @@ are redacted from receipts and explanations.
 
 The related write path — projecting readiness into checkpoint state and, where the
 policy calls for it, creating the verifier task — is `mark_ready_on`
-([`src/integration/parent_completion.py:242`](../../../src/integration/parent_completion.py)),
+([`src/integration/records.py:242`](../../../src/integration/records.py)),
 which the daemon drives. This command deliberately does not.
 
 ## Failure modes and diagnostics
