@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.task_batch_review_record_request import TaskBatchReviewRecordRequest
+from ...models.task_batch_review_record_response import TaskBatchReviewRecordResponse
 from ...models.task_batch_review_record_response_422 import TaskBatchReviewRecordResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | TaskBatchReviewRecordResponse422 | None:
+) -> TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = TaskBatchReviewRecordResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | TaskBatchReviewRecordResponse422]:
+) -> Response[TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: TaskBatchReviewRecordRequest,
-) -> Response[Any | TaskBatchReviewRecordResponse422]:
+) -> Response[TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422]:
     """Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned
     fidelity reviewer.
 
@@ -77,7 +79,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | TaskBatchReviewRecordResponse422]
+        Response[TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -95,7 +97,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: TaskBatchReviewRecordRequest,
-) -> Any | TaskBatchReviewRecordResponse422 | None:
+) -> TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422 | None:
     """Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned
     fidelity reviewer.
 
@@ -110,7 +112,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | TaskBatchReviewRecordResponse422
+        TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422
     """
 
     return sync_detailed(
@@ -123,7 +125,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: TaskBatchReviewRecordRequest,
-) -> Response[Any | TaskBatchReviewRecordResponse422]:
+) -> Response[TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422]:
     """Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned
     fidelity reviewer.
 
@@ -138,7 +140,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | TaskBatchReviewRecordResponse422]
+        Response[TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -154,7 +156,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: TaskBatchReviewRecordRequest,
-) -> Any | TaskBatchReviewRecordResponse422 | None:
+) -> TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422 | None:
     """Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned
     fidelity reviewer.
 
@@ -169,7 +171,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | TaskBatchReviewRecordResponse422
+        TaskBatchReviewRecordResponse | TaskBatchReviewRecordResponse422
     """
 
     return (

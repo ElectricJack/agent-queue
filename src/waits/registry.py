@@ -38,6 +38,7 @@ def build_registry(*, clock=time.time, ci_reader=None, pr_reader=None, resource_
     """Missing service readers refuse verification; they never create an exemption."""
     from src.waits.adapters.batch import BatchAdapter
     from src.waits.adapters.ci import CIAdapter
+    from src.waits.adapters.close_merge import CloseMergeAdapter
     from src.waits.adapters.dependency import DependencyAdapter
     from src.waits.adapters.human import HumanAdapter
     from src.waits.adapters.job import JobAdapter
@@ -57,6 +58,7 @@ def build_registry(*, clock=time.time, ci_reader=None, pr_reader=None, resource_
             CIAdapter("ci_run", ci_reader),
             PullRequestAdapter(pr_reader),
             BatchAdapter(),
+            CloseMergeAdapter(),
             MessageAdapter(),
             HumanAdapter(clock),
             TimerAdapter(clock),

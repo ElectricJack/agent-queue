@@ -8,6 +8,7 @@ once the router is ready, in-flight legacy work finishes where it is.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -267,3 +268,124 @@ async def test_a_router_that_is_not_ready_leaves_legacy_work_running(orch):
             conn, project_id="p", profile_id="standard-high-codex", agent_id="a",
             router_ready=await orchestrator_router_ready(orch, "p"),
         ) == "legacy"
+
+
+@pytest.mark.parametrize("disable", ["pool", "zero", "provider", "quarantine"])
+async def test_unavailable_router_route_is_automatically_returned_and_rerouted(
+    handler, orch, disable,
+):
+    from src.providers.availability import ProviderAvailability
+
+    orch.set_command_handler(handler)
+    _ready(orch, "p")
+    _router._pool_source(orch)
+    constraints = {"exclude_providers": ["uninstalled-provider"]}
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high",
+                  prefer_target="codex", prefer_mode="soft", route={"constraints": constraints})
+    assert (await _route(handler, "t"))["profile_id"] == "standard-high-codex"
+    before = await orch.db.get_task("t")
+    history = [{"attempt_id": "prior", "intelligence_class": "standard-high",
+                "reason": "verification_failed"}]
+    await orch.db.set_task_meta("t", "routing_failed_attempts", history)
+    if disable == "pool":
+        result = await handler.execute("pool_set_enabled", {
+            "profile_id": "standard-high-codex", "enabled": False,
+        })
+        assert result["success"], result
+    elif disable == "zero":
+        await orch.db.update_profile("standard-high-codex", max_active=0)
+    elif disable == "provider":
+        orch.provider_availability._rows["codex"] = ProviderAvailability(
+            provider="codex", override_state="disabled", updated_at=time.time(),
+        )
+    else:
+        orch._quarantine_pool("p", "standard-high-codex", "private captured output")
+    # The periodic sweep must repair existing routes, including after a restart
+    # with no in-memory configuration event and no spare alternative capacity.
+    for i in range(3):
+        await _create(orch.db, f"full-{i}", profile_id="standard-high-claude",
+                      intelligence_class="standard-high", route_source=ROUTER)
+    assert await _emitted(orch) == {"t"}
+    reset = await orch.db.get_task("t")
+    assert (reset.route_source, reset.profile_id, reset.intelligence_class) == (UNROUTED, None, None)
+    assert (reset.class_hint, reset.prefer_target, reset.prefer_mode) == (
+        before.class_hint, before.prefer_target, before.prefer_mode,
+    )
+    assert reset.route == {"constraints": constraints}
+    assert await orch.db.get_task_meta("t", "routing_failed_attempts") == history
+    assert (await _route(handler, "t"))["profile_id"] == "standard-high-claude"
+    assert await _emitted(orch) == set()
+    comments = (await orch.db.list_task_comments("t"))["comments"]
+    assert len(comments) == 1 and "unavailable" in comments[0]["body"]
+
+
+async def test_automatic_rerouting_preserves_strict_target_until_reenabled(handler, orch):
+    orch.set_command_handler(handler)
+    _ready(orch, "p")
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH,
+                  prefer_target="codex", prefer_mode="strict")
+    assert (await _route(handler, "t"))["profile_id"] == "standard-high-codex"
+    await orch.db.update_profile("standard-high-codex", enabled=False)
+    assert await _emitted(orch) == {"t"}
+    assert (await _router._plan(handler, "t"))["outcome"] in {"held", "no_candidates"}
+    task = await orch.db.get_task("t")
+    assert (task.profile_id, task.prefer_target, task.prefer_mode) == (None, "codex", "strict")
+    await orch.db.update_profile("standard-high-codex", enabled=True)
+    assert (await _route(handler, "t"))["profile_id"] == "standard-high-codex"
+
+
+async def test_automatic_rerouting_leaves_active_and_authoritative_routes_alone(handler, orch):
+    orch.set_command_handler(handler)
+    _ready(orch, "p")
+    for task_id, source, status in (
+        ("running", ROUTER, TaskStatus.IN_PROGRESS),
+        ("claimed", ROUTER, TaskStatus.READY),
+        ("override", OVERRIDE, TaskStatus.READY),
+        ("role", ROLE, TaskStatus.READY),
+        ("healthy", ROUTER, TaskStatus.READY),
+    ):
+        await _create(orch.db, task_id, task_type=TaskType.RESEARCH,
+                      profile_id="standard-high-claude" if task_id == "healthy"
+                      else "standard-high-codex", route_source=source,
+                      intelligence_class="standard-high", status=status)
+    await _router._session(orch.db, "live", task_id="claimed")
+    await orch.db.update_profile("standard-high-codex", enabled=False)
+    assert await _emitted(orch) == set()
+    for task_id in ("running", "claimed", "override", "role"):
+        assert (await orch.db.get_task(task_id)).profile_id == "standard-high-codex"
+
+
+@pytest.mark.parametrize("change", ["reenable", "claim", "route"])
+async def test_route_refresh_rechecks_target_and_claim_after_waiting_for_apply_lock(
+    handler, orch, monkeypatch, change,
+):
+    import asyncio
+
+    orch.set_command_handler(handler)
+    _ready(orch, "p")
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH,
+                  profile_id="standard-high-codex", route_source=ROUTER,
+                  intelligence_class="standard-high")
+    await orch.db.update_profile("standard-high-codex", enabled=False)
+    observed = asyncio.Event()
+    original = handler._routing_static_facts
+
+    async def facts(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        observed.set()
+        return result
+
+    monkeypatch.setattr(handler, "_routing_static_facts", facts)
+    async with orch.db.routing_apply_lock():
+        sweep = asyncio.create_task(_emitted(orch))
+        await asyncio.wait_for(observed.wait(), timeout=10)
+        if change == "reenable":
+            await orch.db.update_profile("standard-high-codex", enabled=True)
+        elif change == "claim":
+            await _router._session(orch.db, "live", task_id="t")
+        else:
+            await orch.db.update_task("t", profile_id="standard-high-claude", route_source=ROUTER)
+    assert await sweep == set()
+    assert (await orch.db.get_task("t")).profile_id == (
+        "standard-high-claude" if change == "route" else "standard-high-codex"
+    )
