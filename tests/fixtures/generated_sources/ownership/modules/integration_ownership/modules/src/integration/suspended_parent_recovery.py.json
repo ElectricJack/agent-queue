@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/suspended_parent_recovery.py::SuspendedParentRecovery.run::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 321,
+      "owner": "SuspendedParentRecovery.run",
+      "owner_fingerprint": "b677fb0c97588a84c8e79b2f60d9b7576e8a5c159a0264076b637075ba3893ec",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
