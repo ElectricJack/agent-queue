@@ -30,8 +30,8 @@ Design strengths (see specs/git/git.md §10 for the full list):
 
 Resolved gaps:
   - **G1 (resolved):** ``merge_branch`` now fetches and hard-resets
-    ``origin/<default_branch>`` before merging, and ``_merge_and_push``
-    resets local main on push failure to avoid diverged state.
+    ``origin/<default_branch>`` before merging, and the retired orchestrator
+    merge-and-push reset local main on push failure to avoid diverged state.
   - **G2 (resolved):** ``recover_workspace`` resets the local default branch
     to ``origin/<default_branch>`` after any failed merge-and-push, ensuring
     the workspace is clean for the next task.
@@ -63,8 +63,11 @@ See specs/git/git.md for the full behavioral specification.
 
 from __future__ import annotations
 
+from src.claim_timing import timed_claim_git
+
 import asyncio
 import contextvars
+import functools
 import logging
 import math
 import os
@@ -74,14 +77,17 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
+
+from structlog.contextvars import bound_contextvars
 
 from src.git.askpass_broker import (
     GitCredentialTopology,
@@ -98,6 +104,8 @@ from src.git.github_contracts import (
     GitHubRepositoryBinding,
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
+from src.git.process import ProcessCleanupError, run_owned_process
+from src.git.locks import remove_stale_locks
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -111,6 +119,8 @@ logger = logging.getLogger(__name__)
 APP_AUTH_PUSH_TIMEOUT_SECONDS = 120.0
 APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS = 5.0
 
+_COMMAND_TIMEOUT: ContextVar[int | None] = ContextVar("git_command_timeout", default=None)
+
 
 @contextmanager
 def _zeroized_credential(buffer: bytearray):
@@ -120,15 +130,74 @@ def _zeroized_credential(buffer: bytearray):
         zeroize(buffer)
 
 
-def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int = 512) -> str:
+def safe_git_detail(value: str, token: str | None = None, *, limit: int = 512) -> str:
     """Keep useful failure text without returning a credential to callers or logs."""
     from src.projects.github import scrub_secrets
 
     if token:
         value = value.replace(token, "***")
+    # Results can cross more than one diagnostic boundary. Recover escaped
+    # line separators so a second scrub does not swallow text after a header.
+    value = value.replace("\\r", "\r").replace("\\n", "\n")
     value = re.sub(r"(?im)(authorization\s*:\s*)[^\r\n]*", r"\1***", value)
     safe = scrub_secrets(value)
-    return safe[-limit:].replace("\r", "\\r").replace("\n", "\\n")
+    # Escape control characters before bounding the rendered diagnostic.
+    safe = re.sub(r"[\x00-\x1f\x7f]", lambda m: repr(m[0])[1:-1], safe)
+    return safe[-limit:]
+
+
+def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int = 512) -> str:
+    return safe_git_detail(value, token, limit=limit)
+
+
+_PUSH_STDERR_LIMIT = 4096
+
+
+async def _read_push_stderr(stream: asyncio.StreamReader, credential: bytearray) -> str:
+    """Drain continuously, retaining only a scrubbed tail of complete bounded lines."""
+    pending = bytearray()
+    tail = b""
+    oversized = False
+    try:
+        while chunk := await stream.read(_PUSH_STDERR_LIMIT):
+            for part in chunk.splitlines(keepends=True):
+                if len(pending) + len(part) > _PUSH_STDERR_LIMIT:
+                    oversized = True
+                    pending.clear()
+                if not oversized:
+                    pending.extend(part)
+                if part.endswith((b"\n", b"\r")):
+                    # Drop oversized lines whole: truncating before redaction could
+                    # expose a credential suffix whose prefix was discarded.
+                    safe = "[oversized stderr line omitted]" if oversized else safe_git_detail(
+                        pending.decode("utf-8", errors="replace"),
+                        credential.decode("utf-8"), limit=_PUSH_STDERR_LIMIT,
+                    )
+                    tail = (tail + safe.encode("utf-8"))[-_PUSH_STDERR_LIMIT:]
+                    pending.clear()
+                    oversized = False
+        if pending or oversized:
+            safe = "[oversized stderr line omitted]" if oversized else safe_git_detail(
+                pending.decode("utf-8", errors="replace"),
+                credential.decode("utf-8"), limit=_PUSH_STDERR_LIMIT,
+            )
+            tail = (tail + safe.encode("utf-8"))[-_PUSH_STDERR_LIMIT:]
+        return tail.decode("utf-8", errors="ignore")
+    finally:
+        zeroize(credential)
+
+
+#: Git's notice that an earlier detached auto-gc failed.  Auto maintenance runs
+#: last, so the block runs to the end of stderr; its quoted "fatal:" lines are
+#: that old gc run's, not the command's.
+_STALE_GC_REPORT = re.compile(
+    rb"(?ms)^(?:warning|error): The last gc run reported the following\..*\Z"
+)
+
+
+def _without_stale_gc_report(stderr: bytes) -> bytes:
+    """Drop the stale-gc.log notice; callers apply this only after a zero exit."""
+    return _STALE_GC_REPORT.sub(b"", stderr)
 
 
 class GitError(Exception):
@@ -141,7 +210,19 @@ class ChildPreparationConflict(GitError):
     def __init__(self, child_head, parent_head, merge_head, files, reason):
         self.child_head, self.parent_head, self.merge_head = child_head, parent_head, merge_head
         self.files = tuple(files)
+        super().__init__(f"child merge conflict in {', '.join(self.files)}: {reason}")
+
+
+class ForeignSlotClaim(GitError):
+    """A slot still bound to another task: a workspace fault, not the claimant's."""
+
+    def __init__(self, reason, *, workspace_id="", path="", holder_task_id=None):
+        self.workspace_id, self.path, self.holder_task_id = workspace_id, path, holder_task_id
         super().__init__(reason)
+
+
+class SlotSourceDisagreement(GitError):
+    """A slot whose checkout contradicts its sentinel: every claim there fails alike."""
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +286,27 @@ def _git_subcommand(args: Sequence[str]) -> str | None:
     return None
 
 
+def _git_preparation_error(
+    reason: str, *, subcommand: str = "none", elapsed: float = 0.0,
+    budget: float = 0.0, returncode: int | None = None, diagnostic_kind: str = "none",
+) -> GitError:
+    """Expose only bounded, daemon-selected fields at every diagnostic boundary."""
+    fields = {
+        "reason_code": reason, "git_subcommand": subcommand,
+        "elapsed_seconds": round(elapsed, 3), "budget_seconds": round(budget, 3),
+        "returncode": returncode, "diagnostic_kind": diagnostic_kind,
+    }
+    detail = (
+        f"reason={reason}, subcommand={subcommand}, elapsed={elapsed:.3f}s, "
+        f"budget={budget:.3f}s, rc={returncode}, diagnostic_kind={diagnostic_kind}"
+    )
+    # The stdlib-to-structlog bridge merges contextvars, not LogRecord extras.
+    # Keep extras too so direct stdlib consumers see the same typed fields.
+    with bound_contextvars(**fields):
+        logger.warning("git_preparation_failed: %s", detail, extra=fields)
+    return GitError(f"authenticated Git push preparation failed ({detail})")
+
+
 class _AuthenticatedGitTimeout(GitError):
     """A contained Git attempt timed out and may be retried within its deadline."""
 
@@ -222,6 +324,7 @@ class RemoteRefResult:
     state: RemoteRefState
     oid: str | None = None
     error: str | None = None
+    publication_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -241,6 +344,9 @@ class _OriginFetchTransfer:
     objects: int
     size_kib: int
     elapsed_seconds: float
+    prepare_seconds: float
+    network_seconds: float
+    import_seconds: float
 
 
 @dataclass(frozen=True)
@@ -504,6 +610,105 @@ def _require_authorized_repository(configured_url: str, repository_url: str, *, 
         raise GitError("push destination is not the authorized repository")
 
 
+def _parse_status_branch_header(header: str) -> str:
+    """Branch name from a ``git status --branch`` header (after ``## ``)."""
+    for prefix in ("No commits yet on ", "Initial commit on "):
+        if header.startswith(prefix):
+            return header[len(prefix):].strip()
+    if header.startswith("HEAD (no branch)"):
+        return "HEAD"
+    return header.split("...", 1)[0].split(" ", 1)[0].strip()
+
+
+
+#: How long a clean full fsck of an unchanged object store is reused.
+_RETAINED_VERIFY_TTL_SECONDS = 3600.0
+
+
+def _common_git_dir(git_dir: str) -> Path:
+    """Resolve a linked worktree's object-store owner, without running Git."""
+    directory = Path(git_dir)
+    common = directory / "commondir"
+    if common.is_file():
+        directory = (directory / common.read_text(encoding="utf-8").strip()).resolve()
+    return directory
+
+
+def _object_store_fingerprint(git_dir: str) -> tuple | None:
+    """Every object-store file's (path, size, inode), or None if unreadable.
+
+    Covers loose objects, packs, indexes and alternates. Git writes objects
+    by rename, so any new or replaced object changes it; mtime is left out
+    because Git freshens existing objects on every fetch that names them.
+    """
+    entries = []
+    try:
+        root = _common_git_dir(git_dir) / "objects"
+        if not root.is_dir():
+            return None
+        for directory, _subdirs, files in os.walk(root):
+            for name in files:
+                # Interrupted fetches leave these outside Git's object inventory.
+                # They are not evidence that a verified object changed.
+                if name.startswith(("tmp_pack_", "tmp_obj_")):
+                    continue
+                path = os.path.join(directory, name)
+                stat = os.stat(path)
+                entries.append((os.path.relpath(path, root), stat.st_size, stat.st_ino))
+    except OSError:
+        return None
+    return tuple(sorted(entries))
+
+
+#: One request's shared budget for Git reads that may queue behind a fetch or
+#: retained-store recovery. Background readers keep their own recovery budgets.
+REQUEST_GIT_READ_SECONDS = 5.0
+_REQUEST_GIT_READ_DEADLINE: ContextVar[float | None] = ContextVar(
+    "request_git_read_deadline", default=None,
+)
+
+
+def bounded_git_reads(func):
+    """Run coroutine *func* under one ``REQUEST_GIT_READ_SECONDS`` read budget.
+
+    Nested budgets keep the earlier deadline. Reads opt in through
+    :func:`within_git_read_budget`; nothing else is cancelled.
+    """
+    @functools.wraps(func)
+    async def bounded(*args, **kwargs):
+        deadline = asyncio.get_running_loop().time() + REQUEST_GIT_READ_SECONDS
+        previous = _REQUEST_GIT_READ_DEADLINE.get()
+        token = _REQUEST_GIT_READ_DEADLINE.set(
+            deadline if previous is None else min(previous, deadline))
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            _REQUEST_GIT_READ_DEADLINE.reset(token)
+    return bounded
+
+
+async def within_git_read_budget(func, *args):
+    """``await func(*args)`` within the active request budget; None once it lapses.
+
+    Without a budget this simply awaits. An expired budget never starts *func*.
+    Callers must not let cancellation abandon shared work: a shared fetch or
+    recovery keeps running under its own writer lock, and only this request
+    goes without its evidence.
+    """
+    deadline = _REQUEST_GIT_READ_DEADLINE.get()
+    if deadline is None:
+        return await func(*args)
+    if asyncio.get_running_loop().time() >= deadline:
+        return None
+    scope = asyncio.timeout_at(deadline)
+    try:
+        async with scope:
+            return await func(*args)
+    except TimeoutError:
+        if scope.expired():
+            return None
+        raise
+
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
     _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
@@ -536,6 +741,11 @@ class GitManager:
     # whole commit and tree history (no blobs); every later one is
     # incremental.  Ten minutes covers a large repository once.
     _PR_DIFF_FETCH_TIMEOUT = 600
+
+    # Local exact fetches have taken 115.4s against the old 120s ceiling on a
+    # busy retained store. Allow twice that ceiling for standalone acquisition;
+    # an explicit caller budget (including push authority) always wins.
+    _EXACT_FETCH_TIMEOUT = 240.0
 
     #: Directory, under the directory ``pr_merge`` runs in, holding one
     #: blob-less bare repository per ``<host>/<owner>/<repo>`` from which PR
@@ -575,6 +785,7 @@ class GitManager:
         # same bare cache at once.
         self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
         self._repository_operation_locks: dict[str, asyncio.Lock] = {}
+        self._retained_fsync_stores: set[tuple[str, int]] = set()
         self.github_access = github_access
         # The daemon installs ``project -> resolved identity`` here
         # (``src.git.identity.resolve_git_identity`` over its live config), so
@@ -623,6 +834,20 @@ class GitManager:
         identity = self.commit_identity_env(args)
         return {**self._SUBPROCESS_ENV, **identity} if identity else self._SUBPROCESS_ENV
 
+    @staticmethod
+    def _foreground_git_env(env: Mapping[str, str]) -> dict[str, str]:
+        # Git's automatic maintenance can setsid() and escape the process
+        # group. Repository maintenance belongs to its scheduled owner, not
+        # a cancellable checkout/fetch. Preserve existing command config.
+        result = dict(env)
+        count = int(result.get("GIT_CONFIG_COUNT", "0"))
+        for key, value in (("maintenance.auto", "false"), ("gc.auto", "0")):
+            result[f"GIT_CONFIG_KEY_{count}"] = key
+            result[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+        result["GIT_CONFIG_COUNT"] = str(count)
+        return result
+
     async def bind_github_repository(self, repository_url: str) -> GitHubRepositoryBinding:
         if self.github_access is None:
             raise GitError("GitHub access service is not configured")
@@ -655,6 +880,18 @@ class GitManager:
         """
         self._lock_provider = provider
 
+    @contextmanager
+    def command_timeout(self, seconds: int) -> Iterator[None]:
+        """Scope default local-command budgets to this coroutine, never the manager."""
+        token = _COMMAND_TIMEOUT.set(seconds)
+        try:
+            yield
+        finally:
+            _COMMAND_TIMEOUT.reset(token)
+
+    def _command_timeout(self, timeout: int | None = None) -> int:
+        return timeout or _COMMAND_TIMEOUT.get() or self._GIT_TIMEOUT
+
     def _run(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str:
         try:
             result = subprocess.run(
@@ -663,12 +900,12 @@ class GitManager:
                 capture_output=True,
                 text=True,
                 env=self._env_for(args),
-                timeout=timeout or self._GIT_TIMEOUT,
+                timeout=self._command_timeout(timeout),
             )
         except subprocess.TimeoutExpired:
             raise GitError(
                 f"git {' '.join(args)} timed out after "
-                f"{timeout or self._GIT_TIMEOUT}s (possible credential prompt)"
+                f"{self._command_timeout(timeout)}s"
             )
         if result.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -697,6 +934,7 @@ class GitManager:
                 return await self._arun_unlocked(args, cwd, timeout)
         return await self._arun_unlocked(args, cwd, timeout)
 
+    @timed_claim_git
     async def _arun_unlocked(
         self, args: list[str], cwd: str | None = None, timeout: int | None = None
     ) -> str:
@@ -708,35 +946,18 @@ class GitManager:
         acquired the appropriate lock (e.g. for compound operations that need
         a single lock scope spanning multiple git commands).
         """
-        effective_timeout = timeout or self._GIT_TIMEOUT
+        effective_timeout = self._command_timeout(timeout)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "git",
-                *args,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._env_for(args),
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=effective_timeout,
+                proc, stdout, stderr = await run_owned_process(
+                    "git", *args, cwd=cwd, timeout=effective_timeout,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env=self._foreground_git_env(self._env_for(args)),
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-                # Cancellation (including daemon shutdown) must not leave a
-                # reset writing after its claim request has gone away.
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass  # Process already exited before we could kill it
-                await proc.wait()
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
+            except asyncio.TimeoutError as exc:
                 raise GitError(
-                    f"git {' '.join(args)} timed out after "
-                    f"{effective_timeout}s (possible credential prompt)"
-                )
+                    f"git {' '.join(args)} timed out after {effective_timeout}s"
+                ) from exc
         except FileNotFoundError as exc:
             if cwd is not None and not Path(cwd).is_dir():
                 raise GitError(f"git working directory does not exist: {cwd}") from exc
@@ -794,32 +1015,23 @@ class GitManager:
         env: dict[str, str],
         timeout: int | None,
     ) -> subprocess.CompletedProcess:
-        effective_timeout = timeout or self._GIT_TIMEOUT
+        effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=cwd,
-                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env},
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(None if stdin is None else stdin.encode("utf-8")),
-                    timeout=effective_timeout,
+                proc, stdout, stderr = await run_owned_process(
+                    *command, cwd=cwd, timeout=effective_timeout,
+                    input=None if stdin is None else stdin.encode("utf-8"),
+                    stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env=self._foreground_git_env({
+                        **self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env,
+                    }),
                 )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
+            except asyncio.TimeoutError as exc:
                 raise GitError(
-                    f"git {' '.join(args)} timed out after {effective_timeout}s "
-                    "(possible credential prompt)"
-                )
+                    f"git {' '.join(args)} timed out after {effective_timeout}s"
+                ) from exc
         except FileNotFoundError as exc:
             if not Path(cwd).is_dir():
                 raise GitError(f"git working directory does not exist: {cwd}") from exc
@@ -841,6 +1053,38 @@ class GitManager:
         async with lock:
             yield
 
+    async def aread_blob(self, cwd: str, oid: str, *, max_bytes: int) -> bytes:
+        """Read a pinned Git blob without text decoding or an unbounded pipe.
+
+        Script proposal inputs may contain binary supporting files. Callers
+        first resolve a regular-file tree entry at an approved commit; neither
+        revision expressions nor working-tree filters are accepted here.
+        """
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid) is None or max_bytes < 0:
+            raise GitError("invalid bounded blob request")
+        proc = await asyncio.create_subprocess_exec(
+            "git", "--no-replace-objects", "cat-file", "blob", oid,
+            cwd=cwd, env=self._SUBPROCESS_ENV,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            async with asyncio.timeout(self._GIT_TIMEOUT):
+                chunks = bytearray()
+                while chunk := await proc.stdout.read(min(65536, max_bytes + 1 - len(chunks))):
+                    chunks.extend(chunk)
+                    if len(chunks) > max_bytes:
+                        raise GitError("blob exceeds input limit")
+                if await proc.wait() != 0:
+                    raise GitError("pinned blob unavailable")
+                return bytes(chunks)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            # Reap while draining the now-dead producer's pipe. Waiting without
+            # draining can hang on asyncio's paused transport after overflow.
+            await proc.communicate()
+
     async def _arun_subprocess(
         self,
         cmd: list[str],
@@ -852,27 +1096,16 @@ class GitManager:
         Returns a :class:`subprocess.CompletedProcess`-compatible object so
         callers can inspect ``returncode``, ``stdout``, and ``stderr``.
         """
-        effective_timeout = timeout or self._GIT_TIMEOUT
+        effective_timeout = self._command_timeout(timeout)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._SUBPROCESS_ENV,
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=effective_timeout,
+                proc, stdout, stderr = await run_owned_process(
+                    *cmd, cwd=cwd, timeout=effective_timeout,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env=self._foreground_git_env(self._SUBPROCESS_ENV),
                 )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass  # Process already exited before we could kill it
-                await proc.wait()
-                raise subprocess.TimeoutExpired(cmd, effective_timeout)
+            except asyncio.TimeoutError as exc:
+                raise subprocess.TimeoutExpired(cmd, effective_timeout) from exc
         except FileNotFoundError:
             raise FileNotFoundError(f"{cmd[0]} executable not found")
         return subprocess.CompletedProcess(
@@ -945,7 +1178,7 @@ class GitManager:
 
         This is safer than ``git pull`` because pull can fail when the local
         branch has diverged (e.g. from un-pushed merge commits left by
-        ``_merge_and_push``). A hard reset unconditionally moves the branch
+        a failed merge-and-push). A hard reset unconditionally moves the branch
         pointer to match the remote.
 
         Must be called while the default branch is checked out (for normal
@@ -988,7 +1221,7 @@ class GitManager:
         - **Normal repo:** checkout default branch, hard-reset to
           ``origin/<default_branch>``, then create the task branch. The hard
           reset ensures we always match remote even if a previous
-          ``_merge_and_push`` left local main diverged.
+          failed merge-and-push left local main diverged.
         - **Worktree:** Can't checkout the default branch (it's already checked
           out in the main working tree), so we create the task branch directly
           from ``origin/<default_branch>`` in a single step.
@@ -1019,7 +1252,7 @@ class GitManager:
             # Normal checkout flow: hard-reset default branch to match remote,
             # then create task branch. Hard reset is used instead of pull
             # because pull can fail when local main has diverged (e.g. from
-            # un-pushed merge commits left by _merge_and_push).
+            # un-pushed merge commits left by a failed merge-and-push).
             try:
                 self._run(["checkout", default_branch], cwd=checkout_path)
             except GitError:
@@ -1932,6 +2165,7 @@ class GitManager:
         repository_url: str,
         lock_held: bool = False,
         all_heads: bool = False,
+        refetch: bool = False,
     ) -> None:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
         fetch_args = (
@@ -1942,6 +2176,10 @@ class GitManager:
                               "+refs/heads/*:refs/remotes/origin/*",
                               "+refs/aq/provenance/*:refs/aq/provenance/*"]
         )
+        if refetch:
+            fetch_args.insert(1, "--refetch")
+            fetch_args.append("+refs/tags/*:refs/tags/*")
+        fetch_args[:0] = ["-c", "fetch.fsckObjects=true"]
         if self._uses_existing_ssh(repository_url):
             from src.projects.github import GitHubError, parse_github_repository
 
@@ -1984,7 +2222,8 @@ class GitManager:
         async def acquire() -> None:
             token = await self._atoken_for_repository(binding)
             await self._afetch_origin_with_auth_to_url(
-                checkout_path, source_url=source_url, token=token
+                checkout_path, source_url=source_url, token=token,
+                **({"refetch": True} if refetch else {}),
             )
 
         if lock_held:
@@ -1999,6 +2238,7 @@ class GitManager:
         *,
         source_url: str,
         token: str | None,
+        refetch: bool = False,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2019,6 +2259,9 @@ class GitManager:
         destination_git_dir, borrowable_objects = await self._aorigin_fetch_destination(
             checkout_path
         )
+        if refetch:
+            # Damaged tips must not tell the server their objects are held.
+            borrowable_objects = None
         with tempfile.TemporaryDirectory(prefix="aq-app-origin-fetch-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -2038,6 +2281,7 @@ class GitManager:
                     home=home, deadline=deadline,
                 )
             mode = "incremental" if borrowable_objects is not None else "full"
+            prepared_at = loop.time()
             try:
                 await self._arun_authenticated_git(
                     # The checkout's tips reach negotiation only through the
@@ -2045,6 +2289,7 @@ class GitManager:
                     # credentialed process from running for-each-ref against
                     # the checkout (and so reading its worker-writable config).
                     ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                     "-c", "fetch.fsckObjects=true",
                      f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
                      "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
                      "+refs/aq/provenance/*:refs/aq/provenance/*"],
@@ -2058,24 +2303,30 @@ class GitManager:
                 raise GitError(
                     f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
                 ) from None
+            acquired_at = loop.time()
             received_objects, received_kib = await self._areceived_objects(
                 imported, home=home, deadline=deadline
             )
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                 "-c", "fetch.fsckObjects=true",
                  f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
+                 *(["--refetch"] if refetch else []),
                  str(imported), "+refs/heads/*:refs/remotes/origin/*",
-                 "+refs/aq/provenance/*:refs/aq/provenance/*"],
+                 "+refs/aq/provenance/*:refs/aq/provenance/*",
+                 *(["+refs/tags/*:refs/tags/*"] if refetch else [])],
                 home=home,
                 deadline=deadline,
             )
-            await self._run_isolated_import_git(
-                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                 str(imported), "+refs/tags/*:refs/tags/*"],
-                home=home,
-                deadline=deadline,
-            )
+            if not refetch:
+                await self._run_isolated_import_git(
+                    ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                     "-c", "fetch.fsckObjects=true",
+                     f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                     str(imported), "+refs/tags/*:refs/tags/*"],
+                    home=home,
+                    deadline=deadline,
+                )
             imported_refs = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
                  "refs/heads", "refs/tags", "refs/aq/provenance"],
@@ -2108,12 +2359,17 @@ class GitManager:
             objects=received_objects,
             size_kib=received_kib,
             elapsed_seconds=loop.time() - started,
+            prepare_seconds=prepared_at - started,
+            network_seconds=acquired_at - prepared_at,
+            import_seconds=loop.time() - acquired_at,
         )
         logger.info(
             "authenticated origin fetch: origin_fetch=%s, seeded_tips=%d, "
-            "received_objects=%d, received_kib=%d, elapsed=%.1fs",
+            "received_objects=%d, received_kib=%d, elapsed=%.1fs, "
+            "prepare=%.1fs, network=%.1fs, import=%.1fs",
             transfer.mode, transfer.seeded_tips, transfer.objects, transfer.size_kib,
             transfer.elapsed_seconds,
+            transfer.prepare_seconds, transfer.network_seconds, transfer.import_seconds,
         )
         return transfer
 
@@ -2174,8 +2430,9 @@ class GitManager:
         the destination's refs matching *patterns* (all refs when empty) are
         named under ``refs/aq/have/`` so fetch negotiation reports them as
         held.  Runs credential-free, before the network fetch.  Returns how
-        many distinct tips were named; on failure it names none and the fetch
-        downloads everything, which is slow but correct.
+        many distinct tips were named. Before advertising any tip, verify the
+        lender's objects, including blobs and local-only refs. An unavailable
+        lender is never silently treated as an empty, healthy repository.
         """
         alternates = imported / "objects" / "info" / "alternates"
         alternates.parent.mkdir(parents=True, exist_ok=True)
@@ -2185,36 +2442,195 @@ class GitManager:
              f"--count={self._FETCH_HAVE_LIMIT}", "--format=%(objectname)", *patterns],
             home=home, deadline=deadline,
         )
-        tips = sorted({
-            line for line in listed.decode("ascii", errors="replace").splitlines()
-            if _OID_RE.fullmatch(line)
-        })
+        lines = listed.decode("ascii", errors="replace").splitlines()
+        if any(not _OID_RE.fullmatch(line) for line in lines):
+            raise GitError("retained Git tip inventory is invalid")
+        tips = sorted(set(lines))
         if not tips:
+            # An origin fetch only advertises origin/provenance/tag tips, but
+            # local-only refs still hold required sources. Check them even
+            # when there are no matching tips to advertise. With no refs at
+            # all, an incomplete unreferenced commit can still be fetched.
+            if patterns:
+                retained = await self._run_isolated_import_git(
+                    [f"--git-dir={destination_git_dir}", "for-each-ref", "--count=1",
+                     "--format=%(objectname)"],
+                    home=home, deadline=deadline,
+                )
+                if retained:
+                    if not _OID_RE.fullmatch(retained.decode("ascii", errors="replace")):
+                        raise GitError("retained Git tip inventory is invalid")
+                    await self._averify_retained_objects(
+                        destination_git_dir, home=home, deadline=deadline,
+                    )
             return 0
-        try:
-            await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "update-ref", "--stdin"],
-                home=home, deadline=deadline,
-                input="".join(
-                    f"update refs/aq/have/{index} {oid}\n" for index, oid in enumerate(tips)
-                ).encode("ascii"),
-            )
-        except GitError:
-            logger.warning(
-                "authenticated fetch could not name %d destination tips; "
-                "downloading the full history instead", len(tips),
-            )
-            return 0
+        await self._averify_retained_objects(destination_git_dir, home=home, deadline=deadline)
+        await self._run_isolated_import_git(
+            [f"--git-dir={imported}", "update-ref", "--stdin"],
+            home=home, deadline=deadline,
+            input=("start\n" + "".join(
+                f"update refs/aq/have/{index} {oid}\n" for index, oid in enumerate(tips)
+            ) + "prepare\ncommit\n").encode("ascii"),
+        )
         return len(tips)
 
+    async def _averify_retained_objects(
+        self, git_dir: str, *, home: Path, deadline: float,
+    ) -> None:
+        """Read-only integrity gate, never permission to repair or replace a store.
+
+        Connectivity-only fsck does not read blob bodies. Full fsck also checks
+        local/unpublished and unreachable objects; neither exit zero nor a valid
+        remote tip is sufficient proof. Unverified writes invalidate this result.
+        The caller must separately fence repository identity and all writers
+        before using any inspection as a recovery precondition.
+
+        A clean result is reused only while the object store holds the same
+        files (path, size, inode) and for at most
+        ``_RETAINED_VERIFY_TTL_SECONDS``: unverified object writes invalidate it. A
+        full check holds the repository lock for many seconds on a large store,
+        so repeating it on every no-op fetch starves the integration train.
+        """
+        # One full check per store at a time: concurrent fetches into the same
+        # store wait for it and reuse a clean result instead of each running
+        # their own. The object-store walks run off the event loop.
+        key = os.path.realpath(git_dir)
+        lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
+            key, asyncio.Lock())
+        loop = asyncio.get_running_loop()
+        started_waiting = loop.time()
+        try:
+            async with asyncio.timeout_at(deadline):
+                await lock.acquire()
+        except TimeoutError as exc:
+            raise _git_preparation_error(
+                "lock_wait_timeout", elapsed=loop.time() - started_waiting,
+                budget=max(0.0, deadline - started_waiting),
+            ) from exc
+        try:
+            fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+            if self._retained_verified_matches(key, fingerprint):
+                return
+            started = time.monotonic()
+            for attempt in range(2):
+                try:
+                    await self._run_isolated_import_git(
+                        [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                         "--no-reflogs", "--no-progress"],
+                        home=home, deadline=deadline, verify_integrity=True,
+                    )
+                    break
+                except GitError as exc:
+                    if attempt or not str(exc).startswith("retained Git object integrity"):
+                        raise
+                    # A linked worktree shares objects with independent writers.
+                    # Re-run the full gate once after a transient pack/ref change;
+                    # the original acquisition deadline still bounds both checks.
+                    fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+            after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+            self._record_retained_verified(key, fingerprint, after, started)
+        finally:
+            lock.release()
+
+    def _retained_verified_matches(self, key: str, fingerprint: tuple | None) -> bool:
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        cached = verified.get(key)
+        if cached is None:
+            return False
+        recorded, at = cached
+        if (time.monotonic() - at < _RETAINED_VERIFY_TTL_SECONDS
+                and fingerprint is not None and fingerprint == recorded):
+            return True
+        verified.pop(key, None)
+        return False
+
+    def _record_retained_verified(
+        self, key: str, fingerprint: tuple | None, after: tuple | None, started: float,
+    ) -> None:
+        # Nothing is recorded when the store changed while the check ran.
+        if fingerprint is None or after != fingerprint:
+            return
+        self.__dict__.setdefault("_retained_verified", {})[key] = (fingerprint, started)
+
+    def retained_store_verified(self, git_dir: str) -> bool:
+        """Whether a clean full fsck of *git_dir*'s unchanged object store is reusable.
+
+        Walks the object store synchronously; async callers use
+        :meth:`aretained_store_verified`.
+        """
+        return self._retained_verified_matches(
+            os.path.realpath(git_dir), _object_store_fingerprint(git_dir))
+
+    async def aretained_store_verified(self, git_dir: str) -> bool:
+        """:meth:`retained_store_verified` with the walk off the event loop."""
+        fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        return self._retained_verified_matches(os.path.realpath(git_dir), fingerprint)
+
+    def record_retained_store_verified(
+        self, git_dir: str, fingerprint: tuple | None, started: float,
+    ) -> None:
+        """Remember a clean full fsck of *git_dir* taken from *fingerprint*.
+
+        Nothing is recorded when the store changed while the check ran.
+        """
+        self._record_retained_verified(
+            os.path.realpath(git_dir), fingerprint, _object_store_fingerprint(git_dir), started)
+
+    async def arecord_retained_store_verified(
+        self, git_dir: str, fingerprint: tuple | None, started: float,
+    ) -> None:
+        """:meth:`record_retained_store_verified` with the walk off the event loop."""
+        after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        self._record_retained_verified(os.path.realpath(git_dir), fingerprint, after, started)
+
+    async def aretained_store_baseline(self, git_dir: str) -> tuple[tuple | None, float]:
+        """The fingerprint and start time to record after a clean full fsck."""
+        return await asyncio.to_thread(_object_store_fingerprint, git_dir), time.monotonic()
+
+    async def areuse_retained_verification(self, git_dir: str, *, extend: bool) -> bool:
+        """Whether a fetch just made under writer exclusion can skip full fsck.
+
+        *extend* says the clean baseline held before that fetch and the fetch
+        succeeded: its checked additions then carry the baseline forward.
+        Otherwise only an unchanged, still-verified object store qualifies.
+        """
+        if extend:
+            return await self.aextend_retained_store_verified(git_dir)
+        return await self.aretained_store_verified(git_dir)
+
+    async def aextend_retained_store_verified(self, git_dir: str) -> bool:
+        """Extend a clean baseline across a checked fetch under writer exclusion.
+
+        Only additions are permitted; an existing object replaced, truncated or
+        removed still requires full verification. Incoming objects must have
+        passed fetch.fsckObjects. Keep the original age so incremental traffic
+        cannot indefinitely postpone the next full check.
+        """
+        key = os.path.realpath(git_dir)
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        cached = verified.get(key)
+        if cached is None:
+            return False
+        previous, started = cached
+        if previous is None or time.monotonic() - started >= _RETAINED_VERIFY_TTL_SECONDS:
+            verified.pop(key, None)
+            return False
+        current = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        if (current is None or not set(previous).issubset(current)
+                or verified.get(key) != cached):
+            return False
+        verified[key] = (current, started)
+        return True
+
     async def _aholds_complete_commit(
-        self, imported: Path, oid: str, *, home: Path, deadline: float
+        self, imported: Path, oid: str, *, home: Path, deadline: float,
+        lender_verified: bool = False,
     ) -> bool:
         """Whether *imported* already holds commit *oid* and everything it references.
 
-        The same check ``git fetch`` makes before transferring anything, run
-        credential-free: the walk stops at the named tips, whose history the
-        destination holds.  A commit left without its trees or parents (an
+        Walk the exact closure credential-free, without excluding seeded tips.
+        A ref does not prove
+        its history is present. A commit left without its trees or parents (an
         interrupted unpack) is not held, so it is still fetched.
         """
         try:
@@ -2226,12 +2642,15 @@ class GitManager:
             if peeled.decode("ascii", errors="replace") != oid:
                 return False
             await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "rev-list", "--objects", "--quiet", oid,
-                 "--not", "--all"],
+                [f"--git-dir={imported}", "rev-list", "--objects", "--quiet", oid],
                 home=home, deadline=deadline,
             )
         except GitError:
             return False
+        if not lender_verified:
+            # With no named tips, the lender may contain just an unreferenced
+            # commit. rev-list detects absent objects but not truncated blobs.
+            await self._averify_retained_objects(str(imported), home=home, deadline=deadline)
         return True
 
     async def _areceived_objects(
@@ -2279,6 +2698,8 @@ class GitManager:
             result = await self._arun_subprocess(
                 ["git", "remote"], cwd=checkout_path, timeout=self._GIT_TIMEOUT
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None if strict else False
         if result.returncode != 0:
@@ -2586,6 +3007,8 @@ class GitManager:
                     "project_id": project_id,
                 },
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
 
@@ -3119,6 +3542,8 @@ class GitManager:
                         "agent_id": agent_id,
                     },
                 )
+            except ProcessCleanupError:
+                raise
             except Exception:
                 # Event emission is best-effort; never fail the commit
                 # because we couldn't emit the event.
@@ -3159,6 +3584,8 @@ class GitManager:
                     {"pr_url": pr_url, "branch": branch, "title": title,
                      "project_id": project_id},
                 )
+            except ProcessCleanupError:
+                raise
             except Exception:
                 logger.debug("Failed to emit git.pr.created event for %s", checkout_path,
                              exc_info=True)
@@ -3475,7 +3902,7 @@ class GitManager:
 
     async def apush_new_refs(
         self, checkout_path: str, tips: Mapping[str, str], *, remote: str = "origin",
-        repository_url: str | None = None, qualified: bool = False,
+        repository_url: str | None = None, qualified: bool = False, lock_held: bool = False,
     ) -> dict[str, RemoteRefResult]:
         """Create absent heads or qualified provenance refs; read each back.
 
@@ -3483,6 +3910,8 @@ class GitManager:
         push is not atomic, so the returned post-transfer read settles each
         head, not the exit status: a head the transfer failed to create
         reports that failure as an error. Callers compare heads with *tips*.
+        Failed transfers retain a safe publication_error when readback does
+        not prove the expected tip, including read errors and conflicting tips.
         """
         updates = []
         for branch, tip in tips.items():
@@ -3494,6 +3923,7 @@ class GitManager:
         if not updates:
             return {}
         failure = None
+        token = None
         try:
             destination_url, token = await self._apush_destination(
                 checkout_path, remote, repository_url=repository_url
@@ -3506,6 +3936,7 @@ class GitManager:
                      *(f"--force-with-lease={refs[branch]}:{old}" for _t, branch, old in updates),
                      *(f"{tip}:{refs[branch]}" for tip, branch, _old in updates)],
                     cwd=checkout_path,
+                    lock_held=lock_held,
                 )
                 if result.returncode != 0:
                     failure = (result.stderr or result.stdout or "git push failed").strip()
@@ -3524,9 +3955,12 @@ class GitManager:
             repository_url=repository_url,
         )
         if failure is not None:
+            failure = safe_git_detail(failure, token)
             for branch, result in observed.items():
                 if result.state is RemoteRefState.ABSENT:
-                    observed[branch] = RemoteRefResult(RemoteRefState.ERROR, error=failure)
+                    result = RemoteRefResult(RemoteRefState.ERROR, error=failure)
+                if result.state is not RemoteRefState.PRESENT or result.oid != tips[branch]:
+                    observed[branch] = replace(result, publication_error=failure)
         return observed
 
     async def afetch_repository_oid(
@@ -3570,6 +4004,40 @@ class GitManager:
             if (not separator or not ref.startswith("refs/tags/")
                     or not is_valid_git_oid(oid) or ref in found):
                 raise GitError("remote returned malformed or duplicate tag identity")
+            _validate_ref(ref.removesuffix("^{}"))
+            found[ref] = oid
+        return found
+
+    async def als_remote_head_refs(
+        self, checkout_path: str, *, repository_url: str | None = None,
+    ) -> dict[str, str]:
+        """List all remote branch heads using this repository's read credentials."""
+        destination, token = await self._apush_destination(
+            checkout_path, "origin", repository_url=repository_url,
+        )
+        if destination is None:
+            result = await self.arun_git_result(
+                ["ls-remote", "--heads", "origin"], cwd=checkout_path,
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "remote head inventory failed")
+            output = result.stdout
+        else:
+            with tempfile.TemporaryDirectory(prefix="aq-app-heads-") as temporary:
+                home = Path(temporary)
+                home.chmod(0o700)
+                output = (await self._arun_authenticated_git(
+                    ["ls-remote", "--heads", destination], home=home,
+                    repository_url=destination, token=token,
+                    deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                    budget_seconds=self._GIT_TIMEOUT,
+                )).decode("utf-8")
+        found = {}
+        for line in output.splitlines():
+            oid, separator, ref = line.partition("\t")
+            if (not separator or not ref.startswith("refs/heads/")
+                    or not is_valid_git_oid(oid) or ref in found):
+                raise GitError("remote returned malformed or duplicate head identity")
             _validate_ref(ref.removesuffix("^{}"))
             found[ref] = oid
         return found
@@ -4156,47 +4624,6 @@ class GitManager:
         )
         return tip
 
-    async def apush_expected_delivery(
-        self,
-        checkout_path: str,
-        base_oid: str,
-        tip_oid: str,
-        branch: str,
-        expected_old_oid: str,
-        *,
-        lock_held: bool = False,
-        remote: str = "origin",
-    ) -> str:
-        """Push one validated candidate with an exact remote old-tip lease.
-
-        Callers have already selected the target transition.  This helper
-        checks the candidate's local ancestry and daemon-owned-path policy,
-        then uses only immutable object IDs in its refspec.  The explicit
-        lease is deliberately independent of ``origin/<branch>``: a stale
-        tracking ref is not authority to overwrite a concurrent remote move.
-        """
-        branch = _validate_ref(branch)
-        for name, oid in (
-            ("delivery base", base_oid),
-            ("delivery tip", tip_oid),
-            ("expected target", expected_old_oid),
-        ):
-            if not isinstance(oid, str) or not _OID_RE.fullmatch(oid.lower()):
-                raise GitError(f"invalid {name} OID")
-
-        for oid in (base_oid, tip_oid):
-            await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
-        if not await self._apush_is_ancestor(checkout_path, base_oid, tip_oid):
-            raise GitError("delivery tip is not a descendant of its expected base")
-        paths = await self.areserved_paths_in_diff(checkout_path, base_oid, tip_oid)
-        if paths:
-            raise GitError("reserved delivery paths: " + ", ".join(paths))
-        await self._apush_oid(
-            checkout_path, tip_oid, branch, expected_old_oid=expected_old_oid,
-            remote=remote, lock_held=lock_held,
-        )
-        return tip_oid
-
     async def apush_oid_with_app_auth(
         self,
         checkout_path: str,
@@ -4357,7 +4784,7 @@ class GitManager:
             or destination_url.startswith("file://")
         ):
             raise GitError("invalid authenticated Git source")
-        fetch_timeout = timeout_seconds if timeout_seconds is not None else self._GIT_TIMEOUT
+        fetch_timeout = timeout_seconds if timeout_seconds is not None else self._EXACT_FETCH_TIMEOUT
         if not math.isfinite(fetch_timeout) or fetch_timeout <= 0:
             raise GitError("invalid authenticated Git fetch deadline")
         loop = asyncio.get_running_loop()
@@ -4388,8 +4815,8 @@ class GitManager:
                     imported, str(destination), borrowable_objects,
                     patterns=(), home=home, deadline=deadline,
                 )
-                held = await self._aholds_complete_commit(
-                    imported, oid, home=home, deadline=deadline
+                held = _object_type == "commit" and await self._aholds_complete_commit(
+                    imported, oid, home=home, deadline=deadline, lender_verified=seeded_tips > 0,
                 )
             mode = (
                 "local" if held
@@ -4397,10 +4824,25 @@ class GitManager:
                 else "full"
             )
             if held:
+                # The exact closure and lender integrity have already been checked.
+                # Pin it where it already lives instead of packing its full history
+                # into a temporary store and fetching that history straight back.
                 await self._run_isolated_import_git(
-                    [f"--git-dir={imported}", "update-ref", "refs/aq/exact", oid],
+                    [f"--git-dir={destination}", "update-ref", destination_ref, oid],
                     home=home, deadline=deadline,
                 )
+                pinned = await self._run_isolated_import_git(
+                    [f"--git-dir={destination}", "rev-parse", destination_ref],
+                    home=home, deadline=deadline,
+                )
+                if pinned.decode("ascii", errors="replace") != oid:
+                    raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
+                logger.info(
+                    "authenticated exact fetch: exact_fetch=local, seeded_tips=%d, "
+                    "received_objects=0, received_kib=0, elapsed=%.1fs",
+                    seeded_tips, loop.time() - started,
+                )
+                return oid
             else:
                 try:
                     await self._arun_authenticated_git(
@@ -4444,7 +4886,7 @@ class GitManager:
                 home=home, deadline=deadline,
             )
             if local.decode("ascii", errors="replace") != oid:
-                raise GitError("authenticated exact Git import returned another object")
+                raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
         logger.info(
             "authenticated exact fetch: exact_fetch=%s, seeded_tips=%d, "
             "received_objects=%d, received_kib=%d, elapsed=%.1fs",
@@ -4466,6 +4908,16 @@ class GitManager:
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_LFS_SKIP_SMUDGE": "1",
+            # A detached auto-gc outlives the temporary HOME it runs in, dies on the
+            # deleted cwd and leaves gc.log behind, which turns every later write's
+            # auto-gc into "fatal:" lines.  Retained stores run maintenance explicitly.
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "gc.auto",
+            "GIT_CONFIG_VALUE_0": "0",
+            "GIT_CONFIG_KEY_1": "gc.autoDetach",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "maintenance.auto",
+            "GIT_CONFIG_VALUE_2": "false",
         }
 
     def _existing_git_auth_environment(self) -> dict[str, str]:
@@ -4835,6 +5287,8 @@ class GitManager:
                     pass
                 raise
             return False
+        except ProcessCleanupError:
+            raise
         except Exception:
             return False
 
@@ -4845,9 +5299,22 @@ class GitManager:
         home: Path,
         deadline: float | None = None,
         input: bytes | None = None,
+        verify_integrity: bool = False,
     ) -> bytes:
         """Run a credential-free Git import/verification command safely."""
         process: asyncio.subprocess.Process | None = None
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        budget = self._GIT_TIMEOUT if deadline is None else max(0.0, deadline - started)
+        # Never echo an argument as a subcommand: paths, refs and config values
+        # are untrusted even when this helper runs without a credential.
+        command = _git_subcommand(args)
+        subcommand = command if command in {
+            "init", "clone", "fetch", "rev-parse", "for-each-ref", "update-ref",
+            "cat-file", "rev-list", "count-objects", "fsck", "config",
+        } else "other"
+        if args == ["--exec-path"]:
+            subcommand = "exec-path"
         try:
             timeout = (
                 asyncio.timeout(self._GIT_TIMEOUT)
@@ -4863,19 +5330,62 @@ class GitManager:
                     cwd=str(home),
                     stdin=asyncio.subprocess.PIPE if input is not None else None,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
                     env=self._app_git_environment(home),
                     start_new_session=True,
                 )
-                stdout, _ = await process.communicate(input)
+                stdout, stderr = await process.communicate(input)
         except BaseException as exc:
             if process is not None:
                 await self._kill_app_git_group(process)
-            if isinstance(exc, (FileNotFoundError, asyncio.TimeoutError)):
-                raise GitError("authenticated Git push preparation failed") from exc
+            if isinstance(exc, asyncio.TimeoutError):
+                raise _git_preparation_error(
+                    "git_timeout", subcommand=subcommand,
+                    elapsed=loop.time() - started, budget=budget,
+                ) from exc
+            if isinstance(exc, FileNotFoundError):
+                raise _git_preparation_error(
+                    "git_exit", subcommand=subcommand, elapsed=loop.time() - started,
+                    budget=budget, diagnostic_kind="executable_missing",
+                ) from exc
             raise
+        # Git can print integrity errors while returning zero. Keep untrusted
+        # paths/content out of the exception, but never discard that evidence.
+        diagnostics = stdout + b"\n" + stderr
+        if verify_integrity:
+            unexpected = [line for line in diagnostics.splitlines()
+                          if line.strip() and line != b"notice: No default references"
+                          and not re.fullmatch(
+                              rb"notice: HEAD points to an unborn branch \([^\r\n]+\)", line,
+                          )]
+            if process.returncode != 0 or unexpected:
+                # fsck paths and ref names are untrusted and can contain secrets.
+                # Preserve the diagnostic kind and object IDs, never raw text.
+                evidence = []
+                for line in unexpected:
+                    kind = re.match(rb"(?:missing|broken link|error|fatal|warning)\b", line)
+                    oids = re.findall(rb"(?<![0-9a-f])[0-9a-f]{40,64}(?![0-9a-f])", line)
+                    detail = (kind.group().decode("ascii") if kind else "diagnostic")
+                    if oids:
+                        detail += " " + " ".join(oid.decode("ascii") for oid in oids[:4])
+                    if detail not in evidence:
+                        evidence.append(detail)
+                detail = "; ".join(evidence[:16]) or f"fsck exit {process.returncode}"
+                raise GitError(f"retained Git object integrity is unavailable: {detail}")
+        elif process.returncode == 0 and re.search(
+            rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
+        ):
+            raise _git_preparation_error(
+                "git_exit", subcommand=subcommand, elapsed=loop.time() - started,
+                budget=budget, returncode=process.returncode, diagnostic_kind="error",
+            )
         if process.returncode != 0:
-            raise GitError("authenticated Git push preparation failed")
+            kind = re.search(rb"(?m)^(fatal|error|warning):", stderr)
+            raise _git_preparation_error(
+                "git_exit", subcommand=subcommand, elapsed=loop.time() - started,
+                budget=budget, returncode=process.returncode,
+                diagnostic_kind=kind[1].decode("ascii") if kind else "exit_status",
+            )
         return stdout.strip()
 
     @staticmethod
@@ -4927,6 +5437,26 @@ class GitManager:
             updates=((tip_oid, branch, expected_old_oid),), _deadline=_deadline,
         )
         return tip_oid or expected_old_oid
+
+    async def _apush_borrowable_objects(
+        self, checkout: Path, *, home: Path, deadline: float,
+    ) -> Path | None:
+        """The object store a push from *checkout* may borrow, or None to import.
+
+        A shallow or partial store lacks history its tips name, so those still
+        import the exact graph (which fails loudly on a missing object).
+        """
+        try:
+            resolved = (await self._run_isolated_import_git(
+                ["-C", str(checkout), "rev-parse", "--path-format=absolute",
+                 "--git-common-dir", "--is-shallow-repository"],
+                home=home, deadline=deadline,
+            )).decode("utf-8", errors="replace").splitlines()
+        except GitError:
+            return None
+        if len(resolved) != 2:
+            return None
+        return self._borrowable_objects(*resolved)
 
     async def _apush_refs_with_app_auth_to_url(
         self,
@@ -5004,7 +5534,20 @@ class GitManager:
                 home=home,
                 deadline=_deadline,
             )
-            if imports:
+            borrowed = (
+                await self._apush_borrowable_objects(checkout, home=home, deadline=_deadline)
+                if imports else None
+            )
+            if borrowed is not None:
+                # Borrow the checkout's object store read-only rather than
+                # copying each tip's whole history.  send-pack leaves out only
+                # the advertised remote tips it holds, and an import holds just
+                # the tips' own history: once the remote moved past it, every
+                # push re-sent the full graph (two full packs per push).
+                alternates = repository / "objects" / "info" / "alternates"
+                alternates.parent.mkdir(parents=True, exist_ok=True)
+                alternates.write_text(f"{borrowed}\n", encoding="utf-8")
+            elif imports:
                 # One import carries every tip's graph; shared history is
                 # copied once rather than once per head.  Git 2.47+ ends a
                 # fetch with a detached ``maintenance run --auto``: it calls
@@ -5035,15 +5578,16 @@ class GitManager:
                         deadline=_deadline,
                     )
                     if imported.decode("ascii", errors="replace") != tip_oid:
-                        raise GitError("authenticated Git push preparation failed")
-                    target = next(branch for tip, branch, _old in validated if tip == tip_oid)
-                    kind = await self._run_isolated_import_git(
-                        [f"--git-dir={repository}", "cat-file", "-t", tip_oid],
-                        home=home, deadline=_deadline,
-                    )
-                    expected_kind = "tag" if _qualified_refs and target.startswith("refs/tags/") else "commit"
-                    if kind.decode("ascii") != expected_kind:
-                        raise GitError("authenticated Git push preparation has wrong object type")
+                        raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
+            for tip_oid, _ref in imports:
+                target = next(branch for tip, branch, _old in validated if tip == tip_oid)
+                kind = await self._run_isolated_import_git(
+                    [f"--git-dir={repository}", "cat-file", "-t", tip_oid],
+                    home=home, deadline=_deadline,
+                )
+                expected_kind = "tag" if _qualified_refs and target.startswith("refs/tags/") else "commit"
+                if kind.decode("ascii") != expected_kind:
+                    raise GitError("authenticated Git push preparation has wrong object type")
 
             topology = (
                 None
@@ -5057,6 +5601,8 @@ class GitManager:
             request_channel = None
             broker_task: asyncio.Task[bool] | None = None
             process: asyncio.subprocess.Process | None = None
+            stderr_task: asyncio.Task[str] | None = None
+            stderr_credential = bytearray()
             request_fd: int | None = None
             if not uses_existing_auth:
                 try:
@@ -5133,11 +5679,15 @@ class GitManager:
                         cwd=str(home),
                         stdin=asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.PIPE,
                         env=environment,
                         pass_fds=(request_fd,) if request_fd is not None else (),
                         start_new_session=True,
                     )
+                    stderr_credential.extend(token_buffer)
+                    stderr_task = asyncio.create_task(_read_push_stderr(
+                        process.stderr, stderr_credential,
+                    ))
                     if request_channel is not None:
                         request_channel.close()
                         request_channel = None
@@ -5160,8 +5710,12 @@ class GitManager:
                             )
                         )
                         broker_channel = None
-                    await process.wait()
+                    # wait() can wait for pipe EOF after the leader exits. A
+                    # surviving descendant may hold stderr open until cleanup.
+                    while process.returncode is None:
+                        await asyncio.sleep(0.01)
                     await self._kill_app_git_group(process)
+                    stderr_tail = await stderr_task
                     if broker_task is not None:
                         broker_served = await self._settle_app_credential_broker(broker_task)
                         broker_task = None
@@ -5175,18 +5729,34 @@ class GitManager:
                     broker_task = None
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                raise GitError("authenticated Git push failed") from exc
+                reason = "timeout" if isinstance(exc, TimeoutError) else "spawn_or_wait"
+                raise GitError(
+                    f"authenticated Git push failed (reason={reason}, "
+                    f"exception={type(exc).__name__})"
+                ) from None
             finally:
+                if stderr_task is not None:
+                    if not stderr_task.done():
+                        stderr_task.cancel()
+                    await asyncio.gather(stderr_task, return_exceptions=True)
+                # Also covers cancellation before the reader's first turn.
+                zeroize(stderr_credential)
                 if request_channel is not None:
                     request_channel.close()
                 if broker_channel is not None:
                     broker_channel.close()
             if process.returncode != 0:
-                raise GitError("authenticated Git push failed")
+                raise GitError(
+                    f"authenticated Git push failed (reason=git_exit, "
+                    f"returncode={process.returncode}): {stderr_tail or '[no stderr]'}"
+                )
             # Unlike a read, a push is never anonymous on GitHub: one the
             # broker did not authenticate was not made as the App.
             if destination_url.startswith("https://") and not broker_served:
-                raise GitError("authenticated Git push failed")
+                raise GitError(
+                    "authenticated Git push failed (reason=broker_not_served): "
+                    "credential broker did not serve token"
+                )
 
     async def alist_prs(
         self,
@@ -5462,14 +6032,17 @@ class GitManager:
 
     async def acommit_check_runs(
         self, slug: str, sha: str, *, cwd: str | None = None,
-        repository: GitHubRepositoryBinding | None = None,
+        repository: GitHubRepositoryBinding | None = None, strict: bool = False,
     ) -> list[dict] | None:
+        """Exact-commit check runs, or None; ``strict`` raises so callers can classify."""
         try:
             client = self._github_client(repository)
             if slug != repository.full_name:
                 raise GitError("CI repository did not match authorized repository")
             return await client.commit_check_runs(sha)
         except (GitError, GitHubAccessError, ValueError):
+            if strict:
+                raise
             return None
 
     async def ajob_failed_tests(
@@ -5550,6 +6123,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None
         if result.returncode != 0:
@@ -5572,6 +6147,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None
         if result.returncode != 0:
@@ -5649,6 +6226,47 @@ class GitManager:
         except GitError:
             return None if strict else ""
 
+    async def aread_status_summary(
+        self, checkout_path: str, *, timeout: int | None = None
+    ) -> tuple[str, bool]:
+        """Read ``(branch, dirty)`` with one lock-free ``git status`` call.
+
+        A diagnostic read for listings: ``--no-optional-locks`` keeps it from
+        taking ``index.lock``, so it never contends with a writer resetting the
+        checkout, and it runs through :meth:`_arun_unlocked`, which kills the
+        child on timeout and on cancellation. ``branch`` is ``"HEAD"`` for a
+        detached checkout. Failure raises :class:`GitError`; unlike
+        :meth:`ahas_uncommitted_changes` it never reads as "clean".
+        """
+        output = await self._arun_unlocked(
+            ["--no-optional-locks", "status", "--porcelain=v1", "--branch"],
+            cwd=checkout_path,
+            timeout=timeout,
+        )
+        lines = output.splitlines()
+        if not lines or not lines[0].startswith("## "):
+            raise GitError(f"git status gave no branch header for {checkout_path}")
+        return _parse_status_branch_header(lines[0][3:]), any(
+            line.strip() for line in lines[1:]
+        )
+
+    async def aclean_detached_worktree(self, checkout_path: str) -> bool:
+        """Whether *checkout_path* is a linked worktree, detached and clean.
+
+        Such a checkout holds no branch and no edits, so it needs no push
+        preparation; its base checkout or slots still cover the shared
+        repository. A base checkout, an attached branch, or tracked or
+        untracked changes read ``False``; an unreadable status raises.
+        """
+        git_dir, common = (await self._arun(
+            ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+            cwd=checkout_path,
+        )).splitlines()
+        if Path(git_dir).resolve() == Path(common).resolve():
+            return False
+        branch, dirty = await self.aread_status_summary(checkout_path)
+        return branch == "HEAD" and not dirty
+
     async def ahas_uncommitted_changes(
         self, checkout_path: str, *, strict: bool = False
     ) -> bool | None:
@@ -5667,6 +6285,8 @@ class GitManager:
             if output.returncode != 0:
                 return None if strict else False
             return bool(output.stdout and output.stdout.strip())
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None if strict else False
 
@@ -5713,12 +6333,16 @@ class GitManager:
             pass
         return dot_git
 
+    async def aclear_stale_locks(self, checkout_path: str) -> None:
+        """Recover abandoned locks without changing checkout or operation state."""
+        git_dir = Path(self._resolve_git_dir(checkout_path))
+        await asyncio.to_thread(remove_stale_locks, git_dir)
+
     async def aabort_in_progress_operations(self, checkout_path: str) -> None:
         """Abort any in-progress merge, rebase, or cherry-pick.
 
-        Also removes stale ``.git/index.lock`` files left by crashed
-        processes (e.g. a killed agent) that would block all subsequent
-        git operations.
+        Also removes abandoned worktree and common-directory Git locks after
+        checking for live owners. Unknown ownership preserves the lock.
 
         This is a best-effort method — individual failures are silently
         ignored because not all operations may be in progress.
@@ -5727,14 +6351,7 @@ class GitManager:
         # worktree ``.git`` is a *file* holding ``gitdir: <path>``, and the
         # index lives under ``<base>/.git/worktrees/<name>/`` — resolving it
         # is what makes this work for slot worktrees and not only clones.
-        git_dir = self._resolve_git_dir(checkout_path)
-        for lock_name in ("index.lock", "shallow.lock", "refs/heads.lock"):
-            lock_path = os.path.join(git_dir, lock_name)
-            try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-            except OSError:
-                pass
+        await self.aclear_stale_locks(checkout_path)
 
         # Abort in-progress merge
         try:
@@ -5804,22 +6421,25 @@ class GitManager:
         the agent never moved the task branch) counts.
 
         A merged pull request is evidence that the branch's work has already
-        shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        shipped only when its head commit contains the tip: a merged PR from an
+        earlier use of the same branch name does not deliver newer commits.
+        Closed-but-unmerged PRs deliberately remain a failure.
         ``head_ref`` supplies the exact local or remote-tracking ref whose tip
         must match, while ``branch_name`` remains the GitHub branch identity.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
+        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
+        if include_workspace_head:
+            refs.append("HEAD")
+        shas = [await self.arev_parse(checkout_path, ref) for ref in refs]
+        tips = {sha for sha in shas if sha}
         if include_workspace_head:
             url = await self._open_pr_url_by_head_name(
-                checkout_path, branch_name, repository=repository
+                checkout_path, branch_name, tips, shas[0], repository=repository
             )
             if url:
                 return url
 
-        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
-        if include_workspace_head:
-            refs.append("HEAD")
-        tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
         if not tips:
             return None
         return await self._open_pr_url_by_head_commit(
@@ -5830,17 +6450,43 @@ class GitManager:
         self,
         checkout_path: str,
         branch_name: str,
+        tips: set[str],
+        branch_tip: str | None,
         *, repository: GitHubRepositoryBinding | None = None,
     ) -> str | None:
+        """URL of an open PR for *branch_name*, or a merged one containing the work.
+
+        An open PR is the branch's current request.  A merged PR is history: a
+        reused branch name (PRs #21/#23 merged, then new work for #65) must not
+        count an earlier merge as delivering newer commits, so a merged PR
+        counts only when its head commit is one of *tips* or descends from
+        *branch_tip* (the exact-delivery rule ``GitHubClient._ordinary_pr_for_head``
+        applies).  Ancestry is never checked against the workspace ``HEAD``,
+        which may still sit at a start point every earlier PR descends from.
+        """
         try:
             prs = await self._github_client(repository).list_pull_requests(
-                state="all", head=branch_name, limit=100
+                state="all", head=branch_name, limit=100, include_head_oid=True
             )
         except (GitError, GitHubAccessError, ValueError):
             return None
-        return next(
-            (pr["url"] for pr in prs if pr.get("state") in {"OPEN", "MERGED"}), None
-        )
+        merged: list[dict] = []
+        for pr in prs:
+            if not isinstance(pr, dict) or not pr.get("url"):
+                continue
+            if pr.get("state") == "OPEN":
+                return pr["url"]
+            if pr.get("state") == "MERGED":
+                merged.append(pr)
+        for pr in merged:
+            head_oid = pr.get("headRefOid")
+            if not isinstance(head_oid, str) or re.fullmatch(r"[0-9a-f]{40}", head_oid) is None:
+                continue
+            if head_oid in tips or (
+                branch_tip and await self.ais_ancestor(checkout_path, branch_tip, head_oid)
+            ):
+                return pr["url"]
+        return None
 
     async def _open_pr_url_by_head_commit(
         self,
@@ -5895,6 +6541,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None if strict else False
         if result.returncode == 0:
@@ -6042,6 +6690,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None
         if result.returncode == 0:
