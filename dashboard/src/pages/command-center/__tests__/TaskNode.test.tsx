@@ -30,6 +30,17 @@ const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}, ext
 });
 
 describe("card anatomy (§3.1)", () => {
+  it.each(["DEFINED", "IN_PROGRESS", "PAUSED", "READY"])("shows a canonical held batch on a %s card", (status) => {
+    render(<TaskCard data={card(status, {}, { task: {
+      id: "held", title: "Held task", status, priority: 100, display_state: "active",
+      held_batch: { batch_id: "batch-1", state: "reviewing", structure_revision: 2,
+        source: "spec:approved", lineage: { lineage_kind: "none" } },
+    } })} />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(screen.getByText("Batch batch-1 · revision 2")).toBeInTheDocument();
+    expect(screen.queryByText("Working")).not.toBeInTheDocument();
+  });
+
   it("leaves the main card available as the node drag surface", () => {
     render(<TaskCard data={card("READY")} />);
     expect(screen.getByRole("button", { name: "Open task Ship it" })).not.toHaveClass("nodrag");
@@ -370,3 +381,13 @@ function ReviewProbe() {
   const { reviewId } = useParams();
   return <p data-testid="review-page">{reviewId}</p>;
 }
+
+it("gives a delivery-held READY card a waiting pill and exact landing reason", () => {
+  const data = card("READY", { childCount: 0, descendantCount: 0 });
+  data.task.claim_readiness = { state: "waiting_on_delivery", claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" };
+  render(<TaskCard data={data} />);
+  expect(screen.getByText("Waiting on delivery")).toBeInTheDocument();
+  expect(screen.getByText("Land source.6 on dev; refresh aq/epic")).toBeInTheDocument();
+  expect(screen.queryByText("Claimable · next in frontier")).not.toBeInTheDocument();
+});
