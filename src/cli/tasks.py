@@ -1,8 +1,8 @@
-"""Hand-crafted task CLI commands that require interactive features.
+"""Hand-crafted task CLI commands with interactive features or file input.
 
 Simple list/detail commands are auto-generated with Rich formatters via
 the formatter registry.  This file only contains commands that need
-interactive prompts (wizard, confirmation dialogs, fuzzy search).
+interactive prompts (wizard, confirmation dialogs, fuzzy search) or graph files.
 """
 
 from __future__ import annotations
@@ -13,9 +13,13 @@ from typing import Any
 
 import click
 
+from src.routing.planner import PREFER_MODES
+
 from .app import cli, console, _run, _get_client, _handle_errors
 from .claim_epoch import claim_epoch_option, resolve_claim_epoch
+from .auto_commands import StructuredParam
 from .envelope import emit
+from .styles import TASK_TYPES
 
 
 def _getval(obj: Any, key: str, default: Any = None) -> Any:
@@ -79,6 +83,44 @@ def task() -> None:
     pass
 
 
+@task.command("batch-propose")
+@click.option("--file", "change_file", default=None, help="YAML/JSON change set; '-' reads stdin.")
+@click.option("--project", "--project-id", "project_id", default=None)
+@click.option("--source", default=None, help="Provenance (defaults to the file path).")
+@click.option("--dry-run", is_flag=True, help="Validate and show the diff without saving a proposal.")
+@click.option("--tasks", type=StructuredParam("array"), default=None)
+@click.option("--edges", type=StructuredParam("array"), default=None)
+@click.option("--edits", type=StructuredParam("array"), default=None)
+@click.option("--remove-edges", type=StructuredParam("array"), default=None)
+@click.option("--comments", type=StructuredParam("array"), default=None)
+@click.pass_context
+def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operations):
+    """Stage creates, edits, edge additions/removals and comments for atomic approval."""
+    inline = {key: value for key, value in operations.items() if value is not None}
+    if change_file and inline:
+        raise click.UsageError("use either --file or inline operation options")
+    if not change_file and not inline:
+        raise click.UsageError("supply --file or inline change set operations")
+    document = _load_graph_document(change_file) if change_file else inline
+    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments"}
+    if unknown := set(document) - allowed:
+        raise click.UsageError(f"unknown change set fields: {sorted(unknown)}")
+    provenance = source or document.get("source") or change_file
+    if not provenance:
+        raise click.UsageError("--source is required for inline operations")
+    args = dict(document, source=provenance, dry_run=dry_run)
+    if project_id:
+        args["project_id"] = project_id
+
+    async def run():
+        async with _get_client(ctx.obj.get("api_url") if ctx.obj else None) as client:
+            return await client.execute("task_batch_propose", args)
+
+    result = _run(run())
+    _handle_errors(result)
+    emit(ctx, result)
+
+
 def _load_graph_document(graph_file: str) -> dict:
     """Read a ``--graph`` argument into a decoded document.
 
@@ -130,10 +172,10 @@ def _create_task_graph(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None = None,
-    profile_id: str | None = None,
     intelligence_class: str | None = None,
     reason: str | None = None,
     root: bool = False,
+    after_review: str | None = None,
 ) -> None:
     """Back ``aq task create --graph|--from-spec|--dry-run``."""
     if graph_file and from_spec:
@@ -149,14 +191,14 @@ def _create_task_graph(
         params["spec_path"] = from_spec
     if parent_id:
         params["parent_id"] = parent_id
-    if profile_id:
-        params["profile_id"] = profile_id
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
     if reason:
         params["reason"] = reason
     if root:
         params["root"] = True
+    if after_review:
+        params["after_review"] = after_review
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -204,7 +246,13 @@ def _create_task_graph(
 @click.option("-t", "--title", default=None, help="Task title (skips wizard step)")
 @click.option("-d", "--description", default=None, help="Task description")
 @click.option("--priority", default=None, type=click.IntRange(1, 300), help="Priority (1-300)")
-@click.option("--type", "task_type", default=None, help="Task type")
+@click.option(
+    "--type",
+    "task_type",
+    type=click.Choice(TASK_TYPES),
+    default=None,
+    help="The kind of work, a hint to the router (design: code design; art: art-heavy design)",
+)
 @click.option(
     "--integration-mode",
     "integration_mode",
@@ -213,31 +261,33 @@ def _create_task_graph(
     help="Integration policy override (omit to inherit the project/system policy)",
 )
 @click.option(
-    "-P",
-    "--profile",
-    "profile_id",
-    default=None,
-    help=(
-        "Worker profile id; supervisor is control-plane only. Omit to let "
-        "--intelligence-class pick it, else the project default. "
-        "Run `aq agent list-profiles` for the profile ids this install currently has; "
-        "prefer an enabled lifecycle: pool profile for ordinary worker work."
-    ),
-)
-@click.option(
     "--intelligence-class",
     default=None,
     help=(
-        "Intelligence class id (e.g. deep-high); also fills missing graph node classes. "
-        "Without --profile, a class the project default does not run picks an enabled "
-        "worker whose default_class matches (pool first, project default's provider, "
-        "then Claude) before the task is created; no match is an error"
+        "Intelligence-class hint for the router (e.g. deep-high); also fills missing "
+        "graph node classes. The project's router picks the profile, provider and final "
+        "class; an unknown class is refused"
     ),
 )
 @click.option(
-    "--agent-type",
+    "--prefer",
     default=None,
-    help="Agent type override (cascade falls back to the global profile of this name)",
+    help=(
+        "Routing preference the router weighs before scoring: a harness (e.g. codex) "
+        "or a worker profile id. It does not choose the route -- the project's router "
+        "still does -- and an unknown name, a disabled profile or a non-worker profile "
+        "is refused. Omit for no preference"
+    ),
+)
+@click.option(
+    "--prefer-mode",
+    default=None,
+    type=click.Choice(sorted(PREFER_MODES), case_sensitive=False),
+    help=(
+        "How the router may refuse --prefer: soft (default) routes to it when it has "
+        "headroom and routes normally when it does not; strict admits only that harness "
+        "or profile and holds the task rather than falling back"
+    ),
 )
 @click.option(
     "--graph",
@@ -269,7 +319,10 @@ def _create_task_graph(
 @click.option(
     "--after-review",
     default=None,
-    help="Attach the task to this document review's gate until it is approved",
+    help=(
+        "Attach the task to this document review's gate until it is approved. "
+        "With --graph/--from-spec, every node of the graph is attached"
+    ),
 )
 @click.option(
     "--root",
@@ -304,7 +357,8 @@ def _create_task_graph(
     multiple=True,
     help=(
         "Plan item JSON with id, kind, and target; repeatable. A file target is one "
-        "repo-relative path; a test target is a path or test command line."
+        "repo-relative path; a test target is a path or test command line; a review "
+        "target is spec, plan, other or any (met by a submitted document review)."
     ),
 )
 @click.option(
@@ -319,22 +373,6 @@ def _create_task_graph(
         "Not supported with --graph/--from-spec."
     ),
 )
-@click.option(
-    "--pin",
-    is_flag=True,
-    default=False,
-    help=(
-        "Pin the task to --profile's provider: it holds instead of failing over while "
-        "that provider is unavailable. Without it an explicit --profile is a preference."
-    ),
-)
-@click.option(
-    "--provider-intent",
-    "provider_intent",
-    type=click.Choice(["pinned", "preferred", "class_only"]),
-    default=None,
-    help="Set the provider intent explicitly (pinned/preferred need --profile)",
-)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -345,9 +383,9 @@ def task_create(
     priority: int | None,
     task_type: str | None,
     integration_mode: str | None,
-    profile_id: str | None,
     intelligence_class: str | None,
-    agent_type: str | None,
+    prefer: str | None,
+    prefer_mode: str | None,
     graph_file: str | None,
     from_spec: str | None,
     dry_run: bool,
@@ -358,35 +396,29 @@ def task_create(
     reason: str | None,
     deliverables: tuple[str, ...],
     requires_kinds: tuple[str, ...],
-    pin: bool = False,
-    provider_intent: str | None = None,
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
-    Use ``--profile`` / ``-P`` to pin a specific agent profile (model +
-    tools + system prompt). Use ``--agent-type`` to pick the scope the
-    task runs under when no explicit profile is given.
+    A task is filed with hints, never a route: the project's routing
+    playbook picks its profile, provider and model (mandatory task routing).
+    ``--intelligence-class`` and ``--type`` are the two hints: the task is
+    stored unrouted with the class as its ``class_hint``, and the router
+    picks the profile and the final class (a class outside the policy's
+    bounds for the kind is clamped). A class that is not in the vault is
+    refused. A profile, provider, model or pin is refused on every surface
+    with ``routing.choice_forbidden``.
 
-    ``--intelligence-class`` without ``--profile`` chooses the profile from
-    the class before the task is written: if the implicit route — the project
-    default, or the caller's own profile when a worker files it — runs
-    another class, an enabled worker whose default_class matches is selected
-    (pool first, then that route's provider, then Claude). A class that is
-    not in the vault, or that no enabled worker runs, is refused, and the
-    second refusal lists the classes that are available. The result's
-    ``profile_source`` reports the rule: explicit, class_match,
-    project_default or inherited. Pass ``--profile`` with it to name a
-    provider or a specific worker.
-
-    An explicit ``--profile`` is a *preference* (``provider_intent:
-    preferred``): if its provider runs out of usage or loses its login, the
-    task fails over to the same class on another provider. ``--pin`` makes it
-    a requirement (``pinned``) — the task holds until that provider is back.
-    A profile chosen by class or by the project default is ``class_only``.
+    ``--prefer`` is the third filer input: a harness or worker profile the
+    router weighs before scoring, in ``--prefer-mode soft`` (the default —
+    take it when it has headroom) or ``strict`` (only it; the task waits
+    rather than falling back). It is an input to the router, not a bypass
+    of it, so the router still writes the route and still decides.
 
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
-    in one transaction instead of a single task; add ``--dry-run`` to see the
-    validation report and the ids that would be assigned.
+    in one transaction instead of a single task; add ``--dry-run`` to see
+    the validation report and the ids that would be assigned.  With
+    ``--after-review`` every node of the graph waits on that review's gate
+    until it is approved; an unknown or withdrawn review creates nothing.
 
     ``--requires-kind`` declares the workspace kinds the task needs
     (workspaces-v2 spec §5). It is repeatable and takes either a bare kind id
@@ -401,6 +433,12 @@ def task_create(
 
     if root and parent_id:
         raise click.UsageError("--root and --parent are mutually exclusive")
+    if (prefer is not None or prefer_mode is not None) and (graph_file or from_spec):
+        raise click.UsageError(
+            "--prefer is not supported with --graph/--from-spec; graph nodes carry no "
+            "routing preference. Create the task on its own with --prefer, or set the "
+            "preference afterwards with `aq task route --prefer`."
+        )
     if container and (graph_file or from_spec):
         raise click.UsageError(
             "--container applies to single-task creation; a graph declares its new "
@@ -415,13 +453,6 @@ def task_create(
             "nodes carry no workspace requirements. Create the task on its own "
             "with --requires-kind, or attach it to the graph afterwards."
         )
-    if (pin or provider_intent) and (graph_file or from_spec):
-        raise click.UsageError(
-            "--pin/--provider-intent apply to single-task creation; in a graph put "
-            "'pin: true' on the nodes to pin"
-        )
-    if after_review and (graph_file or from_spec):
-        raise click.UsageError("--after-review only applies to single-task creation")
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -430,10 +461,10 @@ def task_create(
             from_spec=from_spec,
             dry_run=dry_run,
             parent_id=parent_id,
-            profile_id=profile_id,
             intelligence_class=intelligence_class,
             reason=reason,
             root=root,
+            after_review=after_review,
         )
         return
     if dry_run:
@@ -452,10 +483,6 @@ def task_create(
         }
         if integration_mode:
             params["integration_mode"] = integration_mode
-        if profile_id:
-            params["profile_id"] = profile_id
-        if agent_type:
-            params["agent_type"] = agent_type
     else:
         from .menus import task_creation_wizard
 
@@ -498,19 +525,13 @@ def task_create(
                 render=lambda _data: console.print("[dim]Task creation cancelled.[/]"),
             )
             return
-        # CLI flag overrides persist through the wizard if the caller
-        # mixed interactive + flag usage.
-        if profile_id and "profile_id" not in params:
-            params["profile_id"] = profile_id
-        if agent_type and "agent_type" not in params:
-            params["agent_type"] = agent_type
 
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
-    if pin:
-        params["pin"] = True
-    if provider_intent:
-        params["provider_intent"] = provider_intent
+
+    if prefer is not None or prefer_mode is not None:
+        params["prefer"] = prefer
+        params["prefer_mode"] = prefer_mode
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id
@@ -770,10 +791,13 @@ def task_list(
 
 @task.command("show")
 @click.argument("task_id")
+@click.option("--field", default=None, help="Read one canonical field in bounded pages.")
+@click.option("--offset", type=click.IntRange(min=0), default=0, help="Character offset.")
+@click.option("--limit", type=click.IntRange(1, 4096), default=4096, help="Page characters.")
 @click.pass_context
 @_handle_errors
-def task_show(ctx: click.Context, task_id: str) -> None:
-    """Show full task detail: fields, dependencies, context, labels."""
+def task_show(ctx: click.Context, task_id: str, field: str | None, offset: int, limit: int) -> None:
+    """Show task detail, with bounded previews for workers."""
     from .adapters import task_proxy
     from .formatters import format_task_detail
 
@@ -781,11 +805,22 @@ def task_show(ctx: click.Context, task_id: str) -> None:
 
     async def _show():
         async with _get_client(api_url) as client:
-            return await client.execute("task_show", {"task_id": task_id})
+            args = {"task_id": task_id}
+            if field is not None:
+                args.update(field=field, offset=offset, limit=limit)
+            return await client.execute("task_show", args)
 
     result = _run(_show())
 
     def _render(data: dict) -> None:
+        if "field" in data and "content" in data:
+            console.print(data["content"], markup=False)
+            if data.get("next_offset") is not None:
+                console.print(
+                    f"Next page: aq task show {task_id} --field {data['field']} "
+                    f"--offset {data['next_offset']} --limit {limit}", markup=False,
+                )
+            return
         t = task_proxy(data)
         deps_raw = _getval(data, "depends_on", [])
         blocks_raw = _getval(data, "blocks", [])
@@ -794,6 +829,16 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         dependents = list(blocks_raw)
         panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
         console.print(panel)
+
+        for decision in data.get("operator_decisions", []):
+            state = "ACTIVE HOLD" if decision.get("active") else decision["effect"]
+            console.print(
+                f"Operator decision {decision['id']} [{state}]: "
+                f"{decision['operator']}: {decision['decision']} "
+                f"({decision['source']} {decision['source_ref']}; "
+                f"recorded {decision['created_at']} by {decision['recorded_by']})",
+                markup=False,
+            )
 
         for edge in deps_raw:
             if isinstance(edge, dict) and edge.get("reason"):
@@ -816,6 +861,11 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         context = _getval(data, "context", [])
         if context:
             console.print(f"[dim]Context entries:[/] {len(context)}")
+        if data.get("preview"):
+            console.print(data["preview"]["instruction"], markup=False)
+            console.print(data["preview"]["read"], markup=False)
+            console.print("Omitted fields: " + ", ".join(data["preview"]["omitted_fields"]),
+                          markup=False)
 
     emit(ctx, result, entity="task", render=_render)
 
@@ -831,6 +881,7 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
 @task.command("set")
 @click.argument("task_id")
 @click.option("--branch", default=None, help="Set the task's branch name")
+@click.option("--repair-batch", default=None, help="Supervisor/operator: assign this task to repair an open batch")
 @click.option("--pr-url", default=None, help="Set the task's PR URL")
 @click.option("--work-dir", default=None, help="Record the task's working directory")
 @click.option("--note", default=None, help="Append a legacy note to task context")
@@ -857,6 +908,7 @@ def task_set(
     ctx: click.Context,
     task_id: str,
     branch: str | None,
+    repair_batch: str | None,
     pr_url: str | None,
     work_dir: str | None,
     note: str | None,
@@ -892,6 +944,8 @@ def task_set(
     args: dict[str, Any] = {"task_id": task_id}
     if branch is not None:
         args["branch"] = branch
+    if repair_batch is not None:
+        args["repair_batch"] = repair_batch
     if pr_url is not None:
         args["pr_url"] = pr_url
     if work_dir is not None:
@@ -943,7 +997,11 @@ def task_set(
 def task_comment(
     ctx: click.Context, task_id: str, body: str, kind: str, claim_epoch: int | None
 ) -> None:
-    """Append an attributed comment to a task's durable history."""
+    """Append an attributed comment to a task's durable history.
+
+    Keep comments concise: state what changed, decisions, and blockers.
+    Link evidence files; do not paste logs or repeat status.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {"task_id": task_id, "body": body, "kind": kind}
     epoch = resolve_claim_epoch(claim_epoch)
@@ -1181,3 +1239,146 @@ def _subtask_update_command(name: str, status: str | None, *, note_required: boo
 task_subtask_done = _subtask_update_command("subtask-done", "done")
 task_subtask_start = _subtask_update_command("subtask-start", "in_progress")
 task_subtask_skip = _subtask_update_command("subtask-skip", "skipped", note_required=True)
+
+
+def _render_delete_preview(data: dict) -> None:
+    console.print("Tasks to delete:", markup=False)
+    for row in data.get("tasks", []):
+        console.print(f"  {row['id']} — {row['title']} ({row['status']})", markup=False)
+    if data.get("reparented_tasks"):
+        console.print("Children kept: " + ", ".join(data["reparented_tasks"]), markup=False)
+    for entry in data.get("branch_details", []):
+        console.print(
+            f"  {entry['action'].upper()} branch {entry['branch']} "
+            f"(remote: {entry.get('remote_sha') or entry['remote_state']})",
+            markup=False,
+        )
+        for local in entry.get("local_refs", []):
+            console.print(
+                f"    {local['path']}: {local.get('sha') or 'tracking ref only'}", markup=False
+            )
+        for checkout in entry.get("worktrees", []):
+            console.print(f"    worktree: {checkout['path']}", markup=False)
+    for session in data.get("sessions", []):
+        console.print(
+            f"  STOP session {session['session_id']} ({session['task_id']})", markup=False
+        )
+    for notice in data.get("warnings", []):
+        console.print(f"Warning: {notice['message']}", markup=False)
+
+
+def _delete_cli(
+    ctx,
+    task_id,
+    recursive,
+    cascade,
+    branches,
+    stop_running,
+    reason,
+    confirmed,
+    preview,
+    legacy_task_id=None,
+):
+    if task_id and legacy_task_id and task_id != legacy_task_id:
+        raise click.UsageError("Choose one task id.")
+    task_id = task_id or legacy_task_id
+    if not task_id:
+        raise click.UsageError("A task id is required.")
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if cascade:
+        recursive = True
+    if not confirmed and not preview:
+        if recursive is None:
+            recursive = (
+                click.prompt("Scope", type=click.Choice(["task", "recursive"]), default="task")
+                == "recursive"
+            )
+        if branches is None:
+            branches = click.prompt(
+                "Branches", type=click.Choice(["keep", "delete"]), default="keep"
+            )
+        if reason is None:
+            reason = click.prompt("Reason (optional)", default="", show_default=False)
+    args = {
+        "task_id": task_id,
+        "recursive": bool(recursive),
+        "branches": branches or "keep",
+        "stop_running": stop_running,
+        "reason": reason or "",
+    }
+
+    async def _inner():
+        async with _get_client(api_url) as client:
+            plan = await client.execute("delete_task", {**args, "confirmed": False})
+            if preview:
+                emit(ctx, plan, entity="delete_task", render=_render_delete_preview)
+                return
+            if not confirmed:
+                _render_delete_preview(plan)
+                click.confirm(
+                    "Delete these tasks? Running work will stop. Audit history will remain",
+                    abort=True,
+                )
+            result = await client.execute("delete_task", {**args, "confirmed": True})
+
+            def render(data):
+                console.print(
+                    f"Deleted {', '.join(data.get('task_ids', [task_id]))}. "
+                    f"Audit: {data.get('audit_id')}",
+                    markup=False,
+                )
+                for notice in data.get("warnings", []):
+                    console.print(f"Warning: {notice['message']}", markup=False)
+
+            emit(ctx, result, entity="delete_task", render=render)
+
+    _run(_inner())
+
+
+def _delete_options(fn):
+    for decorator in reversed(
+        [
+            click.argument("task_id", required=False),
+            click.option(
+                "--task-id", "legacy_task_id", help="Compatibility spelling for the task id."
+            ),
+            click.option(
+                "--recursive/--task-only", default=None, help="Delete descendants or keep them."
+            ),
+            click.option("--cascade", is_flag=True, help="Deprecated alias for --recursive."),
+            click.option(
+                "--branches",
+                type=click.Choice(["keep", "delete"]),
+                default=None,
+                help="Keep branches or delete local/remote branches and associated worktrees.",
+            ),
+            click.option(
+                "--stop-running",
+                is_flag=True,
+                help="Acknowledge stopping selected sessions and claims.",
+            ),
+            click.option("--reason", help="Optional reason retained in the audit."),
+            click.option(
+                "--yes", "confirmed", is_flag=True, help="Confirm without interactive prompts."
+            ),
+            click.option("--preview", is_flag=True, help="Show the read-only deletion preview."),
+            click.pass_context,
+            _handle_errors,
+        ]
+    ):
+        fn = decorator(fn)
+    return fn
+
+
+@task.command("delete")
+@_delete_options
+def delete_task(ctx, **kwargs):
+    """Delete a task after choosing scope and branch cleanup in one confirmation."""
+    _delete_cli(ctx, **kwargs)
+
+
+@task.command("remove", deprecated=True)
+@_delete_options
+def remove_task(ctx, **kwargs):
+    """Deprecated alias for delete, with identical choices and cleanup."""
+    _delete_cli(ctx, **kwargs)

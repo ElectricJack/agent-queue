@@ -5,6 +5,8 @@ export type TerminalConnectionState = {
   status: "connecting" | "connected" | "reconnecting" | "exited" | "error";
   message?: string;
   attempt?: number;
+  /** The daemon refused this viewer an attach (credentials, origin, loopback). */
+  refused?: true;
 };
 
 export interface TerminalConnection {
@@ -26,25 +28,25 @@ export function terminalDimensions(cols: number, rows: number) {
   };
 }
 
-/**
- * "attach" is a tmux client sized to this viewer. "input" never attaches: it
- * types into the session through `/ws/terminal/{id}/input`, behind the same
- * gates, and receives no output and sends no size, so a phone can type without
- * resizing the agent's window (docs/superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md).
- */
-export type TerminalMode = "attach" | "input";
+const REFUSED = "Terminal access refused. Check credentials, origin and loopback access.";
 
-/** A viewer owns one connection; closing it detaches without stopping the agent. */
-export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onState, visible = true, mode = "attach" }: {
+/**
+ * A viewer owns one connection; closing it detaches without stopping the agent.
+ * A phone attach also asks for `history` lines of scrollback ahead of the live
+ * screen and for `restoreSize`: the agent's window gets its size back when the
+ * last viewer leaves, so a phone never leaves it phone-sized. A daemon without
+ * either option ignores the query, and a desktop attach sends neither.
+ */
+export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onState, visible = true, history = 0, restoreSize = false }: {
   sessionId: string;
   cols?: number;
   rows?: number;
   write: (bytes: Uint8Array, processed: () => void) => void;
   onState: (state: TerminalConnectionState) => void;
   visible?: boolean;
-  mode?: TerminalMode;
+  history?: number;
+  restoreSize?: boolean;
 }): TerminalConnection {
-  const input = mode === "input";
   let socket: WebSocket | undefined;
   let ended = false;
   let ready = false;
@@ -59,7 +61,7 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
   const base = import.meta.env.VITE_TERMINAL_WS_URL || window.location.origin;
   const url = new URL(base, window.location.href);
   url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
-  url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId) + (input ? "/input" : "");
+  url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId);
   url.hash = "";
 
   const retry = reconnectLoop(open, (attempt) => onState({ status: "reconnecting", attempt, message: retryMessage }));
@@ -88,6 +90,7 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
     onState(state);
   };
   const fail = (message: string) => finish({ status: "error", message });
+  const refuse = (message = REFUSED) => finish({ status: "error", message, refused: true });
   const dropped = (message = "Terminal disconnected. Unsent input was discarded.") => {
     if (ended) return;
     retryMessage = message;
@@ -101,7 +104,7 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
     catch { dropped("The terminal connection failed. Unsent input was discarded."); }
   };
   const sendSize = () => {
-    if (input || !writable() || (size.cols === sentSize.cols && size.rows === sentSize.rows)) return;
+    if (!writable() || (size.cols === sentSize.cols && size.rows === sentSize.rows)) return;
     sendControl({ type: "resize", ...size });
     sentSize = size;
   };
@@ -123,14 +126,15 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
       });
       if (ended || socket !== current || controller.signal.aborted) return;
       if (data && data.status !== "ready" && !data.retryable) {
-        finish({ status: data.status === "exited" ? "exited" : "error", message: data.message });
+        if (data.code === 4401 || data.code === 4403) refuse(data.message || REFUSED);
+        else finish({ status: data.status === "exited" ? "exited" : "error", message: data.message });
         return;
       }
     } catch (error) {
       if (ended || socket !== current) return;
       // Middleware / the edge can deny the HTTP probe before the handler.
       if (error instanceof Error && /^API (401|403):/.test(error.message)) {
-        fail("Terminal access refused. Check credentials, origin and loopback access.");
+        refuse();
         return;
       }
     } finally {
@@ -144,7 +148,10 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
     if (ended) return;
     closeSocket();
     try {
-      url.search = input ? "" : new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString();
+      const query = new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) });
+      if (history > 0) query.set("history", String(Math.min(10_000, Math.floor(history))));
+      if (restoreSize) query.set("restore_size", "1");
+      url.search = query.toString();
       const current = new WebSocket(url.toString(), ["aq-terminal-v1"]);
       socket = current;
       current.binaryType = "arraybuffer";
@@ -165,17 +172,12 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
                 fail("The terminal server announced an invalid session.");
                 return;
               }
-              // Anything but an input-only ready would be an attach sized to this phone.
-              if (input !== (frame.mode === "input")) {
-                fail("The terminal server did not open the requested terminal mode.");
-                return;
-              }
               // Queue RIS after old writes and before the fresh tmux attach's
               // redraw. It clears stale parser/screen state, without input.
-              if (hadReady && !input) write(Uint8Array.of(27, 99), () => {});
+              if (hadReady) write(Uint8Array.of(27, 99), () => {});
               hadReady = true;
               ready = true;
-              if (!input) sentSize = { cols: frame.cols, rows: frame.rows };
+              sentSize = { cols: frame.cols, rows: frame.rows };
               sendSize();
               if (!live() || !ready) return;
               clearTimeout(deadline);
@@ -196,6 +198,7 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
             } else if (frame.type === "error") {
               const message = typeof frame.message === "string" ? frame.message : "Terminal unavailable.";
               if (frame.retryable && ![4401, 4403, 4409].includes(frame.code)) dropped(message);
+              else if ([4401, 4403].includes(frame.code)) refuse(message);
               else finish({ status: frame.code === 4409 ? "exited" : "error", message });
             } else if (frame.type === "exit") {
               finish({ status: "exited", message: "The terminal session has ended." });
@@ -203,7 +206,7 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
           } catch { fail("The terminal server sent an invalid control message."); }
           return;
         }
-        if (!ready || input || !(data instanceof ArrayBuffer)) {
+        if (!ready || !(data instanceof ArrayBuffer)) {
           fail("The terminal server sent invalid output.");
           return;
         }
@@ -230,7 +233,7 @@ export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onStat
         clearTimeout(deadline);
         clearInterval(keepalive);
         if ([4401, 4403, 1008].includes(event.code)) {
-          fail("Terminal access refused. Check credentials, origin and loopback access.");
+          refuse();
         } else if (event.code === 4409) {
           finish({ status: "exited", message: "The terminal session has ended or changed." });
         } else if (event.code === 4400) {

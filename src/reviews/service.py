@@ -14,14 +14,15 @@ mixin owns authorization and wiring; nothing here asks who the caller is.
   edited outside the review (*diverged*, §7) is never overwritten except by
   ``revise``, which copies it aside first.
 * **The review gate** (type ``review``, ``await_id`` = review id) is created
-  with the review and resolved only by an approval.  A rejection or a
-  withdrawal leaves it open, so dependent work never starts on a design that
-  was not approved.
+  with the review and resolved only by an approval. A rejection leaves it
+  open; withdrawal cancels it and flags its waiters. Reopening restores the same
+  gate; neither cancellation nor reopening grants approval.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -29,9 +30,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import DOC_REVIEW_DECIDERS, DOC_REVIEW_KINDS
+from src.database.tables import (
+    DOC_REVIEW_DECIDERS, DOC_REVIEW_KINDS, doc_review_revisions, doc_reviews, tasks,
+)
 from src.reviews.diff import block_diff
 from src.reviews.vault import (
     body_sha256,
@@ -39,6 +43,7 @@ from src.reviews.vault import (
     frontmatter_for,
     render,
     split_frontmatter,
+    spec_kind_from_content,
     write_atomic,
 )
 
@@ -85,6 +90,8 @@ class ReviewHooks:
     resolve_gate: Callable[[str, str, str], Awaitable[set[str]]]
     #: ``(review row, decided revision, feedback text)``: hand feedback to the author.
     changes_requested: Callable[[dict, dict, str], Awaitable[None]]
+    file_feedback: Callable | None = None
+    record_playbook: Callable | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +132,50 @@ def _body(content: str) -> str:
     return body
 
 
+def _spec_kind(content: str, default: str | None = None) -> str | None:
+    try:
+        return spec_kind_from_content(content, default)
+    except ValueError as exc:
+        raise ReviewError("bad_spec_kind", str(exc)) from None
+
+
+def _formatting_key(body: str) -> tuple[str, ...]:
+    """Ignore blank lines/trailing space in prose, preserving code bytes."""
+    lines, fence = [], None
+    for line in body.splitlines():
+        match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if match:
+            marker = match[1][0]
+            fence = None if fence == marker else marker
+            lines.append(line)
+        elif fence or line.startswith(("    ", "\t")):
+            lines.append(line)
+        elif line.strip():
+            lines.append(line.rstrip())
+    return tuple(lines)
+
+
+def _review_hygiene(body, previous, changes_note, playbook, spec_kind):
+    same_pin = (
+        (playbook.meta if playbook else None) == previous.get("playbook")
+        and (playbook.artifact if playbook else None) == previous.get("playbook_artifact")
+    )
+    same_kind = spec_kind == previous.get("spec_kind")
+    if same_pin and same_kind and _formatting_key(body) == _formatting_key(previous["content"]):
+        raise ReviewError(
+            "unchanged_content", "Review content is unchanged or formatting-only; "
+            "record progress with aq task comment instead.",
+        )
+    if re.match(
+        r"(?i)^\s*(?:(?:progress|status)[ -](?:only|update)|"
+        r"(?:formatting|whitespace|cosmetic)[ -]only)\b", changes_note or "",
+    ):
+        raise ReviewError(
+            "progress_only", "A formatting/progress-only change note cannot resubmit a review; "
+            "record progress with aq task comment instead.",
+        )
+
+
 def _title(title: str) -> str:
     cleaned = (title or "").strip()
     if not cleaned:
@@ -152,6 +203,7 @@ def _base_payload(review: dict) -> dict:
         "kind": review["kind"],
         "revision": review["current_revision"],
         "author_task_id": review["author_task_id"],
+        "decider": review["decider"],
     }
 
 
@@ -165,11 +217,13 @@ class ReviewService:
         hooks: ReviewHooks,
         *,
         clock: Callable[[], float] = time.time,
+        input_config=None,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
         self.hooks = hooks
         self._clock = clock
+        self.input_config = input_config
 
     # -- submit ------------------------------------------------------------
 
@@ -184,6 +238,7 @@ class ReviewService:
         submitted_by: str,
         decider: str = "user",
         playbook: PlaybookPin | None = None,
+        single_author: bool = False,
     ) -> dict:
         """Create a review at revision 1, its gate and its vault file.
 
@@ -194,6 +249,7 @@ class ReviewService:
         if decider not in DOC_REVIEW_DECIDERS:
             raise ValueError(f"unknown decider {decider!r}")
         body = _body(content)
+        spec_kind = _spec_kind(content)
         now = self._clock()
         date = time.strftime("%Y-%m-%d", time.localtime(now))
 
@@ -201,6 +257,34 @@ class ReviewService:
             review_id = await self.db.generate_review_id()
             try:
                 async with self.db.immediate() as conn:
+                    if single_author:
+                        # The finalizer is the one result producer per attempt.
+                        # Lock its task before checking, so concurrent retries
+                        # cannot create two human result documents.
+                        await conn.execute(select(tasks.c.id).where(
+                            tasks.c.id == author_task_id,
+                        ).with_for_update())
+                        previous = (await conn.execute(select(doc_reviews).where(
+                            doc_reviews.c.author_task_id == author_task_id,
+                        ).order_by(doc_reviews.c.created_at).limit(1))).mappings().first()
+                        if previous:
+                            revision = (await conn.execute(select(
+                                doc_review_revisions.c.content_sha256,
+                                doc_review_revisions.c.spec_kind,
+                            ).where(
+                                doc_review_revisions.c.review_id == previous.id,
+                                doc_review_revisions.c.revision == previous.current_revision,
+                            ))).mappings().one()
+                            if (revision.content_sha256 != body_sha256(body)
+                                    or revision.spec_kind != spec_kind or previous.title != title
+                                    or previous.kind != kind):
+                                raise ReviewError(
+                                    "result_exists",
+                                    "This attempt already has a result; revise that review.",
+                                )
+                            await self._rewrite_status(dict(previous))
+                            return {"review_id": previous.id, "vault_path": previous.vault_path,
+                                    "revision": previous.current_revision, "gate_id": previous.gate_id}
                     vault_path = await self._free_path(project_id, kind, title, date, conn)
                     gate_id, _ = await self.db.create_gate(
                         project_id,
@@ -228,7 +312,7 @@ class ReviewService:
                         review=review,
                         revision=self._revision_row(
                             review_id, 1, body, submitted_by, author_task_id, None, now,
-                            playbook,
+                            playbook, spec_kind,
                         ),
                         conn=conn,
                     )
@@ -238,7 +322,7 @@ class ReviewService:
                     raise
                 logger.info("review submit raced another submission; retrying", exc_info=True)
 
-        self._sync_vault(review, body, playbook.meta if playbook else None)
+        self._sync_vault(review, body, playbook.meta if playbook else None, spec_kind)
         await self._emit("review.submitted", {**_base_payload(review), "vault_path": vault_path})
         return {"review_id": review_id, "vault_path": vault_path, "revision": 1, "gate_id": gate_id}
 
@@ -264,6 +348,8 @@ class ReviewService:
         submitted_by: str,
         submitted_task_id: str | None,
         playbook: PlaybookPin | None = None,
+        reopen: bool = False,
+        expected_revision: int | None = None,
     ) -> dict:
         """Store revision N+1 and put the review back ``in_review``.
 
@@ -273,21 +359,33 @@ class ReviewService:
         ``<name>.edited-<unix>.md`` (returned as ``backup_path``) before the
         new revision replaces it.
         """
-        review = await self._get(review_id)
-        if review["state"] not in OPEN_STATES:
-            raise self._closed(review)
-        body = _body(content)
-        current = review["current_revision"]
-        previous = await self._get_revision(review_id, current)
-        now = self._clock()
-        new_revision = current + 1
-
         async with self.db.immediate() as conn:
+            review = await self._locked(review_id, conn)
+            allowed = {"withdrawn"} if reopen else set(OPEN_STATES)
+            if review["state"] not in allowed:
+                raise self._closed(review)
+            body = _body(content)
+            current = review["current_revision"]
+            if expected_revision is not None and current != expected_revision:
+                raise ReviewError("stale_revision", "review changed: reload it before reopening")
+            previous = await self.db.get_review_revision(review_id, current, conn=conn)
+            spec_kind = _spec_kind(content, previous.get("spec_kind"))
+            if not reopen:
+                _review_hygiene(body, previous, changes_note, playbook, spec_kind)
+            now = self._clock()
+            new_revision = current + 1
+
             moved = await self.db.transition_review(
                 review_id,
-                from_states=set(OPEN_STATES),
+                from_states=allowed,
                 expected_revision=current,
-                values={"state": "in_review", "current_revision": new_revision, "updated_at": now},
+                values={
+                    "state": "in_review", "current_revision": new_revision, "updated_at": now,
+                    "decision_generation": review["decision_generation"] + 1,
+                    "feedback_version": review["feedback_version"] + 1,
+                    **({"decided_by": None, "decided_at": None, "decision_note": None}
+                       if reopen else {}),
+                },
                 conn=conn,
             )
             if moved:
@@ -301,12 +399,17 @@ class ReviewService:
                         changes_note,
                         now,
                         playbook,
+                        spec_kind,
                     ),
                     conn=conn,
                 )
                 await self.db.resolve_review_comments(
                     review_id, list(resolves or []), new_revision, conn=conn
                 )
+                if reopen:
+                    await self.db.set_review_gate_state(
+                        review_id, review["gate_id"], cancelled=False, by=submitted_by, conn=conn,
+                    )
         if not moved:
             raise await self._lost_race(review_id)
 
@@ -317,7 +420,7 @@ class ReviewService:
             backup_path = self._backup(review, now)
             writable = backup_path is not None
         if writable:
-            self._sync_vault(review, body, playbook.meta if playbook else None)
+            self._sync_vault(review, body, playbook.meta if playbook else None, spec_kind)
         else:
             logger.warning(
                 "review %s: vault file %s was edited outside the review and could not be "
@@ -364,110 +467,93 @@ class ReviewService:
         self, *, review_id: str, revision: int, decision: str, note: str, decided_by: str,
         responder_class: str | None = None, responder_profile: str | None = None,
         responder_profile_source: str | None = None,
+        preview_id: str | None = None, expected: dict | None = None,
+        idempotency_key: str | None = None, dispositions: list[dict] | None = None,
     ) -> dict:
-        """Approve or send feedback on the current revision."""
-        if decision not in {"approve", "request_changes", "reject"}:
+        """Compatibility entry point; every decision uses the ask packet boundary.
+
+        decided_by is retained for source compatibility, never used as authority.
+        CommandHandler's authenticated principal determines the actual actor.
+        """
+        from src.asks.adapters import AdapterRegistry
+        from src.asks.models import AskError, DecisionIntent, SourceIdentity, SourceVersion
+        from src.asks.operations import ReviewOperations
+        from src.asks.review import ReviewAdapter, authenticated_actor
+        from src.asks.service import AskService, new_id, version_of
+
+        if decision not in {"approve", "request_changes", "reject", "decline", "fold_in"}:
             raise ReviewError("not_in_review", "invalid review decision")
-        approve = decision == "approve"
-        review = await self._get(review_id)
-        if review["state"] in CLOSED_STATES:
-            raise self._closed(review)
-        if review["state"] != "in_review":
-            raise ReviewError(
-                "not_in_review",
-                f"review {review_id} is {review['state']}: wait for the author's next revision",
-            )
-        if revision != review["current_revision"]:
-            raise ReviewError(
-                "stale_revision",
-                f"review {review_id} is at revision {review['current_revision']}, not "
-                f"{revision}: reload it and decide on the current revision",
-            )
-        current = await self._get_revision(review_id, revision)
-        if self.vault_state(review, current["content_sha256"]) == "diverged":
-            raise ReviewError(
-                "vault_diverged",
-                f"the vault file {review['vault_path']} was edited outside the review: import "
-                f"the edits (aq review import-edits --review-id {review_id}) or undo them first",
-            )
-
-        note = (note or "").strip()
-        state = {"approve": "approved", "request_changes": "changes_requested", "reject": "rejected"}[decision]
-        now = self._clock()
-        async with self.db.immediate() as conn:
-            moved = await self.db.transition_review(
-                review_id,
-                from_states={"in_review"},
-                expected_revision=revision,
-                values={
-                    "state": state,
-                    "decided_by": decided_by,
-                    "decided_at": now,
-                    "decision_note": note or None,
-                    "updated_at": now,
-                },
-                conn=conn,
-            )
-            if moved and not approve:
-                await self.db.set_review_revision_responder(
-                    review_id, revision,
-                    responder={
-                        "responder_class": responder_class,
-                        "responder_profile": responder_profile,
-                        "responder_profile_source": responder_profile_source or "project_default",
-                    },
-                    conn=conn,
-                )
-        if not moved:
-            raise await self._lost_race(review_id)
-
-        review = await self._get(review_id)
-        current = await self._get_revision(review_id, revision)
-        unblocked: set[str] = set()
-        if approve:
-            # The decision is committed; a failed gate resolution is left for
-            # the ``reviews.consistency`` check (§10), not reported as a
-            # failed decision.
-            try:
-                unblocked = set(
-                    await self.hooks.resolve_gate(review["gate_id"], decided_by, "approved")
-                )
-            except Exception:
-                logger.exception(
-                    "review %s: resolving gate %s failed", review_id, review["gate_id"]
-                )
-            await self._rewrite_status(review, current)
-        else:
-            await self._rewrite_status(review, current)
-            open_comments = sum(
-                1
-                for c in await self.db.list_review_comments(review_id)
-                if c["resolved_in_revision"] is None
-            )
-            try:
-                await self.hooks.changes_requested(
-                    review, current, self.feedback_text(review, note, open_comments)
-                )
-            except Exception:
-                logger.exception("review %s: handing feedback to the author failed", review_id)
-
-        unblocked_ids = sorted(unblocked)
-        await self._emit(
-            "review.decided",
-            {
-                **_base_payload(review),
-                "decision": decision,
-                "decided_by": decided_by,
-                "note": note,
-                "responder_class": current["responder_class"] if not approve else None,
-                "responder_profile": current["responder_profile"] if not approve else None,
-                "responder_profile_source": (
-                    current["responder_profile_source"] if not approve else None
-                ),
-                "unblocked_task_ids": unblocked_ids,
-            },
-        )
-        return {"review_id": review_id, "state": state, "unblocked_task_ids": unblocked_ids}
+        asks = AskService(self.db, AdapterRegistry([ReviewAdapter(self)]), clock=self._clock)
+        actor = authenticated_actor()
+        try:
+            async with self.db.immediate() as conn:
+                review = await self.db.lock_review_for_mutation(review_id, conn)
+                if review is None:
+                    raise ReviewError("not_found", f"no review {review_id}")
+                source = SourceIdentity(review["project_id"], "review", review_id, {"id": review_id})
+                ask = await self.db.get_ask_by_source(review["project_id"], "review", review_id, conn=conn)
+                request_key = idempotency_key or preview_id
+                existing = await self.db.get_ask_decision_by_request(
+                    ask["id"], actor.principal_id, request_key, conn=conn,
+                ) if ask and request_key else None
+                if existing:
+                    if revision != existing["review_revision"]:
+                        raise AskError("ask.idempotency_conflict", "Request key names another revision")
+                    from sqlalchemy import select
+                    from src.database.tables import ask_decision_previews
+                    accepted_preview = (await conn.execute(select(ask_decision_previews.c.id).where(
+                        ask_decision_previews.c.ask_id == ask["id"],
+                        ask_decision_previews.c.packet_sha256 == existing["packet_sha256"],
+                        ask_decision_previews.c.consumed_at.is_not(None),
+                    ))).scalar_one()
+                    intent = DecisionIntent(decision,
+                        SourceVersion(**(expected or existing["packet"]["version"])),
+                        note or "", tuple(dispositions or ()), responder_class=responder_class)
+                    frozen, _ = await asks.decide(source, actor, intent, conn=conn,
+                        preview_id=preview_id or accepted_preview, idempotency_key=request_key,
+                        evidence_entry_id=existing["evidence_entry_id"])
+                else:
+                    if revision != review["current_revision"]:
+                        raise ReviewError("stale_revision", "Reload the current review revision")
+                    if review["state"] in CLOSED_STATES:
+                        raise self._closed(review)
+                    if review["state"] != "in_review":
+                        raise ReviewError("not_in_review", "Wait for the author's returned revision")
+                    source = SourceIdentity(review["project_id"], "review", review_id, {"id": review_id})
+                    publication = await asks.publish(source, conn=conn)
+                    intent = DecisionIntent(decision,
+                        SourceVersion(**expected) if expected else version_of(publication.ask),
+                        note or "", tuple(dispositions or ()), responder_class=responder_class)
+                    if preview_id is None:
+                        preview = await asks.prepare_decision(source, actor, intent, conn=conn)
+                        from dataclasses import asdict
+                        # Only a fully specified decision with no feedback or conditional
+                        # effect may internally prepare and accept in a single call.
+                        domain = preview["packet"]["domain"]
+                        if domain["feedback"] or domain["task_kind"] or domain["playbook"]:
+                            return {"review_id": review_id, "state": review["state"],
+                                    "application_state": "not_started",
+                                    "error_code": "ask.preview_required",
+                                    "error": "Run aq ask show, then aq ask prepare with its expected version; "
+                                             "review the full packet and pass its preview_id to aq ask decide",
+                                    "ask_id": publication.ask["id"],
+                                    "expected": asdict(intent.expected), "preview": preview}
+                        preview_id = preview["id"]
+                    elif expected is None:
+                        raise AskError("ask.stale_preview", "Preview acceptance requires its exact version")
+                    evidence_id = new_id("ask-evidence")
+                    await self.db.insert_ask_correspondence({
+                        "id": evidence_id, "ask_id": publication.ask["id"], "direction": "inbound",
+                        "transport": "local", "verified_actor": actor.principal_id,
+                        "text": note or decision, "entry_kind": "decision_evidence",
+                        "received_at": self._clock(), "created_at": self._clock(),
+                    }, conn=conn)
+                    frozen, _ = await asks.decide(source, actor, intent, conn=conn,
+                        preview_id=preview_id, idempotency_key=idempotency_key or preview_id,
+                        evidence_entry_id=evidence_id)
+            return await ReviewOperations(self).apply(frozen["id"])
+        except AskError as exc:
+            raise ReviewError(exc.code, str(exc)) from exc
 
     # -- comment -----------------------------------------------------------
 
@@ -480,31 +566,49 @@ class ReviewService:
         heading_path: list[str],
         body: str,
         author: str,
+        source_discussion_id: str | None = None,
     ) -> dict:
         """Anchor a comment to *quote* (or a whole section) of one revision."""
-        review = await self._get(review_id)
-        if review["state"] in CLOSED_STATES:
-            raise self._closed(review)
-        if not body or not body.strip():
-            raise ReviewError("empty", "a comment needs a body")
-        if len(body) > MAX_COMMENT_CHARS:
-            raise ReviewError("too_large", f"a comment is at most {MAX_COMMENT_CHARS} characters")
-        if not 1 <= revision <= review["current_revision"]:
-            raise ReviewError("not_found", f"review {review_id} has no revision {revision}")
-        comment_id = f"cmt-{uuid.uuid4().hex[:12]}"
-        await self.db.insert_review_comment(
-            {
-                "id": comment_id,
-                "review_id": review_id,
-                "revision": revision,
-                "quote": quote or None,
-                "heading_path": [str(h) for h in heading_path or []],
-                "body": body,
-                "author": author,
-                "resolved_in_revision": None,
-                "created_at": self._clock(),
-            }
-        )
+        async with self.db.immediate() as conn:
+            review = await self._locked(review_id, conn)
+            if review["state"] != "in_review":
+                raise self._closed(review)
+            if not body or not body.strip():
+                raise ReviewError("empty", "a comment needs a body")
+            if len(body) > MAX_COMMENT_CHARS:
+                raise ReviewError("too_large", f"a comment is at most {MAX_COMMENT_CHARS} characters")
+            if not 1 <= revision <= review["current_revision"]:
+                raise ReviewError("not_found", f"review {review_id} has no revision {revision}")
+            if source_discussion_id:
+                from sqlalchemy import select
+                from src.database.tables import escalation_messages, human_asks
+                from src.asks.authority import visible
+                entry = (await conn.execute(select(escalation_messages).where(
+                    escalation_messages.c.id == source_discussion_id,
+                    escalation_messages.c.entry_kind == "discussion",
+                ))).mappings().first()
+                ask = (await conn.execute(select(human_asks).where(
+                    human_asks.c.id == entry["ask_id"],
+                ))).mappings().first() if entry else None
+                if not (ask and visible(ask) and ask["source_kind"] == "review"
+                        and ask["source_key"] == review_id
+                        and entry["source_version"].get("revision") == revision):
+                    raise ReviewError("not_found", "Discussion was not found on this revision")
+            comment_id = f"cmt-{uuid.uuid4().hex[:12]}"
+            await self.db.insert_review_comment(
+                {
+                    "id": comment_id,
+                    "review_id": review_id,
+                    "revision": revision,
+                    "quote": quote or None,
+                    "heading_path": [str(h) for h in heading_path or []],
+                    "body": body,
+                    "author": author,
+                    "source_discussion_id": source_discussion_id,
+                    "resolved_in_revision": None,
+                    "created_at": self._clock(),
+                }, conn=conn
+            )
         await self._emit(
             "review.commented",
             {**_base_payload(review), "revision": revision, "comment_id": comment_id},
@@ -513,30 +617,57 @@ class ReviewService:
 
     # -- withdraw ------------------------------------------------------------
 
-    async def withdraw(self, *, review_id: str, reason: str, by: str) -> dict:
-        """Close the review unapproved; its gate stays open and waiters are flagged."""
-        review = await self._get(review_id)
-        if review["state"] not in OPEN_STATES:
-            raise self._closed(review)
-        current = review["current_revision"]
+    async def reopen(
+        self, *, review_id: str, revision: int, by: str, submitted_task_id: str | None = None,
+    ) -> dict:
+        """Copy the withdrawn revision into N+1 and reopen its existing gate."""
+        previous = await self._get_revision(review_id, revision)
+        return await self.revise(
+            review_id=review_id, content=previous["content"], changes_note="Reopened withdrawn review",
+            resolves=[], submitted_by=by, submitted_task_id=submitted_task_id,
+            playbook=PlaybookPin.from_revision(previous), reopen=True, expected_revision=revision,
+        )
+
+    async def withdraw(self, *, review_id: str, reason: str, by: str, via: str = "cli") -> dict:
+        """Cancel the gate without approval and flag its dependent tasks atomically.
+
+        Audit fields survive reopening. While withdrawn, the decision fields
+        also carry ``by`` and ``reason`` for older readers.
+        """
         async with self.db.immediate() as conn:
+            review = await self._locked(review_id, conn)
+            if review["state"] not in OPEN_STATES:
+                raise self._closed(review)
+            current = review["current_revision"]
+            reason = (reason or "").strip()
+            now = self._clock()
             moved = await self.db.transition_review(
                 review_id,
                 from_states=set(OPEN_STATES),
                 expected_revision=current,
-                values={"state": "withdrawn", "updated_at": self._clock()},
+                values={
+                    "state": "withdrawn",
+                    "decided_by": by,
+                    "decided_at": now,
+                    "decision_note": reason or None,
+                    "withdrawn_by": by,
+                    "withdrawn_at": now,
+                    "withdrawn_via": via,
+                    "withdrawal_reason": reason or None,
+                    "updated_at": now,
+                },
                 conn=conn,
             )
+            if moved:
+                flagged = await self.db.set_review_gate_state(
+                    review_id, review["gate_id"], cancelled=True, by=by, conn=conn,
+                )
         if not moved:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
         await self._rewrite_status(review)
-        flagged = (
-            sorted(await self.db.get_gate_waiters(review["gate_id"])) if review["gate_id"] else []
-        )
         for task_id in flagged:
-            await self.db.set_task_meta(task_id, "needs_attention", "review_withdrawn")
             task = await self.db.get_task(task_id)
             await self._emit(
                 "task.needs_attention",
@@ -554,6 +685,10 @@ class ReviewService:
                 **_base_payload(review),
                 "reason": reason,
                 "withdrawn_by": by,
+                "withdrawn_via": via,
+                "withdrawn_at": now,
+                "gate_id": review["gate_id"],
+                "gate_status": "cancelled",
                 "flagged_task_ids": flagged,
             },
         )
@@ -566,65 +701,64 @@ class ReviewService:
         if to not in _DELEGATE_TO:
             raise ValueError(f"delegate to must be one of {sorted(_DELEGATE_TO)}, not {to!r}")
         decider = _DELEGATE_TO[to]
-        # Delegation does not care which revision is current, so a
-        # concurrent resubmit is retried rather than reported.
-        for _ in range(3):
-            review = await self._get(review_id)
+        async with self.db.immediate() as conn:
+            review = await self._locked(review_id, conn)
             if review["state"] not in OPEN_STATES:
                 raise self._closed(review)
-            async with self.db.immediate() as conn:
-                moved = await self.db.transition_review(
-                    review_id,
-                    from_states={review["state"]},
-                    expected_revision=review["current_revision"],
-                    values={"decider": decider, "updated_at": self._clock()},
-                    conn=conn,
-                )
-            if moved:
-                return {"review_id": review_id, "decider": decider}
-        raise await self._lost_race(review_id)
+            await self.db.transition_review(
+                review_id, from_states={review["state"]},
+                expected_revision=review["current_revision"],
+                values={"decider": decider, "updated_at": self._clock(),
+                        "decision_generation": review["decision_generation"] + 1},
+                conn=conn,
+            )
+        return {"review_id": review_id, "decider": decider}
 
     # -- import edits --------------------------------------------------------
 
     async def import_edits(self, *, review_id: str, by: str) -> dict:
         """Store the vault file's out-of-band body edit as revision N+1 (§7)."""
-        review = await self._get(review_id)
-        if review["state"] in CLOSED_STATES:
-            raise self._closed(review)
-        if review["state"] != "in_review":
-            raise ReviewError(
-                "not_in_review",
-                f"review {review_id} is {review['state']}: only a review in review takes "
-                "imported edits",
-            )
-        current = review["current_revision"]
-        stored = await self._get_revision(review_id, current)
-        if self.vault_state(review, stored["content_sha256"]) != "diverged":
-            raise ReviewError("not_found", "the vault file has no local edits")
-        try:
-            text = self._path(review).read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            raise ReviewError(
-                "not_utf8", f"the vault file {review['vault_path']} is not valid UTF-8"
-            ) from None
-        body = _body(text)
-        # The artifact is compiled from the playbook source, not this prose:
-        # an edit to the document keeps the revision's pin.
-        playbook = PlaybookPin.from_revision(stored)
-        new_revision = current + 1
-        now = self._clock()
         async with self.db.immediate() as conn:
+            review = await self._locked(review_id, conn)
+            if review["state"] in CLOSED_STATES:
+                raise self._closed(review)
+            if review["state"] != "in_review":
+                raise ReviewError(
+                    "not_in_review",
+                    f"review {review_id} is {review['state']}: only a review in review takes "
+                    "imported edits",
+                )
+            current = review["current_revision"]
+            stored = await self.db.get_review_revision(review_id, current, conn=conn)
+            if self.vault_state(review, stored["content_sha256"]) != "diverged":
+                raise ReviewError("not_found", "the vault file has no local edits")
+            try:
+                text = self._path(review).read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                raise ReviewError(
+                    "not_utf8", f"the vault file {review['vault_path']} is not valid UTF-8"
+                ) from None
+            body = _body(text)
+            spec_kind = _spec_kind(text, stored.get("spec_kind"))
+            # The artifact is compiled from the playbook source, not this prose:
+            # an edit to the document keeps the revision's pin.
+            playbook = PlaybookPin.from_revision(stored)
+            new_revision = current + 1
+            now = self._clock()
             moved = await self.db.transition_review(
                 review_id,
                 from_states={"in_review"},
                 expected_revision=current,
-                values={"current_revision": new_revision, "updated_at": now},
+                values={"current_revision": new_revision, "updated_at": now,
+                        "decision_generation": review["decision_generation"] + 1,
+                        "feedback_version": review["feedback_version"] + 1},
                 conn=conn,
             )
             if moved:
                 await self.db.insert_review_revision(
                     revision=self._revision_row(
-                        review_id, new_revision, body, by, None, IMPORT_NOTE, now, playbook
+                        review_id, new_revision, body, by, None, IMPORT_NOTE, now, playbook,
+                        spec_kind,
                     ),
                     conn=conn,
                 )
@@ -632,7 +766,7 @@ class ReviewService:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
-        self._sync_vault(review, body, playbook.meta if playbook else None)
+        self._sync_vault(review, body, playbook.meta if playbook else None, spec_kind)
         await self._emit(
             "review.revised",
             {
@@ -667,7 +801,9 @@ class ReviewService:
 
         state = self.vault_state(review, current["content_sha256"])
         if state == "missing":
-            self._sync_vault(review, current["content"], current.get("playbook"))
+            self._sync_vault(
+                review, current["content"], current.get("playbook"), current.get("spec_kind"),
+            )
 
         out: dict = {
             "review": review,
@@ -676,15 +812,24 @@ class ReviewService:
             "revision": {k: v for k, v in shown.items() if k != "playbook_artifact"},
             "revisions": await self.db.list_review_revisions(review_id),
             "vault_state": state,
+            "dependent_task_ids": (
+                sorted(await self.db.get_gate_waiters(review["gate_id"]))
+                if review["gate_id"] else []
+            ),
+            "gate": await self.db.get_gate(review["gate_id"]) if review["gate_id"] else None,
         }
         dispatches = await self.db.list_review_dispatches(review_id)
         for dispatch in dispatches:
             task = await self.db.get_task(dispatch["task_id"])
             if task is not None:
                 dispatch["task_state"] = task.status.value
+                # The router picks a dispatched reviewer's profile after the
+                # dispatch is written (mandatory-routing spec §5.3).
+                dispatch["routed_profile_id"] = task.profile_id
             else:
                 archived = await self.db.get_archived_task(dispatch["task_id"])
                 dispatch["task_state"] = archived["status"] if archived else "missing"
+                dispatch["routed_profile_id"] = archived.get("profile_id") if archived else None
         out["dispatches"] = dispatches
         if comments:
             out["comments"] = await self.db.list_review_comments(review_id)
@@ -725,10 +870,14 @@ class ReviewService:
     def _path(self, review: dict) -> Path:
         return self.vault_root / review["vault_path"]
 
-    def _sync_vault(self, review: dict, body: str, playbook: dict | None = None) -> None:
+    def _sync_vault(
+        self, review: dict, body: str, playbook: dict | None = None, spec_kind: str | None = None,
+    ) -> None:
         """Write the vault copy of *review* at its current revision; never raises."""
         try:
-            write_atomic(self._path(review), render(frontmatter_for(review, playbook), body))
+            write_atomic(
+                self._path(review), render(frontmatter_for(review, playbook, spec_kind), body),
+            )
         except OSError:
             logger.warning(
                 "review %s: writing vault file %s failed; the database copy stands",
@@ -750,7 +899,9 @@ class ReviewService:
                 review["vault_path"],
             )
             return
-        self._sync_vault(review, current["content"], current.get("playbook"))
+        self._sync_vault(
+            review, current["content"], current.get("playbook"), current.get("spec_kind"),
+        )
 
     # -- helpers -------------------------------------------------------------
 
@@ -783,12 +934,14 @@ class ReviewService:
         changes_note: str | None,
         now: float,
         playbook: PlaybookPin | None = None,
+        spec_kind: str | None = None,
     ) -> dict:
         row = {
             "review_id": review_id,
             "revision": revision,
             "content": body,
             "content_sha256": body_sha256(body),
+            "spec_kind": spec_kind,
             "submitted_by": submitted_by,
             "submitted_task_id": submitted_task_id,
             "changes_note": changes_note,
@@ -798,6 +951,17 @@ class ReviewService:
             row["playbook"] = playbook.meta
             row["playbook_artifact"] = playbook.artifact
         return row
+
+    async def _locked(self, review_id: str, conn) -> dict:
+        review = await self.db.lock_review_for_mutation(review_id, conn)
+        if review is None:
+            raise ReviewError("not_found", f"no review {review_id}")
+        if review.get("pending_decision_id"):
+            raise ReviewError(
+                "decision_pending", "Decision application is pending; reconcile it before changing "
+                "formal feedback. Discuss remains available; use a new review for amendments.",
+            )
+        return review
 
     async def _get(self, review_id: str) -> dict:
         review = await self.db.get_review(review_id)
@@ -813,7 +977,8 @@ class ReviewService:
 
     @staticmethod
     def _closed(review: dict) -> ReviewError:
-        return ReviewError("review_closed", f"review {review['id']} is {review['state']}")
+        return ReviewError("review_closed", f"review {review['id']} is {review['state']}; use a returned revision "
+                           "or a new amendment review for formal feedback. Discuss remains available.")
 
     async def _lost_race(self, review_id: str) -> ReviewError:
         """The refusal for a compare-and-set another request won."""
