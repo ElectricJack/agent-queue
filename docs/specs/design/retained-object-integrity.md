@@ -16,6 +16,40 @@ lock or persistent integrity cache is introduced. Full verification has a cost
 proportional to the retained object store; timeout leaves that observation
 unavailable. Independent stores retain their existing concurrency.
 
+A failed full verification is retried once within the same acquisition deadline:
+linked worktree writers can change packs or refs during the first observation.
+Only a subsequent full clean check authorizes use; persistent errors remain
+unavailable. Diagnostics retain safe error categories and failing object IDs,
+without emitting untrusted paths, ref names or credentials. Object fingerprints
+for linked gitdirs resolve `commondir` so shared-store writes invalidate cached
+successes, including when a write occurs during verification.
+
+## Incremental retained-store acquisition
+
+A clean full check is reusable in process for at most one hour. Fingerprint
+scans run off the asyncio event loop. They cover object paths, sizes and inodes,
+including shared `commondir` stores, and ignore Git's abandoned `tmp_pack_*` and
+`tmp_obj_*` files. Temporary files are preserved for normal Git maintenance.
+
+An isolated retained-store acquisition checks its baseline before fetching.
+Every origin transport and staged local import enables `fetch.fsckObjects` to
+check incoming objects. Under the existing repository transaction, a successful
+fetch may extend the baseline to added objects only if every previously checked
+file remains unchanged. This preserves the original full-check timestamp;
+incremental traffic cannot defer the next full check indefinitely. Missing,
+replaced or truncated files and expired checks still require full verification.
+Failed acquisitions never extend the baseline. Incident recovery retains its
+full checks and durable journal.
+
+Admission shares a five-second snapshot-wait budget across one request's Git
+observations. A slow fetch or recovery continues as the existing shared flight
+under its repository exclusion. The caller receives unavailable evidence and
+withholds only candidates requiring that proof; structurally independent work
+can proceed. A timed-out caller neither cancels recovery nor uses stale delivery
+proof. Later admissions still require a fresh observation and the existing
+identity and remote-ref fences. Other delivery writers retain their normal
+acquisition budgets.
+
 Local Git subprocesses used by creation and result-returning writers must retain
 their handles through cancellation during spawn, and terminate/reap their process
 groups before cancellation or timeout releases the caller's exclusion. This

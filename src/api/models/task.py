@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+from src.models import TaskStatus
+
+from src.observations.models import SnapshotValue
 
 from . import TaskRef
+
+
+# Preserve loose response projections and their empty legacy default while
+# exposing the lifecycle vocabulary from the enum to generated clients.
+TaskStatusValue = Annotated[str, Field(json_schema_extra={
+    "enum": ["", *(status.value for status in TaskStatus)],
+})]
 
 
 # ---------------------------------------------------------------------------
@@ -200,12 +210,48 @@ class TaskDisplayFields(BaseModel):
     claim_readiness: ClaimReadiness | None = None
 
 
+class HeldBatchSummary(BaseModel):
+    """Ingestion membership survives release; ``state`` says whether it still holds work."""
+
+    batch_id: str
+    state: Literal["held", "reviewing", "needs_scope", "released", "retired"]
+    structure_revision: int
+    reviewer_task_id: str | None = None
+    source: str
+    lineage: dict[str, Any]
+
+
+class IngestBatchDetail(HeldBatchSummary):
+    """Durable review evidence, including receipts superseded by a graph edit."""
+
+    project_id: str
+    structure_digest: str
+    source_review_id: str
+    source_revision: int
+    source_content_sha256: str
+    decision_id: str
+    members: dict[str, str]
+    membership: list[dict[str, Any]]
+    check_results: dict[str, Any] | None = None
+    section_verdicts: dict[str, Any] = Field(default_factory=dict)
+    reverse_coverage_verdict: str | None = None
+    walkthrough_verdict: str | None = None
+    structural_findings: list[dict[str, Any]] = Field(default_factory=list)
+    diff: dict[str, Any] | None = None
+    receipts: list[dict[str, Any]] = Field(default_factory=list)
+    release_receipt: dict[str, Any] | None = None
+    release_actor: str | None = None
+    release_revision: int | None = None
+    release_digest: str | None = None
+    released_at: float | None = None
+
+
 class TaskDetail(TaskDisplayFields):
     id: str
     project_id: str
     title: str
     description: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
     priority: int = 0
     assigned_agent: str | None = None
     retry_count: int = 0
@@ -246,6 +292,8 @@ class TaskDetail(TaskDisplayFields):
     rerouted_from: str | None = None
     reroute: TaskReroute | None = None
     provider_hold: ProviderHoldDetail | None = None
+    held_batch: HeldBatchSummary | None = None
+    delivery_condition: dict[str, Any] | None = None
     # Mandatory routing (spec 2026-09-28 §3): who wrote ``profile_id``
     # (unrouted | router | override | role | legacy), the filer's
     # intelligence-class hint, and the router's record of the route.  Set by
@@ -270,7 +318,7 @@ class TaskDict(BaseModel):
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +326,7 @@ class TaskDict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ListTasksResponse(BaseModel):
+class ListTasksResponse(SnapshotValue):
     display_mode: str = "flat"
     tasks: list[TaskDetail] = []
     total: int = 0
@@ -353,6 +401,9 @@ class TaskShowResponse(TaskDetail):
     labels: list[str] = []
     provenance: list[dict[str, Any]] = []
     claimed_by: ClaimedBy | None = None
+    # Present only on the assigned fidelity reviewer's bounded member read.
+    batch_member: dict[str, Any] | None = None
+    fidelity: dict[str, Any] | None = None
 
 
 class TaskSetResponse(TaskShowResponse):
@@ -623,6 +674,14 @@ class TaskControlResponse(BaseModel):
     status: str
 
 
+class DiscardPauseCheckpointResponse(BaseModel):
+    task_id: str
+    discarded: bool
+    branch: str | None = None
+    ref: str | None = None
+    commit: str | None = None
+
+
 class StopTaskResponse(BaseModel):
     stopped: str
 
@@ -780,6 +839,18 @@ class TaskProgressResponse(TaskDisplayFields):
     waves: list[list[str]]
     max_parallelism: int
     depth: int
+
+
+class TaskSplitResponse(BaseModel):
+    success: bool
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
+    code: str | None = None
+    error: str | None = None
+    owner: dict[str, Any] | None = None
+    safe_continuation: str | None = None
 
 
 class ReparentTaskResponse(BaseModel):
@@ -1034,6 +1105,8 @@ class ApprovedSpecPacketResponse(BaseModel):
     body: str
     packet: dict[str, Any]
     feedback: list[dict[str, Any]]
+    # The batch's frozen approved design lineage, never a caller-selected document.
+    design: dict[str, Any] | None = None
 
 
 class SpecIngestReconcileResponse(BaseModel):
@@ -1056,12 +1129,10 @@ class SpecIngestLegacyInventoryResponse(BaseModel):
 
 
 class TaskBatchProposeResponse(BaseModel):
-    """A proposal is created, not applied — unless ingestion applies it live.
+    """Ordinary proposals stage for approval; ingestion materializes held work.
 
-    A batch carrying a live spec-ingest role's approved-document authority is
-    applied in the same call: ``committed`` is then true and ``task_ids`` is
-    that batch's receipt, exactly as a commit's would be. Every other proposal
-    stages in ``ready`` and waits for approval.
+    Design-kind ingestion returns a released batch with a server receipt.
+    Implementation ingestion returns held members pending fidelity review.
     """
 
     success: bool = True
@@ -1071,6 +1142,17 @@ class TaskBatchProposeResponse(BaseModel):
     already_committed: bool = False
     task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
+    status: Literal["draft", "ready", "held", "reviewing", "needs_scope", "released", "retired",
+                    "committed", "discarded"] | None = None
+    batch_id: str | None = None
+    state: str | None = None
+    structure_revision: int | None = None
+    structure_digest: str | None = None
+    members: dict[str, str] | None = None
+    lineage: dict[str, Any] | None = None
+    release_receipt: dict[str, Any] | None = None
+    reviewer_task_id: str | None = None
+    replayed: bool | None = None
 
 
 class TaskBatchAckResponse(BaseModel):
@@ -1103,6 +1185,40 @@ class TaskBatchValidateResponse(BaseModel):
     hard: list[dict[str, Any]] = Field(default_factory=list)
     advisory: list[dict[str, Any]] = Field(default_factory=list)
     gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TaskBatchReviewRecordResponse(BaseModel):
+    """The durable fidelity receipt, including a scope ask when one was raised."""
+
+    success: bool = True
+    batch_id: str
+    state: Literal["reviewing", "needs_scope"]
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
+
+
+class TaskBatchReleaseResponse(BaseModel):
+    """The original atomic release receipt is returned on every successful replay."""
+
+    success: bool = True
+    batch_id: str
+    already_released: bool
+    release_receipt: dict[str, Any]
+
+
+class TaskBatchRetireResponse(BaseModel):
+    success: bool = True
+    batch_id: str
+    state: Literal["retired"]
+    already_retired: bool
+
+
+class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
+    """Adoption replays a held batch receipt or retains the proposal's human gate."""
+
+    left_gated: bool = False
 
 
 class ClaimSessionSummary(BaseModel):
@@ -1207,6 +1323,7 @@ class PoolProjectStatus(BaseModel):
     ready: int = 0
     running_idle: int = 0
     running_busy: int = 0
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int = 0
     draining: int = 0
     #: The project's own ``max_concurrent_agents`` ceiling, which bounds how
@@ -1262,6 +1379,7 @@ class PoolStatusRow(BaseModel):
     desired: int
     running_idle: int
     running_busy: int
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int
     draining: int
     ready: int
@@ -1394,6 +1512,17 @@ class PoolRenameResponse(BaseModel):
     error: str | None = None
 
 
+class PoolDeleteResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    deleted: str | None = None
+    retired: bool = False
+    depth: str | None = None
+    sessions: list[str] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1407,6 +1536,7 @@ class TaskRecoveryResponse(BaseModel):
     incident_id: str
     decision: str
     status: str
+    decided_at: float | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -1432,6 +1562,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
+    "discard_pause_checkpoint": DiscardPauseCheckpointResponse,
     "restart_task": RestartTaskResponse,
     "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,
@@ -1452,6 +1583,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_children": TaskChildrenResponse,
     "task_progress": TaskProgressResponse,
     "reparent_task": ReparentTaskResponse,
+    "task_split": TaskSplitResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "task_recent_activity": TaskRecentActivityResponse,
@@ -1464,6 +1596,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
+    "spec_ingest_legacy_adopt": SpecIngestLegacyAdoptResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,
@@ -1472,10 +1605,14 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
     "task_batch_validate": TaskBatchValidateResponse,
+    "task_batch_review_record": TaskBatchReviewRecordResponse,
+    "task_batch_release": TaskBatchReleaseResponse,
+    "task_batch_retire": TaskBatchRetireResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_rename": PoolRenameResponse,
+    "pool_delete": PoolDeleteResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,

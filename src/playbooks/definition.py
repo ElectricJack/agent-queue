@@ -18,14 +18,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import deque
 
 import yaml
 from datetime import datetime
 from types import UnionType
 from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, Field, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
+from src.playbooks.script_policy import ScriptProgram
+from src.playbooks.script_inputs import PinnedScript
 from src.playbooks.expressions import (
     Condition,
     Identifier,
@@ -176,7 +179,7 @@ def scope_to_v1(scope: Any) -> str:
 # §4.5 — step common shapes
 # --------------------------------------------------------------------------
 
-StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal"]
+StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal", "script"]
 
 
 class StepBase(V2Base):
@@ -211,6 +214,30 @@ class ToolUsePolicy(V2Base):
 # --------------------------------------------------------------------------
 # §4.5 — the seven steps
 # --------------------------------------------------------------------------
+
+
+# Script programs are shared with the durable job dispatch boundary.
+
+
+SCRIPT_OUTCOMES: Final = frozenset({
+    "succeeded", "nonzero_exit", "timed_out", "cancelled",
+    "output_limit_exceeded", "invalid_json", "admission_denied", "admission_timed_out",
+})
+
+
+class ScriptStep(StepBase):
+    type: Literal["script"] = "script"
+    program: ScriptProgram
+    environment: dict[str, Value] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _environment_policy(self):
+        if set(self.environment) - set(self.program.env_allowlist):
+            raise ValueError("script environment names must be in env_allowlist")
+        return self
+
+    save_result_as: Identifier | None = None
+    transitions: dict[str, Identifier]
 
 
 class CommandStep(StepBase):
@@ -379,12 +406,13 @@ class TerminalStep(StepBase):
 
 
 Step = Annotated[
-    CommandStep | LlmStep | AgentTaskStep | DecisionStep | WaitStep | ForEachStep | TerminalStep,
+    CommandStep | LlmStep | AgentTaskStep | DecisionStep | WaitStep | ForEachStep | TerminalStep | ScriptStep,
     Field(discriminator="type"),
 ]
 
 #: Every step model, for the invariant walks and the diff.
 STEP_MODELS: Final[tuple[type[StepBase], ...]] = (
+    ScriptStep,
     CommandStep,
     LlmStep,
     AgentTaskStep,
@@ -488,6 +516,8 @@ def business_outcomes(step: Any, *, contract_outcomes: frozenset[str] | None = N
     command's business set is empty and §6.6 has already emitted
     ``unknown_command``.
     """
+    if isinstance(step, ScriptStep):
+        return SCRIPT_OUTCOMES
     if isinstance(step, CommandStep):
         return contract_outcomes if contract_outcomes is not None else frozenset()
     if isinstance(step, LlmStep):
@@ -526,6 +556,23 @@ def _outcome_enum(step: LlmStep) -> list[str] | None:
 
 def result_schema_for(step: Any, *, command_schema: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The JSON-Schema-shaped result a step binds through ``save_result_as``."""
+    if isinstance(step, ScriptStep):
+        return {"type": "object", "properties": {
+            "stdout": {"type": ["string", "null"]},
+            "stderr": {"type": ["string", "null"]},
+            "stdout_json": {},
+            "outcome": {"type": "string"},
+            "terminal_cause": {"type": "string"},
+            "execution_id": {"type": "string"},
+            "exit_code": {"type": ["integer", "null"]},
+            "signal": {"type": ["integer", "null"]},
+            "capture_complete": {"type": "boolean"},
+            "cleanup_complete": {"type": "boolean"},
+            "inline_omitted": {"type": "boolean"},
+            "output_refs": {"type": "object", "properties": {
+                "stdout": {"type": "string"}, "stderr": {"type": "string"},
+            }},
+        }, "additionalProperties": True}
     if isinstance(step, CommandStep):
         return command_schema
     if isinstance(step, LlmStep):
@@ -560,19 +607,27 @@ def step_targets(step: Any) -> dict[str, str]:
     return targets
 
 
-def step_values(step: Any) -> list[Any]:
+def step_values(step: Any, *, scoped: bool = False) -> list[Any]:
     """Every value node a step carries, for the typing and reference passes."""
     values: list[Any] = []
     for attribute in ("prompt", "objective", "collection", "correlation_key", "awaited",
                       "idempotency_key", "result"):
         node = getattr(step, attribute, None)
         if node is not None:
-            values.extend(walk_value(node))
+            values.extend(walk_value(node, scoped=scoped))
     for node in getattr(step, "inputs", {}).values():
-        values.extend(walk_value(node))
+        values.extend(walk_value(node, scoped=scoped))
+    if isinstance(step, ScriptStep):
+        program = step.program
+        inputs = [*(program.argv[1:] if program.argv else program.arguments),
+                  *step.environment.values()]
+        if program.stdin is not None:
+            inputs.append(program.stdin)
+        for node in inputs:
+            values.extend(walk_value(node, scoped=scoped))
     if isinstance(step, DecisionStep):
         for case in step.cases:
-            values.extend(condition_values(case.when))
+            values.extend(condition_values(case.when, scoped=scoped))
     return values
 
 
@@ -631,21 +686,37 @@ def referenced_profile_ids(definition: PlaybookDefinition) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+#: Commands whose effect needs another command's authority.  A command step
+#: grants the dependency only when the artifact's pinned source declaration
+#: (``trusted_execution.required_capabilities``) names it, so the reviewed
+#: source shows every authority the step exercises.
+DECLARED_COMMAND_DEPENDENCIES: dict[str, frozenset[str]] = {
+    "playbook_state_notify": frozenset({"message_send"}),
+}
+
+
 def granted_aq_commands(definition: Any) -> frozenset[str]:
-    """Every AQ command the artifact grants: its command steps' commands and
-    the ``aq_commands`` its steps' tool use names.
+    """Every AQ command the artifact grants: its command steps' commands, the
+    ``aq_commands`` its steps' tool use names, and the declared dependencies
+    of those commands (:data:`DECLARED_COMMAND_DEPENDENCIES`).
 
     Derived from the immutable artifact itself, never from a reviewed
-    manifest, so a repository write cannot grant anything.  A command that
+    manifest, so a repository write cannot grant anything.  A declared
+    capability no step depends on grants nothing.  A command that
     must only run from one kind of playbook (``task_route_apply`` runs only
     from the project's bound router) checks it on the live invocation
     (:mod:`src.playbooks.invocation`).
     """
+    metadata = getattr(definition, "trusted_execution", None)
+    declared = frozenset(getattr(metadata, "required_capabilities", None) or ())
     found: set[str] = set()
     for step in getattr(definition, "steps", {}).values():
+        if isinstance(step, ScriptStep):
+            found.update(("playbook_script_run", "job_cancel"))
         command = getattr(step, "command", None)
         if isinstance(command, str) and command:
             found.add(command)
+            found.update(DECLARED_COMMAND_DEPENDENCIES.get(command, frozenset()) & declared)
         tool_use = getattr(step, "tool_use", None)
         if tool_use is not None:
             found.update(getattr(tool_use, "aq_commands", None) or ())
@@ -696,6 +767,22 @@ class CompiledAgainst(V2Base):
     profiles: dict[QualifiedName, Sha256] = Field(default_factory=dict)
 
 
+class TrustedExecutionMetadata(V2Base):
+    """Source-derived execution pins; never caller authority or compiler output.
+
+    State and script owners extend this strict model with reviewed pins. Command
+    security policy remains in the execution contracts, not in author assertions.
+    """
+
+    required_capabilities: tuple[QualifiedName, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    state_schema_version: Annotated[int, Field(strict=True, ge=1)] | None = None
+    scripts: dict[Identifier, PinnedScript] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+
+
 class PlaybookDefinition(V2Base):
     schema_version: Literal[2] = 2
     id: QualifiedName
@@ -709,6 +796,17 @@ class PlaybookDefinition(V2Base):
     steps: Annotated[dict[Identifier, Step], Field(min_length=1, max_length=MAX_STEPS)]
     compiled_against: CompiledAgainst = Field(default_factory=CompiledAgainst)
     integration_policy: IntegrationPolicy | None = None
+    # Omit only new empty fields; legacy defaults remain part of artifact bytes.
+    required_features: tuple[QualifiedName, ...] = Field(default=(), exclude_if=lambda value: not value)
+    trusted_execution: TrustedExecutionMetadata | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None or not value.model_dump(exclude_none=True),
+    )
+
+    @field_validator("required_features")
+    @classmethod
+    def _feature_set(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(sorted(set(value)))
 
     @model_validator(mode="after")
     def _bounded(self) -> PlaybookDefinition:
@@ -1029,6 +1127,7 @@ __all__ = [
     "TerminalOutcome",
     "TerminalStep",
     "ToolUsePolicy",
+    "TrustedExecutionMetadata",
     "Trigger",
     "V2Base",
     "WaitKind",
@@ -1039,6 +1138,7 @@ __all__ = [
     "contract_fingerprint",
     "is_executable_path",
     "load_definition_json",
+    "loop_body",
     "normalize_source",
     "referenced_profile_ids",
     "reserved_outcomes_for",
@@ -1050,4 +1150,51 @@ __all__ = [
     "step_targets",
     "step_values",
     "truncate_excerpt",
+    "uses_iteration_paths",
 ]
+
+
+def loop_body(definition: PlaybookDefinition, loop_id: str) -> set[str]:
+    """§6.3 — the steps that are *inside* the loop.
+
+    The plan states this as "BFS from ``body_entry``, stopping at ``f`` itself".
+    Taken literally that is a plain forward closure, which swallows every target
+    a body step has — including the loop's own failure terminal — and makes
+    ``loop_body_escapes`` vacuous, because a step's target is in its own closure
+    by construction.  The body is therefore the closure restricted to the steps
+    that can reach ``f`` again: exactly the nodes on a path from ``body_entry``
+    back to the loop node, which is what "inside the loop" means.  Recorded as
+    an amendment in the child plan's §20.
+    """
+    loop = definition.steps[loop_id]
+    forward: set[str] = set()
+    exits = set(loop.transitions.values())
+    if loop.continuation is not None:
+        exits.add(loop.continuation)
+    queue: deque[str] = deque([loop.body_entry])
+    while queue:
+        step_id = queue.popleft()
+        if (step_id == loop_id or step_id in exits or step_id in forward
+                or step_id not in definition.steps):
+            continue
+        forward.add(step_id)
+        queue.extend(step_targets(definition.steps[step_id]).values())
+
+    inside: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for step_id in forward - inside:
+            targets = set(step_targets(definition.steps[step_id]).values())
+            if loop_id in targets or targets & inside:
+                inside.add(step_id)
+                changed = True
+    return inside
+
+
+def uses_iteration_paths(definition: PlaybookDefinition) -> bool:
+    """B3 may pin the feature explicitly; nested syntax already requires it."""
+    if "nested_foreach_v1" in getattr(definition, "required_features", ()):
+        return True
+    loops = {key for key, step in definition.steps.items() if isinstance(step, ForEachStep)}
+    return any(loop_body(definition, key) & loops for key in loops)
