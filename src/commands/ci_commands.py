@@ -278,6 +278,61 @@ def _string_list(value: object) -> list[str] | None:
 class CiCommandsMixin:
     """Mixin that adds CI baseline reads to CommandHandler."""
 
+    async def _cmd_ci_completed_status(self, args: dict) -> dict:
+        """Audit recorded COMPLETED sources; unknown CI remains explicit."""
+        from src.integration.completion_ci import (
+            completion_checks, observe_completion_ci, unavailable,
+        )
+        from src.integration.delivery_path import task_repository_url
+
+        project_id = str(args.get("project_id") or "").strip()
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+        project = await self.db.get_project(project_id)
+        if project is None:
+            return {"success": False, "error": f"unknown project: {project_id}"}
+        tasks = await self.db.list_tasks(project_id=project_id, status=TaskStatus.COMPLETED)
+        failing, unresolved = [], []
+        cache = {}
+        checked = 0
+        for task in tasks:
+            completion = await self.db.get_task_completion(task.id)
+            head = completion.commits[-1] if completion and completion.commits else (
+                await self.db.get_task_meta(task.id, "work_commit_auto")
+                or await self.db.get_task_meta(task.id, "work_commit")
+            )
+            proof = await self.db.get_task_meta(task.id, "completion_ci")
+            if (isinstance(proof, dict) and proof.get("reason") == "no_source_changes"
+                    and head and proof.get("head_sha") == head == proof.get("base_sha")
+                    and proof.get("branch") == (task.branch_name or "").removeprefix("refs/heads/")
+                    and proof.get("repository_url") == await task_repository_url(self.db, task, project)):
+                continue
+            try:
+                required = await completion_checks(self.db, self.config, task, project, audit=True)
+                if required is None:
+                    continue
+                url = await task_repository_url(self.db, task, project)
+                key = (url, head, required.names,
+                       required.trusted.version if required.trusted else None,
+                       required.trusted.producer_id if required.trusted else None)
+                if key not in cache:
+                    cache[key] = await observe_completion_ci(
+                        self.orchestrator.git, url, head, required,
+                    )
+                observed = cache[key]
+            except (ValueError, TypeError, KeyError) as exc:
+                observed = unavailable(head, "Required completion CI policy is invalid",
+                                       stage="policy", cause=exc)
+            checked += 1
+            row = {"task_id": task.id, "title": task.title, "branch": task.branch_name,
+                   **observed}
+            if observed["state"] == RED:
+                failing.append(row)
+            elif observed["state"] != GREEN:
+                unresolved.append(row)
+        return {"success": True, "project_id": project_id, "checked": checked,
+                "failing": failing, "unresolved": unresolved}
+
     async def _observe_ci_baseline(self, project, ref: str) -> dict:
         """Read *ref*'s head check runs and, when red, its failing pytest node ids.
 

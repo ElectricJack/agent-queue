@@ -171,6 +171,7 @@ async def test_ordinary_send_cannot_link_a_collaboration_reply(env):
             "body": "bypass",
             "thread_id": "ordinary",
             "reply_to_id": sent["message_id"],
+            "claim_epoch": 1,
         },
         worker("two"),
     )
