@@ -324,11 +324,16 @@ class SessionLens:
         if kind != "session" or not target_id.startswith(_SUPERVISOR_NAME_PREFIX):
             return False
 
+        from src.models import ProjectStatus
+
         suffix = target_id[len(_SUPERVISOR_NAME_PREFIX):]
         if suffix != _GLOBAL_SUPERVISOR_SUFFIX:
             project = await self._db.get_project(suffix)
             if project is not None and not project.supervisor_enabled:
                 logger.info("Project supervisor %s is disabled; refusing start/wake", suffix)
+                return False
+            if project is not None and project.status == ProjectStatus.PAUSED:
+                logger.info("Project %s is paused; refusing supervisor start/wake", suffix)
                 return False
             # A message after re-enabling may arrive while the previous turn
             # is still draining. Reuse that running instance on this explicit
@@ -429,6 +434,13 @@ class SessionLens:
         if harness is None:
             logger.warning("harness %r not registered; cannot start supervisor", harness_name)
             return False
+        if self._availability is not None:
+            provider_key = self._availability.provider_for_profile(
+                profile, agent=agent, project_id=harness_project,
+            )
+            if self._availability.suppresses(provider_key):
+                logger.info("Provider %s is unavailable; refusing supervisor start", provider_key)
+                return False
 
         # Match the reconciler exactly: use the operator's configured
         # provider. Tests must register the fake under that same name (or
