@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from hypothesis import settings
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
+from src.config import DatabaseConfig
+from tests.db_fixtures import lease_dsn
 
 # Fresh per-test SQLite databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
+
+# CI explores the same examples on every run. Opt into a longer, randomized
+# local search with HYPOTHESIS_PROFILE=deep; deadlines are deliberately disabled
+# because a shared test box's latency is not a correctness invariant.
+settings.register_profile("ci", max_examples=40, derandomize=True, database=None, deadline=None)
+settings.register_profile("deep", max_examples=500, deadline=None)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
+
+
+def _resolve_base_dsn() -> str | None:
+    from tests.db_fixtures import base_dsn
+
+    return base_dsn()
 
 
 def _refuse_production_database() -> None:
@@ -42,6 +59,261 @@ def _refuse_production_database() -> None:
 
 
 _refuse_production_database()
+
+
+# ── PostgreSQL test substrate ──────────────────────────────────────────────
+# PostgreSQL is the suite's only backend. Every test leases a run-owned,
+# template-cloned database. See tests/db_fixtures.py and the SQLite-removal
+# implementation spec §T0.
+_PG_POOL = None
+_PG_POOL_DSNS: list[str] = []
+
+_PG_BASE_DSN: str | None = None
+
+
+def pytest_configure(config) -> None:
+    """Validate the required DSN once, before collection or worker startup."""
+    from src.cli.test_runner import postgres_test_dsn_error
+
+    error = postgres_test_dsn_error()
+    if error:
+        raise pytest.UsageError(error)
+    _refuse_stale_selection_catalogue(config)
+
+    # Collection validates configuration but must not create test resources.
+    if getattr(config.option, "collectonly", False):
+        return
+
+    # Under xdist the controller coordinates only; each worker derives its own
+    # database after PYTEST_XDIST_WORKER is present. Avoid creating a controller
+    # database that no test can use and no fixture would clean up.
+    is_xdist_worker = hasattr(config, "workerinput")
+    num_processes = getattr(config.option, "numprocesses", 0)
+    if num_processes and not is_xdist_worker:
+        return
+
+    global _PG_BASE_DSN
+    _PG_BASE_DSN = _resolve_base_dsn()
+
+
+def _refuse_stale_selection_catalogue(config) -> None:
+    """Refuse to run a named test module whose selection-catalogue entry is stale.
+
+    ``tests/selection_catalogue.json`` records every test module's areas and
+    ``src`` imports.  A worker who adds a module, or an import to one, and
+    runs only that file never sees ``tests/test_generated_artifacts.py``
+    fail; the candidate CI run does, and a train repair follows (2026-10-06:
+    keen-harbor-16.2).  The check is per named file, so directory runs are
+    untouched, and it is off under ``CI``, where that test is the check and a
+    usage error would only blank a job that names a file.  xdist workers
+    repeat the controller's configuration, so only the controller checks.
+    """
+    if (
+        os.environ.get("CI")
+        or hasattr(config, "workerinput")
+        or getattr(config.option, "pyargs", False)
+    ):
+        return
+    from src.test_selection.catalogue import stale_named_modules, stale_named_modules_message
+    from src.test_selection.discovery import named_test_modules
+
+    rels = named_test_modules(config.rootpath, config.invocation_params.dir, config.args)
+    problems = stale_named_modules(config.rootpath, rels)
+    if problems:
+        raise pytest.UsageError(stale_named_modules_message(problems))
+
+
+def pytest_unconfigure(config) -> None:
+    """Drop worker databases after pytest has torn down session fixtures."""
+    import asyncio
+
+    from tests.pg_dsn import dispose_owned_databases
+
+    asyncio.run(dispose_owned_databases())
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _dispose_pg_pool():
+    """Remove this worker's template-cloned lease databases."""
+    yield
+    if _PG_POOL is not None:
+        await _PG_POOL.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logging():
+    """Undo the process-global logging configuration a test performs.
+
+    ``setup_logging()`` reconfigures the *root* logger — level, handlers,
+    filters — and every other test in the worker shares that one object.
+    Leaving it at ``INFO`` makes every ``logging.getLogger(__name__)``
+    record in the process reach pytest's ``caplog`` handler, so a test that
+    asserts on captured messages starts seeing unrelated loggers' output and
+    its outcome depends on shard order. That is not hypothetical:
+    ``tests/test_logging_config.py`` called ``setup_logging(level="DEBUG")``
+    and never restored, and on CI the ``src.database`` "database url=" INFO
+    line leaked into ``TestSchedulerBlockerLogging``'s assertions on whichever
+    worker ran both.
+
+    Snapshot the root logger around every test. Handlers the test installed
+    are removed and any file handler is closed (otherwise a per-test
+    RotatingFileHandler leaks a descriptor for the rest of the run), and
+    pytest's own capture handler — already attached when this fixture
+    starts — is among those restored.
+    """
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = root.handlers[:]
+    saved_filters = root.filters[:]
+    try:
+        yield
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+        for log_filter in root.filters[:]:
+            root.removeFilter(log_filter)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        for log_filter in saved_filters:
+            root.addFilter(log_filter)
+        root.setLevel(saved_level)
+
+
+@pytest.fixture(autouse=True)
+def _restore_command_handler_provider():
+    """Undo the process-global command handler provider a test installs.
+
+    ``Orchestrator.set_command_handler`` calls ``set_handler_provider``, which
+    points the global ``CONTRACTS`` registry at the live handler's descriptors
+    composed with its plugin registry. Nothing uninstalls it, so a later test
+    in the same worker that expects offline discovery (the packaged command
+    catalogue, the codegen routers) sees that handler's plugin definitions —
+    with runtime ``_plugin`` / ``_category`` keys — and its outcome depends on
+    shard order. On CI, ``test_orchestrator.py`` startup tests leaked into
+    ``test_cli_startup_offline.py`` and ``test_api_client_contract.py``.
+
+    Restore whatever was installed before the test, so a module-scoped
+    provider survives, and only touch the modules once something imported them.
+    """
+    import sys
+
+    def installed():
+        builtin = sys.modules.get("src.commands.contracts.builtin")
+        registry = sys.modules.get("src.commands.contracts.registry")
+        return (builtin, builtin._handler_provider if builtin else None,
+                registry, registry.CONTRACTS._snapshot_provider if registry else None)
+
+    _, saved_handler, _, saved_snapshot = installed()
+    yield
+    builtin, handler, registry, snapshot = installed()
+    if builtin is not None and handler is not saved_handler:
+        builtin._handler_provider = saved_handler
+    if registry is not None and snapshot is not saved_snapshot:
+        registry.CONTRACTS.configure_snapshot_provider(saved_snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_login_probes(monkeypatch):
+    """Never shell out to ``codex login status`` / ``claude auth status``.
+
+    Every initialised orchestrator seeds provider availability with an auth
+    probe (provider-failover D5).  On a developer box those CLIs exist and
+    their answer is whatever the developer's own login says, so a test's
+    outcome would depend on the machine.  The probe reports "not probeable"
+    here; tests that exercise it inject ``probe=`` into the service.
+    """
+    from src.providers.availability_service import ProviderAvailabilityService
+
+    async def _not_probeable(self, provider, timeout):
+        return None, {}
+
+    monkeypatch.setattr(ProviderAvailabilityService, "_login_probe", _not_probeable)
+
+
+@pytest.fixture(autouse=True)
+async def _pg_backend():
+    """Arm this test's pool of leasable Postgres databases.
+
+    ``lease_dsn("name")`` hands out one database per distinct name, and each
+    is reset on teardown.  This replaces the ``Database(str(tmp_path /
+    "x.db"))`` idiom the suite grew under SQLite: there is no file to name any
+    more, so the name is just a key.
+    """
+    global _PG_POOL, _PG_POOL_DSNS
+    from tests import db_fixtures
+    from tests.db_fixtures import POOL_SIZE, LeasePool
+
+    if _PG_POOL is None:
+        if not _PG_BASE_DSN:
+            pytest.fail("PostgreSQL test preflight did not provision this worker's database")
+        pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
+        try:
+            pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]
+        except BaseException:
+            await pool.dispose()
+            raise
+        _PG_POOL, _PG_POOL_DSNS = pool, pool_dsns
+
+    db_fixtures.begin_test(_PG_POOL_DSNS)
+    try:
+        yield
+    finally:
+        # Reset *and* replay the migration seed rows: the built-in
+        # workspace_kinds live in the template, and a bare reset would
+        # leave every test after the first without them.
+        for leased in db_fixtures.leased():
+            await db_fixtures.reset_all(leased)
+            if db_fixtures._SEED:
+                await db_fixtures.restore_seed(leased, db_fixtures._SEED)
+
+
+@pytest.fixture(scope="session")
+def _initialized_databases():
+    from tests.db_fixtures import InitializedDatabases
+
+    return InitializedDatabases()
+
+
+@pytest.fixture
+async def reuse_database(_pg_backend, _initialized_databases):
+    """Session-initialized databases reset by ``_pg_backend`` per test.
+
+    The explicit dependency closes connections before the lease is reset.
+    Fresh adapters and engines preserve each test's callbacks and pool options,
+    and prevent connections crossing pytest-asyncio's function-scoped loops.
+    """
+    databases = {}
+
+    async def _get(name="test"):
+        dsn = lease_dsn(name)
+        if dsn not in databases:
+            databases[dsn] = await _initialized_databases.get(dsn)
+        return databases[dsn]
+
+    try:
+        yield _get
+    finally:
+        for database in databases.values():
+            await database.close()
+
+
+@pytest.fixture
+def unpooled_postgres(monkeypatch):
+    """TestClient runs on another loop; asyncpg connections cannot cross loops."""
+    from sqlalchemy.pool import NullPool
+    from src.database import engine
+
+    create_engine = engine.create_async_engine
+
+    def create_unpooled_engine(*args, **kwargs):
+        for option in ("pool_size", "max_overflow", "pool_timeout"):
+            kwargs.pop(option, None)
+        kwargs["poolclass"] = NullPool
+        return create_engine(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "create_async_engine", create_unpooled_engine)
 
 
 @pytest.fixture
@@ -235,7 +507,7 @@ async def internal_plugins_handler(tmp_path: Path):
     from unittest.mock import create_autospec
 
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.database import Database
     from src.event_bus import EventBus
     from src.git.manager import GitManager
@@ -250,11 +522,11 @@ async def internal_plugins_handler(tmp_path: Path):
             config = AppConfig(
                 discord=DiscordConfig(bot_token="test-token", guild_id="123"),
                 workspace_dir=str(tmp_path / "workspaces"),
-                database_path=str(tmp_path / "plugins-handler.db"),
+                database=DatabaseConfig(url=lease_dsn("plugins-handler.db")),
                 data_dir=str(tmp_path / "data"),
             )
         if db is None:
-            db = Database(config.database_path)
+            db = Database(config.database.url)
             await db.initialize()
             created_dbs.append(db)
         if git is None:
@@ -302,11 +574,7 @@ DEFAULT_PIPELINE_PATH = (
 
 #: The live shipped authoring source — prose, no action graph.
 SHIPPED_PIPELINE_PATH = (
-    Path(__file__).parent.parent
-    / "src"
-    / "prompts"
-    / "default_playbooks"
-    / "default-pipeline.md"
+    Path(__file__).parent.parent / "src" / "prompts" / "default_playbooks" / "default-pipeline.md"
 )
 
 
@@ -336,12 +604,12 @@ def command_handler_factory(tmp_path: Path):
         from src.database import Database
         from src.orchestrator import Orchestrator
 
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             data_dir=str(tmp_path / "d"),
         )
         o = Orchestrator(cfg)
@@ -383,12 +651,12 @@ def orchestrator_factory(tmp_path: Path):
         from src.database import Database
         from src.orchestrator import Orchestrator
 
-        db = Database(str(tmp_path / "orch.db"))
+        db = Database(lease_dsn("orch.db"))
         await db.initialize()
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "orch.db"),
+            database=DatabaseConfig(url=lease_dsn("orch.db")),
             data_dir=str(tmp_path / "d"),
         )
         o = Orchestrator(cfg)
@@ -396,7 +664,7 @@ def orchestrator_factory(tmp_path: Path):
         o.git = MagicMock()
         o.bus = MagicMock()
         o.bus.emit = AsyncMock()
-        o.command_handler = CommandHandler(o, cfg)
+        o.set_command_handler(CommandHandler(o, cfg))
         return o
 
     return _make
@@ -458,12 +726,11 @@ class PipelineEngine:
             task_row = await self._db.get_task(str(hydrated["task_id"]))
             if task_row is not None:
                 from dataclasses import asdict
+
                 try:
                     hydrated["task"] = asdict(task_row)
                 except Exception:
-                    hydrated["task"] = (
-                        vars(task_row) if hasattr(task_row, "__dict__") else {}
-                    )
+                    hydrated["task"] = vars(task_row) if hasattr(task_row, "__dict__") else {}
         # Mirrors the orchestrator: a pipeline-created review row flags the
         # event as ``review_task`` regardless of what the emitter sent.
         from src.review_keys import flag_review_task_event

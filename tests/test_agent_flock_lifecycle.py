@@ -19,19 +19,21 @@ from src.models import (
 )
 from src.orchestrator.agent_reconciler import AgentReconciler
 from src.scheduler import Scheduler, SchedulerState
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "flock.db"))
+    database = Database(lease_dsn("flock.db"))
     await database.initialize()
     yield database
     await database.close()
 
 
-async def seed_project(db, pid="p1"):
+async def seed_project(db, pid="p1", *, routed=True):
     await db.create_profile(AgentProfile(id=pid, name=pid, harness="claude"))
-    await db.create_project(Project(id=pid, name=pid, default_profile_id=pid))
+    await db.create_project(Project(id=pid, name=pid))
     await db.create_workspace(
         Workspace(
             id=f"ws-{pid}",
@@ -40,8 +42,14 @@ async def seed_project(db, pid="p1"):
             source_type=RepoSourceType.LINK,
         )
     )
+    # Routed to the project's worker unless *routed* is false: a project
+    # default routes nothing (mandatory routing §8).
     await db.create_task(
-        Task(id=f"t-{pid}", project_id=pid, title=pid, description="work", status=TaskStatus.READY)
+        Task(
+            id=f"t-{pid}", project_id=pid, title=pid, description="work",
+            status=TaskStatus.READY, profile_id=pid if routed else None,
+            route_source="legacy" if routed else "unrouted",
+        )
     )
 
 
@@ -99,8 +107,8 @@ async def test_agent_settings_and_launch_snapshot_round_trip(db):
 
 
 async def test_reconciler_reuses_global_worker_without_reprofiling(db):
-    await seed_project(db, "p1")
-    await seed_project(db, "p2")
+    await seed_project(db, "p1", routed=False)
+    await seed_project(db, "p2", routed=False)
     await db.create_profile(AgentProfile(id="personal", name="Personal", harness="codex"))
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="personal"))
     before = await db.get_agent("a1")
@@ -112,6 +120,12 @@ async def test_reconciler_reuses_global_worker_without_reprofiling(db):
 
 async def test_reconciler_does_not_reuse_live_session_worker(db):
     await seed_project(db)
+    # The live worker retains /tmp/p1 even when its lock columns are empty.
+    # Supply capacity for another worker so this tests identity reuse.
+    await db.create_workspace(Workspace(
+        id="ws-spare", project_id="p1", workspace_path="/tmp/p1-spare",
+        source_type=RepoSourceType.LINK,
+    ))
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="p1"))
     await db.create_session(session(agent_id="a1", state="running"))
     await AgentReconciler(db).reconcile()
@@ -162,12 +176,12 @@ async def test_assignment_refuses_worker_with_live_session(db):
 
 async def test_restart_preserves_orphan_and_retired_definitions(db, tmp_path):
     from unittest.mock import AsyncMock
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "other.db"),
+        database=DatabaseConfig(url=lease_dsn("other.db")),
         data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "ws"),
     )
@@ -188,18 +202,16 @@ async def test_existing_worker_supplies_its_default_without_project_reprofile(db
     from src.config import AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
-    await seed_project(db)
-    await db.update_project("p1", default_profile_id=None)
+    await seed_project(db, routed=False)
     await db.create_profile(
         AgentProfile(id="personal", name="Personal", harness="claude", allowed_tools=["Read"])
     )
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="personal"))
     await AgentReconciler(db).reconcile()
-    assert (await db.get_project("p1")).default_profile_id is None
     assert await db.assign_task_to_agent("t-p1", "a1")
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
         workspace_dir=str(tmp_path / "ws"),
         data_dir=str(tmp_path / "data"),
     )
@@ -208,7 +220,7 @@ async def test_existing_worker_supplies_its_default_without_project_reprofile(db
     orch.bus.emit = AsyncMock()
     profile = await orch._resolve_profile(await db.get_task("t-p1"))
     assert profile.id == "personal" and profile.allowed_tools == ["Read"]
-    await db.update_task("t-p1", profile_id="p1")
+    await db.update_task("t-p1", profile_id="p1", route_source="legacy")
     assert (await orch._resolve_profile(await db.get_task("t-p1"))).id == "p1"
 
 
@@ -231,23 +243,20 @@ async def test_ready_retry_cannot_bypass_its_old_live_session_with_other_worker(
     assert (await db.get_agent("new")).state == AgentState.IDLE
 
 
-async def test_cooled_worker_does_not_suppress_other_provider_supply(db):
-    import time
-
+async def test_suppressed_worker_does_not_suppress_other_provider_supply(db):
     await seed_project(db)
     await db.create_profile(AgentProfile(id="cooled", name="Cooled", harness="codex"))
     await db.create_agent(Agent(id="a1", name="Cooled", profile_id="cooled"))
-    report = await AgentReconciler(db).reconcile(provider_cooldowns={"cooled": time.time() + 60})
+    report = await AgentReconciler(db).reconcile(suppressed_profile_ids=frozenset({"cooled"}))
     assert report.created == [("p1", "p1")]
     assert (await db.get_agent("a1")).profile_id == "cooled"
 
 
-async def test_cooldown_does_not_create_more_unusable_durable_workers(db):
-    import time
+async def test_suppression_does_not_create_more_unusable_durable_workers(db):
     await seed_project(db)
     await db.create_agent(Agent(id="a1", name="Waiting", profile_id="p1"))
     reconciler = AgentReconciler(db)
     for _ in range(2):
-        report = await reconciler.reconcile(provider_cooldowns={"p1": time.time() + 60})
+        report = await reconciler.reconcile(suppressed_profile_ids=frozenset({"p1"}))
         assert report.created == []
     assert len(await db.list_agents()) == 1

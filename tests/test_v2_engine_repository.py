@@ -20,7 +20,6 @@ from sqlalchemy import insert
 
 from src.commands.contracts.models import CommandResult
 from src.commands.principal import TRUSTED_LOCAL
-from src.database import Database
 from src.database.tables import playbook_artifacts
 from src.playbooks.engine import (
     EventArrived,
@@ -31,6 +30,7 @@ from src.playbooks.engine import (
 )
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
+from src.playbooks.private_values import PrivateValueService, is_reference
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     LIST_TASKS,
@@ -52,21 +52,13 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 NOW = 1_000_000.0
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
-async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
+@pytest.fixture
+async def db(reuse_database):
+    database = await reuse_database("test.db")
+    database.set_playbook_private_values(PrivateValueService(
+        database._engine, active_key_id="test", keys={"test": b"x" * 32},
+    ))
     yield database
-    await database.close()
 
 
 async def seed_artifact(database, ref) -> None:
@@ -103,6 +95,7 @@ async def build(database):
     bus = RecordingBus()
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=database.playbook_private_values(),
             contracts=registry, clock=lambda: NOW, artifact_store=store, bus=bus
         ),
         runs=database,
@@ -145,10 +138,7 @@ async def test_a_dispatch_persists_one_run_and_its_receipts_per_rule(db):
         receipts = await db.list_receipts(run_id)
         assert receipts
         # Every attempt of the run is receipted, each with its own identity.
-        keys = [
-            (r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind)
-            for r in receipts
-        ]
+        keys = [(r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind) for r in receipts]
         assert len(keys) == len(set(keys))
 
 
@@ -168,9 +158,7 @@ async def test_external_work_is_fenced_before_the_executor_returns(db):
     adapter.queue.append(asyncio.CancelledError())
 
     with pytest.raises(asyncio.CancelledError):
-        await engine.run_rule(
-            ref, "review", event("task-completed-code"), TRUSTED_LOCAL
-        )
+        await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
 
     [stored] = await db.list_runs(playbook_id=ref.playbook_id)
     assert stored.context["_in_flight_attempt"]["step_id"] == "ensure-review-task"
@@ -284,6 +272,7 @@ async def test_same_dispatch_and_rule_id_create_one_run_per_playbook(db):
         store.put(definition)
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=db.playbook_private_values(),
             contracts=registry, clock=lambda: NOW, artifact_store=store, bus=RecordingBus()
         ),
         runs=db,
@@ -364,6 +353,7 @@ async def build_for(database, artifact_name: str):
     store.put(artifact)
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=database.playbook_private_values(),
             contracts=registry, clock=lambda: NOW, artifact_store=store, bus=RecordingBus()
         ),
         runs=database,
@@ -380,8 +370,11 @@ async def test_a_suspension_writes_the_wait_row_in_the_same_boundary(db):
     assert outcome.lifecycle is RunLifecycle.PAUSED
     active = await db.list_active(outcome.run_id)
     assert [w.step_id for w in active] == ["await-approval"]
-    assert active[0].match == {"task_id": "task-1"}
     stored = await db.load_run(outcome.run_id)
+    assert is_reference(active[0].match["task_id"])
+    assert await db.playbook_private_values().resolve(
+        active[0].match, owner=await db.private_run_owner(stored), principal=TRUSTED_LOCAL,
+    ) == {"task_id": "task-1"}
     assert stored.wait is not None
     # The registration is fenced to the version the boundary wrote, so a
     # resume that found the two disagreeing would refuse rather than resume
@@ -395,14 +388,16 @@ async def test_a_suspension_writes_the_wait_row_in_the_same_boundary(db):
 async def test_resuming_a_wait_clears_its_row_and_advances_the_run(db):
     engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
     outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
-    resumed = await engine.resume(
-        outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
-    )
+    resumed = await engine.resume(outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL)
     assert resumed.lifecycle is RunLifecycle.COMPLETED
     assert await db.list_active(outcome.run_id) == []
     stored = await db.load_run(outcome.run_id)
     assert stored.wait is None
-    assert stored.bindings["approval"]["resolution"] == "approve"
+    assert is_reference(stored.bindings["approval"]["resolution"])
+    restored = await db.resolve_private_snapshot(stored, TRUSTED_LOCAL)
+    assert restored.bindings["approval"]["resolution"] == "approve"
     gate = [r for r in await db.list_receipts(outcome.run_id) if r.step_id == "await-approval"]
     # Two receipts for one step instance: the suspension and the resume.  The
     # database's own uq_playbook_step_receipts_attempt is what would reject a
@@ -432,9 +427,7 @@ async def test_an_expired_wait_claim_is_recovered_after_scheduler_restart(db):
     [recovered] = await db.expire_due(NOW + 32)
     assert recovered.wait_id == first.wait_id
 
-    resumed = await engine.resume(
-        recovered.run_id, TimerFired(recovered.wait_id), TRUSTED_LOCAL
-    )
+    resumed = await engine.resume(recovered.run_id, TimerFired(recovered.wait_id), TRUSTED_LOCAL)
     assert resumed.lifecycle is RunLifecycle.COMPLETED
     assert await db.expire_due(NOW + 60) == []
 
@@ -462,7 +455,9 @@ async def test_a_loop_persists_one_receipt_per_iteration_boundary(db):
     assert ("open-gate", 1, 1, -1, "step") in keys
     stored = await db.load_run(outcome.run_id)
     assert stored.loop is None
-    assert stored.bindings["sweep_result"]["succeeded"] == 2
+    assert is_reference(stored.bindings["sweep_result"]["succeeded"])
+    restored = await db.resolve_private_snapshot(stored, TRUSTED_LOCAL)
+    assert restored.bindings["sweep_result"]["succeeded"] == 2
 
 
 @pytest.mark.asyncio

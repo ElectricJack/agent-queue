@@ -1,4 +1,19 @@
-"""Single-loop bounded reconciliation for durable integration work."""
+"""Bounded control and remote reconciliation for durable integration work.
+
+Two properties keep one stuck subject from stopping the train:
+
+* **Every source and item is bounded.**  Each source callback, and each item of
+  a page the service iterates itself, runs in its own task under a wall-clock
+  budget.  A callback past its budget is cancelled and the pass moves on; the
+  durable row stays where it was and is retried on a later pass.  A callback
+  that refuses cancellation is left to unwind on its own and its source is
+  skipped until it has, so two copies of one source never run at once.  (Bare
+  ``asyncio.wait_for`` is not enough: it waits for the cancelled coroutine to
+  finish, so an uncancellable call would still hold the pass.)
+* **Refusals are revisited from durable Subjects.** Each runtime resumes
+  the persisted cursor and next visit time after a restart; the service owns
+  neither writer policy nor an in-memory delivery queue.
+"""
 
 from __future__ import annotations
 
@@ -13,207 +28,297 @@ logger = logging.getLogger(__name__)
 IntegrationHandler = Callable[[dict[str, Any], float], Awaitable[Any]]
 DrainHandler = Callable[[float], Awaitable[Any]]
 
+#: Budget for one source callback (one bounded page of one source).  The
+#: slowest sources observed on the operator's install (2026-09-28..10-02) were
+#: GitHub PR reviews at 131 s, the outbox at 128 s and branch materialization
+#: at 120 s; a hang is anything well past that.
+DEFAULT_SOURCE_TIMEOUT_SECONDS = 300.0
+#: Budget for one item of a page the service iterates itself.
+DEFAULT_ITEM_TIMEOUT_SECONDS = 60.0
+#: How long a timed-out callback gets to unwind its cancellation before the
+#: pass stops waiting for it.
+CANCEL_GRACE_SECONDS = 5.0
+
+# Ordinary state changes invalidate readiness. Events are hints only: each
+# lane reloads completions, holds, authorization and exact Git/check evidence.
+READINESS_EVENTS = (
+    "integration.publication_verified",
+    "task.completed", "task.closed", "task.created", "task.updated", "task.restarted",
+    "task.ready", "task.child_added", "task.reparented", "task.paused", "task.unblocked",
+    "dependency.added", "dependency.removed", "label.added", "label.removed",
+    "gate.created", "gate.resolved", "gate.expired", "project.paused", "project.resumed",
+    "git.push", "git.pr.created", "integration.ci_completed", "integration.batch_promoted",
+    "integration.root_delivered", "integration.readiness_changed",
+)
+
+
+class _CallTimedOut(Exception):
+    """One bounded callback exceeded its budget and was cancelled."""
+
+    def __init__(self, budget: float) -> None:
+        super().__init__(f"exceeded {budget:.0f}s")
+        self.budget = budget
+
 
 class IntegrationService:
-    """Poll durable integration work without becoming a second authority."""
+    """One bounded pass visits subjects; maintenance has no delivery authority."""
 
     def __init__(
         self,
-        db: Any,
-        scheduler: Any,
-        repair: Any,
-        outbox: Any,
+        db,
+        outbox,
         *,
-        candidate_ci_handler: IntegrationHandler | None = None,
-        unresolved_intent_handler: IntegrationHandler | None = None,
-        cleanup_handler: IntegrationHandler | None = None,
-        drain_handler: DrainHandler | None = None,
-        page_size: int = 100,
-        interval_seconds: float = 5.0,
-        clock: Callable[[], float] = time.time,
-    ) -> None:
-        if page_size <= 0:
-            raise ValueError("integration service page size must be positive")
+        subject_runtime=None,
+        parent_subject_runtime=None,
+        development_subject_runtime=None,
+        train=None,
+        bus=None,
+        maintenance=None,
+        interval_seconds=5.0,
+        source_timeout_seconds=DEFAULT_SOURCE_TIMEOUT_SECONDS,
+        item_timeout_seconds=DEFAULT_ITEM_TIMEOUT_SECONDS,
+        source_timeouts=None,
+        clock=time.time,
+    ):
         if interval_seconds <= 0:
-            raise ValueError("integration service interval must be positive")
-        self._db = db
-        self._scheduler = scheduler
-        self._repair = repair
-        self._outbox = outbox
-        self._candidate_ci_handler = candidate_ci_handler
-        self._unresolved_intent_handler = unresolved_intent_handler
-        self._cleanup_handler = cleanup_handler
-        self._drain_handler = drain_handler
-        self._page_size = page_size
-        self._interval_seconds = interval_seconds
-        self._clock = clock
+            raise ValueError("integration interval must be positive")
+        if train is not None and any(
+            runtime is not None for runtime in
+            (subject_runtime, parent_subject_runtime, development_subject_runtime)
+        ):
+            # git_first: active selects the train for the whole loop; it never
+            # runs beside the subject runtimes as a second engine.
+            raise ValueError("the integration train replaces the subject runtimes")
+        for value in (source_timeout_seconds, item_timeout_seconds,
+                      *(source_timeouts or {}).values()):
+            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+                raise ValueError("integration timeout must be positive")
+        self._db, self._outbox = db, outbox
+        self._subject_runtime = subject_runtime
+        self._parent_subject_runtime = parent_subject_runtime
+        self._development_subject_runtime = development_subject_runtime
+        self._train = train
+        self._bus = bus
+        self._unsubscribers = []
+        self._wake_event = asyncio.Event()
+        self._maintenance = dict(maintenance or {})
+        self._source_timeout_seconds = float(source_timeout_seconds)
+        self._item_timeout_seconds = float(item_timeout_seconds)
+        self._source_timeouts = dict(source_timeouts or {})
+        self._interval_seconds, self._clock = interval_seconds, clock
         self._tick_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
-        self._task: asyncio.Task[None] | None = None
-        self._cursors: dict[str, tuple[Any, ...] | None] = {
-            "schedules": None,
-            "repair_stages": None,
-            "candidate_ci": None,
-            "intents": None,
-            "cleanup": None,
-        }
+        self._task = self._reconciliation_task = None
+        self._unwinding = {}
+        self._skip_reported = set()
 
-    async def tick(self, now: float) -> None:
+    def delivery_modes(self) -> frozenset[str]:
+        """Modes with a selected writer; stopped services cannot deliver."""
+        from src.integration.delivery_engine import DELIVERY_MODES
+
+        if self._stop_event.is_set():
+            return frozenset()
+        if self._train is not None:
+            return DELIVERY_MODES
+        modes = set()
+        if self._subject_runtime is not None and self._parent_subject_runtime is not None:
+            modes.update({"hierarchy", "train"})
+        if self._development_subject_runtime is not None:
+            modes.add("development")
+        return frozenset(modes)
+
+    async def tick(self, now, *, background=False):
         if self._tick_lock.locked():
             return
-        await self._tick_lock.acquire()
+        async with self._tick_lock:
+            if self._train is not None and not self._stop_event.is_set():
+                # A readiness event must not wait behind a slow maintenance
+                # pass (for example a GitHub review listing).
+                await self._source("integration train", self._train.tick, self._clock())
+            if not self._stop_event.is_set() and (
+                self._reconciliation_task is None or self._reconciliation_task.done()
+            ):
+                self._reconciliation_task = asyncio.create_task(
+                    self._reconcile(), name="integration-subject-pass"
+                )
+            if not background and self._reconciliation_task is not None:
+                await self._reconciliation_task
+            from src.integration.outbox import ACTIVE_OUTBOX_EVENT_TYPES
+
+            # Promotion policy authors intents for the train; legacy events
+            # stay fenced from their old writers while the train owns delivery.
+            # Batch review/release policy also uses this shared durable outbox.
+            filters = {"event_types": ACTIVE_OUTBOX_EVENT_TYPES} if self._train is not None else {}
+            await self._source("integration outbox", self._outbox.dispatch_due,
+                               self._clock(), **filters)
+
+    async def _reconcile(self):
+        for name, runtime in (
+            ("root subjects", self._subject_runtime),
+            ("parent subjects", self._parent_subject_runtime),
+            ("development subjects", self._development_subject_runtime),
+        ):
+            if runtime is not None:
+                await self._source(name, runtime.tick, self._clock())
+        for name, callback in self._maintenance.items():
+            await self._source(name, callback, self._clock())
+
+    def _source_budget(self, name: str) -> float:
+        return self._source_timeouts.get(name, self._source_timeout_seconds)
+
+    def _still_unwinding(self, name: str) -> bool:
+        tasks = self._unwinding.get(name)
+        if tasks:
+            tasks.difference_update({task for task in tasks if task.done()})
+        if tasks:
+            if name not in self._skip_reported:
+                self._skip_reported.add(name)
+                logger.warning(
+                    "integration source=%s skipped until its timed-out call finishes unwinding",
+                    name,
+                )
+            return True
+        self._unwinding.pop(name, None)
+        self._skip_reported.discard(name)
+        return False
+
+    async def _bounded(
+        self, name: str, budget: float, callback: Callable, *args, **kwargs
+    ) -> Any:
+        """Await ``callback`` in its own task for at most ``budget`` seconds.
+
+        The callback's own result, exception, or cancellation is returned or
+        re-raised unchanged.  Past the budget it is cancelled and given
+        :data:`CANCEL_GRACE_SECONDS` to unwind; one that is still running is
+        tracked under ``name`` so the source is not started again until it
+        has finished, and :class:`_CallTimedOut` is raised either way.
+        """
+        task = asyncio.ensure_future(callback(*args, **kwargs))
         try:
-            await self._source("schedule", self._tick_schedules, now)
-            await self._source("repair deadline", self._tick_repair_stages, now)
-            await self._source("candidate CI", self._tick_candidate_ci, now)
-            await self._source("integration intent", self._tick_intents, now)
-            if self._cleanup_handler is not None:
-                await self._source("integration cleanup", self._tick_cleanup, now)
-            if self._drain_handler is not None:
-                await self._source("integration drain", self._drain_handler, now)
-            await self._source("integration outbox", self._outbox.dispatch_due, now)
+            done, _pending = await asyncio.wait((task,), timeout=budget)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        if done:
+            return task.result()
+        task.cancel()
+        try:
+            await asyncio.wait((task,), timeout=CANCEL_GRACE_SECONDS)
         finally:
-            self._tick_lock.release()
+            if task.done():
+                self._settle_abandoned(name, task)
+            else:
+                self._unwinding.setdefault(name, set()).add(task)
+                task.add_done_callback(
+                    lambda done_task: self._settle_abandoned(name, done_task)
+                )
+        raise _CallTimedOut(budget)
 
-    async def _tick_schedules(self, now: float) -> None:
-        rows = await self._page(
-            "schedules",
-            self._db.due_integration_schedule_page,
-            lambda row: (row["next_due_at"], row["project_id"]),
-            now=now,
-        )
-        for row in rows:
-            await self._isolated(
-                "schedule",
-                row,
-                self._scheduler.mark_due,
-                row["project_id"],
-                now,
-                "periodic",
+    def _settle_abandoned(self, name: str, task: asyncio.Task[Any]) -> None:
+        """Retrieve a timed-out callback's end so it is reported, not leaked."""
+        tasks = self._unwinding.get(name)
+        if tasks is not None:
+            tasks.discard(task)
+            if not tasks:
+                self._unwinding.pop(name, None)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(
+                "integration %s callback failed while unwinding its timeout: %r",
+                name,
+                exc,
             )
 
-    async def _tick_repair_stages(self, now: float) -> None:
-        rows = await self._page(
-            "repair_stages",
-            self._db.due_integration_repair_stage_page,
-            lambda row: (row["deadline_at"], row["operation_id"], row["stage"]),
-            now=now,
-        )
-        for row in rows:
-            await self._isolated(
-                "repair deadline",
-                row,
-                self._repair.expire,
-                row["operation_id"],
-                int(row["stage"]),
-                now=now,
-            )
-
-    async def _tick_candidate_ci(self, now: float) -> None:
-        rows = await self._page(
-            "candidate_ci",
-            self._db.pending_candidate_ci_page,
-            lambda row: (row["updated_at"], row["batch_id"], row["revision"]),
-        )
-        await self._run_optional("candidate CI", rows, self._candidate_ci_handler, now)
-
-    async def _tick_intents(self, now: float) -> None:
-        rows = await self._page(
-            "intents",
-            self._db.unresolved_integration_intent_page,
-            lambda row: (row["updated_at"], row["id"]),
-        )
-        await self._run_optional(
-            "integration intent", rows, self._unresolved_intent_handler, now
-        )
-
-    async def _tick_cleanup(self, now: float) -> None:
-        rows = await self._page(
-            "cleanup",
-            self._db.pending_integration_cleanup_page,
-            lambda row: (row["next_attempt_at"], row["batch_id"], row["domain_key"]),
-            now=now,
-        )
-        await self._run_optional("integration cleanup", rows, self._cleanup_handler, now)
-
-    async def _page(
-        self,
-        source: str,
-        selector: Callable[..., Awaitable[list[dict[str, Any]]]],
-        cursor_for: Callable[[dict[str, Any]], tuple[Any, ...]],
-        **kwargs: Any,
-    ) -> list[dict[str, Any]]:
-        after = self._cursors[source]
-        rows = await selector(after=after, limit=self._page_size, **kwargs)
-        if not rows and after is not None:
-            self._cursors[source] = None
-            rows = await selector(after=None, limit=self._page_size, **kwargs)
-        if rows:
-            # Fairness state advances on what was scanned, before any handler can
-            # decline, fail, or leave the durable row intentionally untouched.
-            self._cursors[source] = cursor_for(rows[-1])
-        return rows
-
-    @staticmethod
-    async def _source(name: str, callback: Callable, *args, **kwargs) -> Any:
+    async def _source(self, name: str, callback: Callable, *args, **kwargs) -> Any:
+        if self._still_unwinding(name):
+            return None
+        started = self._clock()
         try:
-            return await callback(*args, **kwargs)
+            return await self._bounded(
+                name, self._source_budget(name), callback, *args, **kwargs
+            )
         except asyncio.CancelledError:
             raise
+        except _CallTimedOut as exc:
+            logger.warning(
+                "integration source=%s exceeded its %.0fs budget; cancelled, later sources "
+                "continue and its work remains retryable",
+                name,
+                exc.budget,
+            )
+            return None
         except Exception:
             logger.exception("integration %s source failed and remains retryable", name)
             return None
-
-    async def _run_optional(
-        self,
-        name: str,
-        rows: list[dict[str, Any]],
-        handler: IntegrationHandler | None,
-        now: float,
-    ) -> None:
-        for row in rows:
-            if handler is None:
-                logger.warning("%s remains pending: later-phase handler is unavailable", name)
-                continue
-            await self._isolated(name, row, handler, row, now)
-
-    @staticmethod
-    async def _isolated(name: str, row: dict[str, Any], callback: Callable, *args, **kwargs):
-        try:
-            return await callback(*args, **kwargs)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("integration %s item failed and remains retryable: %s", name, row)
-            return None
+        finally:
+            elapsed = self._clock() - started
+            if elapsed > self._interval_seconds:
+                logger.warning(
+                    "integration slow source=%s elapsed=%.3fs", name, elapsed
+                )
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._stop_event.clear()
+        if self._train is not None and hasattr(self._train, "set_wake_callback"):
+            self._train.set_wake_callback(self._wake_event.set)
+        if self._train is not None and self._bus is not None:
+            self._unsubscribers = [self._bus.subscribe(event, self._on_readiness)
+                                   for event in READINESS_EVENTS]
         self._task = asyncio.create_task(
             self._run(), name="integration-reconciliation-service"
         )
 
+    async def _on_readiness(self, event) -> None:
+        project_id = event.get("project_id")
+        if project_id:
+            self._train.wake(project_id, event.get("repository_id"))
+            self._wake_event.set()
+
     async def stop(self) -> None:
         task = self._task
-        if task is None:
-            return
         self._stop_event.set()
-        await task
+        self._wake_event.set()
+        for unsubscribe in self._unsubscribers:
+            unsubscribe()
+        self._unsubscribers.clear()
+        if self._train is not None and hasattr(self._train, "set_wake_callback"):
+            self._train.set_wake_callback(None)
+        if self._subject_runtime is not None:
+            await self._subject_runtime.stop()
+        if self._parent_subject_runtime is not None:
+            await self._parent_subject_runtime.stop()
+        if self._development_subject_runtime is not None:
+            await self._development_subject_runtime.stop()
+        if self._train is not None:
+            await self._train.stop()
+        if self._reconciliation_task is not None:
+            self._reconciliation_task.cancel()
+            await asyncio.gather(self._reconciliation_task, return_exceptions=True)
+            self._reconciliation_task = None
+        # Timed-out calls that ignored cancellation once get one more request;
+        # they are not awaited, so a stuck one cannot hold shutdown either.
+        for abandoned in [late for tasks in self._unwinding.values() for late in tasks]:
+            abandoned.cancel()
+        if task is not None:
+            await task
         self._task = None
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
+            self._wake_event.clear()
             try:
-                await self.tick(self._clock())
+                await self.tick(self._clock(), background=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("unexpected integration reconciliation tick failure")
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=self._interval_seconds
+                    self._wake_event.wait(), timeout=self._interval_seconds
                 )
             except TimeoutError:
                 pass

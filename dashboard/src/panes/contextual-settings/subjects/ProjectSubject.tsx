@@ -1,14 +1,25 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { CheckIcon, ArrowUturnLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useNavigate } from "react-router-dom";
-import { useProfiles, useProject, useEditProject } from "../../../api/hooks";
+import { useProject, useEditProject } from "../../../api/hooks";
 import {
   type FormState,
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
-  dedupeProfileOptions,
+  supervisorEnabledPayload,
 } from "../../../pages/project/Config";
+import GitIdentitySection from "../../../pages/project/GitIdentitySection";
+import ProjectSupervisorToggle from "../../../pages/project/ProjectSupervisorToggle";
+import {
+  type GitIdentityFieldErrors,
+  type GitIdentityFormFields,
+  GIT_IDENTITY_SECTION_HINT,
+  gitIdentityErrors,
+  gitIdentityPayload,
+  gitIdentitySaveError,
+  hasGitIdentityErrors,
+} from "../../../pages/project/gitIdentity";
 import { Section, Field } from "../../../components/profile/FormSection";
 import { useDirtyForm } from "../useDirtyForm";
 import { fullSettingsRoute } from "../fullSettingsRoute";
@@ -20,11 +31,13 @@ type Args = Extract<ContextualSettingsArgs, { subject: "project" }>;
 export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>) {
   const navigate = useNavigate();
   const { data: project, isLoading, error } = useProject(args.subjectId);
-  const { data: profiles } = useProfiles();
   const editProject = useEditProject();
   const { value: form, setValue: setForm, dirty, resetBaseline } = useDirtyForm<FormState>(
     projectToForm(project ?? {}),
   );
+  const [identityServerErrors, setIdentityServerErrors] = useState<GitIdentityFieldErrors>({});
+  const identityClientErrors = gitIdentityErrors(form);
+  const identityInvalid = hasGitIdentityErrors(identityClientErrors);
 
   useEffect(() => {
     if (project) resetBaseline(projectToForm(project));
@@ -34,28 +47,47 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
   }, [project]);
 
   const save = async () => {
-    if (!project) return;
-    await editProject.mutateAsync({
-      project_id: project.id,
-      name: form.name.trim() || null,
-      repo_default_branch: form.repo_default_branch.trim() || null,
-      default_profile_id: form.default_profile_id.trim() || null,
-      max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
-      credit_weight: parseOptionalFloat(form.credit_weight),
-      budget_limit: parseOptionalFloat(form.budget_limit),
-      discord_channel_id: form.discord_channel_id.trim() || null,
-    });
+    if (!project || identityInvalid) return;
+    setIdentityServerErrors({});
+    const identity = gitIdentityPayload(projectToForm(project), form);
+    try {
+      await editProject.mutateAsync({
+        project_id: project.id,
+        name: form.name.trim() || null,
+        repo_default_branch: form.repo_default_branch.trim() || null,
+        max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
+        credit_weight: parseOptionalFloat(form.credit_weight),
+        budget_limit: parseOptionalFloat(form.budget_limit),
+        ...supervisorEnabledPayload(project, form),
+        ...identity,
+      });
+    } catch (err) {
+      // The mutation's own error state renders below; an identity refusal
+      // is shown on its field instead.
+      const identityError = "git_identity_name" in identity ? gitIdentitySaveError(err) : null;
+      if (identityError) setIdentityServerErrors(identityError);
+      return;
+    }
     resetBaseline(form);
   };
 
   useEffect(() => {
     setToolbar([
-      { id: "save", label: "Save", icon: CheckIcon, onClick: save, disabled: !dirty || editProject.isPending },
+      {
+        id: "save",
+        label: "Save",
+        icon: CheckIcon,
+        onClick: save,
+        disabled: !dirty || editProject.isPending || identityInvalid,
+      },
       {
         id: "discard",
         label: "Discard changes",
         icon: ArrowUturnLeftIcon,
-        onClick: () => project && resetBaseline(projectToForm(project)),
+        onClick: () => {
+          setIdentityServerErrors({});
+          if (project) resetBaseline(projectToForm(project));
+        },
         disabled: !dirty,
       },
       {
@@ -72,9 +104,15 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
   if (error) return <p className="text-sm text-red-400">{(error as Error).message}</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
 
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+  const changeIdentity = (next: GitIdentityFormFields) => {
+    setIdentityServerErrors({});
+    setForm((prev) => ({ ...prev, ...next }));
+  };
+  const identityRefused = Boolean(
+    identityServerErrors.name || identityServerErrors.email || identityServerErrors.general,
+  );
 
   return (
     <div className="space-y-6 text-sm">
@@ -102,20 +140,10 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
       </Section>
 
       <Section title="Scheduling">
-        <Field label="Default profile">
-          <select
-            aria-label="Default profile"
-            value={form.default_profile_id}
-            onChange={(e) => set("default_profile_id", e.target.value)}
-            className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-gray-200 focus:border-indigo-500 focus:outline-none"
-          >
-            <option value="">— inherit / none —</option>
-            {profileOptions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.id})
-              </option>
-            ))}
-          </select>
+        <Field label="Router">
+          <span className="font-mono text-xs text-gray-400">
+            {project.assignment_playbook_id ?? "—"}
+          </span>
         </Field>
         <Field label="Max concurrent agents">
           <input
@@ -128,6 +156,11 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
           />
         </Field>
       </Section>
+
+      <ProjectSupervisorToggle
+        enabled={form.supervisor_enabled}
+        onChange={(enabled) => set("supervisor_enabled", enabled)}
+      />
 
       <Section title="Budget">
         <Field label="Credit weight">
@@ -155,19 +188,17 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
         </Field>
       </Section>
 
-      <Section title="Discord">
-        <Field label="Channel id">
-          <input
-            aria-label="Channel id"
-            value={form.discord_channel_id}
-            onChange={(e) => set("discord_channel_id", e.target.value)}
-            placeholder="(channel id)"
-            className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-gray-200 focus:border-indigo-500 focus:outline-none"
-          />
-        </Field>
+      <Section title="Git commit identity" hint={GIT_IDENTITY_SECTION_HINT}>
+        <GitIdentitySection
+          identity={project.git_identity}
+          value={form}
+          onChange={changeIdentity}
+          editing
+          errors={{ ...identityServerErrors, ...identityClientErrors }}
+        />
       </Section>
 
-      {editProject.isError && (
+      {editProject.isError && !identityRefused && (
         <p className="text-sm text-red-400">
           {(editProject.error as Error)?.message ?? "Save failed."}
         </p>

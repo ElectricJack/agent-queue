@@ -19,12 +19,15 @@ import {
   useRestartTask,
   useSkipTask,
   useReopenWithFeedback,
-  useDeleteTask,
   useProvideInput,
 } from "../api/hooks";
 import { sendChatMessage } from "../api/chat";
 import Modal from "./Modal";
+import DeleteTaskModal from "./DeleteTaskModal";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
+import { canFocusTerminal } from "./terminalFocus";
+import { useTerminalLinkMode } from "./terminalLinks";
+import { focusSessionHref } from "../pages/focus/routes";
 import { workspaceHref } from "../shell/projectNavigation";
 
 interface TaskActionsProps {
@@ -43,16 +46,15 @@ const SUPERVISOR_THREAD = "dashboard:global";
 export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal }: TaskActionsProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const terminalMode = useTerminalLinkMode();
   const [modal, setModal] = useState<ModalType>(null);
   const [textInput, setTextInput] = useState("");
-
   const stopTask = useStopTask();
   const pauseTask = usePauseTask();
   const resumeTask = useResumeTask();
   const restartTask = useRestartTask();
   const skipTask = useSkipTask();
   const reopenWithFeedback = useReopenWithFeedback();
-  const deleteTask = useDeleteTask();
   const provideInput = useProvideInput();
 
   // "Why is this blocked?" — ask the global supervisor in its own chat thread
@@ -68,7 +70,12 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         sessionAddress: SUPERVISOR_SESSION,
         threadId: SUPERVISOR_THREAD,
       });
-      navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: { agentSelection: "replace" } });
+      // Focus routes watch the supervisor's session instead of attaching on /agents.
+      if (terminalMode === "watch") navigate(focusSessionHref(SUPERVISOR_SESSION));
+      else navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: {
+        agentSelection: "replace",
+        ...(canFocusTerminal() ? { terminalFocus: SUPERVISOR_SESSION } : {}),
+      } });
     } catch (err) {
       setAskError(err instanceof Error ? err : new Error(String(err)));
     } finally {
@@ -83,7 +90,6 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     skipTask.isPending ||
     reopenWithFeedback.isPending ||
     asking ||
-    deleteTask.isPending ||
     provideInput.isPending;
 
   const s = task.status?.toUpperCase() ?? "";
@@ -93,23 +99,16 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     setModal(type);
   };
 
-  const closeModal = () => setModal(null);
+  const closeModal = () => {
+    setModal(null);
+  };
 
   const handleSubmitModal = () => {
     if (modal === "reopen") {
       reopenWithFeedback.mutate({ task_id: task.id, feedback: textInput }, { onSuccess: closeModal });
     } else if (modal === "answer") {
       provideInput.mutate({ task_id: task.id, input: textInput }, { onSuccess: closeModal });
-    } else if (modal === "delete") {
-      deleteTask.mutate(
-        { task_id: task.id, cascade: true },
-        { onSuccess: () => {
-          closeModal();
-          onDeleted?.();
-          const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
-          if (destination !== location.pathname + location.search) navigate(destination);
-        } },
-      );
+
     }
   };
 
@@ -119,7 +118,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       icon: <PauseIcon className="h-3.5 w-3.5" />,
       onClick: () => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); },
       variant: "primary",
-      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT"].includes(s),
+      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "WAITING", "HIBERNATED", "RESUME_PENDING"].includes(s),
     },
     {
       label: resumeTask.isPending ? "Resuming…" : "Resume",
@@ -175,7 +174,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       icon: <TrashIcon className="h-3.5 w-3.5" />,
       onClick: () => openModal("delete"),
       variant: "danger",
-      show: s !== "IN_PROGRESS",
+      show: true,
     },
   ];
 
@@ -218,6 +217,11 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         </p>}
       </section>
 
+      {modal === "delete" && <DeleteTaskModal task={task} onClose={closeModal} onDeleted={() => {
+        onDeleted?.();
+        const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks-knowledge");
+        if (destination !== location.pathname + location.search) navigate(destination);
+      }} />}
       <Modal open={modal !== null && modal !== "delete"} onClose={closeModal} title={modalTitles[modal ?? ""] ?? ""}>
         <div className="space-y-4">
           <textarea
@@ -250,33 +254,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         </div>
       </Modal>
 
-      <Modal open={modal === "delete"} onClose={closeModal} title="Delete Task">
-        <div className="space-y-4">
-          <p className="text-sm text-gray-300">
-            Delete <strong>{task.title}</strong> and any descendant tasks? This cannot be undone.
-          </p>
-          {deleteTask.isError && (
-            <p role="alert" className="text-sm text-red-300">
-              Could not delete task. {deleteTask.error.message}
-            </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={closeModal}
-              className="rounded-md border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSubmitModal}
-              disabled={isPending}
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
-            >
-              {isPending ? "Deleting..." : "Delete task and descendants"}
-            </button>
-          </div>
-        </div>
-      </Modal>
+
     </>
   );
 }

@@ -6,7 +6,7 @@ Covers ``docs/specs/implementation/trust-and-ops.md`` §8 rows 2 and 3.
 from __future__ import annotations
 
 import asyncio
-import os
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,6 +22,98 @@ from src.doctor.models import (
     Severity,
 )
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
+from tests.db_fixtures import lease_dsn
+
+
+async def _legacy_proposal(handler, *, source=None):
+    from tests.test_task_batch_commands import _implementation_graph, _ingest_assignment
+
+    path, _, decision = await _ingest_assignment(handler)
+    graph = _implementation_graph(path, decision)
+    if source:
+        graph["source"] = source
+    proposal = await handler.execute("task_batch_propose", graph)
+    assert proposal["success"], proposal
+    return proposal["proposal_id"], decision
+
+
+async def test_ingestion_doctor_inventory_and_adoption(command_handler_factory):
+    from src.database.queries.proposal_queries import get_proposal
+    from tests.test_fidelity_review import _holds
+
+    h = await command_handler_factory()
+    proposal_id, _ = await _legacy_proposal(h)
+    context = DoctorContext(config=h.config, db=h.db, handler=h)
+    registry = default_registry()
+    legacy = registry.get("ingestion.legacy_proposals")
+    held = registry.get("ingestion.held_batches")
+    assert (await legacy.run(context)).data["proposals"][0]["id"] == proposal_id
+    assert (await held.run(context)).data["legacy_proposals"] == [proposal_id]
+    fixed = await legacy.fix(context)
+    assert fixed.fix_applied and fixed.data["adopted"] == [proposal_id], fixed
+    assert not fixed.data["errors"]
+    row = await get_proposal(h.db, proposal_id)
+    assert row["status"] == "held"
+    assert row["payload"]["legacy_proposal"]["source"] == row["source"]
+    task_ids = row["payload"]["receipt"]["task_ids"]
+    assert task_ids and await _holds(h, task_ids) == {proposal_id}
+    finding = await held.run(context)
+    assert finding.data["missing_reviewers"] == [proposal_id]
+    assert finding.data["batches"][0]["structure_revision"] == 1
+    again = await h.execute("spec_ingest_legacy_adopt", {"proposal_id": proposal_id})
+    assert again["replayed"] and again["task_ids"] == task_ids
+
+
+@pytest.mark.parametrize("reason", ["leave_gated", "pending_gate", "unapproved", "wrong_source"])
+async def test_legacy_adoption_preserves_gates_and_requires_approval(command_handler_factory, reason):
+    from src.database.queries.proposal_queries import get_proposal
+
+    h = await command_handler_factory()
+    source = "spec:unapproved.md" if reason in {"unapproved", "wrong_source"} else None
+    proposal_id, decision = await _legacy_proposal(h, source=source)
+    before = await get_proposal(h.db, proposal_id)
+    args = {"proposal_id": proposal_id}
+    if reason == "pending_gate":
+        gate = await h.execute("gate_create", {
+            "project_id": "p1", "gate_type": "human", "title": "Review legacy proposal",
+            "await_id": proposal_id,
+        })
+        assert gate["success"], gate
+    elif reason == "leave_gated":
+        args["leave_gated"] = True
+    elif reason == "wrong_source":
+        args["decision_id"] = decision["decision_id"]
+    result = await h.execute("spec_ingest_legacy_adopt", args)
+    if reason in {"leave_gated", "pending_gate"}:
+        assert result["success"] and result["left_gated"], result
+    else:
+        assert not result["success"], result
+    after = await get_proposal(h.db, proposal_id)
+    assert after == before
+    context = DoctorContext(config=h.config, db=h.db, handler=h)
+    assert not (await default_registry().get("ingestion.held_batches").run(context)).data["batches"]
+
+
+async def test_ingestion_doctor_stale_receipt_and_failed_reviewer(command_handler_factory):
+    from sqlalchemy import update
+    from src.database.tables import ingest_batches, tasks
+    from tests.test_fidelity_review import _record, _review_request
+
+    h = await command_handler_factory()
+    batch, scope, args = await _review_request(h)
+    assert (await _record(h, scope, args))["passing"]
+    async with h.db.immediate() as conn:
+        reviewer_id = (await h.db.get_session(scope.session_id)).task_id
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch["batch_id"],
+        ).values(structure_revision=2))
+        await conn.execute(update(tasks).where(tasks.c.id == reviewer_id).values(status="FAILED"))
+    context = DoctorContext(config=h.config, db=h.db, handler=h)
+    result = await default_registry().get("ingestion.held_batches").run(context)
+    assert result.severity is Severity.WARN
+    assert result.data["stale_receipts"] == [batch["batch_id"]]
+    assert result.data["missing_reviewers"] == [batch["batch_id"]]
+    assert result.data["exhausted_reviewers"] == [batch["batch_id"]]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,6 +133,48 @@ def _fake(check_id: str, severity=Severity.OK, *, fix=None, timeout_s=5.0, delay
 def ctx(tmp_path):
     config = AppConfig(data_dir=str(tmp_path))
     return DoctorContext(config=config, db=None, handler=None)
+
+
+@pytest.mark.parametrize("material", [None, "bad", "eA==", "valid"])
+async def test_private_value_key_diagnostic(ctx, monkeypatch, material):
+    import base64
+
+    variable = "AQ_DOCTOR_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": variable}
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        monkeypatch.setenv(variable, encoded)
+    check = default_registry().get("playbooks.private_value_key")
+
+    result = await check.run(ctx)
+
+    assert result.severity is (Severity.OK if material == "valid" else Severity.ERROR)
+    assert check.fix is None
+    if material != "valid":
+        assert "private_storage_key_unavailable" in result.detail
+        assert "Restore the original key" in result.detail
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+async def test_private_value_key_diagnostic_uses_live_service(ctx, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+
+    from src.playbooks.private_values import PrivateValueService
+
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": "AQ_DOCTOR_TEST_PRIVATE_KEY"}
+    monkeypatch.setenv("AQ_DOCTOR_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    ctx.db = SimpleNamespace(playbook_private_values=lambda: PrivateValueService(object()))
+    check = default_registry().get("playbooks.private_value_key")
+    assert (await check.run(ctx)).severity is Severity.ERROR
+    ctx.config.playbooks.enabled = False
+    assert (await check.run(ctx)).severity is Severity.INFO
 
 
 # ---------------------------------------------------------------------------
@@ -71,39 +205,70 @@ class TestRegistry:
         assert reg.unregister("x.y") is False
 
     def test_default_registry_has_all_builtins(self):
+        from src.doctor.ask_checks import ask_checks
         from src.doctor.capability_checks import capability_checks
+        from src.doctor.dashboard_server_checks import dashboard_server_checks
+        from src.doctor.dashboard_state_checks import dashboard_state_checks
         from src.doctor.db_checks import db_checks
+        from src.doctor.discord_config_checks import discord_config_checks
+        from src.doctor.escalation_checks import escalation_checks
         from src.doctor.formula_checks import formula_checks
+        from src.doctor.git_checks import git_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
+        from src.doctor.ingestion_checks import ingestion_checks
         from src.doctor.integration_checks import integration_checks
         from src.doctor.intelligence_class_checks import intelligence_class_checks
+        from src.doctor.perf_checks import perf_checks
         from src.doctor.playbook_v2_checks import playbook_v2_checks
         from src.doctor.pool_checks import pool_checks
-        from src.doctor.project_checks import project_checks
         from src.doctor.profile_checks import profile_checks
+        from src.doctor.project_checks import project_checks
+        from src.doctor.provider_checks import provider_checks
+        from src.doctor.record_checks import record_checks
         from src.doctor.resource_checks import resource_checks
+        from src.doctor.review_checks import review_checks
+        from src.doctor.routing_checks import routing_checks
+        from src.doctor.service_checks import service_checks
         from src.doctor.session_checks import session_checks
+        from src.doctor.skill_checks import skill_checks
+        from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
+        from src.doctor.wait_checks import wait_checks
 
         reg = default_registry()
         expected = (
             {c.id for c in builtin_checks()}
+            | {c.id for c in ask_checks()}
             | {c.id for c in hierarchy_checks()}
+            | {c.id for c in ingestion_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in task_checks()}
             | {c.id for c in formula_checks()}
             | {c.id for c in intelligence_class_checks()}
+            | {c.id for c in skill_checks()}
+            | {c.id for c in stall_checks()}
             | {c.id for c in resource_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
+            | {c.id for c in git_checks()}
             | {c.id for c in capability_checks()}
             | {c.id for c in workspace_checks()}
             | {c.id for c in profile_checks()}
             | {c.id for c in db_checks()}
+            | {c.id for c in dashboard_state_checks()}
+            | {c.id for c in dashboard_server_checks()}
+            | {c.id for c in discord_config_checks()}
             | {c.id for c in playbook_v2_checks()}
+            | {c.id for c in perf_checks()}
             | {c.id for c in project_checks()}
-            | {c.id for c in session_checks()}
+            | {c.id for c in provider_checks()}
+            | {c.id for c in review_checks()}
+            | {c.id for c in escalation_checks()}
+            | {c.id for c in routing_checks()}
+            | {c.id for c in service_checks()}
+            | {c.id for c in record_checks()}
+            | {c.id for c in wait_checks()}
         )
         assert set(reg.ids()) == expected
 
@@ -378,8 +543,8 @@ class TestBuiltinCatalog:
             "vault.parse",
             "harness.binaries",
             "harness.drift",
-            "db.wal_size",
             "logs.llm_size",
+            "logs.llm_repeated_playbook_calls",
             "tasks.stuck",
             "pauses.active",
             "events.registry",
@@ -389,7 +554,7 @@ class TestBuiltinCatalog:
     def test_fixable_set_matches_design(self):
         """Only the enumerated checks may declare a fix (design §5.4)."""
         fixable = {c.id for c in builtin_checks() if c.fix is not None}
-        assert fixable == {"db.wal_size", "logs.llm_size", "harness.drift"}
+        assert fixable == {"logs.llm_size", "harness.drift"}
 
     async def test_all_builtins_survive_a_bare_context(self, ctx):
         """No built-in may crash when the DB / handler are absent."""
@@ -419,7 +584,7 @@ class TestConfigParseCheck:
         path.write_text(
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
-            f"database:\n  url: {d}/aq.db\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
             "discord:\n  bot_token: t-1\n  guild_id: '1'\n",
             encoding="utf-8",
         )
@@ -435,7 +600,7 @@ class TestDbChecks:
     async def test_connect_ok_on_real_db(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -453,7 +618,7 @@ class TestDbChecks:
     async def test_migrations_at_head_on_fresh_db(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -469,8 +634,9 @@ class TestDbChecks:
         from sqlalchemy import text
 
         from src.database import Database
+        from tests.pg_dsn import create_scratch_database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(await create_scratch_database("doctor_behind"))
         await db.initialize()
         try:
             async with db._engine.begin() as conn:
@@ -484,57 +650,8 @@ class TestDbChecks:
         finally:
             await db.close()
 
-    async def test_wal_size_ok_below_threshold(self, tmp_path):
-        from src.database import Database
-
-        path = str(tmp_path / "t.db")
-        db = Database(path)
-        await db.initialize()
-        try:
-            config = AppConfig(data_dir=str(tmp_path))
-            ctx = DoctorContext(config=config, db=db, handler=None)
-            result = await _run_single("db.wal_size", ctx)
-            assert result.severity is Severity.OK
-        finally:
-            await db.close()
-
-    async def test_wal_size_warns_above_threshold_and_fix_truncates(self, tmp_path):
-        from src.database import Database
-        from src.models import Project
-
-        path = str(tmp_path / "t.db")
-        db = Database(path)
-        await db.initialize()
-        try:
-            # Generate WAL content, then set the threshold to 0 MB so any WAL warns.
-            for i in range(50):
-                await db.create_project(Project(id=f"p-{i}", name=f"n{i}"))
-            config = AppConfig(data_dir=str(tmp_path))
-            config.security.wal_warn_mb = 1
-            ctx = DoctorContext(config=config, db=db, handler=None)
-
-            check = _get_check("db.wal_size")
-            if not os.path.exists(f"{path}-wal"):
-                pytest.skip("no WAL file produced on this platform")
-
-            # The fix must be idempotent: run it twice, both times clean.
-            first = await check.fix(ctx)
-            assert first.severity is Severity.OK
-            second = await check.fix(ctx)
-            assert second.severity is Severity.OK
-            after = await check.run(ctx)
-            assert after.severity is Severity.OK
-        finally:
-            await db.close()
-
-    async def test_wal_size_info_on_postgres(self, tmp_path):
-        config = AppConfig(data_dir=str(tmp_path))
-        # ``backend`` is inferred from the URL scheme, not settable directly.
-        config.database.url = "postgresql://u:p@localhost:5432/aq"
-        result = await _run_single(
-            "db.wal_size", DoctorContext(config=config, db=None, handler=None)
-        )
-        assert result.severity is Severity.INFO
+    def test_sqlite_wal_check_is_not_registered(self):
+        assert "db.wal_size" not in {check.id for check in builtin_checks()}
 
 
 class TestVaultParseCheck:
@@ -589,7 +706,10 @@ class TestHarnessDriftCheck:
             "SHIPPED_HARNESS_HASHES",
             {
                 "fake.md": frozenset(
-                    {hashlib.sha256(v1.encode()).hexdigest(), hashlib.sha256(v2.encode()).hexdigest()}
+                    {
+                        hashlib.sha256(v1.encode()).hexdigest(),
+                        hashlib.sha256(v2.encode()).hexdigest(),
+                    }
                 )
             },
         )
@@ -652,7 +772,7 @@ class TestHarnessDriftCheck:
     async def test_edited_copy_with_parse_warning_is_warn(self, fake_manifest):
         # An unknown Config key is the parser's cheapest warning.
         custom = (
-            '---\nid: fake\n---\n\n## Config\n\n```json\n'
+            "---\nid: fake\n---\n\n## Config\n\n```json\n"
             '{"command": "my-fake", "not_a_key": 1}\n```\n'
         )
         fake_manifest["copy"].write_text(custom, encoding="utf-8")
@@ -739,6 +859,53 @@ class TestLogsLlmSizeCheck:
         assert second.data["removed"] == 0
         assert (base / recent).exists()
         assert (await check.run(ctx)).severity is Severity.OK
+
+
+class TestRepeatedPlaybookLlmCallsCheck:
+    @staticmethod
+    def _write_calls(base, calls):
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        directory = base / "logs" / "llm" / day
+        directory.mkdir(parents=True)
+        with (directory / "llm.jsonl").open("w", encoding="utf-8") as handle:
+            for call in calls:
+                handle.write(json.dumps(call) + "\n")
+
+    @staticmethod
+    def _call(content="same task"):
+        return {
+            "timestamp": "2026-09-16T00:00:00Z",
+            "caller": "playbook:default-assignment-routing:route-task--choose",
+            "model": "gemini-2.5-flash",
+            "provider": "GoogleProvider",
+            "prompt_fingerprint": "same-template",
+            "input": {
+                "system": "choose a class",
+                "messages": [{"role": "user", "content": content}],
+                "tools": [],
+                "max_tokens": 4096,
+            },
+        }
+
+    async def test_warns_for_repeated_exact_request_from_one_step(self, tmp_path):
+        self._write_calls(tmp_path, [self._call(), self._call(), self._call()])
+        ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=None, handler=None)
+
+        result = await _run_single("logs.llm_repeated_playbook_calls", ctx)
+
+        assert result.severity is Severity.WARN
+        assert result.data["repeated"][0]["caller"].endswith("route-task--choose")
+        assert result.data["repeated"][0]["count"] == 3
+        assert "same task" not in repr(result.data)
+
+    async def test_same_template_for_distinct_prompts_is_not_a_repeat(self, tmp_path):
+        self._write_calls(tmp_path, [self._call("first task"), self._call("second task"), self._call("third task")])
+        ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=None, handler=None)
+
+        result = await _run_single("logs.llm_repeated_playbook_calls", ctx)
+
+        assert result.severity is Severity.OK
+        assert result.data["repeated"] == []
 
 
 class TestPausesActiveCheck:
@@ -849,7 +1016,7 @@ class TestFixIdempotency:
     async def test_double_run_on_pristine_state(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -934,6 +1101,53 @@ class TestPluginRegistration:
 
 
 class TestCliExitCodes:
+    @pytest.mark.parametrize("checks", [[], ["--check", "db.connect"],
+                                        ["--check", "db.alembic_orphan", "--check", "db.connect"]])
+    def test_offline_requires_only_the_orphan_check(self, checks):
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        result = CliRunner().invoke(cli, ["doctor", "--offline", *checks])
+        assert result.exit_code == 2
+        assert "--offline requires --check db.alembic_orphan exclusively" in result.output
+
+    @pytest.mark.parametrize("scope,token", [("worker", ""), ("cli", "agent-token")])
+    def test_offline_refuses_agent_sessions_before_loading_config(self, monkeypatch, scope, token):
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: scope)
+        monkeypatch.setenv("AQ_API_TOKEN", token)
+        monkeypatch.setattr("src.cli.db._load_config", lambda: pytest.fail("must refuse first"))
+        result = CliRunner().invoke(cli, ["doctor", "--offline", "--check", "db.alembic_orphan"])
+        assert result.exit_code == 4
+        assert "local operator workflow" in " ".join(result.output.split())
+
+    def test_offline_connection_failure_is_not_healthy_and_disposes_engine(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        engine = MagicMock()
+        engine.connect.return_value.__aenter__.side_effect = RuntimeError("database unreachable")
+        engine.dispose = AsyncMock()
+        monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: "cli")
+        monkeypatch.delenv("AQ_API_TOKEN", raising=False)
+        monkeypatch.setattr("src.cli.db._load_config", lambda: SimpleNamespace())
+        monkeypatch.setattr("src.cli.db._make_engine", lambda config: (engine, "scratch"))
+        result = CliRunner().invoke(
+            cli, ["doctor", "--offline", "--check", "db.alembic_orphan", "--json"]
+        )
+        assert result.exit_code == 3, result.output
+        assert json.loads(result.output)["error"]["code"] == "doctor_failed"
+        engine.dispose.assert_awaited_once()
+
     @pytest.mark.parametrize("exit_code", [0, 1, 2])
     def test_doctor_exits_with_runner_code(self, exit_code, monkeypatch):
         from click.testing import CliRunner

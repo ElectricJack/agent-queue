@@ -1,0 +1,272 @@
+"""Composing the engine's steps with the platform adapter for this host.
+
+``aq install`` runs one registry.  Which steps are in it depends on where it is
+running: the engine's admission and prerequisite checks are true everywhere,
+and everything that knows how to *change* a host belongs to that host's
+adapter.
+
+Two things make the composition worth its own module rather than a branch
+inside the CLI:
+
+* **Order.**  A platform adapter installs the very prerequisites the engine
+  then checks, so ``prereq.git``/``prereq.tmux`` must run *after* the adapter's
+  provisioning step — expressed as a real dependency, not as a registration
+  accident.
+* **Lookup.**  A formula Homebrew just installed is in ``<prefix>/bin``, which
+  is on the next shell's ``PATH`` and not on this process's, so the macOS host
+  hands every command check a prefix-aware ``which``.
+
+An unsupported host still composes: the engine refuses it before any step runs,
+and ``--list-steps`` on a machine that is not a supported host prints the
+engine's own steps rather than nothing.
+"""
+
+from __future__ import annotations
+
+import shutil
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from .command import CommandRunner as ProcessRunner
+from .graft import WorkspaceLister, daemon_workspaces, graft_steps
+from .logins import CommandRunner as ProviderRunner
+from .logins import login_steps
+from .macos import (
+    DEFAULT_PREFIXES,
+    STEP_PYTHON_RUNTIME,
+    brew_aware_which,
+    macos_steps,
+)
+from .macos import STEP_PACKAGES as STEP_BREW_PACKAGES
+from .onboarding import (
+    STEP_DAEMON,
+    HttpProbe,
+    IdentityProbe,
+    _read_config,
+    api_base_url,
+    config_path_for,
+)
+from .onboarding import onboarding_steps as default_onboarding_steps
+from .platform import (
+    HOST_MACOS_ARM,
+    HOST_MACOS_INTEL,
+    HOST_WSL2,
+    SupportVerdict,
+    describe_host,
+)
+from .postgres_steps import STEP_CONNECTION as STEP_POSTGRES_CONNECTION
+from .postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE
+from .postgres_steps import postgres_steps
+from .prerequisites import (
+    STEP_DATA_DIR,
+    STEP_HOST,
+    data_directory_step,
+    git_step,
+    host_step,
+    python_step,
+    tmux_step,
+)
+from .providers import provider_installers, provider_steps, user_bin_aware_which
+from .state import default_state_dir
+from .steps import StepRegistry, StepSpec
+from .wsl import STEP_PACKAGES as STEP_APT_PACKAGES
+from .wsl import wsl_steps
+
+#: Host paths this build has a platform adapter for.
+MACOS_HOSTS = frozenset({HOST_MACOS_ARM, HOST_MACOS_INTEL})
+WSL_HOSTS = frozenset({HOST_WSL2})
+
+#: The adapter step that provisions ``prereq.git``/``prereq.tmux`` on each host
+#: path, so the engine's checks can depend on it by id rather than by platform
+#: branch.  A host path missing from here simply has nothing provisioning them.
+PACKAGE_STEP_BY_HOST: Mapping[str, str] = {
+    **{host: STEP_BREW_PACKAGES for host in MACOS_HOSTS},
+    **{host: STEP_APT_PACKAGES for host in WSL_HOSTS},
+}
+
+
+def platform_steps(
+    support: SupportVerdict,
+    **kwargs: Any,
+) -> tuple[StepSpec, ...]:
+    """The adapter steps for *support*'s host path, or ``()`` when there is none."""
+    if support.host_path in MACOS_HOSTS:
+        return macos_steps(**kwargs)
+    if support.host_path in WSL_HOSTS:
+        return wsl_steps(**kwargs)
+    return ()
+
+
+def build_registry(
+    support: SupportVerdict | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    state_dir: Path | None = None,
+    prefixes: Mapping[str, Path] | None = None,
+    database_steps: Iterable[StepSpec] | None = None,
+    onboarding_steps: Iterable[StepSpec] | None = None,
+    provider_runner: ProviderRunner | None = None,
+    daemon_runner: ProcessRunner | None = None,
+    http_probe: HttpProbe | None = None,
+    dashboard_identify: IdentityProbe | None = None,
+    dashboard_root: Path | None = None,
+    graft_runner: ProcessRunner | None = None,
+    graft_workspaces: WorkspaceLister | None = None,
+    **adapter_kwargs: Any,
+) -> StepRegistry:
+    """Build the full step registry for the host described by *support*.
+
+    ``database_steps`` and ``onboarding_steps`` replace those groups, which is
+    what lets a suite about one adapter compose the registry without dragging
+    in the others: a macOS test has no PostgreSQL and therefore no
+    configuration a daemon could load.
+
+    ``dashboard_root`` names the checkout the dashboard is built from (``None``
+    finds this installer's own); a directory that is not a checkout composes a
+    release-shaped install with nothing to build.
+
+    ``provider_runner``, ``daemon_runner``, ``http_probe``,
+    ``dashboard_identify``, ``graft_runner`` and ``graft_workspaces`` replace
+    something smaller: the seams through which the *default* provider, login,
+    onboarding and graft steps reach the host — a subprocess, ``aq start``, an
+    HTTP probe, the dashboard server's ``/__aq/health`` identity, and the
+    daemon's list of project workspaces.  Handing those in keeps the
+    composition itself real (the same steps, the same ids, the same
+    cross-adapter dependencies this function computes) while a whole-installer
+    test drives it on a machine that has no provider CLI, no daemon and no
+    network.  Replacing the step groups instead would mean asserting against
+    wiring the test wrote itself.
+    """
+    verdict = support or describe_host(environ=environ)
+    macos = verdict.host_path in MACOS_HOSTS
+    # The prefix-aware lookup has to know the *same* prefixes the adapter uses,
+    # or the engine's command checks would miss what Homebrew just installed.
+    lookup = (
+        brew_aware_which(which, list(dict(prefixes or DEFAULT_PREFIXES).values()))
+        if macos
+        else which
+    )
+
+    registry = StepRegistry((host_step(),))
+    registry.extend(
+        platform_steps(
+            verdict,
+            environ=environ,
+            which=lookup,
+            **({"prefixes": prefixes} if macos else {}),
+            **adapter_kwargs,
+        )
+    )
+
+    # On macOS the platform adapter has already said something specific about
+    # the interpreter and has installed the prerequisites, so the engine's
+    # generic checks run after it and revalidate its work.
+    python_after = (STEP_HOST, STEP_PYTHON_RUNTIME) if macos else (STEP_HOST,)
+    # Both supported hosts install Git and tmux in the same run (``macos.packages``
+    # with Homebrew, ``wsl.packages`` with apt) and then check them.  Naming that
+    # step as the provisioner is what keeps a dry run — which executes no
+    # mutating step — from failing at the check and hiding the rest of the plan.
+    package_step = PACKAGE_STEP_BY_HOST.get(verdict.host_path)
+    command_after = (STEP_HOST, package_step) if package_step else (STEP_HOST,)
+    provisioned_by = (package_step,) if package_step else ()
+    registry.extend(
+        (
+            python_step(depends_on=python_after),
+            git_step(which=lookup, depends_on=command_after, provisioned_by=provisioned_by),
+            tmux_step(which=lookup, depends_on=command_after, provisioned_by=provisioned_by),
+            data_directory_step(environ=environ, path=state_dir),
+        )
+    )
+    # PostgreSQL's macOS package plan uses Homebrew.  Make that dependency
+    # explicit so a selected managed database cannot race the macOS bootstrap.
+    postgres_adapter_steps = (
+        tuple(database_steps)
+        if database_steps is not None
+        else postgres_steps(
+            environ=environ,
+            which=lookup or shutil.which,
+            state_dir=state_dir,
+        )
+    )
+    if macos:
+        postgres_adapter_steps = tuple(
+            replace(step, depends_on=(STEP_HOST, STEP_BREW_PACKAGES))
+            if step.id == STEP_POSTGRES_PACKAGE
+            else step
+            for step in postgres_adapter_steps
+        )
+    registry.extend(postgres_adapter_steps)
+    # Provider adapters remain part of every CLI registry.  They are
+    # capability-gated, so this preserves the normal install's behavior while
+    # allowing a platform adapter to order the prerequisites they rely on.
+    installers = provider_installers()
+    process = {} if provider_runner is None else {"runner": provider_runner}
+    # ``lookup`` is None on a host with no platform adapter, and the provider
+    # steps take a callable rather than defaulting a None away: without the
+    # fallback here, `aq install --with provider.claude` on WSL2 reported a
+    # TypeError from the probe instead of "claude is not on PATH".
+    #
+    # Provider CLIs also need the *user* bin directories their own installers
+    # write into: claude.ai/install.sh links into ~/.local/bin, which is on the
+    # next login shell's PATH and not necessarily on this process's.
+    provider_lookup = user_bin_aware_which(lookup or shutil.which)
+    registry.extend(provider_steps(which=provider_lookup, **process))
+    registry.extend(
+        login_steps(
+            environ=environ,
+            which=provider_lookup,
+            installers=installers,
+            **process,
+        )
+    )
+    # The onboarding steps close the newcomer's path: a configuration with
+    # defaults for this box, a daemon that answers and the dashboard URL.  The
+    # daemon needs a database and a configuration that names it, so when the
+    # PostgreSQL adapter is present the dependency is stated rather than left
+    # to registration order — the engine's topological sort interleaves
+    # independent branches, and a daemon started before the credential was
+    # written would fail for a reason nobody could read.
+    onboarding_after = (
+        (STEP_POSTGRES_CONNECTION,) if STEP_POSTGRES_CONNECTION in registry else (STEP_DATA_DIR,)
+    )
+    registry.extend(
+        tuple(onboarding_steps)
+        if onboarding_steps is not None
+        else default_onboarding_steps(
+            environ=environ,
+            home=state_dir,
+            runner=daemon_runner,
+            which=lookup or shutil.which,
+            probe=http_probe,
+            identify=dashboard_identify,
+            depends_on=onboarding_after,
+            dashboard_root=dashboard_root,
+        )
+    )
+    # graft (`--with graft`, offered by the wizard) is optional and advisory:
+    # its steps never change the outcome.  The checkout step asks the daemon
+    # which projects exist, so it runs once the daemon is up.
+    data_dir = state_dir or default_state_dir(environ)
+    registry.extend(
+        graft_steps(
+            which=provider_lookup,
+            **({} if graft_runner is None else {"runner": graft_runner}),
+            list_workspaces=graft_workspaces
+            or (
+                lambda: daemon_workspaces(
+                    api_base_url(_read_config(config_path_for(environ, data_dir)), environ),
+                    environ=environ,
+                )
+            ),
+            vault=data_dir / "vault",
+            environ=environ,
+            repos_after=(STEP_DAEMON,) if STEP_DAEMON in registry else (),
+        )
+    )
+    return registry
+
+
+__all__ = ["MACOS_HOSTS", "build_registry", "platform_steps"]

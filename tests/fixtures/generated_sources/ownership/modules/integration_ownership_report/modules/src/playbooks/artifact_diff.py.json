@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/playbooks/artifact_diff.py::_rule_rows": {
+      "baseline_span": [
+        81,
+        144
+      ],
+      "landing_span": [
+        81,
+        144
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

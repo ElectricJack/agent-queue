@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/waits/adapters/base.py::foreign": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
+    "src/waits/adapters/base.py::invalid": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
+    "src/waits/adapters/base.py::row": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
+    "src/waits/adapters/base.py::unresolved": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority."
+  }
+}

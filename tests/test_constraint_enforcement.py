@@ -13,7 +13,7 @@ background task.
 import pytest
 from unittest.mock import AsyncMock
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     Agent,
     Project,
@@ -23,6 +23,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.scheduler import AssignAction
+from tests.db_fixtures import lease_dsn
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ from src.scheduler import AssignAction
 async def orch(tmp_path):
     """Create a minimal orchestrator with an in-memory DB for testing."""
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )

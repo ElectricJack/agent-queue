@@ -3,11 +3,21 @@
 Manages the agent-queue daemon process using PID file tracking and
 signal-based shutdown, replicating the logic from ``run.sh`` in Python
 so the CLI is fully self-contained.
+
+The dashboard server (docs/specs/dashboard-server.md §1) rides along: when a
+verified bundle is installed, ``aq start`` starts it once the daemon answers,
+``aq stop`` stops it before the daemon, and ``aq restart`` restarts both.  The
+process itself is :mod:`src.dashboard_server.process`; the CLI glue is in
+:mod:`src.cli.dashboard`.  A source checkout with no bundle keeps the
+interactive offer to launch the Vite dev server instead.
 """
 
 from __future__ import annotations
 
+import gzip
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -16,18 +26,51 @@ from pathlib import Path
 
 import click
 
-from .app import cli, console
+from src.daemon_state import (
+    LOCK_ABANDONED,
+    LOCK_HELD,
+    STOP_INTENT_FILENAME,
+    STOPPED_EXIT_CODE,
+    StopIntent,
+    acquire_start_lock,
+    clear_stop_intent,
+    configured_database_endpoint,
+    database_reachable,
+    find_daemon_pid,
+    read_daemon_pid,
+    read_stop_intent,
+    record_stop_intent,
+    release_start_lock,
+    start_lock_owner,
+    start_lock_state,
+)
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
+from src.sessions.env import (
+    AQ_MARKER_KEYS,
+    DAEMON_ENV_STRIP_KEYS,
+    DB_ISOLATION_KEYS,
+)
+
+from .app import cli, console
 
 CONFIG_DIR = os.path.expanduser("~/.agent-queue")
+BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
+MAX_LOG_SIZE_BYTES: int = 256 * 1024 * 1024
+MAX_ROTATED_GENS: int = 3
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
 LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 
-DASHBOARD_PORT = 5173  # Vite default; matches dashboard/vite.config.ts
+#: The Vite dev server a source checkout runs (dashboard/vite.config.ts).  The
+#: dashboard *server*'s port is configuration -- ``dashboard.server.port``.
+DASHBOARD_PORT = 5173
 DASHBOARD_PID_FILE = os.path.join(CONFIG_DIR, "dashboard.pid")
 DASHBOARD_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard.log")
+#: The managed dashboard server.  Its own names, not Vite's: an older release's
+#: ``dashboard.pid`` is a Vite process and must never be mistaken for it.
+DASHBOARD_SERVER_PID_FILE = os.path.join(CONFIG_DIR, "dashboard-server.pid")
+DASHBOARD_SERVER_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard-server.log")
 
 
 # ---------------------------------------------------------------------------
@@ -35,41 +78,112 @@ DASHBOARD_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard.log")
 # ---------------------------------------------------------------------------
 
 
-def _read_pid() -> int | None:
-    """Read and validate the PID from the PID file."""
-    if not os.path.exists(PID_FILE):
-        return None
+def _stop_intent_path() -> str:
+    """``daemon.stopped`` beside the PID file (:mod:`src.daemon_state`)."""
+    return os.path.join(CONFIG_DIR, STOP_INTENT_FILENAME)
+
+
+class StartHeld(Exception):
+    """A deliberate stop is recorded, so this start must not spawn a daemon."""
+
+    def __init__(self, intent: StopIntent, *, during: bool) -> None:
+        self.intent = intent
+        self.during = during
+        when = "while this start was running" if during else "before this start"
+        super().__init__(
+            f"the daemon was stopped on purpose by {intent.by} {when}; not starting it"
+        )
+
+
+#: ``aq update`` holds this (``src.install.update.LOCK_NAME``) for the whole
+#: update; the watchdog's start must not spawn a daemon in the middle of it.
+UPDATE_LOCK_NAME = "update.lock"
+#: An update lock older than this no longer holds a start back.
+UPDATE_LOCK_STALE_AFTER = 7200.0
+
+
+def _update_in_progress() -> StopIntent | None:
+    """An ``aq update`` holding its lock, as the stop it amounts to."""
     try:
-        pid = int(open(PID_FILE).read().strip())
-    except (ValueError, OSError):
-        return None
-    # Check if process is actually running
-    try:
-        os.kill(pid, 0)
-        return pid
+        since = os.stat(os.path.join(CONFIG_DIR, UPDATE_LOCK_NAME)).st_mtime
     except OSError:
-        # Stale PID file
-        os.remove(PID_FILE)
         return None
+    if time.time() - since > UPDATE_LOCK_STALE_AFTER:
+        return None
+    return StopIntent(by="aq update (in progress)", at=since)
+
+
+def _held_for(*, unless_stopped: bool) -> StopIntent | None:
+    """What forbids spawning a daemon right now, if anything.
+
+    A recorded stop always does.  The watchdog's start (``unless_stopped``)
+    also yields to an ``aq update``: the update decided the daemon was down,
+    so it will neither stop what the watchdog starts nor restart it on the
+    new code.
+    """
+    intent = read_stop_intent(path=_stop_intent_path())
+    if intent is None and unless_stopped:
+        intent = _update_in_progress()
+    return intent
+
+
+#: How long ``aq stop`` waits for a start that is already running to either
+#: give up (it sees the stop) or finish spawning (so the stop can find it).
+#: Correctness does not hang on it: a start still short of its last check
+#: when the wait ends sees the recorded stop there and does not spawn.
+START_SETTLE_SECONDS = 45.0
+
+#: Busy installs can take longer than 30 seconds to finish initialization.
+#: Keep the health wait bounded independently of post-start readiness checks.
+DAEMON_START_TIMEOUT_SECONDS = 120.0
+#: Bound both diagnostic I/O and Rich formatting, even for one huge log line.
+LOG_TAIL_MAX_BYTES = 64 * 1024
+
+
+def _read_pid() -> int | None:
+    """Read and validate the PID from the PID file.
+
+    A PID file naming a dead process -- or, after a reboot, a live process that
+    is not the daemon -- is stale and removed (:func:`src.daemon_state.read_daemon_pid`).
+    """
+    return read_daemon_pid(PID_FILE, CONFIG_PATH)
 
 
 def _find_daemon_pid() -> int | None:
     """Find a running daemon PID via PID file or pgrep fallback."""
-    pid = _read_pid()
-    if pid:
-        return pid
-    # Fallback: search for process
+    return find_daemon_pid(PID_FILE, CONFIG_PATH)
+
+
+def _remove_launched_pid_file(pid: int) -> None:
+    """Remove our child's PID file without deleting a successor's record."""
     try:
-        result = subprocess.run(
-            ["pgrep", "-f", f"agent-queue.*{CONFIG_PATH}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
-    except (FileNotFoundError, ValueError):
+        if Path(PID_FILE).read_text(encoding="utf-8").strip() == str(pid):
+            os.remove(PID_FILE)
+    except OSError:
         pass
-    return None
+
+
+def _startup_health_ok(proc: subprocess.Popen, api_base: str, *, timeout: float = 1) -> bool:
+    """Accept healthy/degraded responses only while our launched child is alive."""
+    import urllib.error
+    import urllib.request
+
+    if proc.poll() is not None:
+        return False
+    try:
+        with urllib.request.urlopen(f"{api_base}/health", timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        exc.close()
+    except (urllib.error.URLError, OSError):
+        return False
+    # A response from another listener must not hide our child's startup exit.
+    if proc.poll() is not None:
+        return False
+    if status == 503:
+        console.print("[yellow]Daemon is running with degraded health; run aq doctor.[/]")
+    return status in (200, 503)
 
 
 def _resolve_agent_queue_bin() -> str:
@@ -174,8 +288,7 @@ def _ensure_docker_postgres() -> bool:
     compose_file = _find_compose_file()
     if not compose_file:
         console.print(
-            "[bold red]Error:[/] docker-compose.yml not found. "
-            "Cannot auto-start PostgreSQL."
+            "[bold red]Error:[/] docker-compose.yml not found. Cannot auto-start PostgreSQL."
         )
         return False
 
@@ -194,8 +307,29 @@ def _ensure_docker_postgres() -> bool:
     if not _is_container_running("aq-postgres"):
         console.print("[dim]Starting PostgreSQL container...[/]")
         try:
+            inspection = subprocess.run(
+                ["docker", "container", "inspect", "aq-postgres"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if inspection.returncode == 0:
+                command = ["docker", "start", "aq-postgres"]
+            elif any(
+                f"no such {kind}: aq-postgres" in inspection.stderr.lower()
+                for kind in ("container", "object")
+            ):
+                command = [
+                    "docker", "compose", "-f", compose_file,
+                    "up", "-d", "--no-recreate", "postgres",
+                ]
+            else:
+                console.print("[bold red]Error:[/] Could not inspect PostgreSQL container")
+                if inspection.stderr:
+                    console.print(f"[dim]{inspection.stderr.strip()}[/]")
+                return False
             result = subprocess.run(
-                ["docker", "compose", "-f", compose_file, "up", "-d", "postgres"],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -215,9 +349,16 @@ def _ensure_docker_postgres() -> bool:
         try:
             result = subprocess.run(
                 [
-                    "docker", "compose", "-f", compose_file,
-                    "exec", "-T", "postgres",
-                    "pg_isready", "-U", "agent_queue",
+                    "docker",
+                    "compose",
+                    "-f",
+                    compose_file,
+                    "exec",
+                    "-T",
+                    "postgres",
+                    "pg_isready",
+                    "-U",
+                    "agent_queue",
                 ],
                 capture_output=True,
                 timeout=5,
@@ -246,6 +387,120 @@ def _config_uses_postgres() -> bool:
     return False
 
 
+def _configured_database_endpoint() -> tuple[str, int] | None:
+    """The host and port of the configured database, or ``None`` if unreadable.
+
+    Read from the raw YAML rather than through ``load_config``: this runs
+    before the daemon and must not depend on the whole configuration being
+    valid, and it deliberately never looks at the password.
+    """
+    return configured_database_endpoint(CONFIG_PATH)
+
+
+def _database_reachable() -> bool:
+    """True when something is already listening where the configuration points.
+
+    A PostgreSQL that `aq install` provisioned — or any server the operator
+    already runs — is the normal case, and it has nothing to do with Docker.
+    Probing first is what keeps `aq start` from demanding a compose file on a
+    machine that has a perfectly good database.
+    """
+    return database_reachable(CONFIG_PATH)
+
+
+def _database_matches_compose(compose_file: str) -> bool:
+    """Only auto-start a service proven to publish the configured database.
+
+    Unresolved compose interpolation or unsupported port syntax is not proof:
+    leave those installations to the operator rather than start another server.
+    Load the effective config so environment/profile overlays cannot accidentally
+    authorize starting the development service for an external database.
+    """
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    import yaml
+
+    from src.config import ConfigValidationError, load_config
+
+    try:
+        url = urlsplit(load_config(CONFIG_PATH).database.url)
+        if not url.hostname:
+            return False
+        if set(parse_qs(url.query, keep_blank_values=True)) & {
+            "host", "port", "database", "dbname", "service",
+        }:
+            return False
+        with open(compose_file, encoding="utf-8") as handle:
+            compose = yaml.safe_load(handle)
+        service = compose["services"]["postgres"]
+        environment = service.get("environment", {})
+        if isinstance(environment, list):
+            environment = dict(item.split("=", 1) for item in environment if "=" in item)
+        database = environment.get("POSTGRES_DB")
+        if (not isinstance(database, str) or not database or "$" in database
+                or unquote(url.path.removeprefix("/")) != database):
+            return False
+        host = (url.hostname or "localhost").lower()
+        port = url.port or 5432
+        loopback = {"localhost", "127.0.0.1", "::1"}
+        for publication in service.get("ports", []):
+            if isinstance(publication, dict):
+                if publication.get("protocol", "tcp") != "tcp":
+                    continue
+                bound = str(publication.get("host_ip", "0.0.0.0")).strip("[]").lower()
+                published = str(publication.get("published", ""))
+                target = str(publication.get("target", ""))
+            else:
+                match = re.fullmatch(
+                    r"(?:(\[[^\]]+\]|[^:]+):)?(\d+):(\d+)(?:/tcp)?", str(publication)
+                )
+                if not match:
+                    continue
+                bound, published, target = match.groups()
+                bound = (bound or "0.0.0.0").strip("[]").lower()
+            if not published.isdecimal() or target != "5432" or int(published) != port:
+                continue
+            # Wildcard publications are reachable locally, not at an arbitrary
+            # remote host with the same port. Explicit addresses must match.
+            if bound in {"0.0.0.0", "::"}:
+                if host in loopback:
+                    return True
+            elif host == bound or (host == "localhost" and bound in loopback):
+                return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError,
+            ConfigValidationError, yaml.YAMLError):
+        return False
+    return False
+
+
+def _ensure_database() -> bool:
+    """Make sure the configured database answers before the daemon is started.
+
+    Three cases, in the order they are true on real machines:
+
+    1. Something is already listening — the installed or operator-run server.
+       Nothing else to do.
+    2. Nothing is listening and the configured endpoint matches the compose
+       service's host, published port and database — start that container.
+    3. Nothing is listening and compose does not match — say so, and name the
+       command that installs or repairs one. AQ is PostgreSQL-only, so a
+       missing server is the whole problem, not a missing Docker.
+    """
+    if _database_reachable():
+        return True
+    compose_file = _find_compose_file()
+    if compose_file and _database_matches_compose(compose_file):
+        return _ensure_docker_postgres()
+    endpoint = _configured_database_endpoint()
+    where = f"{endpoint[0]}:{endpoint[1]}" if endpoint else "the configured address"
+    console.print(
+        f"[bold red]Error:[/] no PostgreSQL server is answering at {where}.\n"
+        "[dim]Start the server you configured, or run `aq install` to install and "
+        "configure one (`aq install --with postgres-managed`).[/]"
+    )
+    return False
+
+
 def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
     """Build a stable daemon environment for non-login shell launches."""
     env = os.environ.copy()
@@ -265,21 +520,195 @@ def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
             path_parts.append(candidate)
     env["PATH"] = os.pathsep.join(path_parts)
     strip_harness_session_markers(env)
+    # Every marker a harness or worker session may have set must die here,
+    # not just the narrow per-session block.  The session/DB keys that leak
+    # AQ_DB_SCOPE, AQ_DATABASE_URL and AGENT_QUEUE_DB into the daemon are the
+    # 2026-09-21 incident, so they are part of the default strip set.
+    for key in set(AQ_MARKER_KEYS) | set(DB_ISOLATION_KEYS) | set(DAEMON_ENV_STRIP_KEYS):
+        env.pop(key, None)
     return env
 
 
 def _warn_harness_environment(command: str) -> None:
     """Explain that a daemon launched from a harness will be sanitized."""
-    markers = harness_session_markers(os.environ)
+    markers = sorted(
+        set(harness_session_markers(os.environ))
+        .union(AQ_MARKER_KEYS, DB_ISOLATION_KEYS, DAEMON_ENV_STRIP_KEYS)
+        .intersection(os.environ)
+    )
     if markers:
         console.print(
-            f"[yellow]aq {command} detected enclosing harness marker(s): "
+            f"[yellow]aq {command} detected enclosing harness marker(s) and/or AQ session marker(s): "
             f"{', '.join(markers)}. The daemon will be launched with them removed.[/]"
         )
 
 
-def start_daemon() -> bool:
-    """Start the daemon. Returns True on success."""
+def _is_worker_session_environment() -> bool:
+    """Whether this environment belongs to a worker that cannot manage AQ."""
+    return os.environ.get("AQ_SESSION_KIND") in {"pool", "task"} or (
+        os.environ.get("AQ_DB_SCOPE") == "worker" and bool(os.environ.get("AQ_SESSION_ID"))
+    )
+
+
+def _refuse_worker_daemon_management() -> None:
+    """Stop workers before a lifecycle command can change operator state."""
+    if _is_worker_session_environment():
+        console.print(
+            "[bold red]Refused:[/] a worker must never manage the operator's daemon; "
+            "report the need to the operator instead."
+        )
+        raise SystemExit(10)
+
+
+def _database_is_at_head() -> bool:
+    """Whether the stamped schema matches this checkout's Alembic head.
+
+    Fail-safe: an unreachable database, a missing table, or any other check
+    error returns ``False`` — that is the safe side, because the caller then
+    backs the database up rather than skipping it.  Mirrors ``aq db current``.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        from .db import _head_revisions, _load_config, _make_engine
+
+        async def _main() -> list[str]:
+            config = _load_config()
+            engine, _url = _make_engine(config)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text("SELECT version_num FROM alembic_version"))
+                    return sorted(row[0] for row in result.fetchall())
+            except SQLAlchemyError:
+                return []  # no alembic_version table — unstamped
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(_main()) == _head_revisions()
+    except Exception:  # noqa: BLE001 — fail-safe: a check error must read as "not at head"
+        return False
+
+
+def _backup_database() -> None:
+    """Dump the configured Postgres database to BACKUPS_DIR.
+
+    Prefer compatible local PostgreSQL clients and the configured connection,
+    including Homebrew's keg-only clients. Fall back to the running container
+    publishing that endpoint. Both paths write custom archives; failure stops startup.
+    """
+    import asyncio
+    import datetime
+
+    from src.config import load_config
+    from src.database.backup import BackupError, backup_database, postgres_clients
+
+    try:
+        os.makedirs(BACKUPS_DIR, exist_ok=True)
+    except OSError as exc:
+        raise SystemExit(12) from exc
+
+    destination = Path(BACKUPS_DIR) / (
+        f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
+    )
+
+    async def _main() -> None:
+        clients = await postgres_clients(load_config(CONFIG_PATH).database.url)
+        await backup_database(clients, destination)
+
+    try:
+        asyncio.run(_main())
+    except BackupError as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
+        invalid = str(exc).startswith(("restore_format_unsupported", "restore_archive_invalid"))
+        raise SystemExit(15 if invalid else 13) from exc
+    except (OSError, TimeoutError) as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
+        raise SystemExit(14) from exc
+    console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
+
+
+def _post_daemon_checks() -> None:
+    """Finish what the daemon's start left undone: readiness and the pool fix.
+
+    The operator wrapper waited for ``/ready`` (not just ``/health``) and then
+    ran the stale-worktree doctor fix, because a daemon that answers ``/health``
+    is not yet reconciling pools.  Both are now baked into ``aq start`` and
+    ``aq restart`` so the wrapper is unnecessary.
+    """
+    import urllib.error
+    import urllib.request
+
+    from .client import _resolve_api_url
+
+    api_base = _resolve_api_url()
+
+    def _ready_ok() -> bool:
+        try:
+            with urllib.request.urlopen(f"{api_base}/ready", timeout=5) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError:
+            return False
+        except (urllib.error.URLError, OSError):
+            return False
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if _ready_ok():
+            console.print("[green]Daemon is ready.[/]")
+            break
+        time.sleep(1)
+    else:
+        console.print("[yellow]Daemon is up but still not /ready after 60s.[/]")
+
+    # Let the daemon repair the stale worktrees it owns.  Fail-safe: this is a
+    # postcondition, not a gate — a doctor transport error here must never
+    # undo a successful daemon start, so every failure is caught and downgraded.
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "src.cli.app",
+                "doctor",
+                "--check",
+                "pools.stale_worktree_checkouts",
+                "--fix",
+            ],
+            env=_daemon_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 — a post-start failure must never kill the start
+        console.print(f"[dim]Post-start doctor fix skipped: {exc}[/]")
+        return
+    for line in result.stderr.strip().splitlines()[-3:]:
+        console.print(f"[dim]{line}[/]")
+    for line in result.stdout.strip().splitlines()[-3:]:
+        console.print(line)
+
+
+def start_daemon(*, unless_stopped: bool = False) -> bool:
+    """Start the daemon. Returns True on success.
+
+    ``unless_stopped`` is the auto-restart watchdog's start: a recorded stop is
+    respected instead of withdrawn, and :class:`StartHeld` is raised.  An
+    ordinary start withdraws it -- asking for a daemon is the operator's "run
+    it again", and a start that then fails is one the watchdog may retry.
+    Either way a stop recorded *while* this start runs wins: it is checked
+    again just before the daemon is spawned.
+    """
+    if unless_stopped:
+        intent = _held_for(unless_stopped=True)
+        if intent is not None:
+            raise StartHeld(intent, during=False)
+    else:
+        clear_stop_intent(path=_stop_intent_path())
+
     if not os.path.exists(CONFIG_PATH):
         console.print(f"[bold red]Error:[/] Config not found at {CONFIG_PATH}")
         console.print("[dim]Run setup first.[/]")
@@ -290,28 +719,71 @@ def start_daemon() -> bool:
         console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
         return True
 
-    # If PostgreSQL is configured, ensure Docker + container are running
-    if _config_uses_postgres():
-        if not _ensure_docker_postgres():
+    # Acquire the lock before the database work, not after it: waiting for
+    # PostgreSQL and taking a backup can take minutes, and that is exactly the
+    # window in which a second `aq start` -- the auto-restart service's -- used
+    # to pass the "already running" check and race this one.
+    if not acquire_start_lock(LOCK_DIR):
+        owner = start_lock_owner(LOCK_DIR)
+        if start_lock_state(LOCK_DIR) == LOCK_ABANDONED:
+            # The start that held it was killed; its lock proves nothing.
+            release_start_lock(LOCK_DIR, owner=owner)
+        if not acquire_start_lock(LOCK_DIR):
+            console.print(
+                "[bold red]Error:[/] Another start is in progress.\n"
+                f"[dim]If not, remove: rm -rf {LOCK_DIR}[/]"
+            )
             return False
 
-    # Acquire lock
     try:
-        os.makedirs(LOCK_DIR)
-    except FileExistsError:
-        console.print(
-            "[bold red]Error:[/] Another start is in progress.\n"
-            f"[dim]If not, remove: rm -rf {LOCK_DIR}[/]"
-        )
-        return False
+        # Whoever held the lock before us may have started it meanwhile.
+        existing = _find_daemon_pid()
+        if existing:
+            console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
+            return True
 
-    try:
+        # The daemon cannot start without its database. Reach for Docker only
+        # when nothing is listening and the configured endpoint is proven to
+        # match this checkout's compose service.
+        if _config_uses_postgres() and not _ensure_database():
+            return False
+
+        # The operator wrapper backed this up before the restart whenever the
+        # schema was not confirmed at this checkout's head — because a daemon
+        # that then runs its migration is exactly when a bad schema revision
+        # can burn the live database.  Mirror that: back up first when not at
+        # head.
+        if _config_uses_postgres() and not _database_is_at_head():
+            _backup_database()
+
+        # The last moment a stop can still win: `aq stop` records its intent
+        # first and then waits for this lock, so a stop that arrived during the
+        # database wait or the backup is seen here, and one that arrives after
+        # this check finds the PID written a moment later.
+        intent = _held_for(unless_stopped=unless_stopped)
+        if intent is not None:
+            held = StartHeld(intent, during=True)
+            if unless_stopped:
+                raise held
+            # An operator's own start stopped by a later `aq stop`: report it
+            # like any other start that did not happen, for every caller.
+            console.print(f"[yellow]Not started:[/] {held}.")
+            return False
+        existing = _find_daemon_pid()
+        if existing:
+            console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
+            return True
+
         console.print("[bold]Starting agent-queue daemon...[/]")
         bin_path = _resolve_agent_queue_bin()
 
         env = _daemon_environment()
 
         os.makedirs(CONFIG_DIR, exist_ok=True)
+
+        # Rotate daemon.log if it exceeds MAX_LOG_SIZE_BYTES before starting
+        _rotate_if_needed(LOG_PATH)
+
         with open(LOG_PATH, "a") as log_file:
             proc = subprocess.Popen(
                 [bin_path, CONFIG_PATH],
@@ -327,81 +799,64 @@ def start_daemon() -> bool:
         # Wait until the daemon's HTTP /health endpoint responds — replaces the
         # old fixed 5s pid check, which falsely reported success when crashes
         # (e.g. Discord login failure) happened later in async init. See #28.
-        import urllib.error
-        import urllib.request
-
         from .client import _resolve_api_url
 
         api_base = _resolve_api_url()
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECONDS
         ready = False
-        while time.monotonic() < deadline:
-            # Early-crash detect: if the process is gone, surface the log immediately.
-            try:
-                os.kill(proc.pid, 0)
-            except OSError:
+        while (remaining := deadline - time.monotonic()) > 0:
+            # poll() reaps an exited child, including a zombie that kill(pid, 0)
+            # would still report as alive. Keep the handle for PID-reuse fencing.
+            if proc.poll() is not None:
                 console.print("[bold red]Error:[/] Daemon exited during startup:")
                 _tail_log(30)
-                try:
-                    os.remove(PID_FILE)
-                except OSError:
-                    pass
+                _remove_launched_pid_file(proc.pid)
                 return False
-            # Probe /health. 200 = healthy, 503 = degraded but the daemon is up
-            # and serving (e.g. messaging-degraded mode from #29) — both count
-            # as "started successfully" here.
-            try:
-                with urllib.request.urlopen(f"{api_base}/health", timeout=1) as resp:
-                    if resp.status in (200, 503):
-                        ready = True
-                        break
-            except (urllib.error.URLError, OSError):
-                pass  # not yet listening
-            time.sleep(0.5)
+            if _startup_health_ok(proc, api_base, timeout=min(1, remaining)):
+                ready = True
+                break
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
         if not ready:
             console.print(
-                f"[bold red]Error:[/] Daemon process is alive (PID {proc.pid}) but "
-                f"/health didn't respond within 30s. Killing it. Last log lines:"
+                f"[yellow]Daemon (PID {proc.pid}) did not pass /health within "
+                f"{DAEMON_START_TIMEOUT_SECONDS:g}s. Last log lines before rechecking:"
             )
             _tail_log(30)
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-                # Brief grace period, then SIGKILL
-                for _ in range(5):
-                    time.sleep(1)
+            # Reading/printing diagnostics gives async initialization time to
+            # finish. Never act on the health result from before that work.
+            ready = _startup_health_ok(proc, api_base)
+            if not ready:
+                if proc.poll() is None:
+                    console.print("[bold red]Error:[/] Startup health still failed; stopping child.")
                     try:
-                        os.kill(proc.pid, 0)
-                    except OSError:
-                        break
-                else:
-                    try:
-                        os.kill(proc.pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-            except OSError:
-                pass
-            try:
-                os.remove(PID_FILE)
-            except OSError:
-                pass
-            return False
+                        # Popen signals poll again internally before using the
+                        # PID, so an exited/reaped child cannot target PID reuse.
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            if proc.poll() is None:
+                                proc.kill()
+                            proc.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        console.print(f"[bold red]Error stopping startup child:[/] {exc}")
+                if proc.poll() is not None:
+                    _remove_launched_pid_file(proc.pid)
+                return False
 
         console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
+        _post_daemon_checks()
         console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
         return True
     finally:
-        try:
-            os.rmdir(LOCK_DIR)
-        except OSError:
-            pass
+        release_start_lock(LOCK_DIR, owner=os.getpid())
 
 
 #: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
-#: sessions and ``n-<profile>--<project>`` for named ones.  The reconciler
-#: adopts on exactly these two prefixes, so they are also the safe set to
-#: reap — anything else on the socket belongs to someone else.
-_AQ_SESSION_PREFIXES = ("s-", "n-")
+#: sessions, ``n-<profile>--<project>`` for named ones and ``p-`` for pool
+#: workers. Reap these AQ sessions; leave other sessions on the socket alone.
+_AQ_SESSION_PREFIXES = ("s-", "n-", "p-")
 
 
 def _tmux_socket() -> str:
@@ -448,9 +903,7 @@ def stop_agent_sessions(quiet: bool = False) -> int:
         return 0
 
     names = [
-        n.strip()
-        for n in listed.stdout.splitlines()
-        if n.strip().startswith(_AQ_SESSION_PREFIXES)
+        n.strip() for n in listed.stdout.splitlines() if n.strip().startswith(_AQ_SESSION_PREFIXES)
     ]
     stopped = 0
     for name in names:
@@ -473,8 +926,16 @@ def stop_agent_sessions(quiet: bool = False) -> int:
 
 
 def stop_daemon(quiet: bool = False) -> bool:
-    """Stop the daemon. Returns True if it was stopped."""
+    """Stop the daemon. Returns True if it was stopped.
+
+    The stop is recorded first (:mod:`src.daemon_state`), also when no daemon
+    is running: "stop" means "and keep it stopped", so the auto-restart
+    service must not start one until the next ``aq start``.
+    """
+    record_stop_intent("aq stop", path=_stop_intent_path())
     pid = _find_daemon_pid()
+    if not pid and start_lock_state(LOCK_DIR) == LOCK_HELD:
+        pid = _await_start_in_progress(quiet)
     if not pid:
         if not quiet:
             console.print("[dim]Daemon is not running.[/]")
@@ -507,23 +968,51 @@ def stop_daemon(quiet: bool = False) -> bool:
         os.remove(PID_FILE)
     except OSError:
         pass
-    try:
-        os.rmdir(LOCK_DIR)
-    except OSError:
-        pass
+    owner = start_lock_owner(LOCK_DIR)
+    if start_lock_state(LOCK_DIR) == LOCK_ABANDONED:
+        release_start_lock(LOCK_DIR, owner=owner)
     return True
 
 
+def _await_start_in_progress(quiet: bool) -> int | None:
+    """Wait for a running ``aq start`` to give up or to spawn; the PID if it did.
+
+    The stop is already recorded, so a start still waiting for its database or
+    its backup sees it and gives up; one that was past that point spawns within
+    a moment and writes its PID, which is then what this stop stops.
+    """
+    if not quiet:
+        console.print("[dim]A start is in progress; waiting for it to settle...[/]")
+    deadline = time.monotonic() + START_SETTLE_SECONDS
+    while time.monotonic() < deadline:
+        pid = _find_daemon_pid()
+        if pid or start_lock_state(LOCK_DIR) != LOCK_HELD:
+            return pid or _find_daemon_pid()
+        time.sleep(0.5)
+    return _find_daemon_pid()
+
+
 def _tail_log(lines: int = 20) -> None:
-    """Print the last N lines of the daemon log."""
+    """Print at most N lines from a bounded byte tail of the daemon log."""
+    if lines <= 0:
+        return
     if not os.path.exists(LOG_PATH):
         console.print(f"[dim]No log file at {LOG_PATH}[/]")
         return
     try:
-        with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-            for line in all_lines[-lines:]:
-                console.print(line.rstrip())
+        with open(LOG_PATH, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            start = max(0, size - LOG_TAIL_MAX_BYTES)
+            # Read one boundary byte to distinguish a full first line from a
+            # clipped one; the whole read still stays within the byte budget.
+            f.seek(start)
+            tail = f.read(LOG_TAIL_MAX_BYTES)
+        if start > 0:
+            boundary, tail = tail[:1], tail[1:]
+            if boundary != b"\n" and b"\n" in tail:
+                tail = tail.split(b"\n", 1)[1]
+        for line in tail.decode("utf-8", "replace").splitlines()[-lines:]:
+            console.print(line.rstrip(), markup=False, highlight=False)
     except OSError as e:
         console.print(f"[bold red]Error reading log:[/] {e}")
 
@@ -563,9 +1052,7 @@ def _start_dashboard() -> bool:
     """Daemonize ``npm -w dashboard run dev`` and write a PID file. Returns True on success."""
     repo = _repo_root()
     if repo is None:
-        console.print(
-            "[yellow]Cannot locate the agent-queue repo to launch the dashboard.[/]"
-        )
+        console.print("[yellow]Cannot locate the agent-queue repo to launch the dashboard.[/]")
         return False
     if not (repo / "dashboard" / "node_modules").exists():
         console.print(
@@ -625,14 +1112,30 @@ def _start_dashboard() -> bool:
     return True
 
 
+def _bundle_installed() -> bool:
+    from src.dashboard_server.process import bundle_installed
+
+    return bundle_installed()
+
+
 def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
-    """If the dashboard isn't running, prompt the user to launch it."""
+    """If the Vite dev server isn't running, offer to launch it (source checkouts only)."""
     if no_dashboard:
+        return
+    if not sys.stdin.isatty():
+        # There is nobody to ask. `click.confirm` raises Abort at end of input,
+        # which turned a perfectly healthy `aq start` into a failure for every
+        # caller that is not a terminal — a script, a CI job, and `aq install`'s
+        # own daemon step before it learned to pass `--no-dashboard`.
         return
     if _dashboard_running():
         return
     if _repo_root() is None:
         # Not running from a source checkout; nothing to launch.
+        return
+    if _bundle_installed():
+        # `aq install` built the dashboard and the dashboard server serves it;
+        # offering a Vite dev server as well would only confuse.
         return
     console.print("")
     if click.confirm(
@@ -647,14 +1150,73 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
-@cli.command("start")
-@click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
-def daemon_start(no_dashboard: bool) -> None:
-    """Start the agent-queue daemon."""
-    _warn_harness_environment("start")
-    if not start_daemon():
-        raise SystemExit(1)
+_NO_DASHBOARD_HELP = (
+    "Skip the interactive offer to launch the Vite dev server (source checkouts). "
+    "Does not stop the dashboard server from starting; see --no-dashboard-server."
+)
+_NO_DASHBOARD_SERVER_HELP = "Leave the dashboard server alone: manage the daemon only."
+
+
+def _after_daemon_started(*, no_dashboard: bool, no_dashboard_server: bool) -> None:
+    """Bring up the dashboard: the managed server when a bundle exists, else offer Vite.
+
+    ``--no-dashboard`` keeps its historical meaning -- skip the Vite prompt --
+    and deliberately does *not* suppress the dashboard server: an updater runs
+    ``aq start --no-dashboard`` and then expects the dashboard to be served
+    (docs/specs/dashboard-server.md §6.2).  Neither path can block a caller
+    with no terminal: the server start never prompts, and the Vite prompt
+    returns at once without one.
+    """
+    if not no_dashboard_server:
+        from .dashboard import ensure_dashboard_server
+
+        ensure_dashboard_server()
     _maybe_prompt_dashboard(no_dashboard)
+
+
+def _report_held(held: StartHeld) -> None:
+    console.print(f"[yellow]Not started:[/] {held}. [dim]`aq start` resumes it.[/]")
+    raise SystemExit(STOPPED_EXIT_CODE)
+
+
+@cli.command("start")
+@click.option("--no-dashboard", is_flag=True, help=_NO_DASHBOARD_HELP)
+@click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
+@click.option(
+    "--unless-stopped",
+    is_flag=True,
+    hidden=True,
+    help="Respect a recorded `aq stop` instead of withdrawing it (the auto-restart "
+    f"watchdog's start); exits {STOPPED_EXIT_CODE} when one is recorded.",
+)
+@click.pass_context
+def daemon_start(
+    ctx: click.Context, no_dashboard: bool, no_dashboard_server: bool, unless_stopped: bool = False
+) -> None:
+    """Start the agent-queue daemon, then the dashboard server.
+
+    The dashboard server starts once the daemon answers (also when the daemon
+    was already running) if dashboard.server.enabled is true and a verified
+    dashboard bundle is installed.  A dashboard server that fails to start is
+    reported as a warning; the daemon stays up and `aq status` / `aq doctor`
+    show the problem.
+    """
+    from .envelope import reject_json_mode
+
+    _refuse_worker_daemon_management()
+    reject_json_mode(
+        ctx,
+        "aq start",
+        "daemon lifecycle output is subprocess progress and may prompt for the dashboard",
+    )
+    _warn_harness_environment("start")
+    try:
+        started = start_daemon(unless_stopped=True) if unless_stopped else start_daemon()
+    except StartHeld as held:
+        _report_held(held)
+    if not started:
+        raise SystemExit(1)
+    _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)
 
 
 @cli.command("stop")
@@ -663,14 +1225,29 @@ def daemon_start(no_dashboard: bool) -> None:
     is_flag=True,
     help="Leave agent tmux sessions running (they are re-adopted on next start).",
 )
-def daemon_stop(keep_sessions: bool) -> None:
-    """Stop the agent-queue daemon and its agent sessions.
+@click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
+@click.pass_context
+def daemon_stop(ctx: click.Context, keep_sessions: bool, no_dashboard_server: bool) -> None:
+    """Stop the agent-queue daemon, its agent sessions and the dashboard server.
 
     Agent sessions are stopped too: they outlive the daemon by design so a
     *restart* can re-adopt them, but leaving them running after an explicit
     stop means agents working against a dead API with no way to report back.
-    Pass ``--keep-sessions`` to preserve them.
+    Pass ``--keep-sessions`` to preserve them.  The dashboard server is
+    stopped first, with or without ``--keep-sessions``.
     """
+    from .envelope import reject_json_mode
+
+    _refuse_worker_daemon_management()
+    reject_json_mode(
+        ctx,
+        "aq stop",
+        "daemon lifecycle output is local process and tmux progress",
+    )
+    if not no_dashboard_server:
+        from .dashboard import stop_dashboard_server
+
+        stop_dashboard_server()
     stopped = stop_daemon()
     if keep_sessions:
         if stopped:
@@ -681,18 +1258,83 @@ def daemon_stop(keep_sessions: bool) -> None:
     stop_agent_sessions()
 
 
+# ---------------------------------------------------------------------------
+# Rotation helpers
+# ---------------------------------------------------------------------------
+
+
+def _rotate_if_needed(log_path: str) -> None:
+    """Rotate the log file if it exceeds MAX_LOG_SIZE_BYTES."""
+    try:
+        if not os.path.exists(log_path):
+            return
+
+        stat = os.stat(log_path)
+        if stat.st_size <= MAX_LOG_SIZE_BYTES:
+            return
+
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        rotated_path = f"{log_path}.{timestamp}.gz"
+
+        # Stream bytes so a large log needs bounded memory and preserves any
+        # non-UTF-8 subprocess output. Never replace an existing archive or
+        # truncate the active log until compression has finished successfully.
+        with open(log_path, "rb") as source, gzip.open(rotated_path, "xb") as backup:
+            shutil.copyfileobj(source, backup)
+        with open(log_path, "wb"):
+            pass
+
+        _cleanup_old_rotations(log_path)
+    except OSError as e:
+        console.print(f"[dim]Failed to rotate log:[/] {e}")
+
+
+def _cleanup_old_rotations(current_log: str) -> None:
+    """Retain the newest MAX_ROTATED_GENS timestamped archives for this log."""
+    path = Path(current_log)
+    match = re.compile(rf"^{re.escape(path.name)}\.\d{{14}}\.gz$")
+    try:
+        archives = sorted(
+            (entry for entry in path.parent.iterdir() if match.fullmatch(entry.name)),
+            key=lambda entry: entry.name,
+            reverse=True,
+        )
+        for archive in archives[MAX_ROTATED_GENS:]:
+            try:
+                archive.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 @cli.command("restart")
-@click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
-def daemon_restart(no_dashboard: bool) -> None:
-    """Restart the agent-queue daemon.
+@click.option("--no-dashboard", is_flag=True, help=_NO_DASHBOARD_HELP)
+@click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
+@click.pass_context
+def daemon_restart(ctx: click.Context, no_dashboard: bool, no_dashboard_server: bool) -> None:
+    """Restart the agent-queue daemon and the dashboard server.
 
     Agent sessions are deliberately left running — ``sessions.adopt_on_start``
     re-adopts them, so in-flight work survives the restart. Use ``aq stop`` to
-    end them.
+    end them.  Both processes restart, so a changed dashboard.server setting
+    or a rebuilt bundle needs no second command.
     """
+    from .envelope import reject_json_mode
+
+    _refuse_worker_daemon_management()
+    reject_json_mode(
+        ctx,
+        "aq restart",
+        "daemon lifecycle output is subprocess progress and may prompt for the dashboard",
+    )
     _warn_harness_environment("restart")
+    if not no_dashboard_server:
+        from .dashboard import stop_dashboard_server
+
+        stop_dashboard_server(quiet=True)
     stop_daemon(quiet=True)
     time.sleep(1)
     if not start_daemon():
         raise SystemExit(1)
-    _maybe_prompt_dashboard(no_dashboard)
+    _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)

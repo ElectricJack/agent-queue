@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
@@ -40,12 +39,10 @@ def _now() -> float:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "ro.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("ro.db")
     await database.create_project(Project(id="p1", name="ro"))
     yield database
-    await database.close()
 
 
 async def _mkagent(db):
