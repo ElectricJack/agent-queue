@@ -45,8 +45,11 @@ async def runtime(setup, tmp_path):
     orch._command_handler = handler
     scope = dict(kind="session", session_id="s", session_instance_token="token", project_id="p",
                  task_id="owner")
-    return SimpleNamespace(db=setup.db, config=config, handler=handler, service=service,
-                           scope=scope, owner=Scope("p", "task", "owner", "s", "token", 1))
+    try:
+        yield SimpleNamespace(db=setup.db, config=config, handler=handler, service=service,
+                              scope=scope, owner=Scope("p", "task", "owner", "s", "token", 1))
+    finally:
+        await service.lifecycle.stop()
 
 
 async def submit(r, **kwargs):
@@ -124,6 +127,9 @@ async def test_flag_rollback_preserves_atomic_continuation_and_delivers_outcome(
     await finish(r, result["job"])
     assert await r.service.processing_enabled()
     await r.service.tick()
+    # Writer maintenance runs independently of source delivery. Await its
+    # completion before checking the accounting produced by that command.
+    await asyncio.gather(*r.service.lifecycle._hibernate_tasks.values())
     assert (await rows(r, wait_records))[0]["outcome"] == "satisfied"
     persisted = (await rows(r, continuations))[0]
     # The runtime adds usage accounting while retaining the original intent and

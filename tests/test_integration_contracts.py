@@ -12,6 +12,7 @@ from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
     IntegrationRecordRootNoopArgs,
     IntegrationRepairTargetArgs,
+    IntegrationRerequestCheckArgs,
     IntegrationReevaluateRepairArgs,
     IntegrationReverifyEpicArgs,
     IntegrationRestoreTaskOriginArgs,
@@ -47,6 +48,18 @@ DESIGN_EVENTS = {
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
+
+
+@pytest.mark.parametrize("missing", ["expected_candidate_sha", "reason"])
+def test_check_rerequest_apply_requires_exact_head_and_reason(missing):
+    args = dict(batch_id="batch", check_name="unit", dry_run=False,
+                expected_candidate_sha="a" * 40, reason="Phantom check")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRerequestCheckArgs(**args)
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    assert registry.require("integration_rerequest_check") is not None
 
 
 @pytest.mark.parametrize("missing", ["expected_candidate_sha", "expected_target_sha", "reason"])

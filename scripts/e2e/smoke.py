@@ -454,7 +454,11 @@ def session_token(session_id: str) -> str:
 
 
 #: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
-ROLE_PROFILES = frozenset({"triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer"})
+# S4 and S19 deliberately dispatch dedicated stages, outside ordinary worker selection.
+ROLE_PROFILES = frozenset({
+    "triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer", "coding", "planner",
+})
+
 #: Why the operator overrides a route in this kit; the override needs 10-400 chars.
 OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
 
@@ -624,13 +628,16 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
 
     def claim():
         nonlocal last_claim
-        # Fixture assertions need the final ownership result. Let the daemon
-        # await its preparation job within this existing convergence budget.
-        last_claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
-        # READY and routed does not imply available to this single attempt:
-        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
-        # Releasing that lock emits no task.ready event, so retry explicitly.
+        # SKIP LOCKED can skip a READY fixture; releasing its row lock emits
+        # no task.ready event to wake a long poll. Leave time for retries.
+        # Preparation can outlive this short observation; the next call
+        # resumes the session's existing attempt.
+        last_claim = worker.claim_next(wait=1)
         if last_claim.get("result") == "no_ready_work":
+            return None
+        if last_claim.get("result") == "claim_in_progress":
+            check(last_claim.get("task_id") in fixtures,
+                  f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
             return None
         check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
         check(worker.task_id in fixtures,
@@ -1926,15 +1933,17 @@ def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
 
 
 def set_failover_policy_enabled(enabled: bool) -> None:
-    """Keep S16's operator-driven sweeps isolated from the automatic policy."""
-    result = aq(
-        "playbook",
-        "set-enabled",
-        "--playbook-id",
-        FAILOVER_PLAYBOOK,
-        "--enabled" if enabled else "--no-enabled",
-    )
-    check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
+    """Isolate manual sweeps from failover and unavailable-route recovery."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    for playbook in (FAILOVER_PLAYBOOK, project["assignment_playbook_id"]):
+        result = aq(
+            "playbook", "set-enabled", "--playbook-id", playbook,
+            "--enabled" if enabled else "--no-enabled",
+        )
+        check(result.get("enabled") is enabled, f"could not set {playbook}: {result}")
+    if not enabled:
+        # Router readiness is cached until the cascade observes the activation.
+        observe_scheduler_cycles(lambda: None)
 
 
 def wait_for_restored_readiness() -> None:
@@ -2084,9 +2093,11 @@ def _run_failover_phase(state: dict, phase) -> str:
     # shipped provider-failover playbook would otherwise consume S16's state
     # change and move the first task before this scenario can inspect the full
     # held set and exercise the operator's dry-run/live commands itself.
+    # The ready router's unavailable-route recovery would also clear those
+    # deliberately stranded routes, so pause its activation for this phase.
     try:
         set_failover_policy_enabled(False)
-        note("paused the automatic provider-failover playbook for manual sweep coverage")
+        note("paused automatic failover and routing recovery for manual sweep coverage")
         return phase(state)
     finally:
         try:
@@ -2642,8 +2653,7 @@ def s20_train_delivery(state: dict) -> str:
               for record in records), f"S20 provenance does not bind the immutable close: {records}")
     status = aq("integration", "status", project_id)
     check(status["effective_mode"] == "train", f"S20 project is not in train mode: {status}")
-    if status.get("projection_kind") != "train":
-        return "train-mode close retained its source; delivery explicitly untested (git_first needs active)"
+    check(status.get("projection_kind") == "train", f"S20 default engine is not the train: {status}")
 
     def delivered():
         current = aq("integration", "status", project_id, "--control-only")

@@ -120,6 +120,12 @@ async def test_reconciler_reuses_global_worker_without_reprofiling(db):
 
 async def test_reconciler_does_not_reuse_live_session_worker(db):
     await seed_project(db)
+    # The live worker retains /tmp/p1 even when its lock columns are empty.
+    # Supply capacity for another worker so this tests identity reuse.
+    await db.create_workspace(Workspace(
+        id="ws-spare", project_id="p1", workspace_path="/tmp/p1-spare",
+        source_type=RepoSourceType.LINK,
+    ))
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="p1"))
     await db.create_session(session(agent_id="a1", state="running"))
     await AgentReconciler(db).reconcile()
