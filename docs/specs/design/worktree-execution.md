@@ -163,8 +163,11 @@ the owned continuation, rather than the branch currently checked out in the reus
 slot. A saved branch label may differ when the checkpoint explicitly identifies the
 same task and its project identity matches; legacy snapshots without a task identity
 retain the branch-label check. The checkpoint HEAD must be proved reachable
-from the owned branch tip or its proved continuation commit. If the local owned ref
-is absent, use its exact origin ref after an authorized fresh fetch; a checkpoint
+from the owned branch tip or its proved continuation commit. A checkpoint captured
+on the exact owned branch may instead hold newer commits descending from that
+proved task history. Compare the eligible saved HEAD, local owned ref and its exact
+origin ref after an authorized fresh fetch, even when both refs exist;
+keep the newest head related by ancestry, never an older local checkpoint. A checkpoint
 equal to that tip or the base is valid even with no task commits. Related local progress
 is retained, and the saved index and worktree layers are reconciled separately on
 that continuation before any reset. Child preparation uses the child's owned tip
@@ -173,6 +176,13 @@ and conflicting snapshot contents refuse without changing the checkout or snapsh
 An ownership/ancestry refusal names the saved HEAD and snapshot commit, saved branch,
 owned branch and observed tip, proved continuation, and slot HEAD. The slot HEAD is
 diagnostic evidence, never the authority for checkpoint reachability.
+
+Immediately before restoring an owned pause plan, refuse a reset whose target does
+not contain the observed origin tip. Successful authorized worker publication advances
+the task's working checkpoint SHA and generation when the tip changes, invalidating
+prior verification while preserving the immutable filing origin. Repeating the same
+publication is idempotent; delegates and active parent episodes retain their separate
+checkpoint authority.
 
 A manual pause captures only the task's own checkout. A shared slot with no recorded
 task branch is held to `aq/<task_id>`, so a slot still on another task's branch refuses
@@ -276,7 +286,27 @@ preparation attaches to the slot between the preflight and the reset.
 reconcile: it frees a sentinel naming a terminal or missing task when the slot
 holds no task lock, claim file, live claiming session, owner or job pin, and its
 clean HEAD is contained in a remote ref, then emits `worktree.sentinel_cleared`.
-Attached branch disagreement still refuses reset.
+Clean attached slots use the same terminal-or-missing predecessor proof; the
+sentinel remains available for salvage attribution until reset records the new
+assignment. Live sessions, foreign agent locks, owners, pins, dirty trees and
+nonterminal predecessors still refuse branch disagreement. Branch preparation
+records the observed incoming branch before setup, including a contained failure
+after Git switched branches, so retries do not inherit the previous task's sentinel.
+Unproved process cleanup and cancellation retain the existing evidence.
+The explicit CLI control is `aq project workspace-clear-sentinel --workspace-id <id>`.
+
+Contained reset/preflight timeouts and temporary OS contention release the task
+with preparation backoff, quarantine the failing workspace and drain its session,
+allowing another slot to retry automatically. The first two attempts do not set
+`needs_attention=slot_reset_failed` or request supervisor recovery; the third
+exhausts the existing preparation budget. Ownership and cleanup refusals retain
+their existing fences and are never treated as transient reset errors.
+After a pool process has stopped and released its ownership, teardown detaches
+a clean idle slot at its current HEAD under the acquisition fences. The local
+branch and sentinel preserve unpublished progress and attribution; dirty trees,
+new holders, retained owners and job pins prevent this best-effort cleanup.
+Root branch merge conflicts without a stack origin use ordinary preparation
+feedback rather than attempting a stacked-child repair reservation.
 Legacy clones retain their existing branch-cleanup behavior.
 
 Retirement re-reads and locks the registered workspace instead of trusting the
