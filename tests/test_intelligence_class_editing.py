@@ -24,7 +24,7 @@ from src.vault import ensure_default_intelligence_classes
 
 
 @pytest.fixture
-async def handler(tmp_path):
+async def handler(tmp_path, reuse_database):
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"), data_dir=str(tmp_path / "data")
     )
@@ -33,7 +33,8 @@ async def handler(tmp_path):
         config, intelligence_classes=load_intelligence_classes(config.data_dir)
     )
     orch = SimpleNamespace(
-        db=SimpleNamespace(), bus=EventBus(validate_events=False), session_spec_builder=builder
+        db=await reuse_database("class-editing"), bus=EventBus(validate_events=False),
+        session_spec_builder=builder,
     )
     result = CommandHandler(orch, config)
     result.set_active_project(None)
