@@ -1192,7 +1192,7 @@ async def _ingest_assignment(handler, spec_kind="implementation", *, feedback=No
     await handler.db.create_profile(AgentProfile(
         id="spec-ingest", name="Spec Ingest", harness="codex",
         default_class="deep-high", needs_workspace=False,
-        aq_commands=["task_batch_propose", "task_batch_commit", "list_tasks", "approved_spec_packet"],
+        aq_commands=["task_batch_propose", "task_batch_commit", "task_close", "list_tasks", "approved_spec_packet"],
     ))
     if feedback is None:
         decision = await handler.execute("spec_approve", {"project_id": "p1", "spec_path": str(path)})
@@ -1365,6 +1365,151 @@ async def test_design_batch_released_with_server_receipt(handler):
     assert "Jack's explicit sign-off" in child.description
     assert "pending drops block approval and affected implementation work" in child.description
     assert len(await handler.db.list_tasks(project_id="p1")) == 3
+
+
+def _delivered_design_args(scope, decision):
+    return {
+        "project_id": "p1", "source": f"spec:decision:{decision['decision_id']}",
+        "tasks": [], "edges": [], "_scope": asdict(scope),
+        "no_op": {
+            "reason": "All approved goals landed in Phase A; no implementation planning remains.",
+            "delivered_evidence": [
+                "https://github.com/example/aq/pull/1905",
+                "Merged commit " + "a" * 40,
+            ],
+        },
+    }
+
+
+async def test_delivered_design_settles_without_work_and_closes_pass(handler):
+    from sqlalchemy import select
+    from src.asks.operations import get_operation
+    from src.database.tables import ingest_batches, integration_outbox
+
+    _, scope, decision = await _ingest_assignment(handler, "design")
+    args = _delivered_design_args(scope, decision)
+    assert await check_request_scope("task_batch_propose", args, scope, db=handler.db) is None
+    preview = await handler.execute("task_batch_propose", {**args, "dry_run": True})
+    assert preview["success"] and preview["dry_run"], preview
+    async with handler.db.immediate() as conn:
+        assert await get_operation(conn, decision["decision_id"], "materialization") is None
+
+    result = await handler.execute("task_batch_propose", args)
+    assert result["success"] and result["committed"], result
+    assert result["task_ids"] == [] and result["members"] == {}
+    receipt = result["release_receipt"]
+    assert receipt == preview["diff"]["no_op"]
+    assert receipt["kind"] == "already_delivered"
+    assert receipt["decision_id"] == decision["decision_id"]
+    assert receipt["packet_sha256"] == decision["packet_sha256"]
+    assert receipt["spec_kind"] == "design" and receipt["actor"] == scope.task_id
+    assert receipt["reason"] == args["no_op"]["reason"]
+    assert receipt["delivered_evidence"] == args["no_op"]["delivered_evidence"]
+    async with handler.db.immediate() as conn:
+        op = await get_operation(conn, decision["decision_id"], "materialization")
+        assert op["status"] == "succeeded" and op["receipt"] == result
+        assert await get_operation(conn, decision["decision_id"], "fidelity_review.dispatch") is None
+        assert not (await conn.execute(select(ingest_batches))).all()
+        assert not (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type.in_(["batch.held", "batch.released"]),
+        ))).all()
+    assert await _proposal_rows(handler) == []
+    assert [task.id for task in await handler.db.list_tasks(project_id="p1")] == [scope.task_id]
+    assert not [event for event in _emitted(handler) if event[0] == "proposal.ready"]
+
+    # A retry without the settlement (or with replacement evidence) cannot create work.
+    for replay_args in ({key: value for key, value in args.items() if key != "no_op"},
+                        {**args, "no_op": {"reason": "Different", "delivered_evidence": ["other"]}}):
+        replay = await handler.execute("task_batch_propose", replay_args)
+        assert replay == {**result, "already_committed": True}
+    closed = await handler.execute("task_close", {
+        "task_id": scope.task_id, "outcome": "pass", "summary": json.dumps(receipt),
+        "_scope": asdict(scope),
+    })
+    assert closed["success"], closed
+    assert (await handler.db.get_task(scope.task_id)).status == TaskStatus.COMPLETED
+    ensured = await handler.execute("ensure_spec_ingest", {
+        "project_id": "p1", "decision_id": decision["decision_id"],
+        "packet_sha256": decision["packet_sha256"],
+    })
+    assert ensured == {"success": True, "task_id": scope.task_id, "created": False}
+
+
+@pytest.mark.parametrize("invalid", [
+    None, {}, {"reason": "", "delivered_evidence": ["PR #1905"]},
+    {"reason": "Already done", "delivered_evidence": []},
+    {"reason": "Already done", "delivered_evidence": ["  "]},
+    {"reason": "Already done", "delivered_evidence": [1905]},
+    {"reason": "Already done", "delivered_evidence": "PR #1905"},
+    {"reason": "Already done", "delivered_evidence": ["PR #1905"], "extra": True},
+])
+async def test_delivered_design_refuses_missing_reason_or_evidence(handler, invalid):
+    from src.asks.operations import get_operation
+
+    _, scope, decision = await _ingest_assignment(handler, "design")
+    result = await handler.execute("task_batch_propose", {
+        **_delivered_design_args(scope, decision), "no_op": invalid,
+    })
+    assert not result["success"], result
+    assert await _proposal_rows(handler) == []
+    async with handler.db.immediate() as conn:
+        assert await get_operation(conn, decision["decision_id"], "materialization") is None
+
+
+@pytest.mark.parametrize("operation", ["tasks", "edges", "edits", "remove_edges", "comments"])
+async def test_delivered_design_refuses_mixed_changes(handler, operation):
+    _, scope, decision = await _ingest_assignment(handler, "design")
+    result = await handler.execute("task_batch_propose", {
+        **_delivered_design_args(scope, decision), operation: [{"unexpected": "change"}],
+    })
+    assert not result["success"] and "empty change set" in result["error"], result
+    assert await _proposal_rows(handler) == []
+
+
+@pytest.mark.parametrize("authority", ["ordinary", "implementation", "wrong_source", "stopped"])
+async def test_delivered_design_requires_live_matching_design_approval(handler, authority):
+    _, scope, decision = await _ingest_assignment(
+        handler, "implementation" if authority == "implementation" else "design",
+    )
+    args = _delivered_design_args(scope, decision)
+    if authority == "ordinary":
+        args.pop("_scope")
+    elif authority == "wrong_source":
+        args["source"] = "spec:decision:another-decision"
+    elif authority == "stopped":
+        await handler.db.update_session(scope.session_id, state="stopped", desired_state="stopped")
+    result = await handler.execute("task_batch_propose", args)
+    assert not result["success"], result
+    assert await _proposal_rows(handler) == []
+
+
+@pytest.mark.parametrize("completed", [False, True])
+async def test_delivered_design_preserves_feedback_and_completion_evidence(handler, completed):
+    _, scope, decision = await _ingest_assignment(
+        handler, "design", feedback="Optional rollout example", required=False,
+    )
+    args = _delivered_design_args(scope, decision)
+    async with handler.db.immediate() as conn:
+        [obligation] = await handler.db.list_review_feedback_obligations(decision["decision_id"], conn=conn)
+        if completed:
+            await handler.db.update_review_feedback_progress(
+                obligation["id"], progress="completed", evidence={"merged_pr": "PR #1910"},
+                now=time.time(), conn=conn,
+            )
+        feedback = await handler.db.list_review_feedback_obligations(decision["decision_id"], conn=conn)
+    before = {task.id for task in await handler.db.list_tasks(project_id="p1")}
+    result = await handler.execute("task_batch_propose", args)
+    assert result["success"], result
+    assert result["release_receipt"]["feedback"] == feedback
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == before
+
+
+async def test_empty_design_graph_does_not_implicitly_settle(handler):
+    _, scope, decision = await _ingest_assignment(handler, "design")
+    args = _delivered_design_args(scope, decision)
+    args.pop("no_op")
+    result = await handler.execute("task_batch_propose", args)
+    assert not result["success"] and "non-empty list" in result["error"], result
 
 
 async def test_implementation_ingestion_holds_epics_and_leaf_dependencies_without_gate(handler):
@@ -1753,12 +1898,13 @@ async def test_ingest_concurrent_propose_creates_one_batch(handler):
         ))).all()) == 1
 
 
-async def test_changed_approved_source_returns_previous_receipt_without_duplicating_work(handler):
+@pytest.mark.parametrize("spec_kind", ["design", "implementation"])
+async def test_changed_approved_source_returns_previous_receipt_without_duplicating_work(handler, spec_kind):
     from dataclasses import replace
 
-    path, scope, decision = await _ingest_assignment(handler)
+    path, scope, decision = await _ingest_assignment(handler, spec_kind)
     original = await _ingest_propose(handler, path, scope, decision)
-    path.write_text("---\nstatus: approved\nspec_kind: implementation\n---\n# Revised spec\n")
+    path.write_text(f"---\nstatus: approved\nspec_kind: {spec_kind}\n---\n# Revised spec\n")
     revised = await handler.execute("spec_approve", {"project_id": "p1", "spec_path": str(path)})
     assert revised["success"], revised
     ensured = await handler.execute("ensure_spec_ingest", {
@@ -1777,7 +1923,17 @@ async def test_changed_approved_source_returns_previous_receipt_without_duplicat
     })
     assert not result["success"] and result["error_code"] == "incremental_plan_required", result
     assert result["previous_receipt"]["members"] == original["members"]
-    assert await _proposal_rows(handler) == [(original["proposal_id"], "held")]
+    status = "held" if spec_kind == "implementation" else "committed"
+    assert await _proposal_rows(handler) == [(original["proposal_id"], status)]
+    if spec_kind == "design":
+        before = {task.id for task in await handler.db.list_tasks(project_id="p1")}
+        args = _delivered_design_args(scope, revised)
+        settled = await handler.execute("task_batch_propose", args)
+        assert settled["success"] and settled["task_ids"] == [], settled
+        assert settled["release_receipt"]["decision_id"] == revised["decision_id"]
+        assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == before
+        replay = await handler.execute("task_batch_propose", args)
+        assert replay == {**settled, "already_committed": True}
 
 
 async def test_ingest_dispatch_failure_rolls_back_batch_graph_and_hold(handler, monkeypatch):

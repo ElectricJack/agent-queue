@@ -172,6 +172,10 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "schedule_register",
+    "schedule_get",
+    "schedule_list",
+    "schedule_cancel",
     "wait_register",
     "wait_get",
     "wait_list",
