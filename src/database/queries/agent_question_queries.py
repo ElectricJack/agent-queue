@@ -6,10 +6,13 @@ import time
 from contextlib import asynccontextmanager
 
 from sqlalchemy import insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import (
     agent_questions as questions,
+    escalations,
     message_discord_receipts,
     messages,
     sessions,
@@ -20,7 +23,67 @@ from src.database.tables import (
 PENDING_QUESTION_STATES = ("supervisor", "human", "answered")
 
 
+def _question_projection():
+    escalation_id = (
+        select(escalations.c.id)
+        .where(
+            escalations.c.project_id == questions.c.project_id,
+            escalations.c.source_kind == "question",
+            escalations.c.source_identity == questions.c.id,
+        )
+        .limit(1)
+        .scalar_subquery()
+        .label("escalation_id")
+    )
+    return select(questions, escalation_id)
+
+
 class AgentQuestionQueriesMixin:
+    async def lock_question_source_on(self, conn, question_id):
+        row = (await conn.execute(select(questions).where(
+            questions.c.id == question_id,
+        ).with_for_update())).mappings().first()
+        return dict(row) if row else None
+
+    async def question_claim_current_on(self, conn, q):
+        """Check the claim on the answer transaction, including the live owner."""
+        row = (await conn.execute(select(sessions).select_from(
+            sessions.join(tasks, tasks.c.id == sessions.c.task_id)
+            .join(agents, agents.c.id == tasks.c.assigned_agent_id)
+        ).where(
+            sessions.c.id == q["session_id"], sessions.c.name == q["session_name"],
+            sessions.c.instance_token == q["instance_token"],
+            sessions.c.project_id == q["project_id"], sessions.c.task_id == q["task_id"],
+            sessions.c.state.in_(("starting", "running", "draining")),
+            sessions.c.desired_state == "running", sessions.c.profile_id != "supervisor",
+            or_(sessions.c.agent_id.is_(None), sessions.c.agent_id == q["agent_id"]),
+            or_(sessions.c.last_claim_epoch.is_(None),
+                sessions.c.last_claim_epoch == q["claim_epoch"]),
+            or_(sessions.c.lifecycle == "task",
+                (sessions.c.lifecycle == "pool") & (sessions.c.claim_phase == "active")),
+            tasks.c.status == "IN_PROGRESS", tasks.c.claim_epoch == q["claim_epoch"],
+            tasks.c.assigned_agent_id == q["agent_id"], tasks.c.project_id == q["project_id"],
+            agents.c.current_task_id == q["task_id"], agents.c.deleted_at.is_(None),
+        ).with_for_update())).mappings().first()
+        return dict(row) if row else None
+
+    async def begin_question_submission(self, question_id, token):
+        # Commit the unknown fence BEFORE terminal I/O. A process death cannot
+        # clear it. Only a positive NotSubmitted result authorizes another try.
+        async with self._engine.begin() as conn:
+            result = await conn.execute(update(questions).where(
+                questions.c.id == question_id, questions.c.delivery_token == token,
+                questions.c.submission_state == "pending",
+            ).values(submission_state="unknown"))
+            return result.rowcount == 1
+
+    async def question_submission_not_sent(self, question_id, token):
+        async with self._engine.begin() as conn:
+            await conn.execute(update(questions).where(
+                questions.c.id == question_id, questions.c.delivery_token == token,
+                questions.c.submission_state == "unknown",
+            ).values(submission_state="pending"))
+
     async def create_agent_question(self, **values) -> bool:
         try:
             async with self._engine.begin() as conn:
@@ -35,7 +98,7 @@ class AgentQuestionQueriesMixin:
     async def get_agent_question(self, question_id: str) -> dict | None:
         async with self._engine.connect() as conn:
             row = (
-                (await conn.execute(select(questions).where(questions.c.id == question_id)))
+                (await conn.execute(_question_projection().where(questions.c.id == question_id)))
                 .mappings()
                 .first()
             )
@@ -44,7 +107,7 @@ class AgentQuestionQueriesMixin:
     async def list_agent_questions(
         self, project_id=None, session_id=None, pending_only=True
     ) -> list[dict]:
-        stmt = select(questions)
+        stmt = _question_projection()
         if project_id is not None:
             stmt = stmt.where(questions.c.project_id == project_id)
         if session_id is not None:
@@ -113,10 +176,14 @@ class AgentQuestionQueriesMixin:
             )
             if result.rowcount != 1:
                 return
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id="msg-" + question_id,
-                    project_id=None,
+                    project_id=(
+                        select(questions.c.project_id)
+                        .where(questions.c.id == question_id)
+                        .scalar_subquery()
+                    ),
                     from_kind="system",
                     from_id="agent-questions",
                     to_kind="session",
@@ -130,6 +197,53 @@ class AgentQuestionQueriesMixin:
                 )
             )
 
+    async def ensure_agent_question_answer_message(self, question, message_id, body, now) -> None:
+        """Store an accepted answer where the asking session can read it.
+
+        The worker's terminal receives only a one-line pointer to this row.
+        ``AgentQuestionService`` owns that claim-fenced delivery, so the row is
+        stamped delivered on insert: the message engine must never nudge it a
+        second time.  Idempotent, because a retried delivery reaches it again.
+        """
+        async with self._engine.begin() as conn:
+            await insert_message_with_source_event(conn,
+                pg_insert(messages)
+                .values(
+                    id=message_id,
+                    project_id=question["project_id"],
+                    from_kind="system",
+                    from_id="agent-questions",
+                    to_kind="session",
+                    to_id=question["session_id"],
+                    body=body,
+                    subject="Answer to question " + question["id"],
+                    created_at=now,
+                    delivered_at=now,
+                    via="agent_question",
+                    priority=50,
+                    body_kind="agent_question",
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
+
+    async def list_overdue_supervisor_incident_messages(self, cutoff: float) -> list[dict]:
+        """Return still-undelivered internal incidents old enough for one watchdog notice."""
+        statement = (
+            select(messages)
+            .where(
+                messages.c.to_kind == "session",
+                messages.c.to_id.like("supervisor-%"),
+                messages.c.body_kind.in_(("agent_question", "task_recovery", "escalation_reply")),
+                messages.c.project_id.is_not(None),
+                messages.c.created_at <= cutoff,
+                messages.c.delivered_at.is_(None),
+                messages.c.archived_at.is_(None),
+            )
+            .order_by(messages.c.created_at, messages.c.id)
+        )
+        async with self._engine.connect() as conn:
+            return [dict(row) for row in (await conn.execute(statement)).mappings().all()]
+
     async def claim_agent_question_delivery(self, question_id, token, now) -> bool:
         async with self._engine.begin() as conn:
             result = await conn.execute(
@@ -137,6 +251,7 @@ class AgentQuestionQueriesMixin:
                 .where(
                     questions.c.id == question_id,
                     questions.c.state == "answered",
+                    questions.c.submission_state == "pending",
                     or_(
                         questions.c.delivery_lease_until.is_(None),
                         questions.c.delivery_lease_until < now,
@@ -224,6 +339,7 @@ class AgentQuestionQueriesMixin:
             )
             .values(
                 state="delivered",
+                submission_state="delivered",
                 delivered_at=now,
                 updated_at=now,
                 delivery_token=None,

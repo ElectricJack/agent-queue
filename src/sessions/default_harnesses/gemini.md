@@ -59,7 +59,39 @@ vault watcher; no restart, no release.
       "pattern": "Please sign in|authentication required|not authenticated",
       "is_regex": true,
       "keys": [],
-      "quarantine": true
+      "quarantine": true,
+      "signal": "auth"
+    }
+  ],
+  "input_prompts": [
+    {
+      "name": "numbered-menu",
+      "pattern": "(?m)^[ \\t]*[›>❯]?[ \\t]*[0-9]+[.)][ \\t]+.+$",
+      "is_regex": true
+    },
+    {
+      "name": "menu-navigation",
+      "pattern": "Use .* to move, press enter to confirm",
+      "is_regex": true
+    },
+    {
+      "name": "login-required",
+      "pattern": "Please sign in|authentication required|not authenticated|authenticate",
+      "is_regex": true
+    },
+    {
+      "name": "usage-limit",
+      "pattern": "usage limit|quota exceeded|resource exhausted|limit reached",
+      "is_regex": true
+    },
+    {
+      "name": "trust-or-permission",
+      "pattern": "Do you trust|permission required|Allow this",
+      "is_regex": true
+    },
+    {
+      "name": "press-enter-to-continue",
+      "pattern": "press enter to continue"
     }
   ]
 }
@@ -89,6 +121,16 @@ every prompt boundary. Queued messages reach a Gemini session via nudge
 (keystrokes into the pane) or transcript-tail fallback; task completion
 is unaffected because it is explicit (`aq task close` through the
 injected CLI/MCP surface).
+
+**Prepared knowledge context arrives through `aq prime`,** the same way
+every other message reaches this session: the bootstrap prompt names
+`aq prime`, and the selected records ride that document. There is no hook
+to wrap, so `src/knowledge/delivery.py` classifies this harness as the
+startup prompt and leaves the payload byte-identical. A launch that had
+neither a hook nor a prompt argument would get the same bytes written to
+`.aq/knowledge-startup.md` as explicit guidance instead. Nothing about
+this changes gemini's own configuration, and it stays inert until the
+operator enables the knowledge feature for the project.
 
 **No `transcript_paths`.** Gemini writes session data under
 `~/.gemini/tmp/<hash>/` and `~/.config/gemini-cli/` (snap: under the
@@ -121,6 +163,12 @@ claude.md and codex.md.
 unauthenticated gemini cannot be fixed by keystrokes; run
 `gemini` interactively once on the host to complete OAuth or set a
 `GEMINI_API_KEY` in the daemon environment.
+
+**`input_prompts` is observation-only.** AQ checks these signatures only on
+an unclaimed pool worker whose pane has stayed unchanged past the claim-loop
+stall window. A match is reported by doctor and `aq pool status`; no listed
+prompt is ever answered automatically. Add a named substring or regex here
+when a new Gemini interactive chooser appears.
 
 **`composer_clear_keys: ["C-u"]`** is the recovery key for a nudge that was
 typed but never submitted. Enter races the composer's repaint (an attached

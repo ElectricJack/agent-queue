@@ -1,5 +1,11 @@
 # Pane View: `spec-doc-reader` — Design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Status:** design (approved by brainstorming pass 2026-08-22).
 **Depends on:** `2026-08-22-dashboard-shell-v2-design.md` (shell
 primitives), `2026-08-22-pane-plugin-interface-design.md` (pane

@@ -1,4 +1,9 @@
-"""Task screenshot upload, preview, and removal endpoints."""
+"""Task screenshot upload, preview, and removal endpoints.
+
+Attachments are screenshots: PNG, JPEG, GIF and WebP only, each verified by
+decoding it, so the dashboard can preview every one.  Text (logs,
+transcripts) belongs in a task comment instead.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ from src.api.models.task import (
     TaskAttachmentResponse,
     TaskAttachmentsResponse,
 )
+from src.api.scope import held_task_for_session
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 _CHUNK_BYTES = 64 * 1024
@@ -30,12 +36,17 @@ _ALLOWED_TYPES = {
 _TYPE_BY_SUFFIX = {extension: media_type for media_type, (_fmt, extension) in _ALLOWED_TYPES.items()}
 
 
-def _require_task_scope(scope: RequestScope, task) -> None:
+async def _require_task_scope(scope: RequestScope, task, db) -> None:
     if scope.kind == "local" or (scope.elevated and scope.project_id is None):
         return
     if scope.project_id != task.project_id:
         raise HTTPException(status_code=404, detail=f"No task '{task.id}'")
-    if not scope.elevated and scope.task_id != task.id:
+    if scope.elevated or scope.task_id == task.id:
+        return
+    # A pool token carries no task_id -- its task changes with every claim --
+    # so the task it may touch is the one its session holds right now.
+    held = await held_task_for_session(db, scope)
+    if held is None or held.id != task.id:
         raise HTTPException(status_code=404, detail=f"No task '{task.id}'")
 
 
@@ -127,14 +138,17 @@ def build_task_attachments_router() -> APIRouter:
         if task is None:
             raise HTTPException(status_code=404, detail=f"No task '{task_id}'")
         scope: RequestScope = getattr(request.state, "scope", LOCAL_SCOPE)
-        _require_task_scope(scope, task)
+        await _require_task_scope(scope, task, orch.db)
 
         media_type = (file.content_type or "").lower()
         if media_type not in _ALLOWED_TYPES:
             await file.close()
             raise HTTPException(
                 status_code=415,
-                detail="only PNG, JPEG, GIF, and WebP images are allowed",
+                detail=(
+                    "only PNG, JPEG, GIF, and WebP images are allowed; record text such as "
+                    "logs or transcripts with `aq task comment` instead"
+                ),
             )
 
         directory = _task_directory(orch.config.data_dir, task_id)
@@ -164,7 +178,7 @@ def build_task_attachments_router() -> APIRouter:
         if task is None:
             raise HTTPException(status_code=404, detail=f"No task '{task_id}'")
         scope: RequestScope = getattr(request.state, "scope", LOCAL_SCOPE)
-        _require_task_scope(scope, task)
+        await _require_task_scope(scope, task, orch.db)
         attachments = []
         for linked in task.attachments:
             path = Path(linked)
@@ -181,7 +195,7 @@ def build_task_attachments_router() -> APIRouter:
         if task is None:
             raise HTTPException(status_code=404, detail=f"No task '{task_id}'")
         scope: RequestScope = getattr(request.state, "scope", LOCAL_SCOPE)
-        _require_task_scope(scope, task)
+        await _require_task_scope(scope, task, orch.db)
         path = _linked_attachment(task, attachment_id)
         if not path.is_file():
             raise HTTPException(status_code=404, detail="attachment not found")
@@ -199,7 +213,7 @@ def build_task_attachments_router() -> APIRouter:
         if task is None:
             raise HTTPException(status_code=404, detail=f"No task '{task_id}'")
         scope: RequestScope = getattr(request.state, "scope", LOCAL_SCOPE)
-        _require_task_scope(scope, task)
+        await _require_task_scope(scope, task, orch.db)
         path = _linked_attachment(task, attachment_id)
         attachments = await orch.db.remove_task_attachment(task_id, str(path))
         if attachments is None:
