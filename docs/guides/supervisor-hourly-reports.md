@@ -3,9 +3,13 @@
 The deterministic digest remains the default. Narrative authoring requires both
 `reports.hourly.enabled: true` and a healthy system activation of the reviewed
 `supervisor-hourly-report` playbook. It is neither a required policy nor a default
-activation. The shipped source has `enabled: false`. The reviewed bundle is seeded
-into `vault/reviewed-playbooks/supervisor-hourly-report/`; explicitly import and
-activate that bundle through the playbook operator surfaces when enabling it.
+activation. The reviewed source has `enabled: false` and is no longer copied into
+`vault/system/playbooks/` at startup. The reviewed bundle is available in
+`src/prompts/reviewed_playbooks/supervisor-hourly-report/` in the installed
+checkout. If absent from the vault, copy that directory to
+`vault/reviewed-playbooks/supervisor-hourly-report/`, then explicitly import and
+activate it through the playbook operator surfaces when enabling it. Restart
+does not install the bundle or change an existing activation.
 Review sample narratives before enabling it for general use.
 
 ```bash
@@ -33,6 +37,12 @@ message or lose the reservation. The supervisor has only the existing
 `report_brief` and `report_submit` grants; it cannot select a Discord destination.
 Its profile documents evidence, length and deadline discipline. No inline model
 or worker task authors the report.
+
+A request names the `supervisor-global` address, never a session. Both commands
+accept the elevated token of whichever `n-supervisor--global` launch is live and
+still holds its row's instance token, so a daemon restart (which adopts the
+launch) or a relaunch needs no rebinding. Every other caller, a per-project
+supervisor included, is refused as `out_of_scope`.
 
 ## Delivery library for report consumers
 

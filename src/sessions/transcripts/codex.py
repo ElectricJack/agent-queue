@@ -259,7 +259,7 @@ def _rate_limits_from_payload(payload: dict, *, observed_at: float = 0.0) -> dic
     return {"account_label": str(label), "windows": windows}
 
 
-def _entry_from_line(raw: dict, uuid: str) -> TranscriptEntry | None:
+def _entry_from_line(raw: dict, uuid: str, model: str | None = None) -> TranscriptEntry | None:
     """One decoded rollout line → an entry, or ``None`` to skip."""
     payload = raw.get("payload")
     if not isinstance(payload, dict):
@@ -293,7 +293,8 @@ def _entry_from_line(raw: dict, uuid: str) -> TranscriptEntry | None:
                 parent_uuid=turn_id,
                 type="assistant",
                 text="",
-                model=None,
+                model=model,
+                model_source="turn_context" if model else None,
                 usage=usage,
                 ts=ts,
                 rate_limits=rate_limits,
@@ -514,14 +515,45 @@ class CodexTranscriptReader(TranscriptReader):
         except OSError:
             return None
 
+    @staticmethod
+    def _model_before(path: Path, end: int) -> str | None:
+        """Recover the last transcript-declared model before an incremental read."""
+        if not end:
+            return None
+        try:
+            with path.open("rb") as file:
+                start = max(0, end - 2_000_000)
+                file.seek(start)
+                lines = file.read(end - start).splitlines()
+        except OSError:
+            return None
+        if start and lines:
+            lines.pop(0)  # potentially partial first line
+        for line in reversed(lines):
+            if b'"turn_context"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if record.get("type") == "turn_context":
+                value = (record.get("payload") or {}).get("model")
+                return str(value) if value else None
+        return None
+
     async def read_new(self, path: Path, offset: int) -> tuple[list[TranscriptEntry], int]:
-        result = await asyncio.to_thread(self._read_sync, path, offset)
+        # Include decoding, normalization and compatibility prefix lookups:
+        # offloading only the read still pins the loop on a large backlog.
+        return await asyncio.to_thread(self._read_new_sync, path, offset)
+
+    def _read_new_sync(self, path: Path, offset: int) -> tuple[list[TranscriptEntry], int]:
+        result = self._read_sync(path, offset)
         if result is None:
             return [], offset
         buf, size = result
         if size < offset:
             # A reused session path was truncated; re-read from its start.
-            result = await asyncio.to_thread(self._read_sync, path, 0)
+            result = self._read_sync(path, 0)
             if result is None:
                 return [], offset
             buf, _size = result
@@ -534,9 +566,10 @@ class CodexTranscriptReader(TranscriptReader):
         # A restart can resume at the task-complete line. Recover the prefix
         # once for this batch; normal commentary-only ticks never pay for it.
         if offset and b"task_complete" in buf:
-            active_turn, finals = await asyncio.to_thread(_prefix_final_state, path, offset)
+            active_turn, finals = _prefix_final_state(path, offset)
 
         entries: list[TranscriptEntry] = []
+        current_model = self._model_before(path, offset) if b'"token_count"' in buf else None
         visible_here: set[tuple[str, str]] = set()
         consumed = 0
         stem = path.stem
@@ -564,6 +597,11 @@ class CodexTranscriptReader(TranscriptReader):
             turn = payload.get("turn_id")
             turn_id = str(turn) if turn else None
             line_uuid = f"{stem}:{line_start}"
+
+            if line_type == "turn_context":
+                declared = payload.get("model")
+                current_model = str(declared) if declared else None
+                continue
 
             if line_type == "event_msg" and payload_type == "task_started":
                 active_turn = turn_id
@@ -653,8 +691,8 @@ class CodexTranscriptReader(TranscriptReader):
                 key = (phase, response_text)
                 duplicate = key in visible_here
                 if not duplicate and offset:
-                    duplicate = await asyncio.to_thread(
-                        _legacy_message_in_recent_prefix, path, line_start, response_text, phase
+                    duplicate = _legacy_message_in_recent_prefix(
+                        path, line_start, response_text, phase
                     )
                 if not duplicate:
                     visible_here.add(key)
@@ -669,7 +707,7 @@ class CodexTranscriptReader(TranscriptReader):
                     )
                 continue
 
-            entry = _entry_from_line(obj, line_uuid)
+            entry = _entry_from_line(obj, line_uuid, current_model)
             if entry is not None and entry.type == "assistant" and entry.text:
                 key = (str(payload.get("phase") or "commentary"), entry.text)
                 if key in visible_here:

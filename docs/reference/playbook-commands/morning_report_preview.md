@@ -103,7 +103,12 @@ sources. Hourly digest membership is context, never morning deduplication.
 Individual failures and limits appear under `brief.coverage.gaps`; they prevent
 no-change suppression and advancement of that source. Lateness beyond 72 hours is
 explicitly unsupported. An oversized brief reports omissions and proposes no
-coverage advancement.
+coverage advancement. It sheds context before evidence: hourly digest context
+and the raw git detail (per-commit lists, diffstat, ancestry proofs) go first,
+fact prose is shortened next, and facts are omitted last. In-window evidence
+outranks late evidence, which outranks git commits and session telemetry.
+Projects take turns, each offering landed work and unresolved problems first.
+`omitted` counts dropped facts in total and per project.
 
 ## Example step
 
