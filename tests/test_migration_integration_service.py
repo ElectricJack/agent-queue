@@ -79,6 +79,58 @@ async def test_baseline_has_no_development_delivery_journal():
         await database.close()
 
 
+async def test_batch_ejection_record_migration_is_additive_and_ignores_legacy_metadata():
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    from src.models import Project, Task
+
+    migration = import_module("migrations.versions.a00000000083_batch_ejection_record")
+    database = Database(lease_dsn("batch-ejection"))
+    await database.initialize()
+    await database.create_project(Project(id="p", name="Ejection migration"))
+    await database.create_task(Task(id="forged", project_id="p", title="Forged marker",
+                                    description=""))
+
+    def exercise(conn):
+        # The live baseline already contains the new column. Replay is a no-op.
+        with Operations.context(MigrationContext.configure(conn)):
+            migration.upgrade()
+            migration.downgrade()
+            migration.downgrade()
+        assert "ejection_record" not in {
+            column["name"] for column in inspect(conn).get_columns("integration_batches")
+        }
+        conn.execute(text("INSERT INTO task_metadata (task_id, key, value) "
+                          "VALUES ('forged', 'integration_train_ejection:batch', '{}')"))
+        # A real pre-revision row remains an ordinary abort after upgrade.
+        conn.execute(text("INSERT INTO integration_batches (id, project_id, repository_id, "
+                          "request_id, source_manifest_digest, base_sha, lifecycle, "
+                          "integration_branch, policy_snapshot, artifact_snapshot, "
+                          "cleanup_state, intent, created_at, updated_at) VALUES "
+                          "('batch', 'p', 'r', 'batch', 'digest', :sha, 'aborted', "
+                          "'refs/heads/aq/batches/old', '{}', '{}', 'pending', 'aborted', 1, 1)"),
+                     {"sha": "a" * 40})
+        with Operations.context(MigrationContext.configure(conn)):
+            migration.upgrade()
+            migration.upgrade()
+        [column] = [column for column in inspect(conn).get_columns("integration_batches")
+                    if column["name"] == "ejection_record"]
+        assert isinstance(column["type"], JSONB) and column["nullable"]
+        assert conn.scalar(text("SELECT ejection_record FROM integration_batches "
+                                "WHERE id='batch'")) is None
+        assert conn.scalar(text("SELECT intent FROM integration_batches WHERE id='batch'")) == "aborted"
+
+    try:
+        async with database._engine.begin() as conn:
+            await conn.run_sync(exercise)
+    finally:
+        await database.close()
+
+
 # -- a00000000038: retire development_deliveries ------------------------------
 
 RETIRE_REVISION = "a00000000038"
