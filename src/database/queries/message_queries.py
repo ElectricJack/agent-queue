@@ -25,8 +25,106 @@ import uuid
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import messages, projects
+from src.database.tables import (
+    agent_questions,
+    escalations,
+    messages,
+    projects,
+    sessions,
+    tasks,
+    wait_records,
+)
+from src.escalations.facts import TERMINAL_STATES
 from src.models import Message
+from src.waits.holding import (
+    message_is_held,
+    reply_window_start,
+    stale_wait_wake,
+    wake_already_delivered,
+)
+from src.waits.sources import insert_message_with_source_event
+
+GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD = 50
+
+
+def _obsolete_notice():
+    """Use producer-owned identities, never task names guessed from message bodies."""
+    prefixes = (
+        ("task_recovery", "Task recovery: "),
+        ("stale_open", "Stale BLOCKED task: "),
+        ("stale_open", "Stale PAUSED task: "),
+    )
+    subject_task = case(*(
+        (and_(messages.c.body_kind == kind, messages.c.subject.startswith(prefix)),
+         func.substr(messages.c.subject, len(prefix) + 1))
+        for kind, prefix in prefixes
+    ))
+    unfinished = select(tasks.c.id).where(
+        tasks.c.id == subject_task, tasks.c.project_id == messages.c.project_id,
+        tasks.c.status != "COMPLETED",
+    ).exists()
+    escalation = select(escalations.c.id).where(
+        escalations.c.id == messages.c.thread_id,
+        escalations.c.project_id == messages.c.project_id,
+        or_(
+            escalations.c.state.in_(tuple(TERMINAL_STATES)),
+            select(tasks.c.id).where(
+                tasks.c.id == escalations.c.task_id,
+                tasks.c.project_id == escalations.c.project_id,
+                tasks.c.status == "COMPLETED",
+            ).exists(),
+        ),
+    ).exists()
+    question = select(agent_questions.c.id).where(
+        messages.c.id == "msg-" + agent_questions.c.id,
+        agent_questions.c.project_id == messages.c.project_id,
+        or_(
+            agent_questions.c.state != "supervisor",
+            select(tasks.c.id).where(
+                tasks.c.id == agent_questions.c.task_id,
+                tasks.c.project_id == agent_questions.c.project_id,
+                tasks.c.status == "COMPLETED",
+            ).exists(),
+        ),
+    ).exists()
+    return or_(
+        and_(messages.c.from_kind == "system", subject_task.is_not(None), ~unfinished),
+        and_(messages.c.body_kind.in_((
+            "supervisor_delivery", "escalation_reply", "escalation_owner_reminder",
+            "wait_escalation",
+        )), escalation),
+        and_(messages.c.from_kind == "system", messages.c.body_kind == "agent_question",
+             question),
+    )
+
+
+def _global_supervisor_mailbox():
+    """Include historical logical addresses and the named launch's UUID."""
+    global_sessions = select(sessions.c.id).where(
+        sessions.c.profile_id == "supervisor", sessions.c.lifecycle == "named",
+        sessions.c.project_id.is_(None),
+    )
+    return and_(
+        messages.c.to_kind == "session",
+        or_(messages.c.to_id.in_(("supervisor-global", "n-supervisor--global")),
+            messages.c.to_id.in_(global_sessions)),
+    )
+
+
+def _project_supervisor_session():
+    """Identify the named project supervisor, never a worker or global instance."""
+    return and_(
+        sessions.c.lifecycle == "named", sessions.c.project_id.is_not(None),
+        sessions.c.name == "n-supervisor--" + sessions.c.project_id,
+    )
+
+
+def _global_backlog_snapshot():
+    """Count and oldest identity come from the same database snapshot."""
+    return select(messages.c.id, func.count().over().label("total")).where(
+        _global_supervisor_mailbox(),
+        messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
+    ).order_by(messages.c.created_seq.asc()).limit(1)
 
 
 def _new_message_id() -> str:
@@ -59,14 +157,171 @@ def _row_to_message(row) -> Message:
         created_seq=row["created_seq"],
         last_notified_at=row["last_notified_at"],
         notification_attempts=row["notification_attempts"],
+        provenance=row["provenance"],
     )
 
 
+def _same_conversation(msg: Message):
+    """Rows of *msg*'s conversation: its project, thread, sender and recipient."""
+    return and_(
+        messages.c.project_id == msg.project_id,
+        messages.c.thread_id == msg.thread_id,
+        messages.c.from_kind == msg.from_kind,
+        messages.c.from_id == msg.from_id,
+        messages.c.to_kind == msg.to_kind,
+        messages.c.to_id == msg.to_id,
+    )
+
+
+def _reply_covering(msg: Message):
+    """Select a reply to *msg*, or a transcript-tail reply to a newer delivery
+    in its conversation (see :meth:`MessageQueriesMixin.has_reply_covering_message`)."""
+    reply = messages.alias("reply")
+    covered = False
+    if msg.delivered_at is not None:
+        covered = and_(
+            reply.c.via == "transcript_tail",
+            _same_conversation(msg),
+            messages.c.delivered_at >= msg.delivered_at,
+        )
+    return select(reply.c.id).select_from(
+        messages.join(reply, reply.c.reply_to_id == messages.c.id)
+    ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
+
+
+def _competing_delivery(msg: Message, window: float, *, window_start=None):
+    """Select a row from another conversation delivered to *msg*'s recipient
+    within *window* seconds either side of *msg*'s delivery.
+
+    Any sender and kind counts, notices and archived rows included: each can
+    prompt the turn a transcript tail would otherwise attribute to *msg*.
+    """
+    return select(messages.c.id).where(
+        messages.c.to_kind == msg.to_kind,
+        messages.c.to_id == msg.to_id,
+        messages.c.id != msg.id,
+        reply_window_start() > (window_start or msg.delivered_at) - window,
+        reply_window_start() < (window_start or msg.delivered_at) + window,
+        or_(
+            messages.c.project_id.is_distinct_from(msg.project_id),
+            messages.c.thread_id.is_distinct_from(msg.thread_id),
+            messages.c.from_kind != msg.from_kind,
+            messages.c.from_id != msg.from_id,
+        ),
+    ).limit(1)
+
+
 class MessageQueriesMixin:
+    async def supervisor_requests(self, row) -> list[Message]:
+        """Oldest unanswered requests, including consumed worker questions.
+
+        Include prior instance UUIDs: a fresh supervisor inherits obligations
+        sent to an immutable predecessor address as well as its logical mailbox.
+        """
+        prior = select(sessions.c.id).where(
+            sessions.c.name == row.name, sessions.c.profile_id == "supervisor",
+            sessions.c.project_id.is_not_distinct_from(row.project_id),
+        )
+        address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+        reply = messages.alias("supervisor_reply")
+        answered = select(reply.c.id).where(reply.c.reply_to_id == messages.c.id).exists()
+        completed = (row.supervisor_health or {}).get("last_completed_at") or 0
+        # A consumed status report is handled by a successful turn. An
+        # explicit reply wait or native question remains an obligation.
+        waiting = select(wait_records.c.id).where(
+            wait_records.c.condition_kind == "message", wait_records.c.outcome == "pending",
+            wait_records.c.verification_state == "verified",
+            wait_records.c.cleared_at.is_(None),
+            wait_records.c.project_id == messages.c.project_id,
+            wait_records.c.session_id == messages.c.from_id,
+            wait_records.c.condition["thread_id"].astext == messages.c.thread_id,
+        ).correlate(messages).exists()
+        statement = select(messages).where(
+            messages.c.to_kind == "session",
+            or_(messages.c.to_id.in_((address, row.name)), messages.c.to_id.in_(prior)),
+            messages.c.reply_to_id.is_(None), ~answered,
+            ~func.coalesce(_obsolete_notice(), False),
+            or_(and_(messages.c.from_kind == "session", waiting),
+                messages.c.body_kind == "agent_question",
+                messages.c.created_at > completed),
+        ).order_by(messages.c.provenance["supervisor_escalated_at"].is_not(None),
+                   messages.c.created_at, messages.c.id).limit(100)
+        async with self._engine.begin() as conn:
+            return [_row_to_message(item) for item in (await conn.execute(statement)).mappings()]
+
+    async def escalate_supervisor_request(self, msg, row, *, now: float) -> bool:
+        """One global notice per request, without fabricating a worker reply."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(messages).where(
+                messages.c.id == msg.id,
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return False
+            provenance = dict(current["provenance"] or {})
+            if provenance.get("supervisor_escalated_at"):
+                return False
+            if (await conn.execute(_reply_covering(msg))).first() is not None:
+                return False
+            provenance["supervisor_escalated_at"] = now
+            await conn.execute(update(messages).where(messages.c.id == msg.id).values(
+                provenance=provenance,
+            ))
+            await self.create_message_in_transaction(
+                conn, project_id=msg.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                thread_id=msg.thread_id,
+                body=f"Unanswered worker request {msg.id} to {row.name} after "
+                     f"{int(now - msg.created_at)} seconds. Sender: {msg.from_kind}:{msg.from_id}. "
+                     f"Reply explicitly to the original request; its wait remains active.\n{msg.body[:2000]}",
+                body_kind="supervisor_health",
+            )
+        return True
+
+    async def supervisor_recovery_notice(self, row, health, requests, *, reason, now):
+        """Persist handoff and alert atomically with a recovery-attempt fence."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(sessions).where(
+                sessions.c.id == row.id, sessions.c.instance_token == row.instance_token,
+                sessions.c.desired_state == "running",
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return
+            saved = dict(current["supervisor_health"] or {})
+            if saved.get("notified_attempt") == health["attempts"]:
+                return
+            saved.update(health, notified_attempt=health["attempts"])
+            await conn.execute(update(sessions).where(sessions.c.id == row.id).values(
+                supervisor_health=saved,
+            ))
+            address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+            handoff = (f"Supervisor recovery handoff: {reason}. Previous session {row.id}, "
+                       f"conversation {row.session_key}, harness {row.harness}, model {row.model}. "
+                       f"Last completed turn: {health.get('last_completed_at')}. "
+                       f"Pending request IDs: {', '.join(msg.id for msg in requests)}. "
+                       "Inspect those originals and reply explicitly; do not infer answers from delivery.")
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session", to_id=address, body=handoff, body_kind="supervisor_handoff",
+            )
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                body=f"Restarting {row.name} fresh after {health['attempts']} recovery attempts. "
+                     + handoff, body_kind="supervisor_health",
+            )
+
     """Query mixin for ``messages``.  Expects ``self._engine``."""
 
     async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
         """Resolve opt-in routing without changing the sender's project context."""
+        if to_kind == "session" and to_id.startswith("supervisor-"):
+            suffix = to_id.removeprefix("supervisor-")
+            if suffix != "global" and not await conn.scalar(
+                    select(projects.c.id).where(projects.c.id == suffix)):
+                if project_id:
+                    to_id = "supervisor-" + project_id
         recipient_project = None
         if to_kind == "profile" and to_id == "supervisor":
             recipient_project = project_id
@@ -77,6 +332,12 @@ class MessageQueriesMixin:
                     if suffix != "global":
                         recipient_project = suffix
                     break
+            else:
+                # Native guidance and terminal messages use immutable IDs.
+                # The target session's project, not the sender's, owns opt-in.
+                recipient_project = (await conn.execute(select(sessions.c.project_id).where(
+                    sessions.c.id == to_id, _project_supervisor_session(),
+                ))).scalar_one_or_none()
         if recipient_project:
             enabled = (await conn.execute(select(projects.c.supervisor_enabled).where(
                 projects.c.id == recipient_project,
@@ -93,6 +354,9 @@ class MessageQueriesMixin:
         Delivered but unread messages become pending again, so an abandoned
         supervisor turn cannot swallow a worker's report.
         """
+        supervisor_ids = select(sessions.c.id).where(
+            _project_supervisor_session(), sessions.c.project_id == projects.c.id,
+        ).correlate(projects)
         disabled_recipient = select(projects.c.id).where(
             projects.c.supervisor_enabled.is_(False),
             or_(
@@ -103,6 +367,9 @@ class MessageQueriesMixin:
                         "supervisor-" + projects.c.id,
                         "n-supervisor--" + projects.c.id,
                     ]),
+                ),
+                and_(
+                    messages.c.to_kind == "session", messages.c.to_id.in_(supervisor_ids),
                 ),
                 and_(
                     messages.c.to_kind == "profile", messages.c.to_id == "supervisor",
@@ -135,6 +402,40 @@ class MessageQueriesMixin:
         reply_to_id: str | None = None,
         body_kind: str | None = None,
         pane_open: str | None = None,
+        provenance: dict | None = None,
+        conn=None,
+    ) -> Message:
+        """Compatibility send: own the transaction around the shared insert."""
+        async def write(connection):
+            return await self.create_message_in_transaction(
+                connection, project_id=project_id, from_kind=from_kind, from_id=from_id,
+                to_kind=to_kind, to_id=to_id, body=body, subject=subject, thread_id=thread_id,
+                priority=priority, archive_after_inject=archive_after_inject,
+                reply_to_id=reply_to_id, body_kind=body_kind, pane_open=pane_open,
+                provenance=provenance,
+            )
+        if conn is not None:
+            return await write(conn)
+        async with self._engine.begin() as owned:
+            return await write(owned)
+
+    async def create_message_in_transaction(
+        self, conn,
+        *,
+        project_id: str | None,
+        from_kind: str,
+        from_id: str,
+        to_kind: str,
+        to_id: str,
+        body: str,
+        subject: str | None = None,
+        thread_id: str | None = None,
+        priority: int = 100,
+        archive_after_inject: bool = False,
+        reply_to_id: str | None = None,
+        body_kind: str | None = None,
+        pane_open: str | None = None,
+        provenance: dict | None = None,
     ) -> Message:
         """Insert one message row and return the materialised dataclass."""
         msg = Message(
@@ -153,35 +454,41 @@ class MessageQueriesMixin:
             reply_to_id=reply_to_id,
             body_kind=body_kind,
             pane_open=pane_open,
+            provenance=provenance,
         )
-        async with self._engine.begin() as conn:
-            msg.to_kind, msg.to_id = await self._supervisor_recipient(
-                conn, msg.to_kind, msg.to_id, msg.project_id,
+        if msg.reply_to_id is not None:
+            # Share the transcript-tail sweep's lock before recording a reply.
+            await conn.execute(
+                select(messages.c.id).where(messages.c.id == msg.reply_to_id).with_for_update()
             )
-            result = await conn.execute(
-                insert(messages).values(
-                    id=msg.id,
-                    project_id=msg.project_id,
-                    from_kind=msg.from_kind,
-                    from_id=msg.from_id,
-                    to_kind=msg.to_kind,
-                    to_id=msg.to_id,
-                    thread_id=msg.thread_id,
-                    subject=msg.subject,
-                    body=msg.body,
-                    priority=msg.priority,
-                    created_at=msg.created_at,
-                    delivered_at=None,
-                    read_at=None,
-                    archive_after_inject=int(msg.archive_after_inject),
-                    archived_at=None,
-                    reply_to_id=msg.reply_to_id,
-                    via=None,
-                    body_kind=msg.body_kind,
-                    pane_open=msg.pane_open,
-                ).returning(messages.c.created_seq)
-            )
-            msg.created_seq = result.scalar_one()
+        msg.to_kind, msg.to_id = await self._supervisor_recipient(
+            conn, msg.to_kind, msg.to_id, msg.project_id,
+        )
+        result = await insert_message_with_source_event(conn,
+            insert(messages).values(
+                id=msg.id,
+                project_id=msg.project_id,
+                from_kind=msg.from_kind,
+                from_id=msg.from_id,
+                to_kind=msg.to_kind,
+                to_id=msg.to_id,
+                thread_id=msg.thread_id,
+                subject=msg.subject,
+                body=msg.body,
+                priority=msg.priority,
+                created_at=msg.created_at,
+                delivered_at=None,
+                read_at=None,
+                archive_after_inject=int(msg.archive_after_inject),
+                archived_at=None,
+                reply_to_id=msg.reply_to_id,
+                via=None,
+                body_kind=msg.body_kind,
+                pane_open=msg.pane_open,
+                provenance=msg.provenance,
+            ).returning(messages.c.created_seq)
+        )
+        msg.created_seq = result.scalar_one()
         return msg
 
     async def get_message(self, message_id: str) -> Message | None:
@@ -197,16 +504,21 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        project_id: str | None = None,
         notification_at: float | None = None,
         notification_delays: tuple[float, ...] = (),
+        newest_first: bool = False,
     ) -> list[Message]:
         """Undelivered, unarchived messages for one recipient.
 
         Ordered by ``priority`` ascending (lower delivers first) then
-        ``created_at`` ascending — the delivery order the engine consumes.
+        ``created_at`` ascending for body injection. Notification callers can
+        select newest first within a priority to surface current work.
 
         The notification caller supplies its retry delays. Apply eligibility
         before the limit so unread mail in backoff cannot starve newer mail.
+        A project filter partitions shared profile mailboxes for scoped readers;
+        session/task recipient queues remain unfiltered for cross-project reports.
         """
         stmt = (
             select(messages)
@@ -215,13 +527,23 @@ class MessageQueriesMixin:
                     messages.c.to_kind == to_kind,
                     messages.c.to_id == to_id,
                     messages.c.delivered_at.is_(None),
+                    messages.c.read_at.is_(None),
                     messages.c.archived_at.is_(None),
+                    ~message_is_held(),
+                    ~_obsolete_notice(),
                 )
             )
-            .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
+            .order_by(
+                messages.c.priority.asc(),
+                messages.c.created_at.desc() if newest_first else messages.c.created_at.asc(),
+                messages.c.created_seq.desc() if newest_first else messages.c.created_seq.asc(),
+            )
             .limit(limit)
         )
+        if project_id is not None:
+            stmt = stmt.where(messages.c.project_id == project_id)
         if notification_at is not None and notification_delays:
+            stmt = stmt.where(~wake_already_delivered(), ~stale_wait_wake())
             delay = case(
                 *((messages.c.notification_attempts <= index + 1, value)
                   for index, value in enumerate(notification_delays[:-1])),
@@ -236,12 +558,46 @@ class MessageQueriesMixin:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
 
+    async def expire_finished_task_notices(self) -> int:
+        """Archive obsolete task, question and escalation notices without a fake read."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(update(messages).where(
+                messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
+                _obsolete_notice(),
+            ).values(archived_at=time.time(), via=case(
+                (messages.c.body_kind.in_(("task_recovery", "stale_open")), "expired-task-notice"),
+                else_="expired-source-notice",
+            )))
+            return int(result.rowcount or 0)
+
+    async def alert_global_supervisor_backlog(self) -> Message | None:
+        """Notify the user once per oldest unread backlog identity, across restarts."""
+        async with self._engine.begin() as conn:
+            backlog = (await conn.execute(_global_backlog_snapshot())).mappings().first()
+            if backlog is None or backlog["total"] <= GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD:
+                return None
+            oldest, count = backlog["id"], backlog["total"]
+            result = await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:global-backlog:{oldest}').hex}",
+                project_id=None, from_kind="system", from_id="delivery-engine",
+                to_kind="user", to_id="dashboard", priority=50,
+                body_kind="delivery_alert", created_at=time.time(),
+                subject="Global supervisor unread backlog",
+                body=(f"The global supervisor has {count} unread messages "
+                      f"(threshold {GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD}); oldest is {oldest}. "
+                      "Inspect its authentication and delivery path. "
+                      "These messages remain unread; this alert does not acknowledge them."),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]).returning(messages))
+            row = result.mappings().first()
+            return _row_to_message(row) if row else None
+
     async def get_consumed_messages(
         self,
         to_kind: str,
         to_id: str,
         *,
         limit: int = 50,
+        project_id: str | None = None,
     ) -> list[Message]:
         """Rows this recipient already consumed — the re-read path.
 
@@ -274,6 +630,8 @@ class MessageQueriesMixin:
             .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
             .limit(limit)
         )
+        if project_id is not None:
+            stmt = stmt.where(messages.c.project_id == project_id)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
@@ -291,7 +649,9 @@ class MessageQueriesMixin:
             .where(
                 and_(
                     messages.c.delivered_at.is_(None),
+                    messages.c.read_at.is_(None),
                     messages.c.archived_at.is_(None),
+                    ~_obsolete_notice(),
                 )
             )
             .distinct()
@@ -318,6 +678,7 @@ class MessageQueriesMixin:
                         messages.c.id == message_id,
                         messages.c.delivered_at.is_(None),
                         messages.c.archived_at.is_(None),
+                        ~message_is_held(),
                     )
                 )
                 .values(delivered_at=time.time(), via=via)
@@ -333,6 +694,7 @@ class MessageQueriesMixin:
                     and_(
                         messages.c.id == message_id,
                         messages.c.read_at.is_(None),
+                        ~message_is_held(),
                     )
                 )
                 .values(
@@ -352,6 +714,10 @@ class MessageQueriesMixin:
                 messages.c.delivered_at.is_(None),
                 messages.c.read_at.is_(None),
                 messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                ~wake_already_delivered(),
+                ~stale_wait_wake(),
+                ~_obsolete_notice(),
                 or_(messages.c.last_notified_at.is_(None),
                     messages.c.last_notified_at <= now - retry_delay),
             ).values(
@@ -361,8 +727,42 @@ class MessageQueriesMixin:
             ))
             return result.rowcount > 0
 
+    async def message_held_by_wait(self, message_id: str) -> bool:
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(message_is_held()).where(
+                messages.c.id == message_id,
+            )))
+
+    async def message_reply_window_start(self, message_id: str) -> float | None:
+        async with self._engine.connect() as conn:
+            return await conn.scalar(select(reply_window_start()).where(
+                messages.c.id == message_id, messages.c.delivered_at.is_not(None),
+            ))
+
+    async def mark_wait_wake_delivered(self, message_id: str, *, now: float) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                "wait:" + wait_records.c.id + ":outcome" == message_id,
+                wait_records.c.outcome != "pending",
+                wait_records.c.wake_delivered_at.is_(None),
+            ).values(wake_delivered_at=now))
+
+    async def message_notification_is_pending(self, message_id: str) -> bool:
+        """A cold start can inject or settle mail after notification reservation."""
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(select(messages.c.id).where(
+                messages.c.id == message_id,
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_(None),
+                messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                ~wake_already_delivered(),
+                ~stale_wait_wake(),
+                ~_obsolete_notice(),
+            ).exists())))
+
     async def escalate_unread_message(self, message_id: str) -> Message | None:
-        """Copy an unanswered notification to global supervision exactly once.
+        """Copy an unanswered notification to supervision or the user exactly once.
 
         Lock the source against a racing acknowledgment; deterministic alert IDs
         make retries and daemon restarts idempotent. Never consume the source.
@@ -373,15 +773,27 @@ class MessageQueriesMixin:
                 messages.c.delivered_at.is_(None),
                 messages.c.read_at.is_(None),
                 messages.c.archived_at.is_(None),
+                ~_obsolete_notice(),
                 messages.c.notification_attempts >= 3,
             ).with_for_update())).mappings().first()
             if source is None or source["body_kind"] == "delivery_alert":
                 return None
-            result = await conn.execute(pg_insert(messages).values(
-                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:delivery-alert:{message_id}').hex}",
+            global_recipient = (await conn.execute(select(messages.c.id).where(
+                messages.c.id == message_id, _global_supervisor_mailbox(),
+            ))).scalar_one_or_none() is not None
+            alert_identity = f"aq:delivery-alert:{message_id}"
+            if global_recipient:
+                backlog = (await conn.execute(_global_backlog_snapshot())).mappings().one()
+                # Share the threshold alert's identity: a broken global mailbox
+                # cannot generate one user alert for every unread source row.
+                alert_identity = f"aq:global-backlog:{backlog['id']}"
+            result = await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, alert_identity).hex}",
                 project_id=source["project_id"],
                 from_kind="system", from_id="delivery-engine",
-                to_kind="session", to_id="supervisor-global", priority=source["priority"],
+                to_kind="user" if global_recipient else "session",
+                to_id="dashboard" if global_recipient else "supervisor-global",
+                priority=source["priority"],
                 body_kind="delivery_alert", created_at=time.time(),
                 subject=f"Unread message: {source['subject'] or message_id}",
                 body=(f"Message {message_id} to {source['to_kind']}:{source['to_id']} "
@@ -438,24 +850,81 @@ class MessageQueriesMixin:
         rather than a per-pass cache or a truncated recent-message scan. A later
         incoming delivery remains eligible even if its answer has identical text.
         """
-        reply = messages.alias("reply")
-        covered = False
-        if msg.delivered_at is not None:
-            covered = and_(
-                reply.c.via == "transcript_tail",
-                messages.c.project_id == msg.project_id,
-                messages.c.thread_id == msg.thread_id,
-                messages.c.from_kind == msg.from_kind,
-                messages.c.from_id == msg.from_id,
-                messages.c.to_kind == msg.to_kind,
-                messages.c.to_id == msg.to_id,
-                messages.c.delivered_at >= msg.delivered_at,
-            )
-        stmt = select(reply.c.id).select_from(
-            messages.join(reply, reply.c.reply_to_id == messages.c.id)
-        ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
         async with self._engine.begin() as conn:
-            return (await conn.execute(stmt)).first() is not None
+            return (await conn.execute(_reply_covering(msg))).first() is not None
+
+    async def create_transcript_tail_reply(
+        self, request: Message, *, body: str, attribution_window: float, window_start=None,
+    ) -> Message | None:
+        """Insert *request*'s transcript-tail reply, or ``None`` if none is owed.
+
+        One transaction locks the request row (``create_message`` takes the
+        same lock for a native reply), then re-checks, in order: the request is
+        still delivered and unarchived; no reply covers it; and no message from
+        another conversation reached the same recipient within
+        *attribution_window* of its delivery. A transcript turn carries no
+        message correlation, so with a second conversation in flight the turn
+        cannot be bound to either, and replaying it to both would invent an
+        answer for at least one (2026-10-12). The reply is inserted already
+        delivered, so no undelivered fabricated row survives a lost race.
+        """
+        reply = Message(
+            id=_new_message_id(),
+            project_id=request.project_id,
+            from_kind="session",
+            from_id=request.to_id,
+            to_kind=request.from_kind,
+            to_id=request.from_id,
+            body=body,
+            thread_id=request.thread_id,
+            created_at=time.time(),
+            reply_to_id=request.id,
+            delivered_at=time.time(),
+            via="transcript_tail",
+        )
+        async with self._engine.begin() as conn:
+            locked = (await conn.execute(
+                select(messages.c.delivered_at)
+                .where(messages.c.id == request.id, messages.c.archived_at.is_(None),
+                       ~message_is_held())
+                .with_for_update()
+            )).first()
+            if locked is None or locked.delivered_at != request.delivered_at:
+                return None
+            current_start = await conn.scalar(select(reply_window_start()).where(
+                messages.c.id == request.id,
+            ))
+            if current_start != (window_start or request.delivered_at):
+                return None
+            if (await conn.execute(_reply_covering(request))).first() is not None:
+                return None
+            if (await conn.execute(
+                _competing_delivery(request, attribution_window, window_start=window_start)
+            )).first() is not None:
+                return None
+            result = await insert_message_with_source_event(conn,
+                insert(messages).values(
+                    id=reply.id,
+                    project_id=reply.project_id,
+                    from_kind=reply.from_kind,
+                    from_id=reply.from_id,
+                    to_kind=reply.to_kind,
+                    to_id=reply.to_id,
+                    thread_id=reply.thread_id,
+                    subject=None,
+                    body=reply.body,
+                    priority=reply.priority,
+                    created_at=reply.created_at,
+                    delivered_at=reply.delivered_at,
+                    read_at=None,
+                    archive_after_inject=0,
+                    archived_at=None,
+                    reply_to_id=reply.reply_to_id,
+                    via=reply.via,
+                ).returning(messages.c.created_seq)
+            )
+            reply.created_seq = result.scalar_one()
+        return reply
 
     async def list_messages(
         self,
@@ -469,10 +938,16 @@ class MessageQueriesMixin:
         since: float | None = None,
         limit: int = 100,
         session_addresses: list[str] | None = None,
+        inbound_session_addresses: list[str] | None = None,
+        recipient_ids: list[str] | None = None,
     ) -> list[Message]:
         """List messages newest-first; system_only selects NULL-project records.
 
         Omitting project_id still means all projects, including system records.
+        ``inbound_session_addresses`` extends a project view only to inbound
+        mail for server-verified recipients. ``recipient_ids`` treats their
+        canonical aliases as one recipient. Both filters apply before LIMIT;
+        neither parameter is an authority derived from client arguments.
 
         ``since`` is an exclusive lower bound on ``created_at`` — the
         polling form ``aq chat --once`` uses it to fetch only what arrived
@@ -482,12 +957,20 @@ class MessageQueriesMixin:
         if system_only:
             conditions.append(messages.c.project_id.is_(None))
         elif project_id:
-            conditions.append(messages.c.project_id == project_id)
+            project_view = messages.c.project_id == project_id
+            if inbound_session_addresses:
+                project_view = or_(project_view, and_(
+                    messages.c.to_kind == "session",
+                    messages.c.to_id.in_(inbound_session_addresses),
+                ))
+            conditions.append(project_view)
         if thread_id:
             conditions.append(messages.c.thread_id == thread_id)
         if to_kind:
             conditions.append(messages.c.to_kind == to_kind)
-        if to_id:
+        if recipient_ids is not None:
+            conditions.append(messages.c.to_id.in_(recipient_ids))
+        elif to_id:
             conditions.append(messages.c.to_id == to_id)
         if not include_archived:
             conditions.append(messages.c.archived_at.is_(None))
