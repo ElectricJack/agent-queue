@@ -370,6 +370,13 @@ records past `valid_until` or `recheck_at` are marked stale. The core has no emb
 semantic retrieval provider may only re-rank and return references (`providers.py`), and
 none is enabled.
 
+`aq record capabilities` separates profile grants (`profile_granted_operations`)
+from operations admitted by current project activation, live session authorization
+and write flags (`granted_operations`). `unavailable_operations` maps excluded
+grants to the service refusal code. Feature flags are reported separately; record
+ownership, revision and write-claim checks still apply when an operation is used.
+Workers cannot activate a disabled project through a profile grant.
+
 **Protection.** Described in [knowledge protection](../design/knowledge-protection.md):
 
 - *Proposals.* Anyone with the grant may propose a change. A supervisor accepts or rejects
