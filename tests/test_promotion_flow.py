@@ -321,7 +321,7 @@ def handler():
     return value
 
 
-async def test_command_validates_using_repository_default_and_reports_remote_gap():
+async def test_command_validates_using_repository_default_and_reports_unavailable_remote():
     value = handler()
     result = await value._cmd_promote_validate(
         {
@@ -332,7 +332,7 @@ async def test_command_validates_using_repository_default_and_reports_remote_gap
         }
     )
     assert result["success"] and result["valid"]
-    assert result["warnings"][0]["code"] == "not_implemented"
+    assert result["warnings"][0]["code"] == "remote_unverifiable"
     assert result["warnings"][0]["layer"] == 4
     value._promotion_manifest.assert_awaited_once()
 
@@ -497,7 +497,7 @@ def test_migration_column_is_nullable_jsonb_and_inspector_guarded():
 
     column = projects.c.promotion_flow
     assert isinstance(column.type, JSONB) and column.nullable and column.server_default is None
-    migration = import_module("migrations.versions.a00000000081_projects_promotion_flow")
+    migration = import_module("migrations.versions.a00000000085_projects_promotion_flow")
     inspector = MagicMock()
     inspector.has_table.return_value = True
     inspector.get_columns.return_value = [{"name": "id"}]

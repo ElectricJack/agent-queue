@@ -231,6 +231,35 @@ def test_policy_max_wait_round_trips_a_configured_bound():
     assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy
 
 
+def test_optional_train_policy_preserves_frozen_snapshots():
+    policy = HierarchicalIntegrationPolicy.model_validate(_minimal_policy_values())
+    frozen = policy.model_dump(mode="json")
+
+    assert policy.train is None
+    assert "train" not in frozen
+    assert "train" not in policy.model_dump()
+    assert "train" not in json.loads(policy.model_dump_json())
+    assert HierarchicalIntegrationPolicy.model_validate(frozen) == policy
+    assert HierarchicalIntegrationPolicy.model_validate(frozen).model_dump(mode="json") == frozen
+
+
+@pytest.mark.parametrize("train", [{}, {"cadence_seconds": 90, "settling_cap_seconds": 600}])
+def test_train_policy_defaults_and_configured_timing_round_trip(train):
+    policy = HierarchicalIntegrationPolicy.model_validate({**_minimal_policy_values(), "train": train})
+    assert policy.train.cadence_seconds == train.get("cadence_seconds", 300)
+    assert policy.train.settling_cap_seconds == train.get("settling_cap_seconds", 1800)
+    assert HierarchicalIntegrationPolicy.model_validate(policy.model_dump(mode="json")) == policy
+
+
+@pytest.mark.parametrize("field", ["cadence_seconds", "settling_cap_seconds"])
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), None, "soon"])
+def test_train_policy_requires_positive_seconds(field, value):
+    with pytest.raises(ValueError, match=field):
+        HierarchicalIntegrationPolicy.model_validate(
+            {**_minimal_policy_values(), "train": {field: value}}
+        )
+
+
 @pytest.mark.parametrize(
     "max_wait", [0, -1, float("inf"), float("-inf"), float("nan"), None, "soon"]
 )
@@ -296,6 +325,30 @@ def test_hybrid_promotion_reads_hosted_checks():
     # A promotion step has no candidate gate, only the PR checks GitHub enforces.
     assert ci.source_for("promotion") == "hybrid"
     assert ci.local_kinds() == ("root", "epic")
+    assert ci.requires_hosted("root") and ci.requires_hosted("promotion")
+    assert not ci.requires_hosted("epic")
+
+
+@pytest.mark.parametrize("requirements,root,epic", [
+    ({"root": False}, False, False), ({"epic": True}, True, True),
+    ({"root": False, "epic": True}, False, True),
+])
+def test_hybrid_hosted_requirements_are_explicit_per_boundary(requirements, root, epic):
+    policy = HierarchicalIntegrationPolicy.model_validate({
+        **_minimal_policy_values(), "ci": {"source": "hybrid", "commands": CI_COMMANDS,
+                                          "hosted_attestation": requirements},
+    })
+    assert policy.ci.requires_hosted("root") is root
+    assert policy.ci.requires_hosted("epic") is epic
+    assert policy.model_dump(mode="json")["ci"]["hosted_attestation"] == requirements
+
+
+def test_ci_hosted_requirement_defaults_preserve_existing_snapshot_shape():
+    values = {**_minimal_policy_values(), "ci": {
+        "source": "hybrid", "commands": CI_COMMANDS,
+    }}
+    policy = HierarchicalIntegrationPolicy.model_validate(values)
+    assert "hosted_attestation" not in policy.model_dump(mode="json")["ci"]
 
 
 @pytest.mark.parametrize("ci, error", [
@@ -886,7 +939,10 @@ async def test_active_train_replaces_the_runtimes_and_never_dispatches_legacy_ev
         await service.stop()
         train.stop.assert_awaited_once()
     assert calls == [("train", 100), ("maintenance", 100)] * 2
-    outbox.dispatch_due.assert_not_awaited()
+    from src.integration.outbox import ACTIVE_OUTBOX_EVENT_TYPES
+
+    assert outbox.dispatch_due.await_count == 2
+    outbox.dispatch_due.assert_awaited_with(100, event_types=ACTIVE_OUTBOX_EVENT_TYPES)
 
 
 @pytest.mark.parametrize(
