@@ -383,6 +383,7 @@ async def test_launch_refuses_member_held_after_assignment(db, tmp_path, caplog)
 async def test_wait_admission_retains_ingestion_hold(db):
     from types import SimpleNamespace
 
+    from src.integration.admission import observe_admission
     from src.waits.admission import AdmissionReader
 
     await mktask(db, "held-wait")
@@ -390,6 +391,7 @@ async def test_wait_admission_retains_ingestion_hold(db):
     orchestrator = SimpleNamespace(
         db=db, config=AppConfig(), _worktrees_enabled=lambda: False,
         _pool_quarantine_state=lambda *args: (None, None),
+        _delivery_admission=lambda ids: observe_admission(db, ids, None),
     )
     async with db._engine.connect() as conn:
         observed = await AdmissionReader(orchestrator, clock=lambda: NOW).observe_task(

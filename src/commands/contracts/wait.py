@@ -84,6 +84,8 @@ class WaitListArgs(WaitScopeArgs):
 
 class WaitCancelArgs(WaitPointerArgs):
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
+    owner_kind: Literal["scheduler", "integration", "playbook"] | None = None
+    owner_id: str | None = None
 
 
 class WaitValue(CommandValue):
