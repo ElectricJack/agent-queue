@@ -234,7 +234,7 @@ async def test_operator_playbooks_need_project_scope_and_reviewed_exact_hash(ope
         operator_grant_var.reset(token)
 
 
-@pytest.mark.parametrize("command", ["playbook_activate", "playbook_delete", "policy_apply", "pr_merge", "review_decide", "decision_record", "integration_settle_batch"])
+@pytest.mark.parametrize("command", ["playbook_activate", "playbook_delete", "policy_apply", "pr_merge", "review_decide", "decision_record", "integration_settle_batch", "integration_release_withheld_source"])
 async def test_raw_operator_commands_cannot_bypass_wrapper_even_with_capabilities_off(operator, command):
     handler, _ = operator
     handler.config.security.capability_enforcement = "off"
