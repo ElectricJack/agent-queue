@@ -25,7 +25,6 @@ import pytest
 from sqlalchemy import delete, insert
 
 from src.config import DiscordConfig, DiscordEscalationsConfig
-from src.database import Database
 from src.database.tables import doc_reviews, gates
 from src.doctor.escalation_checks import CHECK_ID, escalation_checks
 from src.doctor.models import DoctorContext, Severity
@@ -37,7 +36,6 @@ from src.escalations.sweep import (
     SweepFacts,
 )
 from src.models import Project, ProjectStatus, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_000_000.0
 CHANNEL = "424242424242424242"
@@ -61,14 +59,12 @@ def config(*, stateful: bool = True):
 
 
 @pytest.fixture
-async def world():
-    db = Database(lease_dsn("escalation_sweep"))
-    await db.initialize()
-    await db.create_project(Project(id="p", name="Active"))
+async def world(reuse_database):
+    db = await reuse_database("escalation_sweep")
+    await db.create_project(Project(id="p", name="Active", supervisor_enabled=True))
     await db.create_project(Project(id="paused", name="Paused", status=ProjectStatus.PAUSED))
     clock = Clock()
     yield SimpleNamespace(db=db, clock=clock)
-    await db.close()
 
 
 async def seed_pile(world) -> dict[str, list[str]]:
@@ -95,6 +91,7 @@ async def seed_pile(world) -> dict[str, list[str]]:
             "incident_key": f"core:{escalation_id}",
             "supervisor_owner": "supervisor-p",
             "summary": f"old question {escalation_id}",
+            "task_title": "Review the outstanding project decision",
             "investigation": "left over from before the stateful phase",
             "decision_requested": "Does this still matter?",
             "severity": "medium",
@@ -249,7 +246,8 @@ async def historical_incident(world, *, task_id=None, source_kind="supervisor", 
     row, _ = await world.db.create_escalation(
         id="esc-history", project_id="p", task_id=task_id, source_kind=source_kind,
         source_identity=identity, incident_key="history", supervisor_owner="supervisor-p",
-        summary="Historical request", investigation="Preserved evidence",
+        task_title="Historical request", summary="Historical request",
+        investigation="Preserved evidence",
         decision_requested="Does this still need action?", severity="medium", now=NOW,
     )
     return row

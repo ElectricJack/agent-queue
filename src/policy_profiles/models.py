@@ -7,11 +7,14 @@ import json
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from src.portable_setup import PoolSettings, ProjectSettings
 
 Scope = Literal["project", "system"]
 Placement = Literal["project", "global", "skip"]
 PolicyType = Literal[
-    "playbook", "agent_settings", "promotion_flow", "ci_test", "routing", "template"
+    "playbook", "agent_settings", "promotion_flow", "ci_test", "routing", "template",
+    "intelligence_class", "pool", "project_settings",
+    "integration_settings",
 ]
 
 
@@ -23,13 +26,23 @@ class AgentConfig(Strict):
     harness: str | None = None
     default_class: str | None = None
     needs_workspace: bool | None = None
-    lifecycle: Literal["task", "pool"] | None = None
+    lifecycle: Literal["task", "pool", "named"] | None = None
     workspaces: list[str] | None = None
     permission_mode: str | None = None
     codex_full_auto: bool | None = None
     codex_service_tier: Literal["default", "fast"] | None = None
     claude_dangerously_skip_permissions: bool | None = None
     read_only: bool | None = None
+    enabled: bool | None = None
+    min_active: int | None = None
+    max_active: int | None = None
+    min_per_project: int | None = None
+    max_claims_per_session: int | None = None
+    mode: str | None = None
+    wake_mode: str | None = None
+    idle_timeout: int | None = None
+    max_session_age: int | None = None
+    allow_base_checkout: bool | None = None
 
 
 class Capabilities(Strict):
@@ -44,6 +57,7 @@ class PolicyAgentSettings(Strict):
     extends: str = ""
     template: bool = False
     config: AgentConfig = Field(default_factory=AgentConfig)
+    pool: PoolSettings | None = None
     capabilities: Capabilities | None = None
     role: str = ""
     rules: str = ""
@@ -61,6 +75,22 @@ class PlaybookPolicy(Strict):
 class PromotionPolicy(Strict):
     type: Literal["promotion_flow"] = "promotion_flow"
     flow: list[dict[str, Any]]
+
+
+class IntegrationSettings(Strict):
+    """Portable inputs, never a source installation's activation identities."""
+
+    type: Literal["integration_settings"] = "integration_settings"
+    version: Literal[1] = 1
+    engine: Literal["shadow", "active"]
+    integration_mode: Literal["pull_request"] = "pull_request"
+    hierarchical_integration_mode: Literal["disabled", "observe", "hierarchy", "train"]
+    integration_repository_id: str | None = None
+    default_branch: str
+    # Placeholders may stand for check-name arrays until materialization. The
+    # ordinary integration policy validator validates the resolved structure.
+    policy: dict[str, Any] | None = None
+    promotion_flow: list[dict[str, Any]] | None = None
 
 
 class PathAreas(Strict):
@@ -145,13 +175,32 @@ class TemplatePolicy(Strict):
     content: str
 
 
+class IntelligenceClassPolicy(Strict):
+    type: Literal["intelligence_class"] = "intelligence_class"
+    source: str
+
+
+class PoolPolicy(Strict):
+    type: Literal["pool"] = "pool"
+    settings: PoolSettings
+
+
+class ProjectPolicy(Strict):
+    type: Literal["project_settings"] = "project_settings"
+    settings: ProjectSettings
+
+
 Payload = Annotated[
     PlaybookPolicy
     | PolicyAgentSettings
     | PromotionPolicy
     | CITestPolicy
     | RoutingPreferences
-    | TemplatePolicy,
+    | TemplatePolicy
+    | IntelligenceClassPolicy
+    | PoolPolicy
+    | ProjectPolicy
+    | IntegrationSettings,
     Field(discriminator="type"),
 ]
 PAYLOAD = TypeAdapter(Payload)
@@ -177,6 +226,19 @@ class Item(Strict):
     original_scope: Scope
     checksum: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     payload: Payload
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_verified_payload(cls, value):
+        # Verify the bytes' logical payload before filling new optional fields.
+        # Older v1 archives did not serialize fields added by newer adapters.
+        if isinstance(value, dict) and isinstance(value.get("payload"), dict):
+            payload = PAYLOAD.validate_python(value["payload"])
+            if checksum(value["payload"]) != value.get("checksum"):
+                raise ValueError(f"item {value.get('id')}: payload checksum mismatch")
+            value = {**value, "payload": payload,
+                     "checksum": checksum(payload.model_dump(mode="json"))}
+        return value
 
     @model_validator(mode="after")
     def consistent(self) -> Item:
@@ -225,7 +287,9 @@ class DiffItem(Strict):
     current_checksum: str | None = None
     diff: str = ""
     destinations: list[str] = []
-    state: Literal["copy", "pending review", "pending configuration", "system template"] = "copy"
+    state: Literal[
+        "copy", "pending review", "pending configuration", "system template", "configure integration"
+    ] = "copy"
 
 
 class ExportRequest(Strict):

@@ -85,6 +85,7 @@ async def mark_integration_handoff_released(
     *,
     workspace,
     task_id: str,
+    preparation_epoch: int | None = None,
 ) -> bool:
     """Atomically record detach proof and release the exact old DB lock.
 
@@ -155,6 +156,11 @@ async def mark_integration_handoff_released(
         ):
             return False
 
+        if preparation_epoch is not None and not await _preparation_claim_is_current(
+            conn, session_row, task_id, preparation_epoch
+        ):
+            return False
+
         released_owner = await conn.execute(
             update(integration_branch_owners)
             .where(
@@ -191,8 +197,9 @@ async def mark_integration_handoff_released(
                 raise RuntimeError("integration pool handoff claim changed before release")
             claim_release = await db.release_claim(
                 session_row["id"],
-                # The successor decides when the old writer may run again.
-                task_status=TaskStatus.PAUSED,
+                # An unactivated preparation has no work to hold for a
+                # successor. Other transfers retain the ordinary pause.
+                task_status=(TaskStatus.READY if preparation_epoch is not None else TaskStatus.PAUSED),
                 context="integration_handoff",
                 now=time.time(),
                 expected_task_id=task_id,
@@ -341,6 +348,8 @@ async def mark_integration_pool_handoff_released(
     task_id: str,
     session_instance_token: str,
     conn=None,
+    preparation_epoch: int | None = None,
+    require_preparation: bool = False,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -374,7 +383,17 @@ async def mark_integration_pool_handoff_released(
             return await mark_integration_pool_handoff_released(
                 db, owner, workspace=workspace, task_id=task_id,
                 session_instance_token=session_instance_token, conn=owned_conn,
+                preparation_epoch=preparation_epoch,
+                require_preparation=require_preparation,
             )
+    if require_preparation and (
+        preparation_epoch is None or await db.lock_claim_workspace(
+            conn, owner.get("session_id"), task_id, epoch=preparation_epoch,
+            instance_token=session_instance_token, expected_workspace=workspace,
+            allow_retained_preparation=True,
+        ) is None
+    ):
+        return False
     # Match release_claim: session before owner/workspace.
     session_row = (await conn.execute(select(sessions).where(
         sessions.c.id == owner.get("session_id")
@@ -418,6 +437,11 @@ async def mark_integration_pool_handoff_released(
     ):
         return False
 
+    if preparation_epoch is not None and not await _preparation_claim_is_current(
+        conn, session_row, task_id, preparation_epoch
+    ):
+        return False
+
     released_owner = await conn.execute(
         update(integration_branch_owners)
         .where(
@@ -439,6 +463,22 @@ async def mark_integration_pool_handoff_released(
     if released_owner.rowcount != 1:
         raise RuntimeError("integration pool handoff release lost its compare-and-swap")
     return True
+
+
+async def _preparation_claim_is_current(conn, session_row, task_id: str, epoch: int) -> bool:
+    """Revalidate the unactivated claim that permits a published-default checkout."""
+    task_row = (await conn.execute(
+        select(tasks).where(tasks.c.id == task_id).with_for_update()
+    )).mappings().one_or_none()
+    return bool(
+        task_row is not None
+        and session_row["lifecycle"] == "pool"
+        and session_row["claim_phase"] == "preparing"
+        and session_row["last_claim_epoch"] == epoch
+        and task_row["claim_epoch"] == epoch
+        and task_row["status"] == TaskStatus.IN_PROGRESS.value
+        and task_row["assigned_agent_id"] == session_row["agent_id"]
+    )
 
 
 async def mark_stopped_integration_pool_handoff_released(
@@ -753,6 +793,16 @@ async def detach_slot_for_integration_handoff(
         allow_published_detached_head=allow_published_detached_head,
         require_detached=require_detached,
     )
+
+
+async def detach_task_slot(db, orch, task, workspace, branch: str, **options) -> bool:
+    """Detach *task*'s slot through its repository binding; False without proof."""
+    project = await db.get_project(task.project_id)
+    repository = await db.get_repo(task.repo_id or project.integration_repository_id)
+    return bool(repository and await detach_slot_for_integration_handoff(
+        db, orch.git, orch._git_mutex, workspace, expected_branch=branch,
+        repository_url=repository.url, default_branch=repository.default_branch, **options,
+    ))
 
 
 async def _probe_workspace_checkout(
@@ -1263,9 +1313,9 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
                 select(sessions.c.id)
                 .where(
                     sessions.c.id != session_id,
-                    sessions.c.agent_id == session_row["agent_id"],
-                    sessions.c.work_dir == session_row["work_dir"],
-                    sessions.c.started_at > session_row["started_at"],
+                    or_(sessions.c.agent_id == session_row["agent_id"],
+                        sessions.c.work_dir == session_row["work_dir"]),
+                    sessions.c.started_at >= session_row["started_at"],
                 )
                 .limit(1)
             )
@@ -1293,8 +1343,8 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
         or task_row["repo_id"] != owner_row["repository_id"]
         or task_row["branch_name"] != owner_row["ref"]
         or workspace_row["locked_by_task_id"] is not None
-        or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
-        or agent_row["state"] != AgentState.IDLE.value
+        or workspace_row["locked_by_agent_id"] not in {None, session_row["agent_id"]}
+        or agent_row["state"] not in {AgentState.IDLE.value, AgentState.RETIRED.value}
         or agent_row["current_task_id"] is not None
         or newer_session is not None
     ):
