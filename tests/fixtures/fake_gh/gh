@@ -31,6 +31,9 @@ if [ -n "${FAKE_GH_FAIL_STDERR:-}" ]; then
 fi
 
 state="${FAKE_GH_STATE:-authed}"
+if [ -n "${GH_CONFIG_DIR:-}" ] && [ -n "${GH_TOKEN:-}" ]; then
+  state="authed"
+fi
 login="${FAKE_GH_LOGIN:-octocat}"
 
 not_logged_in() {
@@ -65,7 +68,49 @@ while [ "$i" -lt "${#args[@]}" ]; do
   i=$((i + 1))
 done
 
-case "${1:-} ${2:-}" in
+# The shared runner supplies HTTP framing, an explicit host and JSON GraphQL
+# bodies on stdin. Locate the endpoint without depending on option positions.
+command_pair="${1:-} ${2:-}"
+api_endpoint=""
+include_headers=false
+if [ "${1:-}" = "api" ]; then
+  i=1
+  while [ "$i" -lt "${#args[@]}" ]; do
+    case "${args[$i]}" in
+      --include|-i) include_headers=true ;;
+      --hostname|--method|-X|--input|--jq|-q|-f|-F)
+        i=$((i + 1))
+        ;;
+      -*) ;;
+      *)
+        if [ -z "$api_endpoint" ]; then
+          api_endpoint="${args[$i]}"
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  command_pair="api $api_endpoint"
+fi
+
+api_headers() {
+  if [ "$include_headers" = true ]; then
+    printf 'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n'
+  fi
+}
+
+if [[ " $* " == *" --input - "* ]]; then
+  payload="$(cat)"
+  if [ -n "${FAKE_GH_STDIN_LOG:-}" ]; then
+    printf '%s\n' "$payload" >>"$FAKE_GH_STDIN_LOG"
+  fi
+  field_query="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("query", ""))')"
+  field_after="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("variables", {}).get("after", ""))')"
+  field_first="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("variables", {}).get("first", ""))')"
+  field_q="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("variables", {}).get("q", ""))')"
+fi
+
+case "$command_pair" in
   "auth status")
     if [ "$state" = "authed" ]; then
       echo "github.com"
@@ -82,6 +127,7 @@ case "${1:-} ${2:-}" in
     ;;
   "api user")
     [ "$state" = "authed" ] || not_logged_in 4
+    api_headers
     printf '%s\n' "$login"
     exit 0
     ;;
@@ -89,6 +135,7 @@ case "${1:-} ${2:-}" in
     [ "$state" = "authed" ] || not_logged_in 4
     case "$field_query" in
       *organizations*)
+        api_headers
         cat <<JSON
 {"data":{"viewer":{"login":"${login}","organizations":{"nodes":[
   {"login":"acme-corp","viewerCanCreateRepositories":true},
@@ -99,6 +146,7 @@ JSON
         exit 0
         ;;
       *search\(*)
+        api_headers
         if [ -z "$field_after" ]; then
           cat <<JSON
 {"data":{"search":{"pageInfo":{"endCursor":"CURSOR-PAGE-2","hasNextPage":true},"nodes":[
@@ -127,6 +175,13 @@ JSON
     esac
     echo "unsupported graphql query" >&2
     exit 1
+    ;;
+  "api repos/"*)
+    [ "$state" = "authed" ] || not_logged_in 4
+    api_headers
+    full="${api_endpoint#repos/}"
+    printf '{"id":42,"full_name":"%s"}\n' "$full"
+    exit 0
     ;;
   "repo create")
     [ "$state" = "authed" ] || not_logged_in 4
