@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import (
@@ -36,6 +37,13 @@ REQUEUE_INTEGRATION_OWNER_ROLES = RETRYABLE_INTEGRATION_OWNER_ROLES | {"verifier
 # the longest an undelivered integration event keeps retrying before the
 # outbox quarantines it as an explicit failed delivery.
 DEFAULT_INTEGRATION_MAX_WAIT_SECONDS = 3600.0
+
+# Task priority for train/batch repair filings (lower runs first).  A repair
+# holds a sealed batch, so every task waiting on that target branch is stuck
+# behind it; at the ordinary default of 100 it starved for hours behind
+# ordinary work (bright-stone-28).  Stopgap until repair waits get their own
+# scheduling (eager-forge-44).
+INTEGRATION_REPAIR_PRIORITY = 1
 
 # Shared refusal code for completion without a trusted CI binding. Keep this
 # in the value layer so command schemas need no database implementation imports.
@@ -76,17 +84,6 @@ class PromotionValue(BaseModel):
     prepared_sha: str | None = None
 
 
-class ConflictResolutionInput(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    intent_id: str
-    operation_id: str
-    resolved_head_sha: str
-    resolved_tree_sha: str
-    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
-    fence: Fence
-
-
 class RequiredCheckSet(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -95,9 +92,58 @@ class RequiredCheckSet(BaseModel):
     producer_id: str
 
 
+class HostedCheckPolicy(BaseModel):
+    """CI inputs for trust bootstrap, independent of hierarchical routing."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    version: str = Field(min_length=1)
+    names: list[str] = Field(min_length=1)
+    producer_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    check_sets: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def valid_check_sets(self) -> HostedCheckPolicy:
+        if not self.version.strip():
+            raise ValueError("check version must be nonempty")
+        for name, checks in [("required checks", self.names), *self.check_sets.items()]:
+            if (not name.strip() or not checks or any(not check.strip() for check in checks)
+                    or len(set(checks)) != len(checks)):
+                raise ValueError("check sets must have nonempty names and distinct nonempty checks")
+        return self
+
+
+def invalid_policy_producers(raw_policy: Any) -> list[dict[str, Any]]:
+    """Find invalid hosted producer IDs without invalidating frozen snapshots."""
+    if not isinstance(raw_policy, dict):
+        return []
+    invalid = []
+    for boundary in ("parent", "root"):
+        settings = raw_policy.get(boundary)
+        checks = settings.get("required_checks") if isinstance(settings, dict) else None
+        if not isinstance(checks, dict):
+            continue  # Structural policy validation owns missing check sets.
+        producer = checks.get("producer_id")
+        if not isinstance(producer, str) or re.fullmatch(r"[1-9][0-9]*", producer) is None:
+            invalid.append({"field": f"{boundary}.required_checks.producer_id",
+                            "producer_id": producer})
+    return invalid
+
+
+def validate_policy_producers(raw_policy: Any) -> None:
+    invalid = invalid_policy_producers(raw_policy)
+    if invalid:
+        fields = ", ".join(item["field"] for item in invalid)
+        raise ValueError(f"{fields} must be canonical positive decimal GitHub App IDs "
+                         "as strings (GitHub Actions: 15368)")
+
+
 class RepairPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Playbook-owned policy for task-free repair; legacy task repairs ignore these.
+    split_attributed: bool = True
+    deferred_revisit_seconds: int = Field(default=300, gt=0)
     primary_seconds: int = Field(default=1800, gt=0)
     primary_attempts: int = Field(default=3, gt=0)
     debug_seconds: int = Field(default=3600, gt=0)
@@ -194,7 +240,10 @@ class IntegrationBoundaryPolicy(BaseModel):
     admission: Literal["reviewed", "authorized"] = "reviewed"
     authorized_task_ids: tuple[str, ...] = ()
     repair: RepairPolicy
-    route: PlaybookRoute
+    # Legacy playbook route. The git-first train never reads it, and the
+    # reviewed integration playbooks it named are retired, so it is optional;
+    # an absent route is omitted from serialized snapshots.
+    route: PlaybookRoute | None = None
     primary_intelligence_class: str | None = Field(default=None, min_length=1)
     # Deprecated and ignored, like ``RepairPolicy.debug_profile_id``: repair
     # and verifier tasks carry the ``*_intelligence_class`` hint only.
@@ -202,6 +251,13 @@ class IntegrationBoundaryPolicy(BaseModel):
     verifier_intelligence_class: str | None = Field(default=None, min_length=1)
     # Deprecated and ignored; see ``primary_profile_id``.
     verifier_profile_id: str | None = Field(default=None, min_length=1)
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_route(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        dumped = handler(self)
+        if self.route is None:
+            dumped.pop("route", None)
+        return dumped
 
 
 class IntegrationCleanupPolicy(BaseModel):
@@ -223,12 +279,149 @@ class IntegrationCleanupPolicy(BaseModel):
 
 
 class IntegrationTrainPolicy(BaseModel):
-    """Root admission timing; epic collection does not wait for this window."""
+    """Deprecated timing fields only parse old snapshots; dispatch follows lane occupancy."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    playbook_id: str | None = Field(default=None, min_length=1)
     cadence_seconds: int = Field(default=300, gt=0)
     settling_cap_seconds: int = Field(default=1800, gt=0)
+    speculative_ci: bool = False
+    # Operator-validated compute evidence, scoped to this project's policy.
+    speculative_public_hosted: bool = False
+    speculative_batch_ci_p90_seconds: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def speculative_compute(self) -> IntegrationTrainPolicy:
+        if self.speculative_ci and not (
+            self.speculative_public_hosted or
+            (self.speculative_batch_ci_p90_seconds is not None and
+             self.speculative_batch_ci_p90_seconds < 60)
+        ):
+            raise ValueError("speculative_ci_compute_not_eligible: public free-hosted runners "
+                             "or measured batch CI p90 below 60 seconds required")
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_speculative_defaults(self, handler: SerializerFunctionWrapHandler):
+        dumped = handler(self)
+        if self.playbook_id is None:
+            dumped.pop("playbook_id", None)
+        if not self.speculative_ci:
+            dumped.pop("speculative_ci", None)
+        if not self.speculative_public_hosted:
+            dumped.pop("speculative_public_hosted", None)
+        if self.speculative_batch_ci_p90_seconds is None:
+            dumped.pop("speculative_batch_ci_p90_seconds", None)
+        return dumped
+
+
+CISource = Literal["hosted", "local", "hybrid"]
+#: The train's target kinds a CI source can be chosen for.  ``root`` covers a
+#: root candidate and the root PR gate, ``epic`` an epic (parent boundary)
+#: candidate, and ``promotion`` a promotion step's gate.
+CITargetKind = Literal["root", "epic", "promotion"]
+CI_TARGET_KINDS: tuple[CITargetKind, ...] = ("root", "epic", "promotion")
+
+
+class IntegrationCIPolicy(BaseModel):
+    """Which runner produces each boundary's required checks.
+
+    ``hosted`` reads the GitHub Actions checks the boundary requires.
+    ``local`` runs them on this box through the local job runner, one command
+    per required check name, and reads no GitHub CI: GitHub is just the push
+    remote. ``hybrid`` gates candidates locally, with hosted candidate checks
+    and App attestation where ``hosted_attestation`` requires them. Root
+    candidates require both by default. Root PR checks remain hosted, and
+    ``promotion: hybrid`` uses the hosted promotion gate.
+
+    Whichever runner produced them, green means the boundary's same named
+    required checks passed, so baselines, repairs and gate states read alike.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: CISource = "hosted"
+    #: Per target kind overrides of ``source``; unset kinds use ``source``.
+    root: CISource | None = None
+    epic: CISource | None = None
+    promotion: CISource | None = None
+    #: Hybrid candidate boundaries needing hosted checks and App attestation.
+    #: An explicit false opts a boundary out; hosted sources always require both.
+    hosted_attestation: dict[Literal["root", "epic"], bool] = Field(
+        default_factory=lambda: {"root": True, "epic": False}, strict=True,
+    )
+    #: The local runner's command for each required check name, e.g.
+    #: ``{"lint": "ruff check src", "unit": "aq test tests/test_x.py"}``.
+    commands: dict[str, str] = Field(default_factory=dict)
+    #: Seconds a local command may wait for a test slot, then may run.
+    queue_seconds: int = Field(default=600, ge=0, le=3600)
+    run_seconds: int = Field(default=300, gt=0, le=3600)
+
+    @model_validator(mode="after")
+    def finite_commands(self) -> IntegrationCIPolicy:
+        from src.jobs.adapters import finite_command
+        from src.jobs.policy import JobError
+
+        for name, command in self.commands.items():
+            if not name:
+                raise ValueError("ci.commands names a check with an empty name")
+            try:
+                finite_command(command)
+            except JobError:
+                raise ValueError(
+                    f"ci.commands[{name!r}] is not a finite job command: {command!r}"
+                ) from None
+        if self.local_kinds() and not self.commands:
+            raise ValueError("a local or hybrid ci source requires ci.commands")
+        return self
+
+    def source_for(self, kind: CITargetKind) -> CISource:
+        return getattr(self, kind) or self.source
+
+    def requires_hosted(self, kind: CITargetKind) -> bool:
+        source = self.source_for(kind)
+        return source == "hosted" or (source == "hybrid" and (
+            kind == "promotion" or self.hosted_attestation.get(kind, kind == "root")
+        ))
+
+    @model_serializer(mode="wrap")
+    def _omit_default_hosted_attestation(self, handler: SerializerFunctionWrapHandler):
+        dumped = handler(self)
+        if self.hosted_attestation == {"root": True, "epic": False}:
+            dumped.pop("hosted_attestation", None)
+        return dumped
+
+    def local_kinds(self) -> tuple[CITargetKind, ...]:
+        """Kinds with a gate the local runner produces.
+
+        A promotion step has no candidate gate of its own, only the checks
+        GitHub enforces on its PR, so ``hybrid`` there is ``hosted``.
+        """
+        return tuple(kind for kind in CI_TARGET_KINDS if self.source_for(kind) == "local"
+                     or (self.source_for(kind) == "hybrid" and kind != "promotion"))
+
+
+class DeliveryWatchdogPolicy(BaseModel):
+    """Per-project stuck-delivery threshold: max(floor, multiplier x p90 batch CI).
+
+    ``stuck_after_seconds`` replaces the measured value outright.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_seconds: float = Field(default=1800, gt=0, allow_inf_nan=False)
+    ci_multiplier: float = Field(default=2, gt=0, allow_inf_nan=False)
+    stuck_after_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class CloseMergePolicy(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    author_assist: bool = True
+    author_budget_seconds: float = Field(default=1200, gt=0, allow_inf_nan=False)
 
 
 class HierarchicalIntegrationPolicy(BaseModel):
@@ -243,18 +436,48 @@ class HierarchicalIntegrationPolicy(BaseModel):
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cross_epic_prerequisites: Literal["default_branch", "completed"] = "default_branch"
-    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = None
+    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = Field(
+        default=None,
+        description=("Unset stacks completed same-repository sources; "
+                     "wait-for-parent is an explicit opt-out."),
+    )
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
     train: IntegrationTrainPolicy | None = None
     max_wait_seconds: float = Field(
         default=DEFAULT_INTEGRATION_MAX_WAIT_SECONDS, gt=0, allow_inf_nan=False
     )
+    #: Unset is hosted for every target kind.
+    ci: IntegrationCIPolicy | None = None
+    delivery_watchdog: DeliveryWatchdogPolicy | None = None
+    close_merge: CloseMergePolicy = Field(default_factory=CloseMergePolicy)
+
+    @model_validator(mode="after")
+    def local_commands_cover_required_checks(self) -> HierarchicalIntegrationPolicy:
+        # A local runner must produce the boundary's own named checks, or a
+        # green local candidate would mean something a hosted one does not.
+        if (self.train and self.train.speculative_ci and self.ci and
+                self.ci.source_for("root") != "hosted"):
+            raise ValueError("speculative_ci_requires_hosted_root: local/hybrid root CI "
+                             "cannot speculate")
+        if self.ci is None:
+            return self
+        for kind, boundary in (("root", self.root), ("epic", self.parent)):
+            if self.ci.source_for(kind) == "hosted":
+                continue
+            missing = sorted(set(boundary.required_checks.names) - set(self.ci.commands))
+            if missing:
+                raise ValueError(
+                    f"ci source for {kind} is {self.ci.source_for(kind)} but ci.commands "
+                    f"has no command for required check(s) {', '.join(missing)}"
+                )
+        return self
 
     @model_serializer(mode="wrap")
     def _omit_optional_defaults(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         # Batches, operations and stages compare frozen snapshots by dict
-        # equality. Older snapshots lack optional policy additions, so omit
-        # their defaults rather than invalidating in-flight work on upgrade.
+        # equality. Older snapshots lack optional policy additions (``train``,
+        # ``ci`` and others), so omit their defaults rather than invalidating
+        # in-flight work on upgrade.
         dumped = handler(self)
         if self.cross_epic_prerequisites == "default_branch":
             dumped.pop("cross_epic_prerequisites", None)
@@ -264,7 +487,52 @@ class HierarchicalIntegrationPolicy(BaseModel):
             dumped.pop("max_wait_seconds", None)
         if self.train is None:
             dumped.pop("train", None)
+        if self.ci is None:
+            dumped.pop("ci", None)
+        if self.delivery_watchdog is None:
+            dumped.pop("delivery_watchdog", None)
+        close = self.close_merge.model_dump(exclude_defaults=True)
+        if close:
+            dumped["close_merge"] = close
+        else:
+            dumped.pop("close_merge", None)
         return dumped
+
+
+def integration_ci_sources(raw_policy: Any) -> dict[str, Any]:
+    """The CI source each target kind uses under a stored project policy.
+
+    ``origin`` says where the answer came from: ``policy`` for a configured
+    ``ci`` block, ``development`` for a pinned development source (its root
+    candidates run that source's local jobs; nothing else changes), else
+    ``default``.  A stored policy that no longer validates reads as default,
+    which is hosted, matching what the train's lanes do with it.
+    """
+    from src.integration.development_policy import project_development_pin
+
+    hosted = dict.fromkeys(CI_TARGET_KINDS, "hosted")
+    if isinstance(raw_policy, dict) and project_development_pin(
+            {"hierarchical_integration_policy": raw_policy}) is not None:
+        return {**hosted, "root": "local", "origin": "development"}
+    ci = integration_ci_policy(raw_policy)
+    if ci is None:
+        return {**hosted, "origin": "default"}
+    return {**{kind: ci.source_for(kind) for kind in CI_TARGET_KINDS}, "origin": "policy"}
+
+
+def integration_ci_policy(raw_policy: Any) -> IntegrationCIPolicy | None:
+    """The validated ``ci`` block of a stored project policy, or ``None``.
+
+    ``None`` is hosted everywhere: an unconfigured project, a development
+    policy (it has no ``ci`` block) and a stored policy that no longer
+    validates all keep reading hosted checks.
+    """
+    if not isinstance(raw_policy, dict) or raw_policy.get("ci") is None:
+        return None
+    try:
+        return HierarchicalIntegrationPolicy.model_validate(raw_policy).ci
+    except (TypeError, ValueError):
+        return None
 
 
 def integration_max_wait_seconds(raw_policy: Any) -> float:

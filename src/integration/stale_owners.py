@@ -301,7 +301,7 @@ class StaleOwnerRelease(OwnerRecovery):
         refs: dict[str, str],
         default_branch: str,
         worktrees: list[dict[str, Any]],
-        live_dirs: set[str],
+        live_dirs: dict[str, str],
     ) -> tuple[str, str]:
         branch = branch_of(row["ref"]) or ""
         origin_sha = refs.get(f"refs/remotes/origin/{branch}")
@@ -312,7 +312,8 @@ class StaleOwnerRelease(OwnerRecovery):
                     continue
                 if os.path.realpath(path) in live_dirs:
                     return CHECKOUT_IN_USE, (
-                        f"{branch} is checked out at {path}, where a live session works"
+                        f"{branch} is checked out at {path}, where live session "
+                        f"{live_dirs[os.path.realpath(path)]} works"
                     )
                 head = entry.get("head")
                 if await self._dirty(path) or (
@@ -580,7 +581,7 @@ async def _owner_status(conn, row: dict[str, Any], *, lock: bool) -> str | None:
     return None if row["owner_role"] == COLLECTOR_ROLE else "deleted"
 
 
-async def _fence_blocker(conn, row: dict[str, Any]) -> None:
+async def _fence_blocker(conn, row: dict[str, Any], *, include_aborted: bool = True) -> None:
     """Refuse while a batch or promotion intent still relies on the row's fence."""
     branch = branch_of(row["ref"])
     batches = (
@@ -589,6 +590,7 @@ async def _fence_blocker(conn, row: dict[str, Any]) -> None:
                 integration_batches.c.id,
                 integration_batches.c.lifecycle,
                 integration_batches.c.cleanup_state,
+                integration_batches.c.intent,
                 integration_batches.c.integration_branch,
             ).where(
                 integration_batches.c.repository_id == row["repository_id"],
@@ -603,6 +605,8 @@ async def _fence_blocker(conn, row: dict[str, Any]) -> None:
         )
     ).all()
     for batch in batches:
+        if not include_aborted and batch.intent == "aborted":
+            continue
         active = batch.lifecycle in ACTIVE_BATCH_LIFECYCLES
         if branch_of(batch.integration_branch) == branch:
             if active:
