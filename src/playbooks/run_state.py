@@ -19,7 +19,7 @@ Two properties are load-bearing and easy to lose:
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 #: Defaults for ``playbooks.v2_max_result_bytes`` / ``v2_max_snapshot_bytes``.
 DEFAULT_MAX_RESULT_BYTES = 262_144
 DEFAULT_MAX_SNAPSHOT_BYTES = 4_194_304
+MAX_LOOP_DEPTH = 4
+MAX_ITERATION_ENTRIES = 100_000
 
 
 # --------------------------------------------------------------------------
@@ -359,6 +361,7 @@ class OperatorDecision:
     raised_at: float
     decision_id: str = ""
     turn_index: int = -1
+    iteration_path: str = ""
     options: tuple[str, ...] = ("accept_outcome", "retry", "fail", "cancel")
 
 
@@ -386,6 +389,11 @@ class LoopFrame:
     last_step_id: str | None = None
     last_outcome: str | None = None
     last_failed: bool | None = None
+    collection: Any = None  # None only for legacy snapshots, resolved once on resume.
+    body_step_ids: tuple[str, ...] = ()
+    private: bool = False
+    succeeded: int = 0
+    failed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +438,7 @@ class RunSnapshot:
     context: Mapping[str, Any] = field(default_factory=dict)
     bindings: Mapping[str, Any] = field(default_factory=dict)
     sensitive: Mapping[str, Any] = field(default_factory=dict)
+    private_bindings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: ``"<step_id>:<iteration>" -> attempts already receipted``.  Attempt
     #: identity is four-part (§9.1) and the database enforces it through
     #: ``uq_playbook_step_receipts_attempt``, so a step the walk reaches
@@ -439,7 +448,10 @@ class RunSnapshot:
     #: here rather than re-reading the receipt table keeps the boundary a
     #: single write and survives a restart with the snapshot.
     attempts: Mapping[str, int] = field(default_factory=dict)
-    loop: LoopFrame | None = None
+    loop: LoopFrame | None = None  # Compatibility view of the innermost frame.
+    loop_stack: tuple[LoopFrame, ...] = ()
+    iteration_entries: int = 0
+    iteration_paths: bool = False
     wait: WaitSpec | None = None
     pending_wait_claims: tuple[WaitClaim, ...] = ()
     budget: RunBudget = field(default_factory=RunBudget)
@@ -459,8 +471,20 @@ class RunSnapshot:
     started_at: float = 0.0
     updated_at: float = 0.0
     completed_at: float | None = None
+    #: The authenticated caller a trusted-execution run's effects act for
+    #: (:mod:`src.playbooks.authority`).  Engine-written at creation from the
+    #: principal, never from authored or event data; ``None`` for legacy
+    #: artifacts, whose body therefore carries no ``caller`` key at all.
+    caller: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        stack = self.loop_stack or ((self.loop,) if self.loop is not None else ())
+        if len(stack) > MAX_LOOP_DEPTH:
+            raise ValueError("loop depth exceeds 4")
+        if not 0 <= self.iteration_entries <= MAX_ITERATION_ENTRIES:
+            raise ValueError("invalid iteration-entry counter")
+        object.__setattr__(self, "loop_stack", tuple(stack))
+        object.__setattr__(self, "loop", stack[-1] if stack else None)
         if not self.run_id:
             raise ValueError("run_id is required")
         if self.mode not in RUN_MODES:
@@ -471,15 +495,45 @@ class RunSnapshot:
             object.__setattr__(self, "lifecycle", RunLifecycle(self.lifecycle))
 
     @property
+    def iteration_path(self) -> str:
+        from src.playbooks.receipts import encode_iteration_path
+
+        return encode_iteration_path([(f.step_id, f.index) for f in self.loop_stack]) \
+            if self.iteration_paths else ""
+
+    @property
     def is_terminal(self) -> bool:
         return self.lifecycle in TERMINAL_LIFECYCLES
 
+    @property
+    def has_private_data(self) -> bool:
+        return bool(self.private_bindings or self.sensitive or self.llm_turns
+                    or any(frame.private for frame in self.loop_stack))
+
     def redacted(self) -> RunSnapshot:
         """Drop plaintext sensitive values.  Any projection must use this."""
-        return replace(self, sensitive={})
+        from src.playbooks.authority import public_caller
+        from src.playbooks.private_values import public_value
 
-    def to_body(self) -> dict[str, Any]:
+        body = self.to_body(protect=public_value)
+        body["sensitive"] = {}
+        if "caller" in body:
+            body["caller"] = public_caller(body["caller"])
+        return replace(RunSnapshot.from_body(body), private_bindings={})
+
+    def to_body(self, *, protect: Callable[[Any], Any] | None = None) -> dict[str, Any]:
         """The dict persisted as ``playbook_v2_runs.snapshot``."""
+        from src.playbooks.private_values import PrivateValueError, is_reference, canonical_reference
+
+        def private(value: Any) -> Any:
+            if is_reference(value):
+                return canonical_reference(value)
+            if isinstance(value, Mapping) and value == {"__redacted__": True}:
+                return dict(value)
+            if protect is None:
+                raise PrivateValueError("private_storage_required")
+            return protect(value)
+
         body = {
             "run_id": self.run_id,
             "playbook_id": self.playbook_id,
@@ -492,9 +546,11 @@ class RunSnapshot:
             "event": dict(self.event),
             "context": dict(self.context),
             "bindings": dict(self.bindings),
-            "sensitive": dict(self.sensitive),
+            "sensitive": {key: private(value) for key, value in self.sensitive.items()},
             "attempts": dict(self.attempts),
-            "loop": asdict(self.loop) if self.loop is not None else None,
+            "loop_stack": [asdict(frame) for frame in self.loop_stack],
+            "iteration_entries": self.iteration_entries,
+            "iteration_paths": self.iteration_paths,
             "wait": self.wait.as_dict() if self.wait is not None else None,
             "pending_wait_claims": [asdict(claim) for claim in self.pending_wait_claims],
             "budget": asdict(self.budget),
@@ -517,10 +573,44 @@ class RunSnapshot:
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
         }
-        if self.loop is not None:
-            body["loop"]["partial"] = list(self.loop.partial)
+        if self.caller is not None:
+            body["caller"] = dict(self.caller)
+        for frame in body["loop_stack"]:
+            frame["partial"] = list(frame["partial"])
+            frame["body_step_ids"] = list(frame["body_step_ids"])
         if self.operator_decision is not None:
             body["operator_decision"]["options"] = list(self.operator_decision.options)
+        if self.private_bindings:
+            body["private_bindings"] = {key: list(names)
+                                        for key, names in self.private_bindings.items()}
+            for binding, names in self.private_bindings.items():
+                if binding in body["bindings"]:
+                    body["bindings"][binding] = {
+                        key: private(value) if key in names else value
+                        for key, value in body["bindings"][binding].items()
+                    }
+        if self.has_private_data:
+            # Derived execution state cannot launder a protected binding.
+            # Keep the outer structures so inspection/cancellation can work
+            # without keys; only live evaluation resolves their values.
+            for key in ("event", "context"):
+                body[key] = {name: private(value) for name, value in body[key].items()}
+            for frame in body["loop_stack"]:
+                frame["partial"] = [private(item) for item in frame["partial"]]
+                frame["collection_digest"] = private(frame["collection_digest"])
+                if frame["collection"] is not None:
+                    frame["collection"] = private(frame["collection"])
+            if body["wait"] is not None:
+                body["wait"]["match"] = {key: private(value)
+                                         for key, value in body["wait"]["match"].items()}
+            for claim in body["pending_wait_claims"]:
+                claim["event_fields"] = {key: private(value)
+                                          for key, value in claim["event_fields"].items()}
+            body["llm_turns"] = [private(turn) for turn in body["llm_turns"]]
+            body["summary"] = "(redacted)" if self.summary else ""
+            body["error"] = "private_run_error" if self.error else None
+            if body["operator_decision"] is not None:
+                body["operator_decision"]["reason"] = "(redacted)"
         return body
 
     @classmethod
@@ -541,23 +631,16 @@ class RunSnapshot:
             context=dict(body.get("context") or {}),
             bindings=dict(body.get("bindings") or {}),
             sensitive=dict(body.get("sensitive") or {}),
+            private_bindings={key: tuple(names)
+                              for key, names in (body.get("private_bindings") or {}).items()},
             attempts={str(k): int(v) for k, v in (body.get("attempts") or {}).items()},
-            loop=(
-                LoopFrame(
-                    step_id=loop["step_id"],
-                    item_binding=loop["item_binding"],
-                    collection_digest=loop["collection_digest"],
-                    index=int(loop["index"]),
-                    total=int(loop["total"]),
-                    partial=tuple(loop.get("partial") or ()),
-                    resume_step_id=loop.get("resume_step_id"),
-                    last_step_id=loop.get("last_step_id"),
-                    last_outcome=loop.get("last_outcome"),
-                    last_failed=loop.get("last_failed"),
-                )
-                if loop
-                else None
+            loop_stack=tuple(
+                LoopFrame(**{**frame, "partial": tuple(frame.get("partial") or ()),
+                             "body_step_ids": tuple(frame.get("body_step_ids") or ())})
+                for frame in body.get("loop_stack", [loop] if loop else [])
             ),
+            iteration_entries=int(body.get("iteration_entries", 0)),
+            iteration_paths=bool(body.get("iteration_paths", False)),
             wait=WaitSpec.from_dict(wait) if wait else None,
             pending_wait_claims=tuple(
                 WaitClaim(
@@ -565,6 +648,7 @@ class RunSnapshot:
                     run_id=claim["run_id"],
                     step_id=claim["step_id"],
                     iteration=int(claim["iteration"]),
+                    iteration_path=claim.get("iteration_path", ""),
                     kind=claim["kind"],
                     snapshot_version=int(claim["snapshot_version"]),
                     claimed_event_id=claim.get("claimed_event_id"),
@@ -586,6 +670,7 @@ class RunSnapshot:
                     raised_at=float(decision["raised_at"]),
                     decision_id=decision.get("decision_id", ""),
                     turn_index=int(decision.get("turn_index", -1)),
+                    iteration_path=decision.get("iteration_path", ""),
                     options=tuple(decision.get("options") or ()),
                 )
                 if decision
@@ -604,6 +689,7 @@ class RunSnapshot:
             started_at=float(body.get("started_at") or 0.0),
             updated_at=float(body.get("updated_at") or 0.0),
             completed_at=body.get("completed_at"),
+            caller=dict(body["caller"]) if body.get("caller") is not None else None,
         )
 
 
@@ -644,10 +730,11 @@ def check_result_size(
 
 
 def serialize_snapshot(
-    snapshot: RunSnapshot, *, limits: StateLimits = DEFAULT_STATE_LIMITS
+    snapshot: RunSnapshot, *, limits: StateLimits = DEFAULT_STATE_LIMITS,
+    protect: Callable[[Any], Any] | None = None,
 ) -> bytes:
     """Canonical bytes for ``playbook_v2_runs.snapshot``, size-checked."""
-    payload = canonical_json(snapshot.to_body())
+    payload = canonical_json(snapshot.to_body(protect=protect))
     if len(payload) > limits.max_snapshot_bytes:
         raise StateLimitExceeded(
             snapshot.run_id, None, "snapshot", len(payload), limits.max_snapshot_bytes
@@ -666,6 +753,7 @@ def bind_step_output(
     step_id: str,
     value: Mapping[str, Any],
     declared: Collection[str],
+    private_fields: Collection[str] | None = None,
     limits: StateLimits = DEFAULT_STATE_LIMITS,
 ) -> RunSnapshot:
     """Bind one step's validated declared output onto the snapshot.
@@ -683,7 +771,13 @@ def bind_step_output(
     check_result_size(snapshot.run_id, step_id, value, limits=limits)
     bindings = dict(snapshot.bindings)
     bindings[step_id] = dict(value)
-    return replace(snapshot, bindings=bindings)
+    private_bindings = dict(snapshot.private_bindings)
+    # Until expression-level taint analysis exists, every derived binding
+    # from a private run remains private, including loop/terminal outputs.
+    names = tuple(value) if snapshot.has_private_data or private_fields is None else tuple(private_fields)
+    if names:
+        private_bindings[step_id] = names
+    return replace(snapshot, bindings=bindings, private_bindings=private_bindings)
 
 
 # --------------------------------------------------------------------------
@@ -738,7 +832,9 @@ class RunRepository(Protocol):
     ) -> list[RunSnapshot]: ...
 
     async def list_receipts(
-        self, run_id: str, *, limit: int = 500, offset: int = 0
+        self, run_id: str, *, limit: int = 500, offset: int = 0,
+        step_id: str | None = None, iteration: int | None = None,
+        iteration_path: str | None = None,
     ) -> list[StepReceipt]: ...
 
     async def list_interrupted_runs(
