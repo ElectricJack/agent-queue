@@ -1,0 +1,155 @@
+{
+  "reconciliation_definitions": {
+    "src/api/target_scope.py::_publication_delegation_project": {
+      "fingerprint": "d67ed86f95d0052bee7598b6b9544abef510b27031ba858aaf7531ea243185f9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
+      "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_record', 'object_id')]": {
+      "reason": "Registers tagged integration operator decision write ownership."
+    },
+    "src/api/target_scope.py::ContextResolver": {
+      "reason": "Contextual project ownership resolver type used by integration operator decision commands."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['batch_id']": {
+      "baseline_span": [
+        235,
+        236
+      ],
+      "landing_span": [
+        231,
+        232
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['event_id']": {
+      "baseline_span": [
+        237,
+        237
+      ],
+      "landing_span": [
+        233,
+        233
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['evidence_id']": {
+      "baseline_span": [
+        229,
+        233
+      ],
+      "landing_span": [
+        225,
+        229
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['expected_episode_id']": {
+      "baseline_span": [
+        216,
+        221
+      ],
+      "landing_span": [
+        212,
+        217
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['origin_id']": {
+      "reason": "Project ownership resolver and table import for supervised origin retirement."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['owner_row_id']": {
+      "baseline_span": [
+        224,
+        228
+      ],
+      "landing_span": [
+        220,
+        224
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['reservation_id']": {
+      "baseline_span": [
+        223,
+        223
+      ],
+      "landing_span": [
+        219,
+        219
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['subject_id']": {
+      "baseline_span": [
+        243,
+        243
+      ],
+      "landing_span": [
+        239,
+        239
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::_decision_object_project": {
+      "reason": "Project scope gate resolves a tagged integration decision object through its exact handler lookup."
+    },
+    "src/api/target_scope.py::_operation_project": {
+      "baseline_span": [
+        169,
+        177
+      ],
+      "landing_span": [
+        165,
+        173
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::_promotion_intent_project": {
+      "baseline_span": [
+        178,
+        190
+      ],
+      "landing_span": [
+        174,
+        186
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::_target_project": {
+      "reason": "Shared resource ownership lookup used by integration target checks; read-only, without publication or lifecycle state."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": {
+      "landing_span": [
+        58,
+        84
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
+    },
+    "src/api/target_scope.py::import from src.database.tables import escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver and table import for supervised origin retirement."
+    },
+    "src/api/target_scope.py::import from src.database.tables import escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, test_selection_promotions, test_selections": {
+      "baseline_span": [
+        58,
+        75
+      ],
+      "landing_span": [
+        54,
+        71
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/target_scope.py::target_references": {
+      "reason": "Shared command reference discovery including integration targets; no storage or authority mutation."
+    }
+  }
+}
