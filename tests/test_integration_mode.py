@@ -9,7 +9,7 @@ is available only through explicit policy.
 """
 
 import os
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,7 @@ from src.models import (
     AgentProfile,
     AgentOutput,
     AgentResult,
+    DepType,
     PhaseResult,
     PipelineContext,
     Project,
@@ -27,6 +28,7 @@ from src.models import (
     RepoSourceType,
     Task,
     TaskStatus,
+    TaskType,
     Workspace,
     WorkspaceKind,
 )
@@ -34,6 +36,7 @@ from src.orchestrator.context import ContextMixin
 from src.orchestrator import Orchestrator
 from src.git.github_contracts import GitHubRepositoryBinding
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 
 class _NullRuntimeFactory:
@@ -110,6 +113,7 @@ async def orch(tmp_path):
 def _pr_task(task_id: str = "t-pr", **kw) -> Task:
     kw.setdefault("branch_name", "feature-1")
     kw.setdefault("status", TaskStatus.IN_PROGRESS)
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     return Task(
         id=task_id,
         project_id="p-1",
@@ -123,6 +127,7 @@ def _pr_task(task_id: str = "t-pr", **kw) -> Task:
 def _direct_task(task_id: str = "t-direct", **kw) -> Task:
     kw.setdefault("branch_name", "feature-1")
     kw.setdefault("status", TaskStatus.IN_PROGRESS)
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     return Task(
         id=task_id,
         project_id="p-1",
@@ -443,6 +448,27 @@ class TestPhaseVerifyByMode:
             strict=True,
         )
 
+    async def test_explicit_pr_mode_on_a_local_remote_names_the_way_out(self, orch):
+        """The block that stranded agile-flare now says how to deliver."""
+        await orch.db.update_project(
+            "p-1", repo_url="/home/op/.agent-queue/local-remotes/site.git"
+        )
+        task = _pr_task("t-pr-local")
+        await orch.db.create_task(task)
+        orch.git.bind_github_repository = AsyncMock(
+            side_effect=GitError("GitHub repository reference was invalid")
+        )
+        orch._emit_text_notify = AsyncMock()
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+
+        assert result == PhaseResult.STOP
+        message = orch._emit_text_notify.await_args.args[0]
+        assert "cannot host a pull request" in message
+        assert "aq task deliver --task-id t-pr-local" in message
+
     async def test_pr_mode_requires_a_pr_for_task_branch_when_checkout_is_default(
         self, orch
     ):
@@ -722,6 +748,8 @@ class TestPhaseVerifyByMode:
             repository_url="https://github.com/org/repo.git",
             event_bus=orch.bus,
             project_id="p-1",
+            identity_policy=ANY,  # held to the project's Git identity
+            inherited_oids=[],  # no source-CI repair head on this branch
         )
 
     async def test_pr_close_does_not_recreate_deleted_branch_after_merge(self, orch):
@@ -917,6 +945,8 @@ class TestTaskBranchPublication:
             force_with_lease=True,
             event_bus=orch.bus,
             project_id="p-1",
+            identity_policy=ANY,
+            inherited_oids=[],  # no source-CI repair head on this branch
         )
         orch.git.apush_branch.assert_not_awaited()
 
@@ -947,17 +977,31 @@ class TestPhaseIntegrateByMode:
             for call in orch.git.apush_validated_delivery.await_args_list
         )
 
-    async def test_direct_mode_merges_into_default(self, orch, monkeypatch):
+    async def test_direct_mode_pushes_the_merged_slot_tip_to_default(self, orch, monkeypatch):
+        """With a remote, the base checkout is never merged into or reset."""
         task = _direct_task("t-int-direct")
         await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        result = await self._run_integrate(orch, task, monkeypatch)
+        assert result == PhaseResult.CONTINUE
+        orch.git.amerge_branch.assert_not_awaited()
+        pushes = [call.args for call in orch.git.apush_validated_delivery.await_args_list]
+        assert pushes == [
+            (ws.workspace_path, "refs/remotes/origin/main", "HEAD", "feature-1"),
+            (ws.workspace_path, "refs/remotes/origin/main", "HEAD", "main"),
+        ]
+        assert "force_with_lease" not in (
+            orch.git.apush_validated_delivery.await_args_list[1].kwargs
+        )
+
+    async def test_direct_mode_without_a_remote_merges_in_the_base(self, orch, monkeypatch):
+        task = _direct_task("t-int-local")
+        await orch.db.create_task(task)
+        orch.git.ahas_remote = AsyncMock(return_value=False)
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
-        assert orch.git.apush_validated_delivery.await_count == 2
-        assert all(
-            call.args[1] == "refs/remotes/origin/main"
-            for call in orch.git.apush_validated_delivery.await_args_list
-        )
+        orch.git.apush_validated_delivery.assert_not_awaited()
 
     async def test_integrate_merges_default_into_the_branch_and_pushes_plainly(
         self, orch, monkeypatch
@@ -1083,7 +1127,8 @@ class TestEmptyBranchSkipsIntegration:
 
         assert result == PhaseResult.CONTINUE
         acquire.assert_awaited_once()
-        orch.git.amerge_branch.assert_awaited_once()
+        # Delivered: the merged tip was pushed to the default branch.
+        assert orch.git.apush_validated_delivery.await_args_list[-1].args[3] == "main"
 
     async def test_an_unanswerable_count_fails_closed(self, orch, monkeypatch):
         """Unknown is not empty and cannot safely identify a delivery ref."""
@@ -1133,6 +1178,32 @@ class TestSessionCloseCompletion:
 
         assert result["status"] == TaskStatus.COMPLETED.value
         assert [row["status"] for row in await orch.db.list_task_subtasks(task.id)] == ["skipped"]
+
+    async def _close_with_dependent(self, orch, task):
+        await orch.db.create_task(task)
+        await orch.db.create_task(
+            Task(id=f"{task.id}-dep", project_id="p-1", title="dep", description="dep")
+        )
+        await orch.db.add_dependency(f"{task.id}-dep", task.id, DepType.BLOCKS.value)
+        pr = "https://github.com/org/repo/pull/56"
+        orch._run_completion_pipeline = AsyncMock(return_value=(pr, True))
+        result = await orch.complete_session_task(task, outcome="pass", notes="done")
+        assert result["status"] == TaskStatus.COMPLETED.value
+        return await orch.db.get_task(f"{task.id}-dep"), pr
+
+    async def test_pull_request_completion_holds_blocks_dependent_on_pr_merge(self, orch):
+        """sound-journey-29: an open PR is not delivery; the dependent waits."""
+        dep, pr = await self._close_with_dependent(orch, _pr_task("t-close-gate"))
+
+        assert dep.is_blocked is True
+        [gate] = await orch.db.get_gates_for_task(dep.id)
+        assert (gate["gate_type"], gate["await_id"], gate["status"]) == ("pr-merged", pr, "open")
+
+    async def test_direct_completion_releases_blocks_dependent(self, orch):
+        dep, _ = await self._close_with_dependent(orch, _direct_task("t-close-direct"))
+
+        assert dep.is_blocked is False
+        assert await orch.db.get_gates_for_task(dep.id) == []
 
 
 class TestResolveIntegrationMode:
@@ -1194,6 +1265,94 @@ class TestResolveIntegrationMode:
         await orch.db.create_task(task)
         assert await orch._effective_integration_mode(task) == "pull_request"
 
+    def test_inherited_pull_request_needs_a_pull_request_host(self):
+        """agile-flare / stark-vault: a bare local remote has nowhere to open
+        a PR, so the system default cannot send its tasks down the PR path."""
+        from src.models import resolve_integration_mode_with_source
+
+        assert resolve_integration_mode_with_source(
+            None, pull_requests_available=False
+        ) == ("direct", "repository")
+        # Explicit policy is the operator's word; doctor flags it instead.
+        assert resolve_integration_mode_with_source(
+            None, project_mode="pull_request", pull_requests_available=False
+        ) == ("pull_request", "project")
+        assert resolve_integration_mode_with_source(
+            "pull_request", pull_requests_available=False
+        ) == ("pull_request", "task")
+        assert resolve_integration_mode_with_source(
+            None, default_mode="direct", pull_requests_available=False
+        ) == ("direct", "default")
+
+    @pytest.mark.parametrize(
+        ("url", "has_host"),
+        [
+            ("https://github.com/org/repo.git", True),
+            ("git@github.com:org/repo.git", True),
+            ("/home/op/.agent-queue/local-remotes/site.git", False),
+            ("file:///srv/git/site.git", False),
+            ("https://gitlab.com/org/repo.git", False),
+        ],
+    )
+    def test_pull_request_host_detection(self, url, has_host):
+        from src.integration.delivery_path import lacks_pull_request_host
+
+        assert lacks_pull_request_host(url) is not has_host
+
+    def test_an_unset_repository_is_not_a_verdict(self):
+        from src.integration.delivery_path import lacks_pull_request_host
+
+        assert lacks_pull_request_host("") is False
+        assert lacks_pull_request_host(None) is False
+
+    async def test_effective_mode_is_direct_for_a_local_remote_project(self, orch):
+        await orch.db.update_project(
+            "p-1", repo_url="/home/op/.agent-queue/local-remotes/site.git"
+        )
+        task = Task(
+            id="t-local", project_id="p-1", title="local", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "direct"
+
+    async def test_a_hosted_remote_off_github_keeps_the_default(self, orch):
+        """No PR host is not permission to land work unreviewed: only a
+        repository on disk inherits direct."""
+        await orch.db.update_project("p-1", repo_url="https://gitlab.com/org/repo.git")
+        task = Task(
+            id="t-gitlab", project_id="p-1", title="gitlab", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "pull_request"
+
+    async def test_explicit_pull_request_on_a_local_remote_is_kept(self, orch):
+        await orch.db.update_project(
+            "p-1",
+            repo_url="/home/op/.agent-queue/local-remotes/site.git",
+            integration_mode="pull_request",
+        )
+        task = Task(
+            id="t-local-pr", project_id="p-1", title="local", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "pull_request"
+
+    async def test_task_repository_row_decides_the_host(self, orch):
+        """A task bound to a repository row is judged by that row's URL."""
+        await orch.db.create_repo(RepoConfig(
+            id="r-local", project_id="p-1", source_type=RepoSourceType.CLONE,
+            url="/srv/git/site.git", default_branch="main",
+        ))
+        task = Task(
+            id="t-row", project_id="p-1", title="row", description="",
+            status=TaskStatus.IN_PROGRESS, repo_id="r-local",
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "direct"
+
 
 class TestVerificationRetryKeepsTheSessionAlive:
     """Regression cover for the close/verification loop killing its own worker.
@@ -1225,8 +1384,11 @@ class TestVerificationRetryKeepsTheSessionAlive:
     async def test_live_session_keeps_the_task_in_progress(self, orch):
         task, ctx = await self._pr_missing_ctx(orch, "t-pr-live", "feature-live")
         ctx.close_session_live = True
+        ctx.accepted_close = {"completion_id": "c", "session_id": "s", "claim_epoch": 0}
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        # A refused close accepts nothing.
+        assert await orch.db.get_task_meta(task.id, "accepted_close") is None
         assert ctx.verification_retry_in_session is True
         assert ctx.verification_reopened is False
         assert any("No open PR" in msg for msg in ctx.verification_issues)
@@ -1242,11 +1404,14 @@ class TestVerificationRetryKeepsTheSessionAlive:
         """A local/elevated close has no agent to hand the issues to."""
         task, ctx = await self._pr_missing_ctx(orch, "t-pr-nolive", "feature-nolive")
         ctx.close_session_live = False
+        ctx.accepted_close = {"completion_id": "c", "session_id": None, "claim_epoch": 0}
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert ctx.verification_reopened is True
         assert ctx.verification_retry_in_session is False
         assert (await orch.db.get_task(task.id)).status is TaskStatus.READY
+        # The reopen is the status write that accepts the close (smart-cascade).
+        assert await orch.db.get_task_meta(task.id, "accepted_close") == ctx.accepted_close
 
     async def test_in_session_retries_are_bounded_by_the_same_budget(self, orch):
         """Exhausting the budget still ends in the terminal (blocking) branch."""
@@ -1366,22 +1531,56 @@ class TestNoCodeTasksSkipThePrGate:
         assert ctx.verification_retry_in_session is True
         assert any("No open PR" in msg for msg in ctx.verification_issues)
 
-    async def test_no_code_task_still_sweeps_uncommitted_changes(self, orch, monkeypatch):
-        """Skipping the gate must not leave a dirty slot for the next task."""
-        task, ctx = await self._no_pr_ctx(orch, "t-dirty", "aq/t-dirty", profile_id="reviewer")
+    @pytest.mark.parametrize("intent", ["reviewer", "review", "design", "no-op", "db-only"])
+    @pytest.mark.parametrize("path", ["ordinary", "skip", "error"])
+    async def test_document_only_dirty_close_preserves_drafts(self, orch, monkeypatch, intent, path):
+        """A local review copy must never become an auto-committed source PR."""
+        kw = {}
+        if intent == "reviewer":
+            kw["profile_id"] = "reviewer"
+        elif intent == "review":
+            kw["deliverables"] = [{"id": "doc", "kind": "review", "target": "spec"}]
+        elif intent == "design":
+            kw["task_type"] = TaskType.DESIGN
+        elif intent == "db-only":
+            await orch.db.create_profile(
+                AgentProfile(id="db-only", name="DB-only", needs_workspace=False)
+            )
+            kw["profile_id"] = "db-only"
+        _, ctx = await self._no_pr_ctx(orch, "t-dirty", "aq/t-dirty", **kw)
+        if intent == "no-op":
+            ctx.work_outcome = "no-op"
+        if path == "skip":
+            ctx.task.skip_verification = True
+        elif path == "error":
+            ctx.output.exit_code = 1
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        sweep = AsyncMock(return_value=False)
+        monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
 
-        # The first strict status sees dirt; all post-remediation probes are
-        # known clean.
-        orch.git.ahas_uncommitted_changes = AsyncMock(
-            side_effect=[True, False, False, False]
-        )
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert "Drafts were preserved" in ctx.verification_feedback
+        sweep.assert_not_awaited()
+        orch.git.afind_open_pr.assert_not_awaited()
+
+    async def test_review_plus_source_deliverables_still_deliver_source(self, orch, monkeypatch):
+        _, ctx = await self._no_pr_ctx(orch, "t-mixed", "aq/t-mixed", deliverables=[
+            {"id": "doc", "kind": "review", "target": "spec"},
+            {"id": "code", "kind": "file", "target": "src/fix.py"},
+        ])
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False, False])
         sweep = AsyncMock(return_value=False)
         monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
 
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
         sweep.assert_awaited_once()
-        assert sweep.await_args.args[1] == task.id
-        assert sweep.await_args.args[2] == "aq/t-dirty"
+
+    async def test_clean_review_only_task_needs_no_source_pr(self, orch):
+        task, ctx = await self._no_pr_ctx(orch, "t-spec", "aq/t-spec", deliverables=[
+            {"id": "doc", "kind": "review", "target": "spec"},
+        ])
+        await self._assert_clean_pass(orch, task, ctx)
 
     async def test_no_code_status_error_does_not_bypass_verification(self, orch):
         """No-code intent is not evidence that an unreadable checkout is clean."""
@@ -1682,7 +1881,7 @@ class TestDevelopmentModeCompletion:
 
     HEAD = "a" * 40
 
-    async def _dev_ctx(self, orch, task_id, branch):
+    async def _dev_ctx(self, orch, task_id, branch, **task_kw):
         from sqlalchemy import update as sa_update
 
         from src.database.tables import workspaces as workspaces_table
@@ -1698,7 +1897,7 @@ class TestDevelopmentModeCompletion:
         await orch.db.update_project(
             "p-1", hierarchical_integration_mode="development", integration_repository_id="r-1"
         )
-        task = _direct_task(task_id, branch_name=branch, repo_id="r-1")
+        task = _direct_task(task_id, branch_name=branch, repo_id="r-1", **task_kw)
         await orch.db.create_task(task)
         async with orch.db._engine.begin() as conn:
             await conn.execute(
@@ -1726,6 +1925,36 @@ class TestDevelopmentModeCompletion:
         assert ctx.verification_issues == []
         assert ctx.verification_retry_in_session is False
 
+    async def test_close_exposes_generation_before_completed_subscribers(self, orch):
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.delivery_truth import load_delivery_requests
+
+        task, _ctx = await self._dev_ctx(orch, "t-dev-generation", "aq/t-dev-generation")
+        observed = []
+
+        async def inspect_completed(event_type, *_args, **_kwargs):
+            if event_type != "task.completed":
+                return
+            request = (await load_delivery_requests(
+                orch.db, [task.id], repository_id="r-1", target_ref="refs/heads/main",
+            ))[task.id]
+            observed.append(request.completion_id)
+            assert request.completion_id == "generation-new"
+            assert await orch.db.get_task_meta(task.id, DEVELOPMENT_COMPLETION_ID_KEY) == (
+                "generation-new"
+            )
+            assert await orch.db.get_task_completion(task.id) is None
+
+        orch._emit_task_event = AsyncMock(side_effect=inspect_completed)
+        with patch("src.integration.provenance.record_worker_completion", new_callable=AsyncMock) as record:
+            record.return_value = self.HEAD
+            result = await orch.complete_session_task(
+                task, outcome="pass", completion_id="generation-new", notes="done"
+            )
+
+        assert result["status"] == TaskStatus.COMPLETED.value
+        assert observed == ["generation-new"]
+
     async def _vault_ctx(self, orch, task_id):
         task, ctx = await self._dev_ctx(orch, task_id, f"aq/{task_id}")
         await orch.db.create_workspace(
@@ -1751,6 +1980,34 @@ class TestDevelopmentModeCompletion:
         assert await orch._run_completion_pipeline(ctx) == (None, True)
         assert ctx.no_work_proven is False
         assert await orch._task_produces_no_code(ctx) is False
+
+    async def _no_workspace_role_ctx(self, orch, task_id):
+        # A custom role, so only its declared flag can make it no-code.
+        await orch.db.create_profile(
+            AgentProfile(id="db-only-role", name="db-only-role", needs_workspace=False)
+        )
+        return await self._dev_ctx(orch, task_id, f"aq/{task_id}", profile_id="db-only-role")
+
+    async def test_no_workspace_role_closes_without_publishing_its_slot(self, orch):
+        """``needs_workspace: false`` marks a database-only role as no-code."""
+        _, ctx = await self._no_workspace_role_ctx(orch, "t-ingest")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
+        orch.git.als_remote_ref = AsyncMock(
+            side_effect=AssertionError("a proven no-code close must not require publication")
+        )
+
+        assert await orch._task_produces_no_code(ctx) is True
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        assert ctx.no_work_proven is True
+
+    async def test_no_workspace_role_cannot_hide_unpublished_commits(self, orch):
+        _, ctx = await self._no_workspace_role_ctx(orch, "t-ingest-work")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        orch.git.als_remote_ref = AsyncMock(return_value=RemoteRefResult(RemoteRefState.ABSENT))
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert ctx.no_work_proven is False
+        assert "not exactly pushed" in ctx.verification_issues[0]
 
     @pytest.mark.parametrize("source_state", ["dirty", "commit"])
     async def test_vault_only_close_refuses_source_work(self, orch, source_state):

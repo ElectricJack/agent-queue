@@ -1,1219 +1,716 @@
-"""``integration.unreviewed_prs`` — the alarm for silently unreviewed work.
-
-The failure it watches for produces no error anywhere: tasks go COMPLETED,
-PRs stay open, and nothing reports a problem.  These tests pin the three
-judgments the check makes — has a PR, has no review task, PR is not already
-merged — and the offline behaviour, since doctor has to work with no ``gh``.
-"""
+"""Subject schedule/hold diagnostics and the retained App trust check."""
 from __future__ import annotations
-
-import time
-
 from types import SimpleNamespace
-
-from unittest.mock import AsyncMock, MagicMock
-
+from unittest.mock import AsyncMock
 import pytest
-
-from src.database import Database
 from src.doctor import default_registry
-from src.doctor.integration_checks import run_check
-from src.doctor.models import Severity
-from src.doctor.models import DoctorContext
-from src.doctor.runner import run_doctor
-from src.git.github_contracts import GitHubRepositoryBinding
-from src.models import Project, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
+from src.doctor.models import DoctorContext, Severity
+from src.models import Project
+from tests.test_integration_gitops import git_history_template as git_history_template
+from tests.test_promotion_steps import promotion as promotion, setup as setup
+# integration.trust (App-mode integration train spec §9.6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("git_first,reconciler,mode,broken", [
+    ("active", False, "development", False),
+    ("active", False, "hierarchy", False),
+    ("active", False, "train", False),
+    ("shadow", True, "development", False),
+    ("shadow", False, "development", True),
+    ("shadow", False, "hierarchy", True),
+    ("shadow", False, "train", True),
+    ("shadow", False, "disabled", False),
+    ("shadow", False, "observe", False),
+])
+async def test_delivery_engine_matches_startup_selection(git_first, reconciler, mode, broken):
+    from src.config import AppConfig
+    from src.doctor.integration_checks import _BY_ID
+
+    config = AppConfig()
+    config.integration.git_first = git_first
+    config.integration.reconciler_active = reconciler
+    project = _app_project("p", mode, repository_id="r")
+    db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[project]),
+        get_repo=AsyncMock(return_value=SimpleNamespace(id="r", project_id="p")),
+    )
+    check = _BY_ID["integration.delivery_engine"]
+    result = await check.run(DoctorContext(config=config, db=db))
+    assert result.severity == (Severity.ERROR if broken else Severity.OK)
+    if broken:
+        assert result.data["projects"][0]["mode"] == mode
+        assert "no delivery engine for this project" in result.detail
+        assert "delivery visits are paused" in result.detail
+    if mode in {"disabled", "observe"} or broken:
+        db.get_repo.assert_not_awaited()
+
+
+@pytest.mark.parametrize("repository_id,repository,reason", [
+    (None, None, "repository is missing"),
+    ("gone", None, "repository is missing"),
+    ("wrong", SimpleNamespace(project_id="other"), "belongs to another project"),
+])
+async def test_delivery_engine_names_repository_configuration(repository_id, repository, reason):
+    from src.config import AppConfig
+    from src.doctor.integration_checks import _BY_ID
+
+    db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[_app_project("p", "development",
+                                                         repository_id=repository_id)]),
+        get_repo=AsyncMock(return_value=repository),
+    )
+    result = await _BY_ID["integration.delivery_engine"].run(
+        DoctorContext(config=AppConfig(), db=db),
+    )
+    assert result.severity == Severity.ERROR
+    assert reason in result.detail
+    assert result.fixable is False
+
+
+@pytest.mark.parametrize("runtime,expected", [
+    ("train", {"development", "hierarchy", "train"}),
+    ("development", {"development"}),
+    ("root", {"hierarchy", "train"}),
+    ("none", set()),
+])
+async def test_delivery_engine_uses_selected_service_and_reports_stops(runtime, expected):
+    from src.config import AppConfig
+    from src.integration.delivery_engine import engine_refusal
+    from src.integration.service import IntegrationService
+
+    config = AppConfig()
+    service = IntegrationService(
+        None, None, train=object() if runtime == "train" else None,
+        development_subject_runtime=object() if runtime == "development" else None,
+        subject_runtime=object() if runtime == "root" else None,
+        parent_subject_runtime=object() if runtime == "root" else None,
+    )
+    orch = SimpleNamespace(integration_service=service)
+    assert service.delivery_modes() == expected
+    for mode in ("development", "hierarchy", "train"):
+        assert (engine_refusal(mode, config, orchestrator=orch) is None) == (mode in expected)
+    # A stopped service overrides even an active-train configuration.
+    service._stop_event.set()
+    config.integration.git_first = "active"
+    assert service.delivery_modes() == set()
+    assert "no engine" in engine_refusal("development", config, orchestrator=orch)
+
+
+async def test_delivery_engine_refuses_mode_activation_before_writing():
+    from unittest.mock import patch
+
+    from src.commands.project_commands import ProjectCommandsMixin
+    from src.config import AppConfig
+    from src.integration.records import PolicyActivation
+
+    config = AppConfig()
+    config.integration.reconciler_active = False
+    db = SimpleNamespace(get_project=AsyncMock(return_value=_app_project("p", "disabled")))
+    handler = SimpleNamespace(db=db, config=config, orchestrator=SimpleNamespace())
+    args = {"project_id": "p", "hierarchical_integration_mode": "development",
+            "expected_integration_generation": 0}
+    with patch.object(PolicyActivation, "configure", new_callable=AsyncMock) as configure:
+        refused = await ProjectCommandsMixin._cmd_edit_project(handler, args)
+        assert refused["success"] is False
+        assert refused["error_code"] == "delivery_engine_unavailable"
+        assert "no delivery engine for this project" in refused["error"]
+        configure.assert_not_awaited()
+        await ProjectCommandsMixin._cmd_edit_project(
+            handler, {**args, "hierarchical_integration_mode": "disabled"},
+        )
+        configure.assert_awaited_once()
+
+
+async def test_delivery_engine_allows_development_mode_on_running_train():
+    from unittest.mock import patch
+
+    from src.commands.project_commands import ProjectCommandsMixin
+    from src.config import AppConfig
+    from src.integration.records import PolicyActivation
+    from src.integration.service import IntegrationService
+
+    config = AppConfig()
+    config.integration.git_first = "active"
+    db = SimpleNamespace(get_project=AsyncMock(return_value=_app_project("p", "disabled")))
+    handler = SimpleNamespace(db=db, config=config, orchestrator=SimpleNamespace(
+        integration_service=IntegrationService(None, None, train=object()),
+    ))
+    with patch.object(PolicyActivation, "configure", new_callable=AsyncMock) as configure:
+        await ProjectCommandsMixin._cmd_edit_project(handler, {
+            "project_id": "p", "hierarchical_integration_mode": "development",
+            "expected_integration_generation": 0,
+        })
+        configure.assert_awaited_once()
+
+
+async def test_delivery_engine_check_is_registered_and_needs_database():
+    from src.doctor.integration_checks import _BY_ID
+
+    assert "integration.delivery_engine" in {c.id for c in default_registry().checks()}
+    result = await _BY_ID["integration.delivery_engine"].run(DoctorContext(config=None))
+    assert result.severity == Severity.INFO
+
+
+def _item(item_id, status="ok", *codes, fix=None):
+    return {"id": item_id, "status": status, "codes": list(codes), "fix": fix}
+
+
+def _verified(*items):
+    return {
+        "success": True,
+        "outcome": "verified",
+        "ready": not any(item["status"] == "fail" for item in items),
+        "items": list(items),
+    }
+
+
+def _app_mode_ctx(projects, responses, *, app=True, repos=None):
+    config = SimpleNamespace(integration=SimpleNamespace(github_app=object() if app else None))
+    repos = repos or {}
+
+    async def get_repo(repository_id):
+        return repos.get(repository_id)
+
+    db = SimpleNamespace(list_projects=AsyncMock(return_value=projects), get_repo=get_repo)
+
+    async def execute(command, args):
+        assert command == "integration_app_verify"
+        return responses[args["project_id"]]
+
+    handler = SimpleNamespace(execute=AsyncMock(side_effect=execute))
+    return DoctorContext(config=config, db=db, handler=handler), handler
+
+
+def _app_project(project_id, mode, url="https://github.com/o/{}.git", repository_id=None):
+    return Project(
+        id=project_id,
+        name=project_id,
+        repo_url=url.format(project_id),
+        hierarchical_integration_mode=mode,
+        integration_repository_id=repository_id,
+    )
+
+
+async def _run_app_mode(ctx):
+    from src.doctor.integration_checks import _BY_ID
+
+    return await _BY_ID["integration.trust"].run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_app_mode_check_is_info_without_an_app():
+    ctx, handler = _app_mode_ctx([_app_project("p", "train")], {}, app=False)
+
+    result = await _run_app_mode(ctx)
+
+    assert result.severity == Severity.INFO
+    handler.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_app_mode_check_reports_fail_items_as_error_and_warn_items_as_warn():
+    projects = [
+        _app_project("train", "train"),
+        _app_project("off", "disabled"),
+        _app_project("local", "development", url="/srv/remotes/{}.git"),
+    ]
+    responses = {
+        "train": _verified(
+            _item("credential"),
+            _item("variables", "fail", "hosted_workflow_variables_unavailable", fix="app-setup"),
+            _item("protection", "warn", "main_protection_app_bypass"),
+        )
+    }
+    ctx, handler = _app_mode_ctx(projects, responses)
+
+    result = await _run_app_mode(ctx)
+
+    assert result.severity == Severity.ERROR
+    assert [call.args[1] for call in handler.execute.await_args_list] == [{"project_id": "train"}]
+    assert [(f["item"], f["status"], f["codes"]) for f in result.data["findings"]] == [
+        ("variables", "fail", ["hosted_workflow_variables_unavailable"]),
+        ("protection", "warn", ["main_protection_app_bypass"]),
+    ]
+    assert "train: variables fail (hosted_workflow_variables_unavailable)" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_app_mode_check_warns_when_only_warn_items_remain():
+    responses = {"p": _verified(_item("audit_workflow", "warn", "audit_workflow_missing"))}
+    ctx, _handler = _app_mode_ctx([_app_project("p", "observe")], responses)
+
+    result = await _run_app_mode(ctx)
+
+    assert result.severity == Severity.WARN
+
+
+@pytest.mark.asyncio
+async def test_app_mode_check_judges_development_on_what_the_publisher_needs():
+    responses = {
+        "dev": _verified(
+            _item("credential"),
+            _item("variables", "fail", "hosted_workflow_variables_unavailable"),
+            _item("protection"),
+        ),
+        "blocked": _verified(
+            _item("protection", "fail", "main_protection_blocks_development_publisher"),
+        ),
+        "fresh": {"success": False, "outcome": "policy_missing", "error": "no policy"},
+    }
+    projects = [_app_project(name, "development") for name in responses]
+    ctx, _handler = _app_mode_ctx(projects, responses)
+
+    result = await _run_app_mode(ctx)
+
+    assert result.severity == Severity.ERROR
+    assert [(f["project_id"], f["item"]) for f in result.data["findings"]] == [
+        ("blocked", "protection")
+    ]
+    assert [entry["project_id"] for entry in result.data["unverified"]] == ["fresh"]
+    dev = next(report for report in result.data["projects"] if report["project_id"] == "dev")
+    assert {item["id"]: item["judged"] for item in dev["items"]} == {
+        "credential": True,
+        "variables": False,
+        "protection": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_app_mode_check_is_an_error_when_the_command_refuses_an_enabled_project():
+    responses = {
+        "p": {"success": False, "outcome": "repository_binding_failed", "error": "no binding"}
+    }
+    ctx, _handler = _app_mode_ctx([_app_project("p", "hierarchy")], responses)
+
+    result = await _run_app_mode(ctx)
+
+    assert result.severity == Severity.ERROR
+    assert result.data["findings"][0]["codes"] == ["repository_binding_failed"]
+
+
+@pytest.mark.asyncio
+async def test_app_mode_check_reads_the_designated_repository_url():
+    """A project whose designated repository is on GitHub counts, whatever its record URL."""
+    from src.models import RepoConfig, RepoSourceType
+
+    repos = {
+        "r": RepoConfig(
+            id="r", project_id="p", source_type=RepoSourceType.CLONE,
+            url="https://github.com/o/r.git",
+        )
+    }
+    project = _app_project("p", "train", url="/srv/{}", repository_id="r")
+    ctx, handler = _app_mode_ctx([project], {"p": _verified(_item("credential"))}, repos=repos)
+
+    result = await _run_app_mode(ctx)
+
+    assert result.severity == Severity.OK
+    handler.execute.assert_awaited_once()
+
+
+def test_app_mode_check_is_registered():
+    assert "integration.trust" in {check.id for check in default_registry().checks()}
+
+
+# ---------------------------------------------------------------------------
+# integration.ci_source (policy-selected CI source)
+# ---------------------------------------------------------------------------
+
+
+async def test_ci_producer_reports_stored_slugs_on_both_boundaries(reuse_database):
+    from src.doctor.integration_checks import _BY_ID
+
+    check = _BY_ID["integration.ci_producer"]
+    assert check.id in {item.id for item in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    db = await reuse_database("doctor-ci-producer")
+    for project_id, policy in {
+        "unconfigured": None,
+        "numeric": {"root": {"required_checks": {"producer_id": "15368"}}},
+        "broken": {"parent": {"required_checks": {"producer_id": "github-actions"}},
+                   "root": {"required_checks": {"producer_id": 15368}}},
+    }.items():
+        await db.create_project(Project(id=project_id, name=project_id,
+                                        hierarchical_integration_policy=policy))
+    ctx = DoctorContext(config=SimpleNamespace(), db=db)
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert result.fixable is False
+    assert result.data["invalid"] == [
+        {"project_id": "broken", "field": "parent.required_checks.producer_id",
+         "producer_id": "github-actions"},
+        {"project_id": "broken", "field": "root.required_checks.producer_id",
+         "producer_id": 15368},
+    ]
+    assert "GitHub Actions: 15368" in result.detail
+    assert "integration-policy" in result.detail
+    await db.update_project("broken", hierarchical_integration_policy=None)
+    assert (await check.run(ctx)).severity == Severity.OK
+
+
+async def test_ci_source_check_names_local_runners_and_invalid_blocks(reuse_database):
+    from sqlalchemy import update
+
+    from src.database.tables import projects
+    from src.doctor.integration_checks import _BY_ID
+    from tests.test_integration_service import _minimal_policy_values
+
+    check = _BY_ID["integration.ci_source"]
+    assert "integration.ci_source" in {c.id for c in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    db = await reuse_database("doctor-ci-source.db")
+    for project_id in ("hosted", "local", "broken"):
+        await db.create_project(Project(id=project_id, name=project_id))
+    ctx = DoctorContext(config=SimpleNamespace(), db=db)
+    result = await check.run(ctx)
+    assert result.severity == Severity.OK
+    assert result.detail == "every project reads hosted checks"
+
+    commands = {"unit": "aq test tests/test_x.py"}
+    stored = {
+        "hosted": _minimal_policy_values(),
+        "local": {**_minimal_policy_values(),
+                  "ci": {"source": "local", "promotion": "hosted", "commands": commands}},
+        "broken": {**_minimal_policy_values(), "ci": {"source": "local"}},
+    }
+    async with db._engine.begin() as conn:
+        for project_id, policy in stored.items():
+            await conn.execute(update(projects).where(projects.c.id == project_id)
+                               .values(hierarchical_integration_policy=policy))
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert result.data["invalid"][0]["project_id"] == "broken"
+    assert "broken:" in result.detail and "requires ci.commands" in result.detail
+    assert "Rollback hazard" in result.detail and "unknown policy field" in result.detail
+    assert result.data["rollback_projects"] == ["broken", "local"]
+    assert result.data["projects"] == [{
+        "project_id": "local", "root": "local", "epic": "local", "promotion": "hosted",
+        "origin": "policy"}]
+
+    del stored["broken"]
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "broken")
+                           .values(hierarchical_integration_policy=None))
+    result = await check.run(ctx)
+    assert result.severity == Severity.OK
+    assert result.detail.startswith("1 project(s) run required checks locally")
+    assert "Before downgrading" in result.detail
+    assert result.data["rollback_projects"] == ["local"]
+
+
+# ---------------------------------------------------------------------------
+# integration.promotion_stranded (an open intent whose task StepAdmission refuses)
+# ---------------------------------------------------------------------------
+
+
+async def test_promotion_stranded_names_the_repair_for_a_refused_task(promotion):
+    from sqlalchemy import insert, update
+
+    from src.database.tables import agent_profiles, tasks
+    from src.doctor.integration_checks import _BY_ID
+
+    check = _BY_ID["integration.promotion_stranded"]
+    assert check.id in {c.id for c in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    ctx = DoctorContext(config=SimpleNamespace(), db=promotion.db)
+    result = await check.run(ctx)
+    assert (result.severity, result.data) == (Severity.OK, {"stranded": []})
+
+    async with promotion.db._engine.begin() as conn:
+        await conn.execute(insert(agent_profiles).values(
+            id="worker", name="Worker", description="", model="test", created_at=1, updated_at=1))
+        await conn.execute(update(tasks).values(
+            status="READY", profile_id="worker", route_source="override"))
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert result.data["stranded"] == [{
+        "batch_id": promotion.batch.id, "project_id": "p",
+        "request_id": "promotion:r:release:1.2.3", "task_id": "promotion-task",
+        "reason": "task promotion-task is a READY promotion task, "
+                  "not an IN_PROGRESS or COMPLETED promotion"}]
+    assert "aq promote repair promotion:r:release:1.2.3 --project p" in result.detail
+
+    async with promotion.db._engine.begin() as conn:
+        await conn.execute(update(tasks).values(status="COMPLETED"))
+    result = await check.run(ctx)
+    assert result.data["stranded"][0]["reason"] == (
+        "promotion task promotion-task is routed to profile 'worker'")
+    await promotion.store.set_intent(promotion.batch.id, "aborted")
+    assert (await check.run(ctx)).severity == Severity.OK
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("doctor.db"))
-    await d.initialize()
-    await d.create_project(Project(id="p", name="P", repo_url="https://github.com/o/r"))
-    return d
-
-
-async def _age(db, task_id: str, age_s: float) -> None:
-    """Rewind ``updated_at`` past ``update_task``, which always stamps *now*."""
-    import sqlalchemy as sa
-
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            sa.text("UPDATE tasks SET updated_at = :ts WHERE id = :id"),
-            {"ts": time.time() - age_s, "id": task_id},
-        )
-
-
-async def _identity_task(db, task_id, *, status=TaskStatus.DEFINED, branch=None):
+async def sealed_train_batch(promotion):
     from sqlalchemy import update
 
-    from src.database.tables import tasks
+    from src.database.tables import integration_batches, projects
+    from src.integration.batches import Batch, BatchMember
 
-    await db.create_task(Task(
-        id=task_id, project_id="p", title=task_id, description="", status=status,
-        branch_name=branch,
-    ))
-    # create_task stamps its own time. Set up the historical snapshot explicitly.
-    async with db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(created_at=200.0))
-
-
-async def _identity_origin(db, task_id, *, created_at=100.0, retired_at=None, branch=None):
-    from sqlalchemy import insert
-
-    from src.database.tables import task_branch_origins
-
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(task_branch_origins).values(
-                id=f"origin-{task_id}", task_id=task_id, repository_id="old-repo",
-                branch_name=branch, base_sha="a" * 40, creation_generation=0,
-                reserved=True, materialized=True, created_at=created_at,
-                materialized_at=created_at, retired_at=retired_at,
-            )
-        )
-
-
-@pytest.mark.parametrize("mode", ["disabled", "development", "hierarchy", "train"])
-@pytest.mark.parametrize("status", [TaskStatus.BLOCKED, TaskStatus.COMPLETED])
-async def test_reused_task_identity_reports_predecessor_origin_in_every_mode(db, mode, status):
-    from sqlalchemy import insert, update
-
-    from src.database.tables import projects, task_integration_checkpoints
-
-    # Integration evidence survived the old task; the current task has the
-    # same name but a later creation time and a different repository/branch.
-    await _identity_origin(db, "reused", branch="aq/reused")
-    await _identity_task(db, "reused", status=status, branch="aq/new-task")
-    async with db.immediate() as conn:
+    env = promotion
+    await env.store.set_intent(env.batch.id, "paused")
+    env.stalled_batch = await env.store.freeze(
+        Batch("train-stuck", "p", "r", "refs/heads/dev"),
+        (BatchMember("source", env.source, env.base),), trees={"source": env.source})
+    async with env.db.immediate() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
-            hierarchical_integration_mode=mode,
-            hierarchical_integration_desired_mode=mode,
-        ))
-        await conn.execute(insert(task_integration_checkpoints).values(
-            task_id="reused", repository_id="old-repo", branch="aq/reused",
-            checkpoint_sha="b" * 40, updated_at=100.0,
-        ))
-
-    result = await run_check(db, "integration.reused_task_identity")
-
-    assert result.severity is Severity.WARN
-    assert result.data == {
-        "count": 1, "task_count": 1,
-        "origins": [{
-            "task_id": "reused", "project_id": "p", "task_status": status.value,
-            "task_created_at": 200.0, "task_repository_id": None,
-            "task_branch": "aq/new-task", "origin_id": "origin-reused",
-            "repository_id": "old-repo", "origin_branch": "aq/reused",
-            "base_sha": "a" * 40, "materialized": True, "origin_created_at": 100.0,
-            "checkpoint_repository_id": "old-repo", "checkpoint_branch": "aq/reused",
-            "checkpoint_sha": "b" * 40,
-        }],
-    }
-    assert "Releasing a fence alone" in result.detail
+            hierarchical_integration_mode="development", status="ACTIVE"))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(updated_at=1_800_000_000 - 411 * 60))
+    return env
 
 
-async def test_reused_task_identity_ignores_normal_retired_and_orphan_origins(db):
-    for task_id, created_at, retired_at in [
-        ("later", 201.0, None), ("equal", 200.0, None), ("retired", 100.0, 150.0),
-    ]:
-        await _identity_task(db, task_id)
-        await _identity_origin(db, task_id, created_at=created_at, retired_at=retired_at)
-    await _identity_origin(db, "orphan")
-    # A transferred ownership row may legitimately predate its current owner.
-    await _held_owner(db, task_id="later")
-
-    result = await run_check(db, "integration.reused_task_identity")
-
-    assert result.severity is Severity.OK
-    assert result.data == {"count": 0, "task_count": 0, "origins": []}
-
-
-async def test_reused_task_identity_fix_leaves_all_evidence_unchanged(db):
-    from sqlalchemy import select
-
-    from src.database.tables import integration_branch_owners, task_branch_origins, tasks
-
-    await _identity_origin(db, "reused")  # Legacy NULL branch and no checkpoint.
-    await _identity_task(db, "reused")
-    await _held_owner(db, task_id="reused")
-
-    async def snapshot():
-        async with db._engine.connect() as conn:
-            return [
-                (await conn.execute(select(table))).mappings().all()
-                for table in (tasks, task_branch_origins, integration_branch_owners)
-            ]
-
-    before = await snapshot()
-    report = await run_doctor(
-        default_registry(), DoctorContext(config=None, db=db),
-        only=["integration.reused_task_identity"], fix=True,
-    )
-
-    assert report["exit_code"] == 1
-    finding = report["checks"][0]
-    assert finding["fixable"] is False
-    assert finding["fix_applied"] is False
-    assert finding["data"]["origins"][0]["checkpoint_sha"] is None
-    assert finding["data"]["origins"][0]["origin_branch"] is None
-    assert await snapshot() == before
-
-
-async def test_reused_task_identity_caps_details_without_hiding_total(db):
-    for number in reversed(range(51)):
-        task_id = f"reused-{number:02}"
-        await _identity_origin(db, task_id)
-        await _identity_task(db, task_id)
-
-    result = await run_check(db, "integration.reused_task_identity")
-
-    assert result.data["count"] == result.data["task_count"] == 51
-    assert len(result.data["origins"]) == 50
-    assert result.data["origins"][0]["task_id"] == "reused-00"
-    assert result.data["origins"][-1]["task_id"] == "reused-49"
-
-
-async def test_reused_task_identity_without_database_is_unknown():
-    result = await run_check(None, "integration.reused_task_identity")
-    assert result.severity is Severity.INFO
-    assert not result.fixable
-
-
-async def _completed(db, task_id: str) -> None:
-    await db.create_task(
-        Task(id=task_id, project_id="p", title=f"T {task_id}", description="")
-    )
-    # Straight to COMPLETED: the check reads the row, and walking the real
-    # DEFINED -> READY -> ... ladder would only test ``transition_task``.
-    await db.update_task(task_id, status=TaskStatus.COMPLETED)
-
-
-async def _completed_with_pr(db, task_id: str, *, pr_url: str, age_s: float = 60.0):
-    await _completed(db, task_id)
-    await db.update_task(task_id, branch_name=f"aq/{task_id}", pr_url=pr_url)
-    await _age(db, task_id, age_s)
-
-
-async def _orphaned_batch_operation(db):
-    from sqlalchemy import insert, update
-
-    from src.database.tables import integration_batches, integration_repair_operations, projects
-
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(projects)
-            .where(projects.c.id == "p")
-            .values(
-                hierarchical_integration_mode="development",
-                hierarchical_integration_desired_mode="development",
-            )
-        )
-        await conn.execute(
-            insert(integration_batches).values(
-                id="legacy-batch",
-                project_id="p",
-                repository_id="repo",
-                request_id="legacy-request",
-                source_manifest_digest="sha256:" + "d" * 64,
-                base_sha="a" * 40,
-                lifecycle="repairing",
-                integration_branch="aq/integration/legacy",
-                policy_snapshot={},
-                artifact_snapshot={},
-                cleanup_state="pending",
-                created_at=1.0,
-                updated_at=2.0,
-            )
-        )
-        await conn.execute(
-            insert(integration_repair_operations).values(
-                id="legacy-operation",
-                target_kind="batch",
-                batch_id="legacy-batch",
-                episode_id="legacy-batch",
-                active_stage=0,
-                state="active",
-                policy_snapshot={},
-                artifact_snapshot={},
-                required_check_version="checks-v1",
-                created_at=1.0,
-                updated_at=2.0,
-            )
-        )
-
-
-def _handler_with_pr_state(db, merged):
-    """A CommandHandler stand-in whose bound PR probe returns *merged*."""
-    git = MagicMock()
-    git.bind_github_repository = AsyncMock(
-        return_value=GitHubRepositoryBinding(1, "o/r")
-    )
-    git.acheck_pr_merged = AsyncMock(return_value=merged)
-    orchestrator = MagicMock()
-    orchestrator.git = git
-    handler = MagicMock()
-    handler.orchestrator = orchestrator
-    return handler
-
-
-@pytest.mark.asyncio
-async def test_warns_on_completed_task_with_open_pr_and_no_review(db):
-    await _completed_with_pr(db, "stranded", pr_url="https://github.com/o/r/pull/1")
-
-    result = await run_check(
-        db, "integration.unreviewed_prs", handler=_handler_with_pr_state(db, False)
-    )
-
-    assert result.severity is Severity.WARN
-    assert result.data["count"] == 1
-    finding = result.data["tasks"][0]
-    assert finding["task_id"] == "stranded"
-    assert finding["pr_url"] == "https://github.com/o/r/pull/1"
-    assert finding["pr_open"] is True
-
-
-@pytest.mark.asyncio
-async def test_orphaned_operations_warns_until_the_operation_is_cancelled(db):
+@pytest.mark.parametrize("case,stalled", [
+    ("completed", True), ("archived", True), ("no_repair", True),
+    ("paused", False), ("aborted", False), ("promoted", False),
+    ("active_repair", False), ("recent_completion", False),
+    ("recent_progress", False), ("retry_pending", False), ("visit_running", False),
+    ("visit_overdue", True), ("wrong_batch_progress", True),
+])
+async def test_stalled_sealed_train_batches_use_progress_and_bounded_deadlines(
+    sealed_train_batch, case, stalled,
+):
     from sqlalchemy import update
 
-    from src.database.tables import integration_repair_operations
-
-    await _orphaned_batch_operation(db)
-
-    result = await run_check(db, "integration.orphaned_operations")
-
-    assert result.severity is Severity.WARN
-    assert result.data["count"] == 1
-    finding = result.data["operations"][0]
-    assert finding["project_id"] == "p"
-    assert finding["id"] == "legacy-operation"
-    assert finding["target"] == {"kind": "batch", "id": "legacy-batch"}
-    assert finding["cancel_preserving"].startswith(
-        "aq integration cancel-preserving legacy-operation --reason"
-    )
-    assert "legacy-operation" in result.detail
-
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_repair_operations)
-            .where(integration_repair_operations.c.id == "legacy-operation")
-            .values(state="cancelled")
-        )
-
-    resolved = await run_check(db, "integration.orphaned_operations")
-
-    assert resolved.severity is Severity.OK
-    assert resolved.data == {"count": 0, "operations": []}
-
-
-@pytest.mark.asyncio
-async def test_ok_when_the_review_task_exists(db):
-    await _completed_with_pr(db, "reviewed", pr_url="https://github.com/o/r/pull/2")
-    # The row ``per-task-review``'s ``ensure_task`` would have written.
-    await db.create_task(
-        Task(
-            id="review-1",
-            project_id="p",
-            title="Review: reviewed",
-            description="",
-            dedup_key="review:task:reviewed",
-        )
-    )
-
-    result = await run_check(
-        db, "integration.unreviewed_prs", handler=_handler_with_pr_state(db, False)
-    )
-
-    assert result.severity is Severity.OK, result.detail
-
-
-@pytest.mark.asyncio
-async def test_merged_pr_is_not_stranded(db):
-    """A merged PR landed, so it is not the failure this check is looking for."""
-    await _completed_with_pr(db, "landed", pr_url="https://github.com/o/r/pull/3")
-
-    result = await run_check(
-        db, "integration.unreviewed_prs", handler=_handler_with_pr_state(db, True)
-    )
-
-    assert result.severity is Severity.OK, result.detail
-
-
-@pytest.mark.asyncio
-async def test_ignores_completions_without_a_pr_and_older_than_the_window(db):
-    await _completed(db, "no-pr")
-
-    await _completed_with_pr(
-        db, "ancient", pr_url="https://github.com/o/r/pull/4", age_s=48 * 3600
-    )
-
-    result = await run_check(
-        db, "integration.unreviewed_prs", handler=_handler_with_pr_state(db, False)
-    )
-
-    assert result.severity is Severity.OK, result.detail
-
-
-@pytest.mark.asyncio
-async def test_reports_when_gh_is_unavailable(db):
-    """Offline, an unverifiable PR still warns — silence is the bug being hunted."""
-    await _completed_with_pr(db, "offline", pr_url="https://github.com/o/r/pull/5")
-
-    # No handler at all: nothing to probe ``gh`` with.
-    result = await run_check(db, "integration.unreviewed_prs", handler=None)
-
-    assert result.severity is Severity.WARN
-    assert result.data["tasks"][0]["pr_open"] is None
-
-
-@pytest.mark.asyncio
-async def test_check_is_registered_in_the_default_registry():
-    registry = default_registry()
-    ids = {c.id for c in registry.checks()}
-    assert "integration.unreviewed_prs" in ids
-
-
-@pytest.mark.asyncio
-async def test_operational_check_reports_modes_blockers_and_human_attention_read_only(db):
-    handler = MagicMock()
-    handler.execute = AsyncMock(
-        return_value={
-            "outcome": "status",
-            "project_id": "p",
-            "effective_mode": "train",
-            "desired_mode": "disabled",
-            "generation": 8,
-            "draining": True,
-            "ready": False,
-            "rollout_ready": False,
-            "blockers": [
-                {
-                    "code": "hosted_workflow_variables_unavailable",
-                    "detail": "functional integration dependency is unavailable",
-                    "ref": "repo",
-                }
-            ],
-            "blocker_digest": "sha256:" + "c" * 64,
-            "certification": {"status": "not_performed", "deferred": ["security"]},
-            "repair": [{"id": "op-1", "state": "human_required"}],
-            "cleanup_pending": [
-                {
-                    "batch_id": "batch-1",
-                    "identity": "refs/heads/aq/integration/batch-1",
-                    "state": "conflict",
-                    "irreversible": False,
-                }
-            ],
-        }
-    )
-
-    result = await run_check(db, "integration.operational", handler=handler)
-
-    assert result.severity is Severity.WARN
-    assert result.fixable is False
-    project = result.data["projects"][0]
-    assert project["effective_mode"] == "train"
-    assert project["desired_mode"] == "disabled"
-    assert project["draining"] is True
-    assert project["generation"] == 8
-    assert project["blockers"][0]["code"] == "hosted_workflow_variables_unavailable"
-    assert project["human_required"] == [{"operation_id": "op-1", "state": "human_required"}]
-    assert project["cleanup_attention"][0]["batch_id"] == "batch-1"
-    assert project["certification"]["status"] == "not_performed"
-    handler.execute.assert_awaited_once_with("integration_status", {"project_id": "p"})
-
-
-@pytest.mark.asyncio
-async def test_operational_check_is_info_for_disabled_unconfigured_projects(db):
-    handler = MagicMock()
-    handler.execute = AsyncMock(
-        return_value={
-            "outcome": "status",
-            "project_id": "p",
-            "effective_mode": "disabled",
-            "desired_mode": "disabled",
-            "generation": 0,
-            "draining": False,
-            "ready": False,
-            "blockers": [{"code": "repository_not_designated", "detail": "missing", "ref": "p"}],
-            "certification": {"status": "not_performed"},
-            "repair": [],
-            "cleanup_pending": [],
-        }
-    )
-
-    result = await run_check(db, "integration.operational", handler=handler)
-
-    assert result.severity is Severity.INFO
-    assert "disabled" in result.detail
-    assert result.data["projects"][0]["blockers"][0]["code"] == "repository_not_designated"
-
-
-@pytest.mark.asyncio
-async def test_operational_doctor_fix_mode_never_mutates_or_calls_control_commands(db):
-    handler = MagicMock()
-    handler.execute = AsyncMock(
-        return_value={
-            "outcome": "status",
-            "project_id": "p",
-            "effective_mode": "observe",
-            "desired_mode": "observe",
-            "generation": 2,
-            "draining": False,
-            "ready": True,
-            "blockers": [],
-            "certification": {"status": "not_performed"},
-            "repair": [],
-            "cleanup_pending": [],
-        }
-    )
-    checks = [check for check in default_registry().checks() if check.id == "integration.operational"]
-    assert len(checks) == 1
-    assert checks[0].fix is None
-
-    outcome = await run_doctor(
-        default_registry(),
-        DoctorContext(config=SimpleNamespace(), db=db, handler=handler),
-        fix=True,
-        only=["integration.operational"],
-    )
-
-    assert outcome["exit_code"] == 0
-    assert outcome["summary"]["fixes_applied"] == 0
-    handler.execute.assert_awaited_once_with("integration_status", {"project_id": "p"})
-
-
-@pytest.mark.asyncio
-async def test_operational_check_surfaces_schema_or_status_failure(db):
-    handler = MagicMock()
-    handler.execute = AsyncMock(side_effect=RuntimeError("no such table: integration_batches"))
-
-    result = await run_check(db, "integration.operational", handler=handler)
-
-    assert result.severity is Severity.ERROR
-    assert "db.migrations" in result.detail
-    assert "integration_batches" in result.data["errors"][0]["error"]
-
-
-# -- integration.branch_discards ---------------------------------------------
-#
-# A discard that parks is invisible otherwise: the task it belonged to is
-# already deleted, so no surface still shows the branch.  Doctor is the only
-# place the leftover ref gets named.
-
-
-async def _parked_origin(
-    db, *, task_id: str, state: str, error: str, branch: str | None = "aq/gone"
-) -> str:
-    import uuid
-
-    from sqlalchemy import insert
-
-    from src.database.tables import task_branch_origins
-
-    origin_id = str(uuid.uuid4())
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(task_branch_origins).values(
-                id=origin_id,
-                task_id=task_id,
-                repository_id="repo",
-                branch_name=branch,
-                parent_ref="main",
-                base_sha="a" * 40,
-                creation_generation=0,
-                reserved=True,
-                materialized=True,
-                materialized_at=1.0,
-                created_at=1.0,
-                retired_at=2.0,
-                discard_state=state,
-                discard_requested_at=2.0,
-                discard_attempts=3,
-                discard_last_error=error,
-            )
-        )
-    return origin_id
-
-
-@pytest.mark.asyncio
-async def test_branch_discards_is_ok_when_nothing_is_parked(db):
-    result = await run_check(db, "integration.branch_discards")
-
-    assert result.severity is Severity.OK
-
-
-@pytest.mark.asyncio
-async def test_branch_discards_names_the_leftover_ref(db):
-    await _parked_origin(
-        db, task_id="gone", state="conflict", error="branch has an active owner",
-        branch="aq/epic/retire-the-publisher",
-    )
-
-    result = await run_check(db, "integration.branch_discards")
-
-    assert result.severity is Severity.WARN
-    assert result.data["count"] == 1
-    assert result.data["discards"][0]["branch"] == "aq/epic/retire-the-publisher"
-    assert "aq/epic/retire-the-publisher" in result.detail
-
-
-@pytest.mark.asyncio
-async def test_branch_discards_does_not_rearm_an_unknown_legacy_ref(db):
-    origin_id = await _parked_origin(
-        db, task_id="deleted-epic", state="failed",
-        error="origin branch is unknown", branch=None,
-    )
-
-    result = await run_check(db, "integration.branch_discards")
-    assert result.severity is Severity.WARN
-    assert result.fixable is False
-    assert result.data["discards"][0]["branch"] is None
-
-    from src.doctor.integration_checks import _fix_branch_discards
-
-    fixed = await _fix_branch_discards(DoctorContext(config=SimpleNamespace(), db=db))
-    assert fixed.fix_applied is False
-    from sqlalchemy import select
-    from src.database.tables import task_branch_origins
-
-    async with db._engine.connect() as conn:
-        state = (
-            await conn.execute(
-                select(task_branch_origins.c.discard_state).where(
-                    task_branch_origins.c.id == origin_id
-                )
-            )
-        ).scalar_one()
-    assert state == "failed"
-
-
-@pytest.mark.asyncio
-async def test_branch_discards_fix_re_arms_rather_than_deleting(db):
-    """The repair is another attempt, never doctor deleting a ref itself."""
-    from sqlalchemy import select
-
-    from src.database.tables import task_branch_origins
-
-    origin_id = await _parked_origin(
-        db, task_id="gone", state="failed", error="network down"
-    )
-
-    result = await run_check(db, "integration.branch_discards")
-    assert result.severity is Severity.WARN
-
-    from src.doctor.integration_checks import _fix_branch_discards
-
-    fixed = await _fix_branch_discards(DoctorContext(config=SimpleNamespace(), db=db))
-
-    assert fixed.fix_applied is True
-    async with db._engine.connect() as conn:
-        row = (
-            await conn.execute(
-                select(task_branch_origins).where(task_branch_origins.c.id == origin_id)
-            )
-        ).mappings().one()
-    assert row["discard_state"] == "pending"
-    assert row["discard_attempts"] == 0
-    assert row["discard_last_error"] is None
-
-
-# -- integration.stranded_fences ---------------------------------------------
-#
-# The wedge this names is silent and self-repeating: the task stays READY, so
-# the scheduler keeps offering it, and every claim of it dies in
-# ``_integration_owner_fence`` with "canonical branch is not reserved by this
-# task".  Nothing surfaces except a pool worker burning a claim each time.
-#
-# The check reports candidates from the database snapshot, but its fix delegates
-# every release decision to ``OwnerRecovery``, which takes the provider and
-# checkout proofs doctor itself cannot.
-
-
-async def _held_owner(
-    db,
-    *,
-    task_id: str,
-    owner_role: str = "verifier",
-    handoff_state: str = "attached",
-    ref: str = "aq/keen-harbor",
-) -> str:
-    from sqlalchemy import insert
-
-    from src.database.tables import integration_branch_owners
-
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(integration_branch_owners).values(
-                id=f"owner-{task_id}",
-                repository_id="repo",
-                ref=ref,
-                owner_id=task_id,
-                owner_role=owner_role,
-                fence_token=27,
-                handoff_state=handoff_state,
-                session_id="dead-session",
-                workspace_id="dead-workspace",
-                created_at=1.0,
-                updated_at=2.0,
-            )
-        )
-    return f"owner-{task_id}"
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_is_ok_when_nothing_is_held(db):
-    result = await run_check(db, "integration.stranded_fences")
-
-    assert result.severity is Severity.OK
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_names_a_requeued_task_holding_its_branch(db):
-    await db.create_task(
-        Task(id="verify-1", project_id="p", title="Verify", description="", status=TaskStatus.READY)
-    )
-    await _held_owner(db, task_id="verify-1")
-
-    result = await run_check(db, "integration.stranded_fences")
-
-    assert result.severity is Severity.WARN
-    assert result.data["count"] == 1
-    assert result.data["fences"][0]["ref"] == "aq/keen-harbor"
-    assert result.data["fences"][0]["owner_role"] == "verifier"
-    assert "aq/keen-harbor" in result.detail
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_leaves_a_live_writer_alone(db):
-    """An IN_PROGRESS owner is a writer at work, not a stranded row."""
-    await db.create_task(
-        Task(
-            id="verify-2",
-            project_id="p",
-            title="Verify",
-            description="",
-            status=TaskStatus.IN_PROGRESS,
-        )
-    )
-    await _held_owner(db, task_id="verify-2")
-
-    result = await run_check(db, "integration.stranded_fences")
-
-    assert result.severity is Severity.OK
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_leaves_a_held_workspace_alone(db):
-    """A workspace still locked by the owner may be a real checkout."""
-    from src.models import RepoSourceType, Workspace
-
-    await db.create_task(
-        Task(id="verify-3", project_id="p", title="Verify", description="", status=TaskStatus.READY)
-    )
-    await db.create_workspace(
-        Workspace(
-            id="ws",
-            project_id="p",
-            workspace_path="/tmp/ws-verify-3",
-            source_type=RepoSourceType.CLONE,
-            locked_by_task_id="verify-3",
-        )
-    )
-    await _held_owner(db, task_id="verify-3")
-
-    result = await run_check(db, "integration.stranded_fences")
-
-    assert result.severity is Severity.OK
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_registers_the_guarded_recovery_fix(db):
-    """Doctor delegates every actual release to the guarded recovery service."""
+    from src.database.tables import integration_batches, tasks
+    from src.doctor.integration_checks import stalled_train_batches
+    from src.integration.repair import ordinary_repair_id
+    from src.models import Task, TaskStatus
+
+    env, now = sealed_train_batch, 1_800_000_000
+    task_id = ordinary_repair_id("train-stuck", 1)
+    if case != "no_repair":
+        await env.db.create_task(Task(id=task_id, project_id="p", repo_id="r", title="Repair", description="",
+                                      status=TaskStatus.COMPLETED))
+        async with env.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                status="READY" if case == "active_repair" else "COMPLETED",
+                updated_at=now - (10 if case == "recent_completion" else 411 * 60)))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "train-stuck").values(repair_attempt_count=1))
+        if case == "archived":
+            await env.db.archive_task(task_id)
+    if case in {"paused", "aborted"}:
+        await env.store.set_intent("train-stuck", case)
+    elif case == "promoted":
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "train-stuck").values(lifecycle="promoted"))
+    observation = {"project_id": "p", "repository_id": "r", "target_ref": "refs/heads/dev",
+                   "batch_id": "train-stuck", "state": "testing"}
+    if case in {"recent_progress", "wrong_batch_progress"}:
+        observation["progress_at"] = now - 10
+        if case == "wrong_batch_progress":
+            observation["batch_id"] = "another-batch"
+    elif case == "retry_pending":
+        observation["deferred_until"] = now + 300
+    elif case in {"visit_running", "visit_overdue"}:
+        observation.update(running=True, visit_started_at=now - (
+            1000 if case == "visit_overdue" else 10))
+    train = SimpleNamespace(status=lambda: [observation], visit_timeout_seconds=900)
+    ctx = DoctorContext(db=env.db, config=SimpleNamespace(),
+                        handler=SimpleNamespace(orchestrator=SimpleNamespace(integration_train=train)))
+    findings = await stalled_train_batches(ctx, now=now, project_ids={"p"})
+    assert bool(findings) is stalled
+    if stalled:
+        [finding] = findings
+        assert finding["batch_id"] == "train-stuck"
+        assert finding["due_at"] < now
+        assert "411m" in finding["detail"]
+        assert finding["repair_task_id"] == (None if case == "no_repair" else task_id)
+    assert await stalled_train_batches(ctx, now=now, project_ids={"another-project"}) == []
+
+
+async def test_stalled_train_batch_check_is_registered_and_read_only(sealed_train_batch, monkeypatch):
     from importlib import import_module
 
-    from src.doctor.integration_checks import integration_checks
-
-    check = next(c for c in integration_checks() if c.id == "integration.stranded_fences")
-
-    assert check.fix is import_module("src.doctor.integration_checks")._fix_stranded_fences
-    assert check.timeout_s == 60.0
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_check_never_writes_the_ownership_row(db):
-    """The check phase leaves the fence exactly as it found it.
-
-    Bumping the fence or clearing the attachment on a snapshot alone would
-    hand the branch to the next claim while a stopped-looking writer may still
-    hold a dirty or unpublished checkout, and would silently undo a guarded
-    rebind that changes the attachment without changing the owner fields.
-    """
     from sqlalchemy import select
 
-    from src.database.tables import integration_branch_owners
+    from src.database.tables import integration_batches
+    from src.doctor.integration_checks import _BY_ID
 
-    await db.create_task(
-        Task(id="verify-4", project_id="p", title="Verify", description="", status=TaskStatus.READY)
-    )
-    owner_id = await _held_owner(db, task_id="verify-4")
-
-    async def _row():
-        async with db._engine.connect() as conn:
-            return dict(
-                (
-                    await conn.execute(
-                        select(integration_branch_owners).where(
-                            integration_branch_owners.c.id == owner_id
-                        )
-                    )
-                ).mappings().one()
-            )
-
-    before = await _row()
-    result = await run_check(db, "integration.stranded_fences")
-    after = await _row()
-
-    assert result.severity is Severity.WARN
-    assert result.fixable is True
-    assert after == before
-    assert after["handoff_state"] == "attached"
-    assert int(after["fence_token"]) == 27
-    assert after["session_id"] == "dead-session"
+    check = _BY_ID["integration.train_batches_stalled"]
+    assert check.id in {c.id for c in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    monkeypatch.setattr(import_module("src.doctor.integration_checks"), "time",
+                        SimpleNamespace(time=lambda: 1_800_000_000))
+    db = sealed_train_batch.db
+    result = await check.run(DoctorContext(db=db, config=SimpleNamespace()))
+    assert result.severity == Severity.WARN and result.fixable is False
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "train-stuck")) == 1_800_000_000 - 411 * 60
 
 
-@pytest.mark.asyncio
-async def test_stranded_fences_keeps_a_stopping_writer_that_is_still_wanted(db):
-    """A stopped process with desired_state=running can still be restarted to write."""
-    await db.create_task(
-        Task(id="verify-5", project_id="p", title="Verify", description="", status=TaskStatus.READY)
-    )
-    await db.create_session(
-        SessionRecord(
-            id="stopping-writer",
-            project_id="p",
-            task_id="verify-5",
-            profile_id="test",
-            harness="test",
-            provider="test",
-            name="stopping-writer",
-            lifecycle="task",
-            work_dir="/tmp/stopping-writer",
-            epoch="epoch",
-            instance_token="token",
-            started_at=time.time(),
-            state="stopped",
-            desired_state="running",
-        )
-    )
-    await _held_owner(db, task_id="verify-5")
-
-    result = await run_check(db, "integration.stranded_fences")
-
-    assert result.severity is Severity.OK
-
-
-@pytest.mark.asyncio
-async def test_stranded_fences_ignores_a_collector_row(db):
-    """A collector's owner is an operation, so none of the checks apply."""
-    await _held_owner(db, task_id="operation-1", owner_role="collector")
-
-    result = await run_check(db, "integration.stranded_fences")
-
-    assert result.severity is Severity.OK
-
-
-# --------------------------------------------------------------------------
-# integration.stranded_dependents
-# --------------------------------------------------------------------------
-
-
-async def test_stranded_dependents_reports_cleaned_commitsless_blocker(db):
-    import sqlalchemy as sa
-
-    from src.database.tables import projects
-    from src.models import RepoConfig, RepoSourceType, TaskCompletion
-
-    await _development_project(db)
-    await db.create_repo(RepoConfig(
-        id="r", project_id="p", source_type=RepoSourceType.CLONE, url="/repo"
-    ))
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            sa.update(projects).where(projects.c.id == "p").values(integration_repository_id="r")
-        )
-    source_sha = "a" * 40
-    await db.create_task(Task(
-        id="blocker", project_id="p", repo_id="r", title="blocker", description="",
-        branch_name="aq/blocker", status=TaskStatus.COMPLETED,
-    ))
-    await db.create_task(Task(
-        id="dependent", project_id="p", repo_id="r", title="dependent", description="",
-        branch_name="aq/dependent", status=TaskStatus.COMPLETED,
-    ))
-    await db.add_dependency("dependent", "blocker")
-    await db.save_task_completion(TaskCompletion(
-        id="blocker-close", task_id="blocker", outcome="pass", commits=[], completed_at=time.time(),
-    ))
-    await _batch(
-        db,
-        "delivered-blocker",
-        state="delivered",
-        manifest=[{"task_id": "blocker", "source_sha": source_sha}],
-        branch_cleanup={
-            "state": "complete",
-            "deleted": [{"branch": "aq/blocker", "sha": source_sha, "kind": "task"}],
-        },
-    )
-
-    result = await run_check(db, "integration.stranded_dependents")
-
-    assert result.severity is Severity.ERROR
-    assert "dependent" in result.detail and "blocker" in result.detail
-    assert "Restore the blocker's branch" in result.detail
-    assert result.data["dependents"] == [{
-        "project_id": "p",
-        "dependent_task_id": "dependent",
-        "blocker_task_id": "blocker",
-        "delivery_id": "delivered-blocker",
-        "source_sha": source_sha,
-    }]
-
-
-def test_stranded_dependents_is_registered():
-    registry = default_registry()
-    assert "integration.stranded_dependents" in registry.ids()
-
-
-# --------------------------------------------------------------------------
-# integration.development_publisher_stalled
-# --------------------------------------------------------------------------
-
-
-async def _development_project(db, project_id="p"):
-    import sqlalchemy as sa
-
-    from src.database.tables import projects
-
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            sa.update(projects)
-            .where(projects.c.id == project_id)
-            .values(hierarchical_integration_mode="development")
-        )
-
-
-async def _batch(
-    db,
-    batch_id,
-    *,
-    manifest,
-    state="parked",
-    diagnostic=None,
-    branch_cleanup=None,
-    project_id="p",
+@pytest.mark.parametrize("case,alerts", [
+    ("before_deadline", False), ("at_deadline", True),
+    ("snapshot_unknown", False), ("visit_running", False),
+    ("discovery_failed", True),
+    ("active_repair_stalled", False), ("active_repair_recent", False),
+    ("recent_progress", False), ("paused", False), ("promoted", False),
+])
+async def test_train_command_alerts_after_one_hour_once_across_restarts(
+    sealed_train_batch, case, alerts,
 ):
-    from src.integration.development import DevelopmentIntegration
+    from sqlalchemy import select, update
 
-    now = time.time()
-    evidence = {"kind": "validation"}
-    if diagnostic is not None:
-        evidence["publisher_diagnostic"] = diagnostic
-    if branch_cleanup is not None:
-        evidence["branch_cleanup"] = branch_cleanup
-    # The publisher records its operations in the event log, not a receipt table.
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            DevelopmentIntegration._operation_insert(
-                id=batch_id,
-                project_id=project_id,
-                repository_id="r",
-                target_ref="refs/heads/main",
-                expected_sha=None,
-                prepared_sha=None,
-                state=state,
-                manifest=manifest,
-                evidence=evidence,
-                reason="selected validation failed",
-                created_at=now,
-                updated_at=now,
-            )
-        )
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.database.tables import escalations, integration_batches, messages, tasks
+    from src.integration.repair import ordinary_repair_id
+    from src.models import Task, TaskStatus
+
+    env, now = sealed_train_batch, 1_800_000_000
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(
+                updated_at=now - (3599 if case == "before_deadline" else 3600)))
+    observation = {"project_id": "p", "repository_id": "r", "target_ref": "refs/heads/dev",
+                   "batch_id": "train-stuck", "state": "testing"}
+    if case == "snapshot_unknown":
+        observation.update(batch_id=None, state="unknown", progress_at=now,
+                           detail="snapshot_git_error: object file is empty",
+                           deferred_until=now + 60)
+    elif case == "visit_running":
+        observation.update(running=True, visit_started_at=now)
+    elif case == "recent_progress":
+        observation["progress_at"] = now - 10
+    elif case.startswith("active_repair"):
+        repair_id = ordinary_repair_id("train-stuck", 1)
+        await env.db.create_task(Task(id=repair_id, project_id="p", repo_id="r", title="Repair",
+                                      description="", status=TaskStatus.READY))
+        async with env.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == repair_id).values(
+                updated_at=now - (10 if case == "active_repair_recent" else 3600)))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "train-stuck").values(repair_attempt_count=1))
+    elif case == "paused":
+        await env.store.set_intent("train-stuck", "paused")
+    elif case == "promoted":
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "train-stuck").values(lifecycle="promoted"))
+    train = SimpleNamespace(status=lambda: [observation], visit_timeout_seconds=900,
+                            tick=AsyncMock(return_value={"started": [], "running": []}))
+    if case == "discovery_failed":
+        train.tick.side_effect = RuntimeError("target discovery failed")
+    # Fresh handlers model restarts: durable dedup must work without a timer/cache.
+    for _ in range(2):
+        handler = IntegrationCommandsMixin()
+        handler.db, handler.config = env.db, SimpleNamespace()
+        handler.orchestrator = SimpleNamespace(integration_train=train)
+        with principal_context(ExecutionPrincipal.service("integration-train")):
+            if case == "discovery_failed":
+                with pytest.raises(RuntimeError, match="target discovery failed"):
+                    await handler._cmd_integration_train_tick({"now": now})
+            else:
+                assert (await handler._cmd_integration_train_tick({"now": now}))["success"]
+    async with env.db._engine.connect() as conn:
+        incidents = (await conn.execute(select(escalations).where(
+            escalations.c.source_kind == "integration_train_stall"))).mappings().all()
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_train_stalled"))).mappings().all()
+    assert len(incidents) == len(notices) == int(alerts)
+    if alerts:
+        [incident], [notice] = incidents, notices
+        assert incident["source_identity"] == "train-stuck"
+        assert notice["to_id"] == "supervisor-p"
+        assert notice["thread_id"] == incident["id"]
+        assert "60m" in notice["body"]
+        assert await env.db.list_escalation_deliveries(incident["id"]) == []
 
 
-async def test_publisher_stalled_names_the_batch_and_the_cause(db):
-    """The agent-queue incident: the same fault on tick after tick."""
-    await _development_project(db)
-    await _batch(
-        db,
-        "b4f49c0c",
-        manifest=[{"task_id": "development-repair-8d6e", "source_sha": "a" * 40}],
-        diagnostic={
-            "kind": "repair_dispatch_failed",
-            "task_ids": ["development-repair-8d6e"],
-            "detail": "ValueError: repair source 'development-repair-8d6e' is not in project 'p'",
-            "consecutive_ticks": 42,
-            "first_failed_at": time.time() - 86_400,
-            "last_failed_at": time.time(),
-        },
+@pytest.mark.parametrize("case", ["retry_pending", "queue_progress", "long_visit"])
+async def test_train_alert_waits_for_real_queue_progress_and_measured_visits(sealed_train_batch, case):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches
+    from src.doctor.integration_checks import stalled_train_batches
+
+    env, now = sealed_train_batch, 1_800_000_000
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(updated_at=now - 3601))
+    lane = {"project_id": "p", "repository_id": "r", "target_ref": "refs/heads/dev",
+            "batch_id": "train-stuck"}
+    if case == "retry_pending":
+        lane["deferred_until"] = now + 270
+    elif case == "queue_progress":
+        lane.update(batch_id="another-batch", progress_at=now - 270)
+    else:
+        lane["timing"] = {"elapsed_seconds": 2100}
+    train = SimpleNamespace(status=lambda: [lane], visit_timeout_seconds=900)
+    ctx = DoctorContext(db=env.db, config=SimpleNamespace(), handler=SimpleNamespace(
+        orchestrator=SimpleNamespace(integration_train=train)))
+    assert await stalled_train_batches(ctx, now=now, alert_after_seconds=3600) == []
+    train.status = lambda: []
+    assert len(await stalled_train_batches(ctx, now=now, alert_after_seconds=3600)) == 1
+
+
+@pytest.mark.parametrize("lifecycle", ["promoted", "aborted", "empty", "failed", "sealed"])
+async def test_periodic_and_explicit_sweep_share_batch_lifecycle_rules(sealed_train_batch, lifecycle):
+    from sqlalchemy import insert, select, update
+
+    from src.database.tables import integration_batches
+    from src.escalations.autoresolve import EscalationAutoResolver
+    from src.escalations.sweep import EscalationSweeper
+
+    env, now = sealed_train_batch, 1_800_000_000
+    batch_id = "train-empty" if lifecycle == "empty" else "train-stuck"
+    config = SimpleNamespace(discord=SimpleNamespace(escalations=SimpleNamespace(stateful=True)))
+    incident, _ = await env.db.create_escalation(
+        id="batch-incident", project_id="p", source_kind="integration_train_stall",
+        source_identity=batch_id, incident_key="batch-stall", supervisor_owner="supervisor-p",
+        task_title="Recover stalled batch",
+        summary="Stalled", investigation="No progress", decision_requested="Recover", severity="high", now=now,
     )
+    async with env.db.immediate() as conn:
+        if lifecycle == "empty":
+            values = dict((await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == "train-stuck"))).mappings().one())
+            values.update(id=batch_id, request_id="empty-request", lifecycle="empty",
+                          base_sha=None, integration_branch=None)
+            await conn.execute(insert(integration_batches).values(**values))
+        else:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch_id).values(lifecycle=lifecycle))
+    sweeper = EscalationSweeper(env.db, config, clock=lambda: now)
+    plan = await sweeper.plan(project_id="p")
+    resolver = EscalationAutoResolver(env.db, config, clock=lambda: now)
+    assert (await resolver.tick()).closed == (0 if lifecycle == "sealed" else 1)
+    row = await env.db.get_escalation(incident["id"])
+    if lifecycle == "sealed":
+        assert row["state"] == "needs_human"
+    else:
+        assert row["outcome"] == "sweep"
+        assert row["terminal_evidence"]["batch_id"] == batch_id
+        assert any(item.escalation_id == row["id"] and item.outcome == "sweep" for item in plan.items)
+        assert (await resolver.tick()).closed == 0
 
-    result = await run_check(db, "integration.development_publisher_stalled")
 
-    assert result.severity is Severity.ERROR
-    assert "b4f49c0c" in result.detail
-    assert "repair_dispatch_failed" in result.detail
-    assert result.data["stalls"][0]["consecutive_ticks"] == 42
-    assert result.data["stalls"][0]["task_ids"] == ["development-repair-8d6e"]
+async def test_saved_batch_sweep_plan_rechecks_reopened_source(sealed_train_batch):
+    from sqlalchemy import update
 
+    from src.database.tables import integration_batches
+    from src.escalations.sweep import EscalationSweeper
 
-async def test_publisher_stalled_lets_one_failing_tick_pass(db):
-    await _development_project(db)
-    await _batch(
-        db,
-        "fresh",
-        manifest=[{"task_id": "one", "source_sha": "a" * 40}],
-        diagnostic={
-            "kind": "repair_source_missing",
-            "task_ids": ["one"],
-            "detail": "one repair source resolves nowhere",
-            "consecutive_ticks": 1,
-            "first_failed_at": time.time(),
-        },
+    env, now = sealed_train_batch, 1_800_000_000
+    config = SimpleNamespace(discord=SimpleNamespace(escalations=SimpleNamespace(stateful=True)))
+    await env.db.create_escalation(
+        id="batch-incident", project_id="p", source_kind="integration_train_stall",
+        source_identity="train-stuck", incident_key="batch-stall", supervisor_owner="supervisor-p",
+        task_title="Recover stalled batch",
+        summary="Stalled", investigation="No progress", decision_requested="Recover", severity="high", now=now,
     )
-
-    result = await run_check(db, "integration.development_publisher_stalled")
-
-    assert result.severity is Severity.OK
-
-
-async def test_publisher_stalled_warns_after_repeated_candidate_skip(db):
-    await _development_project(db)
-    await db.create_task(Task(
-        id="child", project_id="p", title="child", description="",
-        branch_name="aq/child", status=TaskStatus.COMPLETED,
-    ))
-    evidence = {
-        "reason": "dependency_unavailable", "dependency_id": "parent",
-        "consecutive_ticks": 2, "first_skipped_at": time.time() - 600,
-    }
-    await db.set_task_meta("child", "development_publisher_skip", evidence)
-    assert (await run_check(db, "integration.development_publisher_stalled")).severity is Severity.OK
-
-    await db.set_task_meta("child", "development_publisher_skip", {
-        **evidence, "consecutive_ticks": 3,
-    })
-    result = await run_check(db, "integration.development_publisher_stalled")
-    assert result.severity is Severity.WARN
-    assert "child" in result.detail and "parent" in result.detail
-    assert "dependency_unavailable" in result.detail
-    assert result.data["stalls"][0]["dependency_id"] == "parent"
-
-
-async def _skipped_child(db, task_id, skip):
-    await db.create_task(Task(
-        id=task_id, project_id="p", title=task_id, description="",
-        branch_name=f"aq/{task_id}", status=TaskStatus.COMPLETED,
-    ))
-    await db.set_task_meta(task_id, "development_publisher_skip", skip)
-
-
-async def test_publisher_stalled_is_an_error_once_a_skip_attempt_stalls(db):
-    await _development_project(db)
-    now = time.time()
-    # An older skip still below the bound must not headline over the stall.
-    await _skipped_child(db, "observed", {
-        "reason": "missing_ref", "dependency_id": "gone", "state": "observing",
-        "consecutive_ticks": 4, "first_skipped_at": now - 3600,
-    })
-    await _skipped_child(db, "stuck", {
-        "reason": "missing_ref", "dependency_id": "gone", "state": "stalled",
-        "consecutive_ticks": 5, "first_skipped_at": now - 1500,
-        "evidence": {"repository_id": "r", "target_ref": "refs/heads/main",
-                     "target_sha": "b" * 40, "source_sha": "a" * 40,
-                     "completion_id": "stuck-close"},
-        "notified_message_id": "msg-dev-publisher-stall-1",
-    })
-
-    result = await run_check(db, "integration.development_publisher_stalled")
-
-    assert result.severity is Severity.ERROR
-    assert "candidate_stalled" in result.detail and "stuck" in result.detail
-    assert "--recover-child stuck" in result.detail
-    assert "messaged the project supervisor" in result.detail
-    by_task = {stall["task_ids"][0]: stall for stall in result.data["stalls"]}
-    assert by_task["stuck"]["cause"] == "candidate_stalled"
-    assert by_task["stuck"]["evidence"]["completion_id"] == "stuck-close"
-    assert by_task["stuck"]["notified_message_id"] == "msg-dev-publisher-stall-1"
-    assert by_task["observed"]["cause"] == "candidate_skipped"
-
-
-async def test_publisher_stalled_ignores_a_skip_waiting_on_a_live_repair(db):
-    await _development_project(db)
-    await _skipped_child(db, "waits", {
-        "reason": "source_parked", "dependency_id": "waits", "state": "waiting",
-        "waiting_on": "development-repair-abc", "consecutive_ticks": 0,
-        "first_skipped_at": time.time() - 86_400,
-    })
-
-    result = await run_check(db, "integration.development_publisher_stalled")
-
-    assert result.severity is Severity.OK
-
-
-async def test_publisher_stalled_judges_a_pre_bound_skip_by_the_configured_threshold(db):
-    """A record written before attempts had states is judged by its count."""
-    from types import SimpleNamespace
-
-    await _development_project(db)
-    await _skipped_child(db, "legacy", {
-        "reason": "undelivered_dependency", "dependency_id": "parent",
-        "consecutive_ticks": 4, "first_skipped_at": time.time() - 1200,
-    })
-
-    assert (await run_check(db, "integration.development_publisher_stalled")).severity \
-        is Severity.WARN
-    eager = SimpleNamespace(integration=SimpleNamespace(publisher_stall_after=4))
-    result = await run_check(db, "integration.development_publisher_stalled", config=eager)
-    assert result.severity is Severity.ERROR
-    assert result.data["stalls"][0]["cause"] == "candidate_stalled"
-
-
-async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
-    """A repair closed pass whose branch no batch ever picked up."""
-    from src.models import TaskCompletion
-
-    await _development_project(db)
-    repair = "development-repair-uncollected"
-    await db.create_task(
-        Task(
-            id=repair,
-            project_id="p",
-            title="repair",
-            description="",
-            branch_name=f"aq/{repair}",
-            status=TaskStatus.COMPLETED,
-        )
-    )
-    await db.save_task_completion(
-        TaskCompletion(
-            id="c1", task_id=repair, outcome="pass", completed_at=time.time() - 7_200
-        )
-    )
-
-    result = await run_check(db, "integration.development_publisher_stalled")
-
-    assert result.severity is Severity.ERROR
-    stall = result.data["stalls"][0]
-    assert stall["cause"] == "repair_branch_uncollected"
-    assert stall["task_ids"] == [repair]
-    assert f"aq/{repair}" in stall["detail"]
-
-
-async def _deferral_streak(db, identity, *, consecutive, open_=True):
-    from src.integration.development import DevelopmentIntegration
-
-    now = time.time()
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            DevelopmentIntegration._operation_insert(
-                id=identity,
-                project_id="p",
-                repository_id="r",
-                target_ref="refs/heads/main",
-                expected_sha=None,
-                prepared_sha=None,
-                state="cancelled",
-                manifest=[],
-                evidence={
-                    "kind": "validation_deferred",
-                    "open": open_,
-                    "consecutive": consecutive,
-                    "first_at": now - 900,
-                    "last_at": now,
-                    "runs": [{
-                        "at": now, "reason": "timeout",
-                        "detail": "timed out after running 300s (budget 300s, plus 160s queued "
-                                  "for a test slot)",
-                        "members": ["smart-stone.2", "smart-stone.4"], "checks": [],
-                    }],
-                },
-                reason="validation could not finish; batch deferred to the next tick",
-                created_at=now,
-                updated_at=now,
-            )
-        )
-
-
-async def test_publisher_stalled_reports_validation_that_keeps_failing_to_finish(db):
-    """The 2026-09-24 class: nothing failed, yet nothing can be verified either."""
-    await _development_project(db)
-    await _deferral_streak(db, "short", consecutive=2)
-    assert (
-        await run_check(db, "integration.development_publisher_stalled")
-    ).severity is Severity.OK
-
-    await _deferral_streak(db, "long", consecutive=3)
-    result = await run_check(db, "integration.development_publisher_stalled")
-
-    assert result.severity is Severity.ERROR
-    stall = result.data["stalls"][0]
-    assert stall["batch_id"] == "long"
-    assert stall["cause"] == "validation_infrastructure"
-    assert stall["consecutive_ticks"] == 3
-    assert stall["task_ids"] == ["smart-stone.2", "smart-stone.4"]
-    assert "timeout" in result.detail
-    # Not "resolve or cancel the batch": there is no parked batch or repair.
-    assert "no repair" in result.detail
-
-
-async def test_publisher_stalled_ignores_a_closed_deferral_streak(db):
-    await _development_project(db)
-    await _deferral_streak(db, "closed", consecutive=9, open_=False)
-    result = await run_check(db, "integration.development_publisher_stalled")
-    assert result.severity is Severity.OK
-
-
-async def test_publisher_stalled_accepts_a_repair_the_publisher_did_pick_up(db):
-    """Collected-then-parked is the publisher working, not stalling."""
-    from src.models import TaskCompletion
-
-    await _development_project(db)
-    repair = "development-repair-collected"
-    await db.create_task(
-        Task(
-            id=repair,
-            project_id="p",
-            title="repair",
-            description="",
-            branch_name=f"aq/{repair}",
-            status=TaskStatus.COMPLETED,
-        )
-    )
-    await db.save_task_completion(
-        TaskCompletion(
-            id="c1", task_id=repair, outcome="pass", completed_at=time.time() - 7_200
-        )
-    )
-    await _batch(db, "picked-up", manifest=[{"task_id": repair, "source_sha": "a" * 40}])
-
-    result = await run_check(db, "integration.development_publisher_stalled")
-
-    assert result.severity is Severity.OK
-
-
-async def test_publisher_stalled_is_quiet_without_a_development_project(db):
-    repair = "development-repair-other-mode"
-    await db.create_task(
-        Task(id=repair, project_id="p", title="r", description="",
-             branch_name=f"aq/{repair}", status=TaskStatus.COMPLETED)
-    )
-    result = await run_check(db, "integration.development_publisher_stalled")
-    assert result.severity is Severity.OK
-
-
-def test_publisher_stalled_is_registered():
-    registry = default_registry()
-    assert "integration.development_publisher_stalled" in registry.ids()
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(lifecycle="aborted"))
+    sweeper = EscalationSweeper(env.db, config, clock=lambda: now)
+    plan = await sweeper.plan(project_id="p")
+    assert plan.items[0].outcome == "sweep"
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(lifecycle="sealed"))
+    report = await sweeper.apply(plan)
+    assert report.conflicts == 1 and report.closed == 0
+    assert (await env.db.get_escalation("batch-incident"))["state"] == "needs_human"

@@ -9,6 +9,7 @@ import pytest
 from src.config import AppConfig
 from src.doctor import DoctorContext, Severity, default_registry
 from src.doctor.perf_checks import CHECK_ID, MIN_SAMPLES, WINDOW_SECONDS, rank_candidates, run_check
+from src.doctor.perf_checks import HEALTH_CHECK_ID
 from src.metrics.histogram import new_hist, observe
 
 perf_checks = sys.modules["src.doctor.perf_checks"]
@@ -70,6 +71,33 @@ def test_the_check_is_registered_and_read_only():
     assert CHECK_ID in registry.ids()
     assert perf_checks.CHECKS[CHECK_ID].fix is None
     assert perf_checks.CHECKS[CHECK_ID].owner == "dashboard-performance"
+    assert HEALTH_CHECK_ID in registry.ids()
+    assert perf_checks.CHECKS[HEALTH_CHECK_ID].fix is None
+
+
+@pytest.mark.parametrize("values,severity", [([50] * 10, Severity.OK),
+                                            ([3000] * 10, Severity.WARN),
+                                            ([3000] * 9, Severity.INFO)])
+async def test_health_latency_check_merges_completed_probes(values, severity):
+    rows = [sample(NOW - i, routes={"GET /health": {"latency": hist(value)}})
+            for i, value in enumerate(values)]
+    context = ctx(rows)
+    result = await run_check(HEALTH_CHECK_ID, context)
+    assert result.severity is severity
+    assert result.data["requests"] == len(values)
+    assert context.db.reads == [("1s", NOW - WINDOW_SECONDS, NOW, WINDOW_SECONDS + 5)]
+    if severity is Severity.WARN:
+        assert result.data["p95_ms"] > 2000 and result.data["max_ms"] == 3000
+
+
+async def test_health_latency_check_ignores_other_routes_and_disabled_probes():
+    rows = [sample(NOW, routes={"GET /api/tasks": {"latency": hist(*([4000] * 20))}})]
+    result = await run_check(HEALTH_CHECK_ID, ctx(rows))
+    assert result.severity is Severity.INFO and result.data["requests"] == 0
+    result = await run_check(HEALTH_CHECK_ID, ctx(rows + [sample(NOW, enabled=False)]))
+    assert result.severity is Severity.INFO and "off" in result.detail
+    result = await run_check(HEALTH_CHECK_ID, DoctorContext(config=AppConfig()))
+    assert result.severity is Severity.INFO
 
 
 async def test_no_database_is_info():
