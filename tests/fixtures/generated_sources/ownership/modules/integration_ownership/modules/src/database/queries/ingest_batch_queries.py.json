@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/ingest_batch_queries.py::get_batch": "Reads or row-locks one ingestion batch by id; it does not query integration storage or interpret receipt contents.",
+    "src/database/queries/ingest_batch_queries.py::live_digest": "Hashes the hydrated live ingestion structure through compute_structure_digest; the digest attests graph fidelity rather than Git ancestry.",
+    "src/database/queries/ingest_batch_queries.py::members": "Lists optionally locked active/retired ingestion membership rows in stable member-key order; it is graph membership access.",
+    "src/database/queries/ingest_batch_queries.py::passing_receipt": "Selects a passing ingestion fidelity receipt for a structure revision; this is not a task_delivery_receipts lookup or landing proof."
+  },
+  "storage_sinks": {
+    "src/database/queries/ingest_batch_queries.py::set_member_fidelity::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 327,
+      "owner": "set_member_fidelity",
+      "owner_fingerprint": "dda79c98038361738a86f24b4056a4f7c3173b7f118197927ab5a6c2cd3db02a",
+      "reason": "Upserts MEMBER_FIDELITY_META with ingestion structure-review fields; fidelity metadata describes graph membership and is not a delivery receipt."
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 
 import pytest
@@ -11,21 +12,20 @@ from sqlalchemy import event, update
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
-from src.database import Database
 from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.database.tables import gates as gates_table
+from src.database.tables import task_gates
 from src.database.tables import tasks as tasks_table
 from src.models import Agent, AgentState, Project, Task, TaskStatus
 from src.task_graph.layout.driver import LayoutDriver
-from tests.db_fixtures import lease_dsn, seed_task_session_attempt
+from tests.db_fixtures import seed_task_session_attempt
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("gl.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("gl.db")
     await d.create_project(Project(id="p1", name="P1"))
     yield d
-    await d.close()
 
 
 @pytest.fixture
@@ -41,25 +41,29 @@ def client_factory(db):
 async def seed(db):
     """epic e{c0,c1,pkg{g0,g1}}, root card z blocked by c0, hub with 10 dependents."""
 
-    async def mk(tid, parent=None, status=TaskStatus.DEFINED):
-        await db.create_task(
-            Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status)
-        )
-        if parent:
-            async with db._engine.begin() as conn:
+    # Build the fixed graph in one transaction while retaining the normal
+    # task and hierarchy writers, including their layout invalidation.
+    async with db._engine.begin() as conn:
+        async def mk(tid, parent=None, status=TaskStatus.DEFINED):
+            await db.create_task(
+                Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status),
+                conn=conn,
+            )
+            if parent:
                 await db.set_parent(tid, parent, conn=conn)
 
-    await mk("e")
-    await mk("c0", "e")
-    await mk("c1", "e", TaskStatus.COMPLETED)
-    await mk("pkg", "e")
-    await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
-    await mk("g1", "pkg")
-    await mk("z")
+        await mk("e")
+        await mk("c0", "e")
+        await mk("c1", "e", TaskStatus.COMPLETED)
+        await mk("pkg", "e")
+        await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
+        await mk("g1", "pkg")
+        await mk("z")
+        await mk("hub")
+        for i in range(10):
+            await mk(f"d{i}")
     await db.add_dependency("z", "c0")
-    await mk("hub")
     for i in range(10):
-        await mk(f"d{i}")
         await db.add_dependency(f"d{i}", "hub")
     await db.create_agent(Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY))
     await seed_task_session_attempt(
@@ -892,6 +896,42 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
     assert job.json()["id"] == job_id and job.json()["status"] == "queued"
 
 
+async def test_default_router_keeps_geometry_until_binding_or_version_changes(db, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from src.api import dependencies as deps
+    from src.api import graph_layout
+
+    await seed(db)
+    orch = SimpleNamespace(db=db, _command_handler=None)
+    monkeypatch.setattr(deps, "_orchestrator", orch)
+    build = Mock(wraps=graph_layout.build_graph_layout_router)
+    monkeypatch.setattr(graph_layout, "build_graph_layout_router", build)
+    load = AsyncMock(wraps=db.load_rows_for_containers)
+    monkeypatch.setattr(db, "load_rows_for_containers", load)
+    app = FastAPI()
+    app.include_router(graph_layout._build_default_router())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        for _ in range(3):
+            assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 1
+        assert load.await_count == 1
+        # Republishing a layout invalidates geometry without rebuilding routes.
+        await LayoutDriver(db).full_layout("p1", "all")
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 1
+        assert load.await_count == 2
+        # Messaging may swap the handler after startup. Never keep a stale binding.
+        orch._command_handler = _RecordingHandler(db)
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 2
+        assert load.await_count == 3
+        monkeypatch.setattr(deps, "_orchestrator", SimpleNamespace(db=db))
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 3
+
+
 async def test_tidy_refuses_an_agent_session_scope(db, scoped_client_factory):
     """The mutation is scoped like a generated command route."""
     await seed(db)
@@ -1462,15 +1502,28 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     open_gid, _ = await db.create_gate(
         project_id="p1", gate_type="human", title="review", waiter_task_ids=["z", "hub"]
     )
-    for i in range(300):
-        gid, _ = await db.create_gate(
-            project_id="p1",
-            gate_type="timer",
-            title=f"old{i}",
-            await_id=f"t{i}",
-            waiter_task_ids=["hub"],
+    # Gate lifecycle is covered separately; this test measures reads over the
+    # resulting history. Seed that history without 600 lifecycle transactions.
+    history = [
+        {
+            "id": f"historical-gate-{i}",
+            "project_id": "p1",
+            "gate_type": "timer",
+            "title": f"old{i}",
+            "await_id": f"t{i}",
+            "status": "resolved",
+            "resolved_by": "test",
+            "resolution": "done",
+            "created_at": time.time(),
+        }
+        for i in range(300)
+    ]
+    async with db._engine.begin() as conn:
+        await conn.execute(gates_table.insert(), history)
+        await conn.execute(
+            task_gates.insert(),
+            [{"task_id": "hub", "gate_id": gate["id"]} for gate in history],
         )
-        await db.resolve_gate(gid, resolved_by="test", resolution="done")
 
     statements: list[str] = []
 
@@ -1489,7 +1542,27 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     assert gates == [
         {"id": open_gid, "gate_type": "human", "status": "open", "task_ids": ["hub", "z"]}
     ]
-    gate_reads = [s for s in statements if "FROM gates" in s or "task_gates" in s]
+    # The containers' display-activity rollup reads every visible subtree, its
+    # gates included, in one statement; it is budgeted on its own.
+    activity_reads = [s for s in statements if "activity_subtree" in s]
+    assert len(activity_reads) == 1, activity_reads
+    # The epic delivery projection reads open approval gates of the visible
+    # epics in one statement of its own (filtered by gate type).
+    approval_reads = [
+        s for s in statements if "gates.gate_type IN" in s and s not in activity_reads
+    ]
+    assert len(approval_reads) <= 1, approval_reads
+    # The review-wait read joins gates to ``doc_reviews`` once for the whole
+    # response; it is budgeted on its own below, not as a gate lookup.
+    review_reads = [s for s in statements if "doc_reviews" in s]
+    assert len(review_reads) == 1, review_reads
+    gate_reads = [
+        s for s in statements
+        if ("FROM gates" in s or "task_gates" in s)
+        and s not in activity_reads
+        and s not in approval_reads
+        and s not in review_reads
+    ]
     assert len(gate_reads) <= 2, gate_reads
 
 
@@ -1692,7 +1765,10 @@ async def test_tiles_phase_lookup_is_one_statement_regardless_of_visible_count(d
         event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
 
     assert r.status_code == 200
-    phase_reads = [s for s in statements if "task_metadata" in s]
+    # The phase lookup reads metadata values; the epic delivery projection's
+    # own operator-hold read selects ids only and is bounded separately
+    # (test_tiles_epic_delivery_statements_do_not_grow_with_visible_epics).
+    phase_reads = [s for s in statements if "task_metadata.value" in s]
     assert len(phase_reads) == 1, phase_reads
 
 
@@ -2059,3 +2135,373 @@ async def test_locate_under_a_finished_root_searches_the_full_layout(db, client_
         )
     assert r.status_code == 200
     assert [hit["id"] for hit in r.json()["hits"]] == ["child"]
+
+
+# ---------------------------------------------------------------------------
+# Epic implementation vs delivery (noble-nexus-42)
+# ---------------------------------------------------------------------------
+
+
+async def test_tiles_list_and_node_carry_epic_delivery_for_nodes_with_children(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    assert tiles.status_code == listed.status_code == node.status_code == 200
+    nodes = {n["id"]: n for n in tiles.json()["nodes"]}
+    delivery = nodes["e"]["delivery"]
+    # e has open children: implementation, not delivery, is what is running.
+    assert delivery["state"] == "implementing"
+    assert (delivery["implementation_completed"], delivery["implementation_total"]) == (1, 3)
+    assert nodes["z"]["delivery"] is None  # a leaf has no epic answer
+    assert {n["id"]: n for n in listed.json()["nodes"]}["e"]["delivery"]["state"] == "implementing"
+    assert node.json()["node"]["delivery"]["state"] == "implementing"
+
+
+@pytest.mark.parametrize(("leaf_status", "display_state"), [("DEFINED", "waiting"), ("BLOCKED", "blocked"), ("IN_PROGRESS", "active")])
+async def test_layout_rollup_matches_tiles_list_and_detail(db, client_factory, leaf_status, display_state):
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["e", "pkg"])).values(status="IN_PROGRESS"))
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["c0", "g0", "g1"])).values(status=leaf_status))
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    answers = [
+        next(row for row in response.json()["nodes"] if row["id"] == "e")
+        for response in (tiles, listed)
+    ] + [node.json()["node"]]
+    for answer in answers:
+        assert answer["status"] == "IN_PROGRESS"
+        assert answer["display_state"] == display_state
+        assert answer["child_state_counts"] == {"completed": 1, display_state: 2}
+        assert answer["descendant_state_counts"] == {"COMPLETED": 1, leaf_status: 3}
+
+
+async def test_tiles_survive_a_failed_epic_delivery_read(db, client_factory, monkeypatch):
+    from src.integration.epic_delivery import EpicDeliveryProjection
+
+    await seed(db)
+
+    async def boom(self, conn, ids):
+        raise RuntimeError("projection read failed")
+
+    monkeypatch.setattr(EpicDeliveryProjection, "facts_on", boom)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    assert {n["id"]: n for n in r.json()["nodes"]}["e"]["delivery"] is None
+
+
+async def test_tiles_epic_delivery_statements_do_not_grow_with_visible_epics(db):
+    """The projection is batched: more visible epics, same statements."""
+    from src.integration.epic_delivery import EpicDeliveryProjection
+
+    await seed(db)
+    counts = []
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    for round_index, extra in enumerate((0, 3)):
+        for index in range(extra):
+            epic_id = f"x{round_index}{index}"
+            await db.create_task(Task(id=epic_id, project_id="p1", title=epic_id, description=""))
+            await db.create_task(Task(id=f"{epic_id}.c", project_id="p1", title="c", description=""))
+            async with db._engine.begin() as conn:
+                await db.set_parent(f"{epic_id}.c", epic_id, conn=conn)
+        visible = [task.id for task in await db.list_tasks(project_id="p1")]
+        statements.clear()
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+        try:
+            answers = await EpicDeliveryProjection(db).for_tasks(visible)
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+        assert len(answers) == 2 + extra  # e and pkg have children; hub only dependents
+        counts.append(len(statements))
+    assert counts[0] == counts[1], counts
+
+
+# ── review waits (azure-willow-99) ─────────────────────────────────────────
+
+
+async def _review_wait(
+    db,
+    review_id: str,
+    waiters: list[str],
+    *,
+    state: str = "in_review",
+    kind: str = "spec",
+    resolve: bool = False,
+) -> str:
+    """A review and its own ``review`` gate, with *waiters* held on the gate.
+
+    ``resolve`` resolves the gate the way an approval does.  Returns the gate id.
+    """
+    now = time.time()
+    content = "# Body\n"
+    async with db.immediate() as conn:
+        gate_id, _ = await db.create_gate(
+            "p1", "review", f"Review {review_id}", await_id=review_id, conn=conn
+        )
+        await db.insert_review(
+            review={
+                "id": review_id,
+                "project_id": "p1",
+                "author_task_id": None,
+                "kind": kind,
+                "title": f"Design {review_id}",
+                "vault_path": f"projects/p1/specs/{review_id}.md",
+                "current_revision": 1,
+                "state": state,
+                "gate_id": gate_id,
+                "decider": "user",
+                "notified_revision": 0,
+                "created_at": now,
+                "updated_at": now,
+            },
+            revision={
+                "review_id": review_id,
+                "revision": 1,
+                "content": content,
+                "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                "submitted_by": "session:author",
+                "submitted_at": now,
+            },
+            conn=conn,
+        )
+        if waiters:
+            await db.attach_gate_waiters(gate_id, waiters, conn=conn)
+    if resolve:
+        await db.resolve_gate(gate_id, resolved_by="user", resolution="approved")
+    return gate_id
+
+
+async def _seed_review_waits(db) -> dict[str, str]:
+    """Every shape a card can wait on a review in, plus two that must not show.
+
+    * ``z``   -- a spec review still in review (blocking)
+    * ``hub`` -- a plan review with changes requested (blocking)
+    * ``d1``  -- a rejected review: its gate stays open, so it still blocks
+    * ``d4``  -- a human gate filed against ``z``'s review by ``await_id``
+    * ``d2``  -- an approved review whose gate released the not-yet-done task
+    * ``d3``  -- the same, but the task is completed: nothing to show
+    * ``d0``  -- a timer gate, which is no review at all: nothing to show
+
+    All of them are root cards, visible with the epic collapsed.
+    """
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table).where(tasks_table.c.id == "d3").values(status="COMPLETED")
+        )
+    gates = {
+        "pending": await _review_wait(db, "rev-pending-spec", ["z"]),
+        "changes": await _review_wait(
+            db, "rev-changes-plan", ["hub"], state="changes_requested", kind="plan"
+        ),
+        "rejected": await _review_wait(db, "rev-rejected-doc", ["d1"], state="rejected", kind="other"),
+        "approved": await _review_wait(
+            db, "rev-approved-spec", ["d2", "d3"], state="approved", resolve=True
+        ),
+    }
+    gates["human"], _ = await db.create_gate(
+        project_id="p1",
+        gate_type="human",
+        title="sign off the pending spec",
+        await_id="rev-pending-spec",
+        waiter_task_ids=["d4"],
+    )
+    await db.create_gate(
+        project_id="p1", gate_type="timer", title="cool down", await_id="d0", waiter_task_ids=["d0"]
+    )
+    return gates
+
+
+def _waits(node: dict) -> list[tuple]:
+    return [
+        (w["review_id"], w["review_state"], w["gate_type"], w["gate_status"], w["blocking"])
+        for w in node["review_waits"]
+    ]
+
+
+async def test_tiles_report_review_waits_with_review_state(db, client_factory):
+    gates = await _seed_review_waits(db)
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+
+    assert _waits(nodes["z"]) == [("rev-pending-spec", "in_review", "review", "open", True)]
+    assert _waits(nodes["hub"]) == [
+        ("rev-changes-plan", "changes_requested", "review", "open", True)
+    ]
+    assert _waits(nodes["d1"]) == [("rev-rejected-doc", "rejected", "review", "open", True)]
+    assert _waits(nodes["d4"]) == [("rev-pending-spec", "in_review", "human", "open", True)]
+    assert _waits(nodes["d2"]) == [("rev-approved-spec", "approved", "review", "resolved", False)]
+    assert nodes["d3"]["review_waits"] == []
+    assert nodes["d0"]["review_waits"] == []
+    # Everything the card needs to label and link the wait.
+    wait = nodes["hub"]["review_waits"][0]
+    assert wait["gate_id"] == gates["changes"]
+    assert wait["review_kind"] == "plan"
+    assert wait["review_title"] == "Design rev-changes-plan"
+
+
+async def test_blocking_review_waits_are_the_gates_task_explain_reports(db, client_factory):
+    """``blocking`` is exactly explain's ``blocked_gate``: attached and not resolved.
+
+    ``aq task explain`` reads ``get_gates_for_task`` and reports every gate
+    whose status is not ``resolved``; the graph must agree gate for gate.
+    """
+    review_gates = set((await _seed_review_waits(db)).values())
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+
+    for task_id in ("z", "hub", "d1", "d4", "d2", "d3", "d0"):
+        explained = {
+            g["id"] for g in await db.get_gates_for_task(task_id) if g["status"] != "resolved"
+        }
+        blocking = {w["gate_id"] for w in nodes[task_id]["review_waits"] if w["blocking"]}
+        # d0's timer gate is a blocked_gate too, but no review wait.
+        assert blocking == explained & review_gates, task_id
+    assert {g["gate_type"] for g in await db.get_gates_for_task("d0")} == {"timer"}
+
+
+async def test_review_waits_list_blocking_first(db, client_factory):
+    await seed(db)
+    await _review_wait(db, "rev-a-approved", ["z"], state="approved", resolve=True)
+    await _review_wait(db, "rev-b-pending", ["z"])
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/node/z?variant=all")
+    assert r.status_code == 200
+    assert [(w["review_id"], w["blocking"]) for w in r.json()["node"]["review_waits"]] == [
+        ("rev-b-pending", True),
+        ("rev-a-approved", False),
+    ]
+
+
+async def test_list_reports_review_waits(db, client_factory):
+    """The phone list carries the same waits as the canvas tiles."""
+    await _seed_review_waits(db)
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert _waits(nodes["z"]) == [("rev-pending-spec", "in_review", "review", "open", True)]
+    assert _waits(nodes["d2"]) == [("rev-approved-spec", "approved", "review", "resolved", False)]
+    assert nodes["d0"]["review_waits"] == []
+
+
+async def test_list_review_wait_lookup_is_one_statement_regardless_of_page_size(
+    db, client_factory
+):
+    await _seed_review_waits(db)
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    assert len(r.json()["nodes"]) > 1
+    assert len([s for s in statements if "doc_reviews" in s]) == 1
+
+
+async def test_list_review_wait_lookup_is_skipped_for_an_empty_page(db, client_factory):
+    await _seed_review_waits(db)
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post(
+                "/api/projects/p1/graph/list", json={**ALL, "q": "no-such-title-anywhere"}
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    assert r.json()["nodes"] == []
+    assert [s for s in statements if "doc_reviews" in s] == []
+
+
+async def test_graph_delivery_reads_never_fetch_git(db, client_factory, tmp_path):
+    """Cold tiles/list/node reads must not clone or fetch to decorate a card."""
+    from unittest.mock import AsyncMock
+
+    from src.database.tables import projects
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.models import RepoConfig, RepoSourceType
+
+    await seed(db)
+    await db.create_repo(RepoConfig(
+        id="graph-repo", project_id="p1", source_type=RepoSourceType.LINK, url="https://example.invalid/graph.git",
+    ))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p1").values(
+            integration_repository_id="graph-repo", hierarchical_integration_mode="development",
+        ))
+        await conn.execute(update(tasks_table).where(
+            tasks_table.c.id.in_(["e", "c0", "c1", "pkg", "g0", "g1"]),
+        ).values(status="COMPLETED"))
+    observer = DeliveryObserver(db, git=GitManager(), data_dir=tmp_path)
+    observer._store = AsyncMock(side_effect=AssertionError("graph must not fetch Git"))
+    db.set_delivery_observer(observer)
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    for response in (tiles, listed, node):
+        assert response.status_code == 200
+        body = response.json()
+        nodes = body.get("nodes", [body.get("node")])
+        epic = next(n for n in nodes if n["id"] == "e")
+        assert epic["delivery"]["state"] == "unknown"
+        assert epic["delivery"]["evidence"] == "unavailable"
+    observer._store.assert_not_awaited()
+
+
+@pytest.mark.parametrize("surface", ["tiles", "list", "node"])
+async def test_layout_preserves_cached_delivery_hold(db, client_factory, monkeypatch, surface):
+    await db.create_task(Task(id="leaf", project_id="p1", title="Consumer",
+                              description="", status=TaskStatus.READY))
+    await LayoutDriver(db).full_layout("p1", "all")
+
+    async def exclusions(ids, **kwargs):
+        assert kwargs["cached_only"]
+        return {tid: [{"code": "frontier_epic_refresh_pending", "ref": "epic",
+                       "detail": "Refresh aq/epic after source.6 lands on dev"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    async with client_factory() as ac:
+        if surface == "node":
+            response = await ac.get("/api/projects/p1/graph/node/leaf?variant=all")
+        else:
+            response = await ac.post(f"/api/projects/p1/graph/{surface}", json=ALL)
+    assert response.status_code == 200
+    body = response.json()
+    [node] = [body["node"]] if surface == "node" else body["nodes"]
+    assert node["status"] == "READY"
+    assert node["claim_readiness"]["claimable"] is False
+    assert "source.6" in node["claim_readiness"]["reason"]

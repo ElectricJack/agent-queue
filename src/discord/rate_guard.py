@@ -41,6 +41,28 @@ from collections import deque
 
 logger = logging.getLogger(__name__)
 
+
+class OutboundTokenBucket:
+    """One daemon-wide budget for Discord mutations: 20 operations per minute."""
+
+    def __init__(self, *, clock=time.monotonic):
+        self.clock = clock
+        self.tokens = 20.0
+        self.updated_at = clock()
+
+    def available(self) -> bool:
+        now = self.clock()
+        self.tokens = min(20.0, self.tokens + max(0, now - self.updated_at) / 3)
+        self.updated_at = now
+        return self.tokens >= 1
+
+    def take(self) -> bool:
+        if not self.available():
+            return False
+        self.tokens -= 1
+        return True
+
+
 # Discord's invalid request window and threshold
 _WINDOW_SECONDS = 600  # 10 minutes
 _DEFAULT_WARN = 1000
@@ -144,6 +166,17 @@ class InvalidRequestTracker:
         self._alerted_warn = False
         self._alerted_critical = False
         self._alerted_halt = False
+
+    def configure(self, *, warn: int, critical: int, halt: int) -> None:
+        """Update thresholds without losing events or existing references."""
+        self._warn = warn
+        self._critical = critical
+        self._halt = halt
+        self._alerted_warn = False
+        self._alerted_critical = False
+        self._alerted_halt = False
+        self._prune(time.monotonic())
+        self._check_thresholds()
 
     # ------------------------------------------------------------------
     # Internals
@@ -255,10 +288,11 @@ def configure_tracker(
     critical: int = _DEFAULT_CRITICAL,
     halt: int = _DEFAULT_HALT,
 ) -> InvalidRequestTracker:
-    """Create (or reconfigure) the singleton tracker with custom thresholds.
+    """Configure the shared tracker in place with custom thresholds.
 
-    Should be called once during startup before the bot connects.
+    Called during startup before the bot connects. Logging may already hold
+    the tracker, so preserve its identity and any responses recorded so far.
     """
-    global _tracker
-    _tracker = InvalidRequestTracker(warn=warn, critical=critical, halt=halt)
-    return _tracker
+    tracker = get_tracker()
+    tracker.configure(warn=warn, critical=critical, halt=halt)
+    return tracker
