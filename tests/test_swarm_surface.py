@@ -392,7 +392,10 @@ def test_skill_documents_planner_scoped_graph_filing():
     from src.api.scope import AGENT_COMMAND_SET
     from src.profiles.parser import parse_profile
 
-    skill = open("src/skills/aq-tasks/SKILL.md", encoding="utf-8").read()
+    skill = "".join(
+        open(f"src/skills/aq-tasks/{rel}", encoding="utf-8").read()
+        for rel in ("SKILL.md", "reference/task-graphs.md")
+    )
     planner = parse_profile(
         open("src/profiles/defaults/planner/profile.md", encoding="utf-8").read()
     )
@@ -824,7 +827,7 @@ async def test_pool_status_includes_live_instance_detail(pool_handler, monkeypat
     }
 
 
-async def test_pool_status_marks_stable_interactive_prompt_as_blocked(pool_handler):
+async def test_pool_status_marks_stable_interactive_prompt_as_blocked(pool_handler, monkeypatch):
     """A matched prompt is visible as input-blocked, never merely idle."""
     import time
     from types import SimpleNamespace
@@ -873,6 +876,8 @@ async def test_pool_status_marks_stable_interactive_prompt_as_blocked(pool_handl
         create=lambda *_args: provider
     )
 
+    # Pool measurement and database latency must not advance the observation clock.
+    monkeypatch.setattr("src.commands.ops_commands.time", SimpleNamespace(time=lambda: now))
     row = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
 
     assert row["running_idle"] == 0
@@ -880,7 +885,7 @@ async def test_pool_status_marks_stable_interactive_prompt_as_blocked(pool_handl
     instance = row["instances"][0]
     assert instance["state"] == "blocked_on_input"
     assert instance["input_prompt"] == "model-upgrade-menu"
-    assert instance["unchanged_seconds"] == pytest.approx(600, abs=2)
+    assert instance["unchanged_seconds"] == 600
 
 
 async def test_pool_status_exposes_task_lifecycle_sessions_outside_the_pool(pool_handler):

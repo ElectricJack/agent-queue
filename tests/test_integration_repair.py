@@ -2450,7 +2450,9 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
     commands = ClaimCommandsMixin()
     commands.db = db
     commands._development_integration = lambda: None
-    commands.config = SimpleNamespace(integration=SimpleNamespace(default_mode="pull_request"))
+    from src.config import AppConfig
+
+    commands.config = AppConfig()
     commands.orchestrator = SimpleNamespace(
         _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
         _worktree_slots=lambda: SimpleNamespace(
@@ -8516,7 +8518,7 @@ async def test_ordinary_repair_exhaustion_queues_one_human_delivery_with_its_not
         assert result["outcome"] == "human_required"
     incident = await env.db.get_escalation(result["escalation_id"])
     assert incident["task_title"] == "Restore delivery of batch ordinary"
-    assert incident["deep_link"] == f"/focus/escalations/{incident['id']}"
+    assert incident["deep_link"] == f"/escalations/{incident['id']}"
     [root] = await env.db.list_escalation_deliveries(incident["id"])
     assert root["status"] == "pending"
     assert root["dedup_key"] == f"{incident['id']}:root:0"

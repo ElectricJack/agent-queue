@@ -336,8 +336,8 @@ async def ci_lanes(world, monkeypatch, ci: dict, names=("lint",)):
     lanes = DaemonLanes(orchestrator, batches=DatabaseBatches(world.db))
 
     async def hosted_checks(policy, binding, target, batch, sha, *, retained=None,
-                            expected_event="push"):
-        hosted.append((target.kind, expected_event))
+                            expected_event="push", allow_push_fallback=False):
+        hosted.append((target.kind, expected_event, allow_push_fallback))
         return "hosted"
 
     monkeypatch.setattr(lanes, "_hosted", hosted_checks)
@@ -396,11 +396,11 @@ async def test_ci_source_switch_takes_effect_on_the_next_visit(world, monkeypatc
     # The same lanes object: each visit re-reads the stored policy.
     candidate, pr = await visit(await store_ci(None))
     assert (candidate, pr) == ("hosted", "hosted")
-    assert hosted == [("root", "push"), ("root", "pull_request")]
+    assert hosted == [("root", "push", False), ("root", "pull_request", False)]
     candidate, pr = await visit(await store_ci({**LOCAL_CI, "source": "hybrid",
                                                "hosted_attestation": {"root": False}}))
     assert isinstance(candidate.provider, LocalChecks) and pr == "hosted"
-    assert hosted[-1] == ("root", "pull_request") and len(hosted) == 3
+    assert hosted[-1] == ("root", "pull_request", False) and len(hosted) == 3
 
 async def test_local_ci_source_names_each_check_by_its_required_name(world, monkeypatch):
     lint, unit = COMMAND, "aq test tests/test_sample.py"
@@ -433,7 +433,7 @@ async def test_epic_override_keeps_root_candidates_hosted(world, monkeypatch):
                                                            "epic": "local"})
     root = await lanes(TARGET)
     assert await root.checks.for_candidate(BATCH, world.candidate) == "hosted"
-    assert hosted == [("root", "push")]
+    assert hosted == [("root", "push", False)]
     assert root.service.require_attestation
     epic = TrainTarget(project_id="p", repository_id="r", target_ref="refs/heads/aq/epic",
                        kind="epic")
@@ -445,13 +445,16 @@ async def test_epic_override_keeps_root_candidates_hosted(world, monkeypatch):
 
 @pytest.mark.parametrize("source, local_gate", [("local", True), ("hybrid", False),
                                                 ("hosted", False)])
-async def test_root_pr_gate_reads_the_selected_runner(world, monkeypatch, source, local_gate):
+@pytest.mark.parametrize("pr_head", [None, "same", "other"])
+async def test_root_pr_gate_reads_the_selected_runner(world, monkeypatch, source, local_gate, pr_head):
     lanes, policy, hosted = await ci_lanes(world, monkeypatch, {**LOCAL_CI, "source": source})
     member = SimpleNamespace(task_id="t1", source_sha=world.candidate)
-    exact = await lanes._pr_checks(TARGET, member, policy, None)
+    pr_head_sha = world.candidate if pr_head == "same" else "a" * 40 if pr_head == "other" else None
+    exact = await lanes._pr_checks(TARGET, member, policy, None, pr_head_sha=pr_head_sha)
     if not local_gate:
         # Hybrid still reads the PR checks GitHub itself enforces.
-        assert exact == "hosted" and hosted == [("root", "pull_request")]
+        assert exact == "hosted"
+        assert hosted == [("root", "pull_request", pr_head == "same")]
         assert await job_rows(world.db) == []
         return
     assert isinstance(exact, RequestedChecks) and hosted == []

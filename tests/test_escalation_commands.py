@@ -118,7 +118,7 @@ async def test_create_replay_scoped_reads_and_stable_cas_errors(env):
     assert replay["created"] is False
     assert replay["escalation"]["id"] == created["escalation"]["id"]
     assert created["escalation"]["supervisor_owner"] == "supervisor-p"
-    assert created["escalation"]["deep_link"].startswith("/focus/escalations/")
+    assert created["escalation"]["deep_link"].startswith("/escalations/")
     assert len(await db.list_escalation_deliveries(created["escalation"]["id"])) == 1
 
     visible = await supervisor_execute(
@@ -192,7 +192,7 @@ async def test_reply_identity_cannot_be_spoofed_and_notice_is_atomic(env):
 async def versioned_apply(handler, args):
     legacy = await supervisor_execute(handler, "escalation_apply_reply", args)
     assert legacy["error_code"] == "ask.context_missing", legacy
-    assert legacy["ask_url"] == f"/focus/asks/{legacy['ask_id']}"
+    assert legacy["ask_url"] == f"/asks/{legacy['ask_id']}"
     args["expected"] = legacy["expected"]
     prepared = await supervisor_execute(handler, "escalation_apply_reply", {**args, "prepare": True})
     if not prepared["success"]:

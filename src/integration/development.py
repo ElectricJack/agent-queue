@@ -235,7 +235,7 @@ async def publisher_exclusion(db, repository_id, subject=None):
     Cleanup only receives exclusion, never root mutation authority.
     """
     key = int.from_bytes(hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True)
-    async with db._engine.connect() as conn:
+    async with db._engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
         acquired = await conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
         if not acquired:
             raise DevelopmentBusy("repository publisher is already running")
@@ -324,18 +324,13 @@ class DevelopmentPrimitives:
 
     async def store(self, repo, *, fetch=True):
         from src.integration.repository_recovery import (
-            fetch_retained_origin, harden_retained_repository,
+            fetch_retained_origin, open_retained_checkout,
         )
 
         from src.projects.storage_binding import repository_path
 
         path = await repository_path(self.db, repo.id, self._store_path(repo))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not (path / ".git").exists():
-            await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
-        if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
-            raise ValueError("retained repository URL differs from configured repository")
-        await harden_retained_repository(self.git, path)
+        await open_retained_checkout(self.git, path, repo.url)
         if fetch:
             await fetch_retained_origin(self.git, path, repository_url=repo.url,
                                         project_id=repo.project_id, repository_id=repo.id)

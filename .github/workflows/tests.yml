@@ -2,12 +2,12 @@ name: Tests
 
 # The full suite runs on candidate work before branch promotion:
 #
-# * `pull_request` into `dev`, `staging` or `main` tests the PR merge with its base.
+# * `pull_request` into `dev` tests the PR merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
 #   the root train promotes that exact tested SHA to `dev`.
 # * A push to `aq/batches/**` tests the git-first train's batch candidate
 #   (`src/integration/batches.py:candidate_ref`) the same way.
-# * A push to `aq/promote/**` tests the exact promotion source SHA.
+# * AQ dispatches this workflow on a private promotion ref only for ci: rerun.
 # * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref. The parent-CI
 #   publisher that pushed these refs is retired; the trigger is kept.
@@ -21,20 +21,17 @@ name: Tests
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
 # with the required check names the train observes on a candidate. A committed
 # promotion-source-audit check set may trust these names for source admission;
-# candidate CI and publication attestations still require the canonical names.
+# reuse_source promotions retain these names; rerun CI uses canonical names.
 on:
   pull_request:
     branches:
       - dev
-      - staging
-      - main
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - 'aq/parent/**'
       - 'aq/integration/**'
       - 'aq/batches/**'
-      - 'aq/promote/**'
       - 'aq/backmerge/**'
   workflow_dispatch:
   workflow_call:
@@ -48,18 +45,25 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
+
+env:
+  # Official PostgreSQL 18 multi-platform index; mirror-postgres.yml copies these exact bytes.
+  POSTGRES_DIGEST: sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
 
 jobs:
   test:
     name: Tests (${{ matrix.suite.name }})
     # A draft PR waits for `ready_for_review`. A same-repository PR from an
     # `aq/integration/**` branch is skipped because the push trigger above
-    # already tests that head SHA, and its checks appear on the PR.
+    # already tests that head SHA, and its checks appear on the PR. Promotion
+    # PR jobs also skip: the project step policy decides whether AQ dispatches CI.
     if: >-
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        !(github.event.pull_request.head.repo.full_name == github.repository &&
-         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+         (startsWith(github.event.pull_request.head.ref, 'aq/integration/') ||
+          startsWith(github.event.pull_request.head.ref, 'aq/promote/'))))
     runs-on: ubuntu-latest
     # The cache-miss install and the tests each have their own step deadline;
     # this total is their sum plus setup and cleanup, so a slow PyPI cannot
@@ -137,48 +141,19 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
-      # Both registries mirror the official image without Docker Hub's anonymous
-      # pull limit or secrets. Fall back when a mirror serves missing blobs.
+      # GHCR is primary; public mirrors cover bootstrap and unavailable package access.
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
-        run: |
-          # Run 40164398170 exhausted Google retries with `unknown blob`.
-          # Try an independent mirror before repeating the bounded pull round.
-          for pull_attempt in 1 2 3; do
-            for postgres_image in mirror.gcr.io/library/postgres:18 public.ecr.aws/docker/library/postgres:18; do
-              if docker pull "$postgres_image"; then
-                break 2
-              else
-                pull_status=$?
-              fi
-              echo "::warning::PostgreSQL image pull failed from $postgres_image (round $pull_attempt/3)"
-            done
-            if (( pull_attempt == 3 )); then
-              echo "::error::PostgreSQL image pull failed from both mirrors after $pull_attempt rounds"
-              exit "$pull_status"
-            fi
-            sleep 5
-          done
-          docker run --pull=never --detach --name ci-postgres \
-            --publish 127.0.0.1:5432:5432 \
-            --env POSTGRES_USER=agent_queue \
-            --env POSTGRES_PASSWORD=agent_queue \
-            --env POSTGRES_DB=agent_queue \
-            "$postgres_image" \
-            -c max_connections=300 \
-            -c fsync=off \
-            -c synchronous_commit=off \
-            -c full_page_writes=off
-          for attempt in {1..60}; do
-            # The entrypoint's temporary initialization server listens only on
-            # a Unix socket; require TCP so migrations see the final server.
-            if docker exec ci-postgres pg_isready \
-              -h 127.0.0.1 -U agent_queue -d agent_queue; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::PostgreSQL did not become ready after $attempt attempts"
-          exit 1
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: bash .github/scripts/start-postgres.sh
 
       - name: Set up Python
         id: python
@@ -313,7 +288,8 @@ jobs:
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        !(github.event.pull_request.head.repo.full_name == github.repository &&
-         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+         (startsWith(github.event.pull_request.head.ref, 'aq/integration/') ||
+          startsWith(github.event.pull_request.head.ref, 'aq/promote/'))))
     runs-on: ubuntu-latest
     # Include setup and post-job cleanup around the real daemon scenarios.
     # A passing graphs group consumed 261 seconds before its cleanup steps.
@@ -348,46 +324,18 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
-        run: |
-          # Run 40164398170 exhausted Google retries with `unknown blob`.
-          # Try an independent mirror before repeating the bounded pull round.
-          for pull_attempt in 1 2 3; do
-            for postgres_image in mirror.gcr.io/library/postgres:18 public.ecr.aws/docker/library/postgres:18; do
-              if docker pull "$postgres_image"; then
-                break 2
-              else
-                pull_status=$?
-              fi
-              echo "::warning::PostgreSQL image pull failed from $postgres_image (round $pull_attempt/3)"
-            done
-            if (( pull_attempt == 3 )); then
-              echo "::error::PostgreSQL image pull failed from both mirrors after $pull_attempt rounds"
-              exit "$pull_status"
-            fi
-            sleep 5
-          done
-          docker run --pull=never --detach --name ci-postgres \
-            --publish 127.0.0.1:5432:5432 \
-            --env POSTGRES_USER=agent_queue \
-            --env POSTGRES_PASSWORD=agent_queue \
-            --env POSTGRES_DB=agent_queue \
-            "$postgres_image" \
-            -c max_connections=300 \
-            -c fsync=off \
-            -c synchronous_commit=off \
-            -c full_page_writes=off
-          for attempt in {1..60}; do
-            # The entrypoint's temporary initialization server listens only on
-            # a Unix socket; require TCP so migrations see the final server.
-            if docker exec ci-postgres pg_isready \
-              -h 127.0.0.1 -U agent_queue -d agent_queue; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::PostgreSQL did not become ready after $attempt attempts"
-          exit 1
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: bash .github/scripts/start-postgres.sh
 
       - name: Set up Python
         id: python
@@ -473,7 +421,8 @@ jobs:
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        !(github.event.pull_request.head.repo.full_name == github.repository &&
-         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+         (startsWith(github.event.pull_request.head.ref, 'aq/integration/') ||
+          startsWith(github.event.pull_request.head.ref, 'aq/promote/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

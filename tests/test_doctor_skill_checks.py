@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -119,8 +120,9 @@ async def test_no_harness_directory_is_info_not_a_warning(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("optional_homes_present", [False, True])
-async def test_knowledge_skill_seeds_supported_harnesses_and_preserves_edits(
-    tmp_path, monkeypatch, optional_homes_present
+@pytest.mark.parametrize("skill_name", ["aq-knowledge", "aq-bazel-upgrade"])
+async def test_shipped_skill_seeds_supported_harnesses_and_preserves_edits(
+    tmp_path, monkeypatch, optional_homes_present, skill_name
 ):
     """Exercise real shipped discovery, seeding and drift repair in a fake home."""
     expanduser = os.path.expanduser
@@ -131,21 +133,21 @@ async def test_knowledge_skill_seeds_supported_harnesses_and_preserves_edits(
         for home in (".codex", ".gemini", "snap/gemini-cli/common/.gemini"):
             (tmp_path / home).mkdir(parents=True)
 
-    source = Path(skill_checks_module._shipped_skills()["aq-knowledge"])
+    source = Path(skill_checks_module._shipped_skills()[skill_name])
     result = ensure_default_aq_skills(str(tmp_path))
     for target, receipt in result.items():
-        installed = Path(receipt["root"]) / "aq-knowledge" / "SKILL.md"
+        installed = Path(receipt["root"]) / skill_name / "SKILL.md"
         if target == "claude" or optional_homes_present:
-            assert "aq-knowledge" in receipt["created"]
+            assert skill_name in receipt["created"]
             assert installed.read_bytes() == source.read_bytes()
         else:
             assert not installed.exists()
 
-    customized = Path(result["claude"]["root"]) / "aq-knowledge" / "SKILL.md"
+    customized = Path(result["claude"]["root"]) / skill_name / "SKILL.md"
     custom_text = source.read_text(encoding="utf-8") + "\nOperator customization.\n"
     customized.write_text(custom_text, encoding="utf-8")
     second = ensure_default_aq_skills(str(tmp_path))
-    assert "aq-knowledge" in second["claude"]["skipped"]
+    assert skill_name in second["claude"]["skipped"]
     assert customized.read_text(encoding="utf-8") == custom_text
     assert (await _check_installed_skill_drift(None)).data["drifted"] == [str(customized)]
 
@@ -153,3 +155,100 @@ async def test_knowledge_skill_seeds_supported_harnesses_and_preserves_edits(
     assert repaired.severity is Severity.OK
     assert customized.read_bytes() == source.read_bytes()
     assert customized.with_name("SKILL.md.bak").read_text(encoding="utf-8") == custom_text
+
+
+@pytest.mark.asyncio
+async def test_a_drifted_reference_file_is_reported_and_repaired(fake_install):
+    """Reference files beside SKILL.md are skill content too, so they drift too."""
+    shipped, installed = fake_install
+    (shipped / "aq-tasks" / "reference").mkdir()
+    (shipped / "aq-tasks" / "reference" / "graphs.md").write_text("current\n", encoding="utf-8")
+    stale = installed / "aq-tasks" / "reference" / "graphs.md"
+    stale.parent.mkdir()
+    stale.write_text("stale\n", encoding="utf-8")
+
+    result = await _check_installed_skill_drift(None)
+    assert result.severity is Severity.WARN
+    assert result.data["drifted"] == [str(stale)]
+
+    repaired = await _fix_installed_skill_drift(None)
+    assert repaired.fix_applied is True
+    assert stale.read_text(encoding="utf-8") == "current\n"
+    assert stale.with_name("graphs.md.bak").read_text(encoding="utf-8") == "stale\n"
+    assert (await _check_installed_skill_drift(None)).severity is Severity.OK
+
+
+@pytest.mark.asyncio
+async def test_a_missing_reference_beside_an_installed_skill_is_copied_in(fake_install):
+    """A skill split after it was installed links to a file the install lacks."""
+    shipped, installed = fake_install
+    (shipped / "aq-tasks" / "reference").mkdir()
+    (shipped / "aq-tasks" / "reference" / "graphs.md").write_text("new\n", encoding="utf-8")
+    missing = installed / "aq-tasks" / "reference" / "graphs.md"
+
+    result = await _check_installed_skill_drift(None)
+    assert result.severity is Severity.WARN
+    assert result.data == {"drifted": [], "missing": [str(missing)]}
+
+    repaired = await _fix_installed_skill_drift(None)
+    assert repaired.severity is Severity.OK
+    assert missing.read_text(encoding="utf-8") == "new\n"
+    assert not missing.with_name("graphs.md.bak").exists()
+
+
+def _skills_with_references() -> list[str]:
+    return [
+        name
+        for name, skill_md in skill_checks_module._shipped_skills().items()
+        if len(skill_checks_module.shipped_skill_files(os.path.dirname(skill_md))) > 1
+    ]
+
+
+@pytest.mark.parametrize("skill_name", _skills_with_references())
+def test_seeding_copies_reference_files_write_if_absent_per_file(
+    tmp_path, monkeypatch, skill_name
+):
+    """Every shipped file lands; a later-added file arrives beside an edited SKILL.md."""
+    expanduser = os.path.expanduser
+    monkeypatch.setattr(
+        os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else expanduser(path)
+    )
+    source_dir = Path(skill_checks_module._shipped_skills()[skill_name]).parent
+    files = skill_checks_module.shipped_skill_files(str(source_dir))
+    assert files[0] == "SKILL.md"
+
+    first = ensure_default_aq_skills(str(tmp_path))
+    installed_dir = Path(first["claude"]["root"]) / skill_name
+    for rel in files:
+        assert (installed_dir / rel).read_bytes() == (source_dir / rel).read_bytes(), rel
+
+    skill_md = installed_dir / "SKILL.md"
+    skill_md.write_text("operator edit\n", encoding="utf-8")
+    reference = installed_dir / files[1]
+    reference.unlink()
+
+    second = ensure_default_aq_skills(str(tmp_path))
+    assert skill_name in second["claude"]["created"]
+    assert skill_md.read_text(encoding="utf-8") == "operator edit\n"
+    assert reference.read_bytes() == (source_dir / files[1]).read_bytes()
+
+    third = ensure_default_aq_skills(str(tmp_path))
+    assert skill_name in third["claude"]["skipped"]
+
+
+def test_every_skill_link_resolves_to_a_shipped_file():
+    """Markdown links inside a skill point at files the installer ships beside it."""
+    link = re.compile(r"\]\(([^)#\s]+\.md)(?:#[^)]*)?\)")
+    for name, skill_md in skill_checks_module._shipped_skills().items():
+        skill_dir = os.path.dirname(skill_md)
+        files = set(skill_checks_module.shipped_skill_files(skill_dir))
+        for rel in files:
+            text = Path(skill_dir, rel).read_text(encoding="utf-8")
+            for target in link.findall(text):
+                if "://" in target:
+                    continue
+                # An installed skill lives outside any checkout, so a repo-rooted
+                # link resolves nowhere; name repository docs as plain text.
+                assert not target.startswith("/"), (name, rel, target)
+                resolved = os.path.normpath(os.path.join(os.path.dirname(rel), target))
+                assert resolved.replace(os.sep, "/") in files, (name, rel, target)

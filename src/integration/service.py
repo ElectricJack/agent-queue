@@ -128,6 +128,15 @@ class IntegrationService:
         return frozenset(modes)
 
     async def tick(self, now, *, background=False):
+        from src.integration.git_truth import snapshot_scope
+
+        # Lane tasks and the maintenance pass inherit this dispatch's scope,
+        # including when they outlive tick(). Publication follow-ups explicitly
+        # open a new scope and retain their remote-ref fences.
+        with snapshot_scope():
+            return await self._tick(now, background=background)
+
+    async def _tick(self, now, *, background):
         if self._tick_lock.locked():
             return
         async with self._tick_lock:

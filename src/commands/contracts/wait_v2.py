@@ -60,7 +60,7 @@ SERVICE_WAIT_COMMANDS = frozenset(
         "scheduler_wait_sync",
     }
 )
-SUPERVISOR_WAIT_COMMANDS = frozenset({"wait_graph", "wait_decide", "wait_lift"})
+SUPERVISOR_WAIT_COMMANDS = frozenset({"wait_graph", "wait_decide", "wait_lift", "wait_source_redispatch"})
 PUBLIC_WAIT_V2_COMMANDS = frozenset(
     {
         "wait_explain",
@@ -69,6 +69,7 @@ PUBLIC_WAIT_V2_COMMANDS = frozenset(
         "wait_ack",
         "wait_decide",
         "wait_lift",
+        "wait_source_redispatch",
     }
 )
 
@@ -124,8 +125,8 @@ class WaitAckArgs(WaitV2ScopeArgs):
 
 class WaitDecideArgs(CommandArgs):
     project_id: str | None = None
-    wait_id: str = Field(min_length=1)
-    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue"]
+    wait_id: str | None = Field(default=None, min_length=1)
+    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue", "retire"]
     note: str = Field(min_length=1, max_length=4000)
     extend_seconds: float | None = Field(default=None, ge=60, le=86400, allow_inf_nan=False)
     to: str | None = Field(default=None, min_length=1)
@@ -140,11 +141,13 @@ class WaitDecideArgs(CommandArgs):
             raise ValueError("extend_seconds is only valid for extend")
         if (self.decision == "reroute") != (self.to is not None):
             raise ValueError("to is required only for reroute")
-        if self.decision == "requeue":
+        if self.decision != "retire" and self.wait_id is None:
+            raise ValueError("wait_id is required for this decision")
+        if self.decision in {"requeue", "retire"}:
             if not self.continuation_id or self.expected_generation is None:
-                raise ValueError("requeue requires continuation_id and expected_generation")
+                raise ValueError(f"{self.decision} requires continuation_id and expected_generation")
         elif self.continuation_id is not None:
-            raise ValueError("continuation_id is only valid for requeue")
+            raise ValueError("continuation_id is only valid for requeue or retire")
         return self
 
 
@@ -158,6 +161,18 @@ class WaitLiftArgs(CommandArgs):
     def response_nonblank(self):
         if not self.response.strip():
             raise ValueError("response must not be blank")
+        return self
+
+
+class WaitSourceRedispatchArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    source_seq: int = Field(ge=1, strict=True)
+    note: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def note_nonblank(self):
+        if not self.note.strip():
+            raise ValueError("note must not be blank")
         return self
 
 
@@ -255,6 +270,7 @@ WAIT_V2_DEFINITIONS = (
     ("wait_ack", WaitAckArgs, WaitAckValue, SideEffectClass.RESOLVE),
     ("wait_decide", WaitDecideArgs, WaitDecideValue, SideEffectClass.RESOLVE),
     ("wait_lift", WaitLiftArgs, WaitDecideValue, SideEffectClass.RESOLVE),
+    ("wait_source_redispatch", WaitSourceRedispatchArgs, WaitServiceValue, SideEffectClass.RESOLVE),
     ("wait_source_commit", WaitSourceCommitArgs, WaitServiceValue, SideEffectClass.CREATE),
     ("wait_deadline_fire", WaitDeadlineFireArgs, WaitServiceValue, SideEffectClass.RESOLVE),
     ("wait_resume_dispatch", WaitResumeDispatchArgs, WaitServiceValue, SideEffectClass.COMPOSITE),

@@ -11,7 +11,7 @@ import hashlib
 import time
 from dataclasses import replace
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from src.database.tables import (
     integration_batch_members, integration_batches, task_dependencies, tasks,
@@ -21,8 +21,18 @@ from src.integration.models import BranchKey
 from src.waits.sources import execute_batch_mutation
 
 
+def is_deferred(batch):
+    """Automatic lane release, never an explicitly withdrawn fixer."""
+    return (batch["intent"] == "aborted"
+            and (batch["fixer_queue"] or {}).get("status") in {"deferred", "companion"}
+            and (batch["fixer_state"] or {}).get("status") != "aborted")
+
+
 async def defer_on(conn, batch, *, now, reason, head_sha, revisit_seconds=300, **details):
     """Release the lane, retaining source and candidate refs until re-observation."""
+    if ((batch["intent"] != "open" and not is_deferred(batch))
+            or (batch["fixer_state"] or {}).get("status") == "aborted"):
+        return None
     queue = {**(batch["fixer_queue"] or {}), "status": "deferred", "reason": reason,
              "family_id": (batch["fixer_queue"] or {}).get("family_id", batch["id"]),
              "observed_head": head_sha, "revisit_at": now + revisit_seconds,
@@ -152,6 +162,7 @@ class FixerBatches:
                 table.c.repository_id == target.repository_id,
                 table.c.target_ref == target.target_ref,
                 table.c.intent == "aborted", table.c.fixer_queue["status"].astext == "deferred",
+                func.coalesce(table.c.fixer_state["status"].astext, "") != "aborted",
             ).order_by(table.c.created_at, table.c.id))).mappings().all()
         for row in rows:
             queue = dict(row["fixer_queue"])
@@ -183,7 +194,7 @@ class FixerBatches:
                 current = (await conn.execute(select(table).where(
                     table.c.id == row["id"],
                 ).with_for_update())).mappings().one()
-                if current["intent"] != "aborted" or current["fixer_queue"] != queue:
+                if not is_deferred(current) or current["fixer_queue"] != queue:
                     continue
                 queue["revisit_at"] = self.clock() + queue["revisit_seconds"]
                 if not (head and (released or changed or green or retry_capacity)):
