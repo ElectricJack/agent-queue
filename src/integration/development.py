@@ -8,8 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import shlex
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -18,7 +18,6 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text
 
-from src.task_templates import render_task_template
 from src.database.tables import (
     events,
     task_metadata,
@@ -38,16 +37,13 @@ from src.integration.delivery_branches import (
     repository_protected_branches,
 )
 from src.integration.delivery_truth import (
-    SETTLEMENT_KEY,
     DeliveryState,
     delivery_snapshot,
     load_delivery_requests,
-    settlement_fields,
 )
 from src.integration.publishable_artifact import (
     EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY,
 )
-from src.jobs.pytest_output import failing_tests
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -71,13 +67,6 @@ BRANCH_CLEANUP_RETRY_SECONDS = 300.0
 BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
 #: Journal rows cleaned per project per tick; a backlog drains over ticks.
 BRANCH_CLEANUP_ROWS_PER_TICK = 10
-#: Task metadata key holding what a repair's parked batch recorded.
-REPAIR_EVIDENCE_KEY = "development_repair_evidence"
-#: Chained repairs of one parked batch before the rest is left to an operator.
-REPAIR_GENERATIONS = 3
-#: How much of a failure a repair description quotes.
-REPAIR_TESTS_LISTED = 20
-REPAIR_OUTPUT_TAIL_CHARS = 3000
 
 
 def _publishable_object_task(task):
@@ -89,13 +78,14 @@ def _publishable_object_task(task):
     ).correlate(task).exists()
 #: The ``merge`` attribute a repository gives its generated artifacts in
 #: ``.gitattributes``.  Under a ``regenerate`` policy the publisher defines this
-#: driver for its own merges as a text merge that keeps our side of every
-#: overlapping hunk -- it never conflicts -- and then rebuilds the files with
-#: the policy's command, so a conflict confined to them never parks a source.
+#: driver for its own merges, then rebuilds the files with the policy's command.
+#: Legacy reviewed bookkeeping requires verified shard provenance first.
 GENERATED_MERGE_DRIVER = "aq-generated"
 GENERATED_MERGE_CONFIG = (
     "-c", f"merge.{GENERATED_MERGE_DRIVER}.name=generated artifact, rebuilt after the merge",
-    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver=git merge-file --quiet --ours %A %O %B",
+    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver="
+    f"{shlex.quote(sys.executable)} "
+    f"{shlex.quote(str(Path(__file__).with_name('generated_merge_driver.py')))} %O %A %B %P",
 )
 REGENERATION_OUTPUT_TAIL_CHARS = 4000
 
@@ -158,43 +148,6 @@ def _manifest_members(manifest):
     return [m for m in manifest or [] if isinstance(m, dict) and m.get("task_id")]
 
 
-def _carried_sources(repair_id, contracts):
-    """Every exact revision *repair_id* carries, through the repairs it replaced.
-
-    A repair's ``development_repair_sources`` contract names the revisions it
-    replaces.  When one of those is itself a repair, that repair's contract
-    names what *it* replaced, and so on: the newest repair of a chain carries
-    the whole chain, not only its predecessor.  Reading one contract made a
-    generation-3 repair unable to supersede its generation-1 ancestor, so
-    every sweep held the three as a dependency cycle (solid-horizon).
-    *contracts* maps repair ids to their contracts.  A task reached with two
-    different revisions maps to ``None``: which one is carried is unproven.
-    """
-    carried, pending, seen = {}, [repair_id], set()
-    while pending:
-        current = pending.pop()
-        if current in seen:
-            continue
-        seen.add(current)
-        for member in _manifest_members(contracts.get(current)):
-            task_id, source = member["task_id"], member.get("source_sha")
-            if carried.setdefault(task_id, source) != source:
-                carried[task_id] = None
-            if task_id in contracts:
-                pending.append(task_id)
-    return carried
-
-
-#: A repair in one of these is still being worked on (or will be).
-OPEN_REPAIR_STATUSES = frozenset({
-    TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
-    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value,
-    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value,
-    TaskStatus.RESUME_PENDING.value, TaskStatus.PAUSED.value,
-})
-#: Links followed through repairs of repairs.  The generation budget keeps a
-#: real chain at three; a longer one is a loop in the journal.
-REPAIR_CHAIN_LIMIT = 8
 
 
 def row_repair_identity(row, identity=None):
@@ -207,84 +160,6 @@ def row_repair_identity(row, identity=None):
     if isinstance(recorded, str) and recorded.startswith("development-repair-"):
         return recorded
     return (identity or DevelopmentPrimitives._repair_identity)(row["manifest"])
-
-
-def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None,
-                 verified=(), row=None):
-    """Follow a parked batch through its repairs to the one still carrying it.
-
-    A parked batch's repair is ``development-repair-<digest of its manifest>``.
-    When that repair closes and its own publication parks too (the target
-    moved again), the batch is carried by the repair of *that* row, and so on.
-    That chain is what the source's dependents are waiting on.  Reading only
-    the first repair made a live chain look like no repair at all
-    (``wise-bridge``: fresh-ember.2, nimble-bridge.8).
-
-    *statuses* maps repair task ids to their status, the live table first and
-    then the archive; *identity* names a manifest's repair
-    (:meth:`DevelopmentPrimitives._repair_identity` by default).  The result's ``open_repair`` names the repair that
-    carries the batch, or is ``None`` when nothing will resolve it by itself:
-
-    * ``open``: a repair in the chain is still being worked on;
-    * ``awaiting_publication``: the last repair closed and the publisher has
-      neither parked nor delivered it yet;
-    * ``delivered``: the last repair reached the target, so the next sweep
-      adopts the batch;
-    * ``missing``: no repair exists for the last parked row (not yet filed, or
-      refused, e.g. past the generation budget);
-    * ``finished``: the last repair ended without completing;
-    * ``loop``: the journal's chain repeats or passes :data:`REPAIR_CHAIN_LIMIT`.
-
-    Pass the parked *row* itself so a repair it names is followed
-    (:func:`row_repair_identity`).
-    """
-    rows = sorted(
-        (row for row in history if row.get("repository_id") == repository_id),
-        key=lambda row: (row.get("created_at") or 0, str(row.get("id"))),
-        reverse=True,
-    )
-    parked_in = {}
-    delivered = set(verified)
-    for journal_row in rows:
-        members = _manifest_members(journal_row.get("manifest"))
-        if journal_row.get("state") == "parked":
-            for member in members:
-                parked_in.setdefault(member["task_id"], []).append(journal_row)
-    identity = identity or DevelopmentPrimitives._repair_identity
-    seen = set()
-
-    def outcome(open_repair, state, chain, detail):
-        return {"open_repair": open_repair, "state": state, "chain": chain, "detail": detail}
-
-    def follow(repair, chain):
-        status = statuses.get(repair)
-        chain = [*chain, {"task_id": repair, "status": status}]
-        if repair in seen or len(chain) > REPAIR_CHAIN_LIMIT:
-            return outcome(None, "loop", chain, f"repair chain repeats at {repair}")
-        seen.add(repair)
-        if status is None:
-            return outcome(None, "missing", chain, f"no repair {repair} exists")
-        if status in OPEN_REPAIR_STATUSES:
-            return outcome(repair, "open", chain, f"repair {repair} is {status}")
-        if status != TaskStatus.COMPLETED.value:
-            return outcome(None, "finished", chain, f"repair {repair} ended {status}")
-        if repair in delivered:
-            return outcome(repair, "delivered", chain, f"repair {repair} was delivered")
-        # Duplicate rows of one manifest share one repair: follow each once.
-        successors = list(dict.fromkeys(
-            row_repair_identity(parked, identity) for parked in parked_in.get(repair, [])
-        ))
-        if not successors:
-            return outcome(
-                repair, "awaiting_publication", chain,
-                f"repair {repair} closed and awaits publication",
-            )
-        results = [follow(successor, chain) for successor in successors]
-        return next((result for result in results if result["open_repair"]), results[0])
-
-    return follow(
-        row_repair_identity(row, identity) if row is not None else identity(manifest), [],
-    )
 
 
 @dataclass(frozen=True)
@@ -510,46 +385,6 @@ class DevelopmentPrimitives:
         """Latest operation revisions; no delivery receipts are read."""
         async with self.db._engine.connect() as conn:
             return await operation_rows_on(conn, [project_id])
-
-
-    async def _reclaim_repair(self, repair_id, target):
-        """Drop *repair_id*'s settlement on *target*: a live park needs it again."""
-        from sqlalchemy import delete
-
-        async with self.db._engine.begin() as conn:
-            value = await conn.scalar(select(task_metadata.c.value).where(
-                task_metadata.c.task_id == repair_id, task_metadata.c.key == SETTLEMENT_KEY,
-            ))
-            if value is None or settlement_fields(value).get("settled_target_ref") != target:
-                return
-            await conn.execute(delete(task_metadata).where(
-                task_metadata.c.task_id == repair_id, task_metadata.c.key == SETTLEMENT_KEY,
-            ))
-        logger.warning(
-            "development publisher: repair %s is needed again on %s; its settlement is withdrawn",
-            repair_id, target,
-        )
-
-
-    @staticmethod
-    def _name_diagnostic(diagnostics, *, kind, task_ids, detail):
-        """Name a batch-scoped fault instead of raising it.
-
-        The sweep visits every parked batch of every development project.  One
-        batch that cannot be resolved is a fact about that batch; turning it
-        into an exception starved the other twenty-four parked agent-queue
-        batches and wrote a rich traceback every five minutes for months.
-        """
-        entry = {"kind": kind, "task_ids": sorted(task_ids), "detail": detail}
-        if diagnostics is None:
-            logger.warning(
-                "development publisher: %s (%s)", detail, kind,
-                extra={"diagnostic": kind, "task_ids": entry["task_ids"]},
-            )
-        else:
-            diagnostics.append(entry)
-        return entry
-
 
     async def resolve_task(self, task_id):
         """Return *task_id* from the live table, else from the archive, else ``None``.
@@ -952,346 +787,3 @@ class DevelopmentPrimitives:
                 }),
             )
         return report
-
-
-    async def ensure_repair(
-        self, project_id, repository_id, manifest, candidate_sha, *, reason, diagnostics=None,
-        parked=None,
-    ):
-        """File or reuse one bounded repair with provenance and delivery holds.
-
-        Development delivery can park a *set* of source tasks.  It must not
-        pick one arbitrary source as a structural parent: that would both hide
-        the other origins and make a multi-source repair look like it belongs
-        to only one completion.  Repairs are intentionally root tasks, while
-        a non-blocking ``discovered-from`` edge records every origin.
-
-        For one original source, the repair is filed as its child even though the
-        source is already checkpointed.  The hierarchy writer has a narrowly
-        authorised completed-parent exception for this case; it preserves the
-        source placement without asking a completed task to execute again.
-        At the structural depth cap it is deliberately rooted instead, with
-        the same source delivery hold as a shared repair.
-        A repair-of-repair remains rooted so the bounded recovery chain cannot
-        consume structural hierarchy depth, and no repair ever ``blocks`` on
-        another repair: the repaired repair's parked row is what waits for
-        this one, and a blocking edge back onto a repair whose contract names
-        it would be a dependency cycle.
-
-        For a shared repair, the reverse edge is deliberately different: every parked source
-        ``blocks`` on the repair.  In development mode that edge is satisfied
-        only after the repair has been delivered, rather than merely closed.
-        This makes a shared repair required work for *all* of its sources and
-        prevents a delivered repair from falsely releasing just the arbitrary
-        source chosen as a parent.  Do not use a parent-child edge here: a
-        repair is created after its source has checkpointed/completed, and a
-        parent-child edge plus this required reverse edge would be a blocking
-        cycle.
-        """
-        from src.integration.models import INTEGRATION_REPAIR_PRIORITY
-        from src.models import DepType, Task, TaskType
-        from src.task_names import MAX_STRUCTURAL_DEPTH
-
-        identity = (
-            row_repair_identity(parked) if parked is not None else self._repair_identity(manifest)
-        )
-        # Archive-aware, or an archived repair reads back as "never filed" and
-        # is recreated as a fresh READY task on every tick.  That is how
-        # ``development-repair-dfda02e25d80e0d1ab2d`` came to sit in ``tasks``
-        # as READY while ``archived_tasks`` held the same id COMPLETED.
-        if await self.resolve_task(identity) is not None:
-            if parked is not None:
-                # A live park on this target owes its repair again, even one
-                # an earlier settlement of the same manifest released.
-                await self._reclaim_repair(identity, parked["target_ref"])
-            return identity
-        single_original_source = len(manifest) == 1 and not str(
-            manifest[0]["task_id"]
-        ).startswith("development-repair-")
-        # Resolve every source once, through the archive as well as the live
-        # table, and decide the whole batch before writing anything.
-        resolved, missing = {}, []
-        for member in manifest:
-            source_id = member["task_id"]
-            source = await self.resolve_task(source_id)
-            if (
-                source is None
-                or source.project_id != project_id
-                or (source.archived and not source.terminal)
-            ):
-                missing.append(source_id)
-            else:
-                resolved[source_id] = source
-        if missing:
-            # A source that exists nowhere is a fact about the batch, not a
-            # reason to abort the sweep for every other batch and project.
-            self._name_diagnostic(
-                diagnostics,
-                kind="repair_source_missing",
-                task_ids=missing,
-                detail=(
-                    f"{len(missing)} repair source(s) resolve in neither tasks nor "
-                    f"archived_tasks for project '{project_id}': {', '.join(sorted(missing))}"
-                ),
-            )
-            return None
-        generation = 1
-        for source in resolved.values():
-            if source.task_id.startswith("development-repair-"):
-                match = re.search(r"Development repair generation: (\d+)", source.description)
-                generation = max(generation, (int(match.group(1)) if match else 1) + 1)
-        if generation > REPAIR_GENERATIONS:
-            # Keep the candidate parked for operator inspection; no unbounded
-            # repair chain.  Say so: a silent refusal leaves the sources
-            # parked with no open repair and nothing that names why.
-            self._name_diagnostic(
-                diagnostics,
-                kind="repair_generation_exhausted",
-                task_ids=[member["task_id"] for member in manifest],
-                detail=(
-                    f"{REPAIR_GENERATIONS} repair generations did not deliver "
-                    f"{', '.join(sorted(m['task_id'] for m in manifest))}; no further "
-                    "repair is filed and the batch stays parked for an operator"
-                ),
-            )
-            return None
-        sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
-        repo = await self.db.get_repo(repository_id)
-        target_branch = repo.default_branch
-        branches = "\n".join(
-            f"- {member['task_id']}: {resolved[member['task_id']].branch_name}"
-            for member in manifest
-        )
-        conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
-        recovery = (
-            render_task_template("development-conflict-recovery", target_branch=target_branch)
-            if conflict else
-            render_task_template("development-source-recovery", target_branch=target_branch)
-        ) + self._regeneration_text(parked)
-        repair = Task(
-                id=identity,
-                project_id=project_id,
-                repo_id=repository_id,
-                title="Repair development integration: " + reason,
-                description=(
-                    # The retry budget reads this factual marker, so wording edits
-                    # must not remove or change it.
-                    f"Development repair generation: {generation}\n"
-                    + render_task_template(
-                        "development-repair",
-                        generation=generation,
-                        sources=sources,
-                        candidate_sha=candidate_sha,
-                        branches=branches,
-                        target_branch=target_branch,
-                        recovery=recovery,
-                        failure_details=self._repair_failure_text(project_id, parked),
-                    )
-                ),
-                branch_name="aq/" + identity,
-                status=TaskStatus.READY,
-                task_type=TaskType.BUGFIX,
-                priority=INTEGRATION_REPAIR_PRIORITY,
-                max_retries=3,
-                # The routing policy names this origin
-                # (``origins.development_repair``) instead of matching the
-                # title (mandatory-routing spec §5.3).
-                created_by_kind="development_repair",
-            )
-        # Service work has no authenticated held-task context, so root
-        # placement is an explicit policy choice rather than an accidental
-        # omission.  Keep all source provenance independently of placement.
-        async with self.db.immediate() as conn:
-            nest_repair = False
-            if single_original_source and not resolved[manifest[0]["task_id"]].archived:
-                # The source may already be at the hierarchy depth cap. A
-                # failed set_parent would roll back the repair every tick.
-                # Hold the hierarchy lock through the placement write so a
-                # concurrent move cannot invalidate this decision.
-                await self.db.lock_hierarchy_project(conn, project_id)
-                nest_repair = await self.db.structural_depth(
-                    manifest[0]["task_id"], conn=conn
-                ) < MAX_STRUCTURAL_DEPTH
-            await self.db.create_task(repair, conn=conn)
-            for member in manifest:
-                source_id = member["task_id"]
-                source = resolved[source_id]
-                if source.archived:
-                    # ``task_dependencies.depends_on_task_id`` references
-                    # ``tasks.id``, so no edge to an archived source can exist.
-                    # The source is terminal, which is to say already
-                    # satisfied, and the repair's description still names the
-                    # revision.  Record that and carry on; the schema's limit
-                    # is not a reason to fail the batch.
-                    logger.info(
-                        "development repair %s: source %s is archived (%s); "
-                        "provenance edge skipped, source already satisfied",
-                        identity,
-                        source_id,
-                        source.status,
-                        extra={"repair": identity, "source": source_id, "status": source.status},
-                    )
-                    continue
-                await self.db.add_dependency(
-                    identity, source_id, DepType.DISCOVERED_FROM.value,
-                    description=reason, conn=conn,
-                )
-                # A provenance edge answers where the repair came from; it
-                # must never be mistaken for a release condition.  The
-                # source's blocking edge supplies that condition without
-                # giving the repair a reverse dependency on any source.
-                # A source that is itself a repair gets no such edge: its
-                # parked row already waits for this repair's delivery, and
-                # an edge onto a repair whose contract names it is a cycle.
-                # Three generations of that held every repair of the chain
-                # forever (solid-horizon).
-                if not nest_repair and not source_id.startswith("development-repair-"):
-                    await self.db.add_dependency(
-                        source_id, identity, DepType.BLOCKS.value,
-                        description=f"required development repair: {reason}", conn=conn,
-                    )
-            if nest_repair:
-                await self.db.set_parent(
-                    identity,
-                    manifest[0]["task_id"],
-                    conn=conn,
-                    description=f"required development repair: {reason}",
-                    integration_authorized=True,
-                    completed_parent_for_repair=True,
-                )
-        await self.db.set_task_meta(identity, "development_repair_sources", manifest)
-        if parked is not None:
-            await self.db.set_task_meta(
-                identity, REPAIR_EVIDENCE_KEY, self._repair_evidence(parked)
-            )
-        return identity
-
-
-    @staticmethod
-    def _repair_evidence(parked):
-        """What the parked batch recorded, compact enough for task metadata."""
-        evidence = parked.get("evidence") or {}
-        return {
-            "delivery_id": parked["id"],
-            # The target this repair publishes to; after a retarget it is owed
-            # nowhere else (development_settlement.repair_target_of).
-            "target_ref": parked.get("target_ref"),
-            "reason": parked.get("reason"),
-            "kind": evidence.get("kind"),
-            "conclusion": evidence.get("conclusion"),
-            "head_sha": evidence.get("head_sha") or parked.get("prepared_sha"),
-            "failing_tests": failing_tests(evidence),
-            "checks": [
-                {
-                    key: check.get(key)
-                    for key in (
-                        "command", "exit_code", "outcome", "detail", "duration_seconds",
-                        "slot_wait_seconds", "run_seconds", "summary",
-                    )
-                    if key in check
-                }
-                for check in evidence.get("checks") or []
-                if isinstance(check, dict)
-            ],
-            "merge_conflict": (
-                evidence.get("detail") if evidence.get("kind") == "merge_conflict" else None
-            ),
-            "conflicting_files": evidence.get("conflicting_files", []),
-            "conflict_with": evidence.get("conflict_with"),
-            "conflicting_members": evidence.get("conflicting_members", []),
-            "regeneration": evidence.get("regeneration"),
-        }
-
-
-    @staticmethod
-    def _conflict_attribution_text(evidence):
-        """What a parked conflict was proven to conflict with; rows before this say nothing."""
-        kind = evidence.get("conflict_with")
-        target = f"{evidence.get('target_ref')} at {evidence.get('target_sha')}"
-        if kind == "target":
-            return [f"Conflicts with the target itself: {target}."]
-        if kind == "members":
-            return [
-                f"Conflicts with work merged before it in the same batch (on {target}):",
-                *(f"- {member['task_id']} ({member['source_sha']}): "
-                  + ", ".join(member.get("paths") or [])
-                  for member in evidence.get("conflicting_members") or []),
-            ]
-        if kind == "batch":
-            return [(
-                f"Merges cleanly onto {target}, but conflicts with the batch aggregate "
-                f"{evidence.get('aggregate_sha')}; no single member was proven responsible."
-            )]
-        return []
-
-
-    @staticmethod
-    def _regeneration_text(parked):
-        """How a repair treats generated files, when the batch could rebuild them."""
-        command = ((parked or {}).get("evidence") or {}).get("regenerate")
-        if not command:
-            return ""
-        return (
-            render_task_template(
-                "development-regeneration", generated_merge_driver=GENERATED_MERGE_DRIVER, command=command
-            )
-        )
-
-
-    @staticmethod
-    def _repair_failure_text(project_id, parked):
-        """The part of a repair description that names what failed."""
-        if parked is None:
-            return ""
-        evidence = parked.get("evidence") or {}
-        lines = [
-            "",
-            "",
-            (
-                f"What failed (development delivery row {parked['id']}, "
-                f"`aq integration status {project_id}`):"
-            ),
-        ]
-        if evidence.get("kind") == "merge_conflict":
-            detail = str(evidence.get("detail") or "").strip()
-            files = evidence.get("conflicting_files") or []
-            regeneration = evidence.get("regeneration")
-            if files:
-                lines += ["Conflicting files:", *(f"- {path}" for path in files)]
-            lines += DevelopmentPrimitives._conflict_attribution_text(evidence)
-            if regeneration:
-                # The merge itself succeeded; rebuilding its generated files did not.
-                lines += [
-                    (
-                        f"Regenerating the generated files with "
-                        f"`{regeneration.get('command')}` failed: {regeneration.get('detail')}."
-                    ),
-                    "Regeneration output:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```",
-                ]
-            else:
-                lines += ["Merge conflict:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
-            return "\n".join(lines)
-        tests = failing_tests(evidence)
-        if tests:
-            lines.append("Failing tests:")
-            for test in tests[:REPAIR_TESTS_LISTED]:
-                reason = f" — {test['reason']}" if test["reason"] else ""
-                lines.append(f"- {test['id']}{reason}")
-            if len(tests) > REPAIR_TESTS_LISTED:
-                lines.append(f"- … and {len(tests) - REPAIR_TESTS_LISTED} more (see the row)")
-        else:
-            lines.append("Failing tests: none identified in the output; see the tail below.")
-        for check in evidence.get("checks") or []:
-            if not isinstance(check, dict) or check.get("exit_code") == 0:
-                continue
-            timing = ""
-            if "run_seconds" in check:
-                timing = (
-                    f" after running {check['run_seconds']:.0f}s "
-                    f"({check.get('slot_wait_seconds', 0):.0f}s queued for a test slot)"
-                )
-            lines.append(f"Command `{check.get('command')}` exited {check.get('exit_code')}{timing}.")
-            output = str(check.get("output") or "").rstrip()
-            if output:
-                lines += ["Output tail:", "```", output[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
-        return "\n".join(lines)
