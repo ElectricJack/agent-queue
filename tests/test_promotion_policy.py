@@ -28,10 +28,11 @@ from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from src.playbooks.services import resolve_integration_route
-from src.profiles.capabilities import DENY_ALL
+from src.profiles.capabilities import CapabilityPolicy
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore, RecordingBus, RecordingRunRepository, StubActivations, artifact_ref_for,
 )
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_promotion_backmerge import (
     MultipleIntentGitHub, source_world,
@@ -76,7 +77,7 @@ async def policy_engine(e, kind):
     store, runs = InMemoryArtifactStore(), RecordingRunRepository()
     store.put(artifact)
     registry = ContractRegistry()
-    calls = []
+    calls, results = [], []
     for name in {str(step.command) for step in artifact.steps.values() if step.type == 'command'}:
         registration = CONTRACTS.get(name)
 
@@ -87,6 +88,7 @@ async def policy_engine(e, kind):
             else:
                 with principal_context(ctx):
                     raw = await getattr(e.handler, '_cmd_' + name)(args.model_dump(mode='json'))
+            results.append((name, raw))
             value = contract.result_model(**{k: v for k, v in raw.items()
                                              if k in contract.result_model.model_fields})
             return CommandResult(outcome=raw['outcome'], value=value, summary=raw.get('error', ''))
@@ -96,8 +98,9 @@ async def policy_engine(e, kind):
     engine = PlaybookEngine(services=EngineServices(contracts=registry, artifact_store=store,
         bus=RecordingBus(), clock=lambda: 1000.0), runs=runs, waits=None,
         activations=StubActivations([ref]))
-    principal = ExecutionPrincipal(kind=PrincipalKind.SERVICE, policy=DENY_ALL,
-                                   service_name='fixture-promotion', project_id='p')
+    principal = ExecutionPrincipal(kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=list(artifact.compiled_against.commands)),
+        service_name='fixture-promotion-' + kind, project_id='p')
 
     async def run(rule, *, step='release', **facts):
         event = {'project_id': 'p', 'step_id': step, 'notes_reviewed': False, **facts}
@@ -105,7 +108,43 @@ async def policy_engine(e, kind):
         assert outcome.lifecycle is RunLifecycle.COMPLETED, (outcome, runs.receipts)
         return outcome
 
-    return SimpleNamespace(run=run, calls=calls, runs=runs, artifact=artifact, ref=ref)
+    return SimpleNamespace(run=run, calls=calls, results=results, runs=runs, artifact=artifact,
+                           ref=ref, engine=engine, principal=principal)
+
+
+@pytest.mark.parametrize('kind,rule', [
+    ('request', 'explicit-request'), ('request', 'hotfix-completed'),
+    ('request', 'backmerge-delivered'), ('continuous', 'explicit-request'),
+    ('continuous', 'hotfix-completed'), ('continuous', 'backmerge-delivered'),
+    ('continuous', 'advance-source'),
+])
+@pytest.mark.parametrize('refusal', [
+    'migrations_not_additive', 'migration_range_invalid',
+    'breaking_migration_override_forbidden',
+])
+async def test_migration_refusals_notify_once_without_override_or_retry(kind, rule, refusal):
+    handler = SimpleNamespace(
+        _cmd_integration_promotion_policy_input=AsyncMock(return_value={
+            'success': True, 'outcome': 'policy_input',
+            'policy': {'source_sha': 'a' * 40, 'backmerge_pending': False,
+                       'active_request_id': None, 'newer_source': False},
+        }),
+    )
+    command = ('integration_backmerge_source' if rule == 'backmerge-delivered'
+               else 'promote_request')
+    refused = AsyncMock(return_value={'success': False, 'outcome': refusal})
+    setattr(handler, '_cmd_' + command, refused)
+    policy = await policy_engine(SimpleNamespace(handler=handler), kind)
+
+    await policy.run(rule, from_task='hotfix' if rule == 'hotfix-completed' else None)
+
+    refused.assert_awaited_once()
+    assert policy.results[-2][1]['outcome'] == refusal
+    assert [name for name, _ in policy.calls].count('message_send') == 1
+    assert policy.calls[-1][0] == 'message_send'
+    assert all(not args.get('allow_breaking_migration') for _, args in policy.calls)
+    assert not any(name in {'promote_approve', 'integration_promotion_publish', 'promote_cancel'}
+                   for name, _ in policy.calls)
 
 
 async def chain_lanes(e, flow):
@@ -263,7 +302,8 @@ async def test_two_step_policies_publish_notes_and_hotfix_backmerges(promote_env
         return await original_author(self, *args, **kwargs)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(BackmergeAdmission, 'author', author)
-        authored = await e.handler._cmd_integration_backmerge_source({'project_id': 'p', 'step_id': 'release'})
+        await requested.run('backmerge-delivered', batch_id=urgent['batch_id'])
+        authored = requested.results[-1][1]
     assert authored['success'], authored
     assert len(authored['backmerges']) == 2
     await record('lower-backmerges-requested')
@@ -429,3 +469,27 @@ async def test_hotfix_notification_survives_task_completed_subscriber_failure(pr
             integration_outbox.c.event_type == 'promotion.hotfix_completed'))).mappings().all()
     assert len(rows) == 1
     assert rows[0]['payload']['from_task'] == 'hotfix'
+
+
+async def test_valid_debt_status_never_resolves_a_lane_or_initializes_a_store(promote_env):
+    from sqlalchemy import insert
+
+    from src.database.tables import task_metadata, tasks
+
+    e = promote_env
+    async with e.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(id='debt', project_id='p', repo_id='r',
+            title='Debt', description='', task_type='backmerge', created_at=1000, updated_at=1000))
+        await conn.execute(insert(task_metadata).values(task_id='debt', key='backmerge',
+            value=json.dumps({'source_sha': e.source, 'target_ref': 'refs/heads/dev',
+                              'origin_ref': 'refs/heads/main'})))
+    git(e.repo.store, 'fetch', 'origin', 'dev')
+    e.handler._promotion_runtime = AsyncMock(side_effect=AssertionError('network lane resolved'))
+    e.handler.orchestrator.development_integration.store = AsyncMock(side_effect=AssertionError('store initialized'))
+    result = await e.handler._cmd_promote_status({'project_id': 'p'})
+    assert result['success'] and result['backmerges'][0]['state'] == 'contained'
+    e.handler._promotion_runtime.assert_not_awaited()
+    e.handler.orchestrator.development_integration.store.assert_not_awaited()
+    e.handler.orchestrator.development_integration._store_path = lambda _: e.repo.store / 'absent'
+    result = await e.handler._cmd_promote_status({'project_id': 'p'})
+    assert result['success'] and result['backmerges'][0]['state'] == 'unknown'

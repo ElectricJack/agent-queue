@@ -1,0 +1,1 @@
+Publish the repaired candidate with the managed lease. It must pass the unchanged trusted required checks and attestation on its own exact SHA before the train can advance the epic. Default-branch evidence only authorizes this merge; it does not satisfy candidate checks.

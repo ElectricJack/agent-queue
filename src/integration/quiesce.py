@@ -5,15 +5,72 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import select, union, update
+from sqlalchemy import and_, or_, select, union, update
 
 from src.database import tables as t
+from src.database.queries.integration_state_queries import (
+    session_attached_clause,
+    unresolved_claim_clause,
+)
 from src.integration.engine import RootEngineOwnership
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.owner_recovery import _Refusal
+from src.integration.row_query import select_row
 from src.integration.stale_owners import _fence_blocker
-from src.integration.subjects import Subject, SubjectSchedule, schedule_values
+from src.integration.runtime_contracts import Subject, SubjectSchedule, schedule_values
+
+
+def _ended_published_resolution_clause():
+    """An ended operation's exactly acknowledged publication is audit history.
+
+    Reserved attempts still block. The separate mutation, session, owner and
+    checkout guards keep any remaining publication or cleanup authority fenced.
+    """
+    resolution = t.integration_candidate_resolutions
+    batch = t.integration_batches.alias("resolution_terminal_batch")
+    operation = t.integration_repair_operations.alias("resolution_ended_operation")
+    mutation = t.integration_candidate_ref_mutations.alias("resolution_applied_mutation")
+    return and_(
+        resolution.c.state == "pushed",
+        select(batch.c.id)
+        .where(
+            batch.c.id == resolution.c.batch_id,
+            or_(
+                batch.c.intent == "aborted",
+                batch.c.lifecycle.in_(("promoted", "empty", "failed", "aborted")),
+            ),
+        )
+        .correlate(resolution)
+        .exists(),
+        select(operation.c.id)
+        .where(
+            operation.c.id == resolution.c.operation_id,
+            operation.c.batch_id == resolution.c.batch_id,
+            operation.c.episode_id == resolution.c.operation_episode_id,
+            operation.c.state.in_(("completed", "cancelled")),
+        )
+        .correlate(resolution)
+        .exists(),
+        select(mutation.c.id)
+        .where(
+            mutation.c.resolution_id == resolution.c.id,
+            mutation.c.batch_id == resolution.c.batch_id,
+            mutation.c.revision == resolution.c.revision,
+            mutation.c.member_ordinal == resolution.c.member_ordinal,
+            mutation.c.operation_id == resolution.c.operation_id,
+            mutation.c.operation_episode_id == resolution.c.operation_episode_id,
+            mutation.c.operation_stage == resolution.c.stage_ordinal,
+            mutation.c.repository_id == resolution.c.repository_id,
+            mutation.c.target_branch == resolution.c.target_branch,
+            mutation.c.purpose == "repair_resolution",
+            mutation.c.state == "applied",
+            mutation.c.desired_sha == resolution.c.resolved_head_sha,
+            mutation.c.remote_sha == resolution.c.resolved_head_sha,
+        )
+        .correlate(resolution)
+        .exists(),
+    )
 
 
 class TrainQuiesce:
@@ -46,18 +103,11 @@ class TrainQuiesce:
                 or current["hierarchical_integration_generation"] != request.expected_generation
             ):
                 raise ValueError("project integration generation or repository changed")
-            row = (
-                (
-                    await conn.execute(
-                        select(t.integration_subjects)
-                        .where(
-                            t.integration_subjects.c.id == request.subject_id,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn,
+                t.integration_subjects,
+                t.integration_subjects.c.id == request.subject_id,
+                lock=True,
             )
             if (
                 row is None
@@ -78,18 +128,11 @@ class TrainQuiesce:
                 or row["writer_session_id"]
             ):
                 raise ValueError("only an unfrozen admitting root without a writer may be quiesced")
-            schedule = (
-                (
-                    await conn.execute(
-                        select(t.project_integration_schedules)
-                        .where(
-                            t.project_integration_schedules.c.project_id == request.project_id,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            schedule = await select_row(
+                conn,
+                t.project_integration_schedules,
+                t.project_integration_schedules.c.project_id == request.project_id,
+                lock=True,
             )
             request_id = row["subject_key"].removeprefix(f"root_batch:{repository_id}:")
             prefix = f"integration-sweep:{request.project_id}:"
@@ -120,7 +163,9 @@ class TrainQuiesce:
                 select(t.integration_batches.c.id).where(
                     t.integration_batches.c.project_id == request.project_id,
                     t.integration_batches.c.intent != "aborted",
-                    t.integration_batches.c.lifecycle.not_in(("promoted", "empty", "failed", "aborted")),
+                    t.integration_batches.c.lifecycle.not_in(
+                        ("promoted", "empty", "failed", "aborted")
+                    ),
                 ),
                 select(t.integration_batches.c.id).where(
                     t.integration_batches.c.project_id == request.project_id,
@@ -139,6 +184,7 @@ class TrainQuiesce:
                 select(t.integration_candidate_resolutions.c.id).where(
                     t.integration_candidate_resolutions.c.batch_id.in_(batch_ids),
                     t.integration_candidate_resolutions.c.state.in_(("reserved", "pushed")),
+                    ~_ended_published_resolution_clause(),
                 ),
                 select(t.integration_attestation_publications.c.id).where(
                     t.integration_attestation_publications.c.batch_id.in_(batch_ids),
@@ -154,12 +200,13 @@ class TrainQuiesce:
                 select(t.sessions.c.id).where(
                     t.sessions.c.project_id == request.project_id,
                     t.sessions.c.task_id.is_not(None),
-                    t.sessions.c.state.in_(("starting", "running", "draining")),
+                    session_attached_clause(),
                 ),
                 select(t.workspaces.c.id).where(t.workspaces.c.locked_by_task_id.in_(task_ids)),
                 select(t.task_metadata.c.task_id).where(
                     t.task_metadata.c.task_id.in_(task_ids),
                     t.task_metadata.c.key == "claimed_by_session",
+                    unresolved_claim_clause(),
                 ),
             )
             for statement in blockers:
@@ -170,18 +217,11 @@ class TrainQuiesce:
                     )
             owners = []
             for expected in request.owners:
-                owner = (
-                    (
-                        await conn.execute(
-                            select(t.integration_branch_owners)
-                            .where(
-                                t.integration_branch_owners.c.id == expected.owner_row_id,
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                owner = await select_row(
+                    conn,
+                    t.integration_branch_owners,
+                    t.integration_branch_owners.c.id == expected.owner_row_id,
+                    lock=True,
                 )
                 if (
                     owner is None
@@ -202,19 +242,12 @@ class TrainQuiesce:
                         "quiesce can release only detached reservations without writers"
                     )
                 if owner["owner_role"] in ("worker", "repair", "verifier"):
-                    task = (
-                        (
-                            await conn.execute(
-                                select(t.tasks)
-                                .where(
-                                    t.tasks.c.id == owner["owner_id"],
-                                    t.tasks.c.project_id == request.project_id,
-                                )
-                                .with_for_update()
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
+                    task = await select_row(
+                        conn,
+                        t.tasks,
+                        t.tasks.c.id == owner['owner_id'],
+                        t.tasks.c.project_id == request.project_id,
+                        lock=True,
                     )
                     if (
                         task is None
@@ -225,18 +258,11 @@ class TrainQuiesce:
                     ):
                         raise ValueError("reserved task must be explicitly paused or finished")
                 elif owner["owner_role"] == "collector":
-                    operation = (
-                        (
-                            await conn.execute(
-                                select(t.integration_repair_operations)
-                                .where(
-                                    t.integration_repair_operations.c.id == owner["owner_id"],
-                                )
-                                .with_for_update()
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
+                    operation = await select_row(
+                        conn,
+                        t.integration_repair_operations,
+                        t.integration_repair_operations.c.id == owner['owner_id'],
+                        lock=True,
                     )
                     if operation is None or operation["state"] not in ("completed", "cancelled"):
                         raise ValueError("collector operation must have ended")
