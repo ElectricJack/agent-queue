@@ -41,9 +41,10 @@ def reserved_statement(candidate, project_id, profile_id):
 async def claim_candidate(handler, conn, **kwargs):
     active = enabled(handler.config, kwargs.get("project_id"))
     if active and kwargs.get("task_id") is None:
-        reserved = await handler.db.select_reserved_for_profile(conn, **kwargs)
-        if reserved:
-            return reserved["task_id"], reserved["reservation_id"]
+        selected = await handler.db.select_ready_for_profile(
+            conn, **kwargs, reservation_first=True, effective_priority=True,
+        )
+        return (selected["task_id"], selected["reservation_id"]) if selected else (None, None)
     return await handler.db.select_ready_for_profile(
         conn, **kwargs, **({"effective_priority": True} if active else {}),
     ), None

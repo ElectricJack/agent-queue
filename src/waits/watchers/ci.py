@@ -17,7 +17,7 @@ import time
 
 from sqlalchemy import select
 
-from src.database.tables import repos, wait_records
+from src.database.tables import integration_check_evidence, repos, wait_records
 from src.git.manager import GitError
 from src.integration.checks import Conclusion, evaluate
 from src.integration.runtime_contracts import HeadIdentity
@@ -79,6 +79,23 @@ class CheckWatcher:
     def registry_readers(self):
         """``build_registry`` keywords: one fresh read serves the CI and PR adapters."""
         return {"ci_reader": self.read, "pr_reader": self.read}
+
+    async def lock_source(self, conn, cond):
+        """Keep repository binding/cache stable across the fresh remote verdict.
+
+        Remote state cannot be transaction locked: read() re-verifies the
+        exact head and check with its authenticated provider on every dispatch.
+        Events and cached results never substitute for that observation.
+        """
+        await conn.execute(select(repos.c.id).where(
+            repos.c.id == cond.parameters["repository_id"],
+            repos.c.project_id == cond.context["project_id"],
+        ).with_for_update(read=True))
+        table = integration_check_evidence
+        await conn.execute(select(table.c.id).where(
+            table.c.repository_id == cond.parameters["repository_id"],
+            table.c.sha == cond.parameters["head_sha"],
+        ).order_by(table.c.id).with_for_update(read=True))
 
     @staticmethod
     def head(cond):
