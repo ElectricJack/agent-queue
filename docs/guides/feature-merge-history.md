@@ -1,5 +1,14 @@
 # Feature history and integration merges
 
+<!-- aq:optional-mode -->
+> **This describes the optional strict integration modes.** Squash-before-review,
+> reviewed-tip submission and per-parent trains belong to the pull-request and
+> train modes. In [development mode](development-integration.md) — the policy
+> this repository runs — workers push ordinary task branches, nothing is squashed,
+> and the daemon merges finished branches into a validated batch. Read
+> [Integration](../concepts/integration.md) for which mode a project is in
+> before applying any rule below.
+
 Leaf feature work is squashed on the feature branch before its first review.
 The worker preserves the final tree and attribution, pushes the final commit,
 and submits that exact SHA for review. Published task branches may be rewritten
@@ -34,3 +43,10 @@ reviewed history.
 Database fields named `squash_sha` and `generated_squash_sha` retain their names
 for compatibility; new clean deliveries store the merge commit SHA there.
 Conflict-repair evidence and ownership fences continue to control publication.
+
+For a child conflict, the resolution may retain the exact reviewed child tip
+as the second parent of one merge commit. Its first-parent chain must start at
+the expected parent head; any following repair commits stay on that chain.
+Unrelated side branches, additional merge parents, and reversed parent order
+are rejected. The complete resolution tree and commit range remain bound to
+the persisted repair evidence before publication.

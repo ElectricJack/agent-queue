@@ -4,15 +4,23 @@ tags: [design, formulas, task-graph, vault, swarm-work-model]
 
 # Formulas — Reusable Task-Graph Templates
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Implemented (swarm-work-model §13, Plan 3)
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #9 simple interfaces)
-**Related:** [[work-graph]], `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §13 and §18 (P7)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #9 simple interfaces)
+**Related:** [work-graph](work-graph.md), `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §13 and §18 (P7)
 
 ---
 
 ## 1. Purpose
 
-A formula is a reusable [[work-graph|task graph]] template — a parameterised
+A formula is a reusable [task graph](work-graph.md) template — a parameterised
 `aq-graph` document authored once in the vault and *cooked* (resolved,
 substituted, validated, and created) as many times as needed, each time with
 different variable values. It is the Agent Queue answer to "workflows as
@@ -38,7 +46,7 @@ A formula file lives at:
   profiles and MCP servers)
 
 Structure: YAML frontmatter, then exactly one fenced ` ```aq-graph ` block
-(the same fence language [[work-graph|task-graph documents]] use elsewhere —
+(the same fence language [task-graph documents](work-graph.md) use elsewhere —
 `create_task_graph --graph`, spec-embedded graphs).
 
 Frontmatter keys:

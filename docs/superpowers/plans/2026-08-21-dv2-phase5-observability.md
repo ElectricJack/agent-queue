@@ -1,5 +1,12 @@
 # Dashboard v2 Phase 5 — Observability (Console Pane-View + Work Preview) Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give operators live pane-view visibility into an agent's tmux console and a read-only, path-safe file browser + markdown preview of a task's worktree diff, so a running task's work-in-progress is inspectable without SSH-ing to the box.

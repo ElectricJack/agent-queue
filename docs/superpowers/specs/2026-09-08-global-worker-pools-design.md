@@ -1,5 +1,11 @@
 # Global worker pools
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-08
 **Status:** implemented (2026-09-08) — sizing, placement, bounds, doctor, CLI and
 API surfaces have shipped; the dashboard re-keying in §6.4 has not
