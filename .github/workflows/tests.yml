@@ -9,8 +9,8 @@ name: Tests
 #   (`src/integration/batches.py:candidate_ref`) the same way.
 # * A push to `aq/promote/**` tests the exact promotion source SHA.
 # * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
-# * A push to `aq/parent/**` tests an immutable parent snapshot ref that
-#   `src/integration/parent_ci.py` publishes and then reads the run from.
+# * A push to `aq/parent/**` tests an immutable parent snapshot ref. The parent-CI
+#   publisher that pushed these refs is retired; the trigger is kept.
 #
 # The delivery branches themselves are not push triggers. Their work is validated
 # first, by one of the runs above or by the development publisher's
@@ -264,7 +264,22 @@ jobs:
         timeout-minutes: 20
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
-        run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+        run: |
+          echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+          ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+
+      - name: Check test runtime budget
+        if: ${{ always() && steps.tests.outputs.started_at != '' }}
+        env:
+          TEST_STARTED_AT: ${{ steps.tests.outputs.started_at }}
+          TEST_SUITE: ${{ matrix.suite.name }}
+          TEST_BUDGET_SECONDS: "1200"
+        run: |
+          elapsed=$(( $(date +%s) - TEST_STARTED_AT ))
+          echo "$TEST_SUITE took ${elapsed}s of its ${TEST_BUDGET_SECONDS}s test budget"
+          if (( elapsed * 100 > TEST_BUDGET_SECONDS * 80 )); then
+            echo "::warning title=Test runtime budget::$TEST_SUITE took ${elapsed}s, exceeding 80% of its ${TEST_BUDGET_SECONDS}s budget; refresh timings and rebalance shards"
+          fi
 
       # Each default shard records only its selected tests. Keep the committed
       # map as the selection input; merge all eight outputs to refresh it.
