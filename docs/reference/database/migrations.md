@@ -15,8 +15,8 @@ If you are changing the schema, also read [Adding a revision](#adding-a-revision
 * **Revision** — one migration file in
   [`migrations/versions/`](../../../migrations/versions/), with an `upgrade()`
   and a `downgrade()`, naming its parent as `down_revision`.
-* **Head** — the newest revision in the chain. This checkout's head is
-  `a0000000000c`; there is exactly one, and
+* **Head** — the newest revision in the chain. Run read-only `alembic heads`
+  to identify this checkout's head. There must be exactly one, and
   `tests/test_migration_single_head.py` fails if a branch ever creates a second.
 * **Stamped** — the revision id recorded in the database's `alembic_version`
   table. "Stamped at head" means the schema matches this checkout.
@@ -26,7 +26,7 @@ If you are changing the schema, also read [Adding a revision](#adding-a-revision
   sessions get, and letting an override redefine "production" would disarm the
   guard exactly where it matters.
 
-## What the chain looks like today
+## The baseline and the current chain
 
 On 2026-09-07 the 117 revisions that preceded it were collapsed into one
 squashed baseline, at the same time SQLite support was removed. Most of their
@@ -34,7 +34,14 @@ weight was dual-backend tax — 71 used `op.batch_alter_table`, which exists onl
 because SQLite cannot `ALTER TABLE`, and 29 branched on the dialect name.
 Replaying them cost about eight seconds per fresh database.
 
-What is left is a baseline plus eleven revisions:
+The chain continues to grow under
+[`migrations/versions/`](../../../migrations/versions/). Use `alembic history`
+and `alembic heads` for the complete local chain; neither command migrates a
+database. Current domains describe their schema in the
+[system specs](../../specs/systems/README.md).
+
+The table below is a **historical snapshot of the first twelve revisions**,
+not today's complete chain:
 
 | Revision | What it does |
 |---|---|
@@ -56,8 +63,8 @@ Supporting files in the same directory:
 | File | Purpose |
 |---|---|
 | [`alembic.ini`](../../../alembic.ini) | Alembic configuration. `sqlalchemy.url` is deliberately empty — the URL is supplied programmatically. A `ruff check --fix` post-write hook formats generated revisions. |
-| [`migrations/env.py`](../../../migrations/env.py) | The environment. Two things matter: `target_metadata` is `src.database.tables.metadata`, and `transaction_per_migration=True`, because one revision opens a *second* connection to inspect what the previous revision created. Its docstring and a `render_as_batch` branch still mention SQLite; PostgreSQL is the only supported backend. |
-| [`migrations/integration_guards.py`](../../../migrations/integration_guards.py) | 29 PL/pgSQL functions and 50 triggers over 31 integration tables, snapshotted at the pre-squash head. Table metadata cannot express a trigger, so these are carried separately. **Immutable** — a behaviour change is a new revision, not an edit here. |
+| [`migrations/env.py`](../../../migrations/env.py) | The environment. Two things matter: `target_metadata` is `src.database.tables.metadata`, and `transaction_per_migration=True`, because one revision opens a *second* connection to inspect what the previous revision created. PostgreSQL is the only supported backend. |
+| [`migrations/integration_guards.py`](../../../migrations/integration_guards.py) | PL/pgSQL functions and triggers snapshotted at the pre-squash head. Table metadata cannot express a trigger, so these are carried separately. **Immutable** — a behaviour change is a new revision, not an edit here. |
 | [`migrations/script.py.mako`](../../../migrations/script.py.mako) | The template new revisions are generated from. |
 
 ## Who may migrate what
@@ -315,7 +322,10 @@ unknown-revision diagnostic rather than marking a half-migrated database current
 
 The schema's source of truth is
 [`tables.py`](../../../src/database/tables.py). Edit it first, then generate the
-migration that makes a database match it.
+migration that makes a database match it. Autogeneration requires an explicit
+URL for a disposable database. A worker slot has no database to autogenerate
+against: write an idempotent revision by hand and use the test harness to
+validate it. Leave the worker scope and refusal-sentinel environment intact.
 
 ```bash
 alembic revision --autogenerate -m "description of change"
@@ -338,6 +348,10 @@ Rules learned the hard way:
   `DEFAULT '''system'''`. Booleans use `sa.false()` / `sa.true()`, never `"0"` /
   `"1"`. Guarded by `tests/test_migration_string_defaults.py` and
   `tests/test_migration_boolean_defaults.py`.
+* **JSON columns use `JSONB`.** PostgreSQL `json` has no equality operator,
+  which breaks whole-row `DISTINCT`, `UNION` and `GROUP BY`. Keep revision
+  column types consistent with `tables.py`; `tests/test_migration_json_columns.py`
+  guards this rule.
 * **PostgreSQL only.** No `batch_alter_table`, no `dialect.name` branches;
   `tests/test_sqlite_removal.py` is the ratchet.
 * **Be idempotent.** The squashed baseline builds from live metadata, so a fresh
