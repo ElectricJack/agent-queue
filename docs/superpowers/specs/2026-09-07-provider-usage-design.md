@@ -1,9 +1,19 @@
 # Provider usage in the dashboard
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-07
-**Status:** design — not implemented
+**Status:** implemented historical design record
 **Touches:** `src/sessions/transcripts/codex.py`, a new `src/providers/usage/`,
 `src/commands/`, `src/api/metrics.py`, `dashboard/src/pages/metrics/`
+
+Current behaviour: [providers system spec](../../specs/systems/providers.md) and
+[usage accounting](../../reference/usage-accounting.md). This record preserves the
+original design; its proposed implementation details are not setup instructions.
 
 ## Problem
 

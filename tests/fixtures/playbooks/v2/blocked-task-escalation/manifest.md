@@ -1,12 +1,12 @@
 ---
 playbook_id: blocked-task-escalation
-artifact_sha256: sha256:eae9b8d6e0033ae09cf690d7acd8f36531dfbeb2b9ddea25425234f9b533f896
-source_sha256: sha256:fd129f705d36a836cbbdbf69bbc8eb2cca9ca9a3167a625157030dc41eeaafef
-contract_fingerprint: sha256:5a699793898e346709711f3fc8741f37a1c1d3dc8578c2819b011c7346d27ed2
+artifact_sha256: sha256:5cc41369642a1ad63fb63ce5a8c5b5c6f865288e02b3036a785ebfaab1919c99
+source_sha256: sha256:c8c28fe1de804c51348bfca9c976bddc0d298905c58b9cfc3cb24d104e3e673e
+contract_fingerprint: sha256:04aa97ad67d622f1fb05d821c989e1ae5ba1223247371f779299b227ee51d9e3
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - message_send
+  - task_recovery_notify
   harness_tools: []
   plugin_tools: []
 profiles_referenced: []

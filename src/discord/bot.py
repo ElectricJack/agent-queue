@@ -1,10 +1,10 @@
-"""Simplified Discord gateway: escalation replies only.
+"""Simplified Discord gateway with opt-in supervisor conversations.
 
-Discord no longer owns task controls, worker input, project chat, execution
-threads, lifecycle notifications, or slash commands. Outbound escalation and
-digest delivery live in their dedicated durable transports. The gateway's one
-inbound responsibility is to authenticate a reply in a known escalation
-thread and pass it to ``escalation_reply`` for the owning supervisor.
+Discord's explicit operator delete action shares the daemon command boundary.
+Worker input, execution threads and the six old slash commands remain retired. Outbound escalation and
+digest delivery live in their dedicated durable transports. Escalation replies
+and §5.3's choice buttons route first; enabled conversations pass verified input
+through the command boundary.
 """
 
 from __future__ import annotations
@@ -18,13 +18,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.config import AppConfig
+from src.discord.intake_diagnostics import IgnoreCounter
 from src.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
 
 class AgentQueueBot(commands.Bot):
-    """One-channel Discord adapter with no direct work mutation surface."""
+    """One-channel Discord adapter with one explicit operator delete action."""
 
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
         intents = discord.Intents.default()
@@ -42,6 +43,12 @@ class AgentQueueBot(commands.Bot):
         )
         self._guild: discord.Guild | None = None
         self._escalation_intake_impl: tuple[Any, Any] | None = None
+        self._escalation_buttons_impl: tuple[Any, Any] | None = None
+        self._inbound_router_impl: tuple[Any, Any, Any] | None = None
+        self._conversation_backfill_impl: tuple[Any, Any] | None = None
+        # Outlives any one intake adapter: a handler swap rebuilds the adapter,
+        # not the counts ``digest_status`` reports as its ``intake`` block.
+        self._intake_diagnostics = IgnoreCounter()
         self._cutover_complete = asyncio.Event()
         self._cutover_report: Any = None
 
@@ -65,15 +72,88 @@ class AgentQueueBot(commands.Bot):
                 handler,
                 self.config,
                 reconcile=self._reconcile_escalation,
+                on_ignore=self._intake_diagnostics.record,
             )
             self._escalation_intake_impl = (handler, intake)
             return intake
+        return cached[1]
+
+    def _escalation_buttons(self):
+        """Build the §5.3 press handler lazily against the current handler."""
+        from src.discord.escalation_buttons import EscalationButtonPress
+
+        cached = self._escalation_buttons_impl
+        handler = self.handler
+        if cached is None or cached[0] is not handler:
+            press = EscalationButtonPress(
+                handler,
+                self.config,
+                reconcile=self._reconcile_escalation,
+                on_ignore=self._intake_diagnostics.record,
+            )
+            self._escalation_buttons_impl = (handler, press)
+            return press
         return cached[1]
 
     async def _reconcile_escalation(self, escalation_id: str) -> None:
         service = getattr(self.orchestrator, "escalation_delivery", None)
         if service is not None:
             await service.reconcile(escalation_id)
+
+    def _inbound_router(self):
+        """Build lazily; rebuilding the handler also rebuilds both inbound adapters."""
+        from src.discord.inbound import DiscordInboundRouter
+
+        handler = self.handler
+        intake = self._escalation_intake()
+        cached = getattr(self, "_inbound_router_impl", None)
+        if cached is None or cached[0] is not handler or cached[1] is not intake:
+            diagnostics = getattr(self, "_intake_diagnostics", None)
+            if diagnostics is None:
+                diagnostics = self._intake_diagnostics = IgnoreCounter()
+            router = DiscordInboundRouter(
+                bot=self,
+                handler=handler,
+                config=self.config,
+                escalation_intake=intake,
+                diagnostics=diagnostics,
+                cutover_status=lambda: getattr(
+                    getattr(self, "_cutover_report", None), "status", None
+                ),
+                outbox_bound=lambda: bool(
+                    getattr(getattr(self.orchestrator, "conversation_outbox", None), "bound", False)
+                ),
+            )
+            self._inbound_router_impl = (handler, intake, router)
+            return router
+        return cached[2]
+
+    def _conversation_backfill(self):
+        """Keep one recovery pass lock and refresh it when the router changes."""
+        from src.conversations.backfill import ConversationBackfill
+        from src.discord.escalation_transport import DiscordEscalationTransport
+
+        router = self._inbound_router()
+        cached = getattr(self, "_conversation_backfill_impl", None)
+        if cached is None or cached[0] is not router:
+            backfill = ConversationBackfill(
+                db=self.handler.db,
+                router=router,
+                transport=DiscordEscalationTransport(self, self.config),
+                config=self.config,
+            )
+            self._conversation_backfill_impl = (router, backfill)
+            return backfill
+        return cached[1]
+
+    async def _run_conversation_backfill(self) -> None:
+        try:
+            result = await self._conversation_backfill().run(
+                bot_user_id=getattr(self.user, "id", None)
+            )
+            logger.info("Discord conversation backfill: %s", result)
+        except Exception:
+            logger.warning("Discord conversation backfill failed", exc_info=True)
 
     async def setup_hook(self) -> None:
         """Keep plugin commands, retire only the six former AQ commands, sync."""
@@ -90,6 +170,10 @@ class AgentQueueBot(commands.Bot):
         retired = unregister_retired_commands(self.tree)
         if retired:
             logger.info("Retired Discord slash commands: %s", ", ".join(retired))
+
+        from src.discord.task_delete import register_task_delete
+
+        register_task_delete(self)
 
         original_check = self.tree.interaction_check
 
@@ -148,12 +232,17 @@ class AgentQueueBot(commands.Bot):
             )
         finally:
             self._cutover_complete.set()
+        await self._run_conversation_backfill()
+
+    async def on_resumed(self) -> None:
+        """A resumed gateway can have missed messages just like a fresh READY."""
+        await self._run_conversation_backfill()
 
     async def wait_until_cutover_complete(self) -> None:
         await self._cutover_complete.wait()
 
     async def on_message(self, message: discord.Message) -> None:
-        """Accept only known escalation-thread replies; ignore all chatter."""
+        """Route authenticated messages only after the Discord cutover completes."""
         if message.author == self.user or not self._is_authorized(message.author.id):
             return
         ready = getattr(self, "_cutover_complete", None)
@@ -163,7 +252,40 @@ class AgentQueueBot(commands.Bot):
         if report is None or report.status != "complete":
             return
         bot_user_id = getattr(self.user, "id", None)
-        await self._escalation_intake().handle(message, bot_user_id=bot_user_id)
+        await self._inbound_router().route(message, bot_user_id=bot_user_id)
+
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        """Answer an escalation button press (§5.3), and nothing else.
+
+        Every component interaction reaches here, whether or not a view owns it,
+        because discord.py dispatches through its in-memory view store first and
+        then emits the event regardless.  That is exactly what this feature
+        wants: the views sent with a post are stopped once they are on the
+        message, so the press of a post that outlived the daemon that sent it is
+        still handled, by the same code path as one sent a minute ago.
+
+        Slash commands never arrive here -- ``app_commands`` dispatches those
+        through the command tree -- and a custom id that is not one of ours is
+        returned without a log line, a reply or a reaction.
+        """
+        from src.escalations.interactions import parse_custom_id
+
+        data = getattr(interaction, "data", None) or {}
+        if getattr(interaction, "type", None) is not discord.InteractionType.component:
+            return
+        if str(data.get("custom_id", "")).startswith("aqask:"):
+            from src.discord.ask_buttons import AskButtonPress
+            await AskButtonPress(self.handler).handle(interaction)
+            return
+        if parse_custom_id(data.get("custom_id")) is None:
+            return
+        ready = getattr(self, "_cutover_complete", None)
+        if ready is not None and not ready.is_set():
+            return
+        try:
+            await self._escalation_buttons().handle(interaction)
+        except Exception:
+            logger.warning("escalation button press failed", exc_info=True)
 
 
 __all__ = ["AgentQueueBot"]
