@@ -125,6 +125,7 @@ class TestTaskFailedEvent:
                 title="Retry task",
                 description="test",
                 status=TaskStatus.READY,
+                profile_id="claude", route_source="legacy",
                 max_retries=1,
                 retry_count=0,
             )
@@ -211,7 +212,7 @@ class TestTaskFailedEvent:
             description="test",
             status=TaskStatus.IN_PROGRESS,
             assigned_agent_id="a-3",
-            profile_id="claude",
+            profile_id="claude", route_source="legacy",
             max_retries=1,
             retry_count=0,
         )
@@ -256,7 +257,7 @@ class TestTaskFailedEvent:
             description="test",
             status=TaskStatus.IN_PROGRESS,
             assigned_agent_id="a-4",
-            profile_id="claude",
+            profile_id="claude", route_source="legacy",
             max_retries=3,
             retry_count=0,
         )

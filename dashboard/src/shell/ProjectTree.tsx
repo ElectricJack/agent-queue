@@ -1,11 +1,10 @@
-import { useMemo, useRef, useState, type DragEvent } from "react";
+import { useMemo, useState, type DragEvent } from "react";
 import { Link } from "react-router-dom";
 import {
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   FolderIcon,
-  FolderPlusIcon,
   PencilSquareIcon,
   TrashIcon,
   XMarkIcon,
@@ -28,11 +27,14 @@ import {
 } from "./navOrganization";
 import { linkClass } from "./railStyles";
 import { workspaceHref, type WorkspaceTab } from "./projectNavigation";
+import { writeRecordSelection } from "../pages/records/recordUrlState";
 
 interface Props {
   projects: readonly NavProject[];
   organization: NavOrganization;
   update: (next: (org: NavOrganization) => NavOrganization) => void;
+  creatingFolder: boolean;
+  onCloseFolderForm: () => void;
   activeProjectId: string | null;
   tab: WorkspaceTab;
   search: string;
@@ -59,12 +61,10 @@ function carries(event: DragEvent, type: string): boolean {
  * docs/superpowers/specs/2026-09-07-project-folders-and-drag-drop-design.md.
  */
 export default function ProjectTree({
-  projects, organization, update, activeProjectId, tab, search,
+  projects, organization, update, creatingFolder, onCloseFolderForm, activeProjectId, tab, search,
 }: Props) {
   const [dragging, setDragging] = useState<Dragging>(null);
-  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  const newFolderRef = useRef<HTMLButtonElement>(null);
   const tree = useMemo(() => navTree(projects, organization), [projects, organization]);
 
   const dropProject = (projectId: string, target: MoveProjectTarget) => {
@@ -127,6 +127,8 @@ export default function ProjectTree({
 
   const projectRow = (project: NavProject, folderId: string | null) => {
     const label = projectLabel(project);
+    const filters = writeRecordSelection(new URLSearchParams(search), null);
+    const projectSearch = activeProjectId === project.id ? search : filters.size ? `?${filters}` : "";
     return (
       <div
         key={project.id}
@@ -139,8 +141,9 @@ export default function ProjectTree({
         data-project-row={project.id}
       >
         <Link
-          to={workspaceHref(project.id, tab, search)}
+          to={workspaceHref(project.id, tab, projectSearch)}
           data-listnav="1"
+          data-primary-control
           aria-current={activeProjectId === project.id ? "page" : undefined}
           className={`min-w-0 flex-1 ${linkClass(activeProjectId === project.id)}`}
         >
@@ -165,19 +168,7 @@ export default function ProjectTree({
 
   return (
     <div id="project-links" className="space-y-0.5">
-      <div className="flex items-center px-1 pb-1">
-        <button
-          ref={newFolderRef}
-          type="button"
-          data-listnav="1"
-          onClick={() => setCreating(true)}
-          className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-800 hover:text-gray-200"
-        >
-          <FolderPlusIcon className="h-4 w-4" />
-          <span>New folder</span>
-        </button>
-      </div>
-      {creating && (
+      {creatingFolder && (
         <form
           className="flex items-center gap-1 px-1 pb-1"
           onSubmit={(event) => {
@@ -185,8 +176,7 @@ export default function ProjectTree({
             const input = new FormData(event.currentTarget).get("folderName");
             const name = typeof input === "string" ? input.trim() : "";
             if (name) update((org) => createFolder(org, name).org);
-            setCreating(false);
-            newFolderRef.current?.focus();
+            onCloseFolderForm();
           }}
         >
           <input
@@ -197,8 +187,7 @@ export default function ProjectTree({
             onKeyDown={(event) => {
               if (event.key !== "Escape") return;
               event.preventDefault();
-              setCreating(false);
-              newFolderRef.current?.focus();
+              onCloseFolderForm();
             }}
             className="min-w-0 flex-1 rounded border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-gray-100"
           />
@@ -208,7 +197,7 @@ export default function ProjectTree({
           <button
             type="button"
             aria-label="Cancel new folder"
-            onClick={() => { setCreating(false); newFolderRef.current?.focus(); }}
+            onClick={onCloseFolderForm}
             className="rounded p-1 text-gray-400 hover:text-gray-100"
           >
             <XMarkIcon className="h-4 w-4" />

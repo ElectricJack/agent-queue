@@ -1,5 +1,11 @@
 # Discord UI Components & Human-in-the-Loop Interaction Research
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Date:** 2026-03-14
 **Project:** agent-queue
 **Purpose:** Research Discord's UI capabilities and design a comprehensive plan for human-in-the-loop interaction commands.

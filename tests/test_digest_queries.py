@@ -1,0 +1,451 @@
+"""What a digest window is allowed to see (implementation spec §8).
+
+These cover the read half: durable facts only, "active" meaning a live
+current attempt, project visibility applied in SQL, and the lookback that
+picks up rows written after their window closed.
+"""
+
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import insert, update
+
+from src.database import Database
+from src.database.queries.digest_queries import DigestQueryMixin, provider_fact
+from src.database.tables import (
+    agent_questions,
+    provider_availability_transitions,
+    task_comments,
+    task_session_attempts,
+    tasks,
+)
+from src.digest import DigestWindow, build_digest
+from src.digest.facts import KIND_PROVIDER
+from src.models import Project, SessionRecord, Task, TaskCompletion
+
+NOW = 2_000_000.0
+HOUR = 3600.0
+WINDOW = DigestWindow(since=NOW - HOUR, until=NOW)
+
+
+@pytest.fixture
+async def db(reuse_database):
+    database = await reuse_database("digest.db")
+    await database.create_project(Project(id="p", name="Agent Queue"))
+    await database.create_project(Project(id="other", name="Other"))
+    yield database
+
+
+async def make_task(db, task_id, *, project_id="p", status="COMPLETED", title=None):
+    await db.create_task(
+        Task(id=task_id, project_id=project_id, title=title or task_id, description="")
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status=status))
+
+
+async def add_attempt(db, task_id, *, started_at, ended_at=None, project_id="p",
+                      session_id="s1"):
+    attempt_id = uuid4().hex
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(task_session_attempts).values(
+                id=attempt_id, session_id=session_id, task_id=task_id, project_id=project_id,
+                agent_id="a", agent_name="Worker", profile_id="worker", name="worker",
+                lifecycle="pool", model="claude-opus-5", harness="claude", provider="tmux",
+                state="running", work_dir="/w", started_at=started_at,
+                session_started_at=started_at, ended_at=ended_at,
+            )
+        )
+    return attempt_id
+
+
+async def add_session(db, session_id, *, state="running", last_activity=NOW - 30,
+                      project_id="p", task_id=None):
+    await db.create_session(
+        SessionRecord(
+            id=session_id, project_id=project_id, profile_id="worker", harness="claude",
+            provider="tmux", name=f"s-{session_id}", lifecycle="pool", work_dir="/w",
+            epoch="e", instance_token=session_id, started_at=NOW - 2 * HOUR,
+            task_id=task_id, state=state, last_activity=last_activity,
+        )
+    )
+
+
+async def complete(db, task_id, *, at, summary="shipped the thing", pr_url=None):
+    await db.save_task_completion(
+        TaskCompletion(
+            id="completion-" + uuid4().hex, task_id=task_id, outcome="pass",
+            summary=summary, pr_url=pr_url, completed_at=at,
+        )
+    )
+
+
+async def note(db, task_id, body, *, at, project_id="p", kind="progress",
+               author_kind="agent", author_id="worker"):
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(task_comments).values(
+                id="comment-" + uuid4().hex, task_id=task_id, project_id=project_id,
+                body=body, author_kind=author_kind, author_id=author_id, kind=kind,
+                created_at=at,
+            )
+        )
+
+
+async def collect(db, **kwargs):
+    kwargs.setdefault("now", NOW)
+    return await db.collect_digest_activity(kwargs.pop("window", WINDOW), **kwargs)
+
+
+def keys(inputs):
+    return {fact.key.split(":")[0] for fact in inputs.facts}
+
+
+def test_the_mixin_is_composed_into_the_database():
+    assert issubclass(Database, DigestQueryMixin)
+
+
+async def test_a_completion_in_the_window_is_a_work_fact(db):
+    await make_task(db, "t1", title="Ship pools")
+    await complete(db, "t1", at=NOW - 120)
+    inputs = await collect(db)
+    assert [(f.kind, f.category, f.project_id) for f in inputs.facts] == [
+        ("completed", "work", "p")
+    ]
+    assert inputs.facts[0].detail == "shipped the thing"
+    assert inputs.project_names["p"] == "Agent Queue"
+
+
+async def test_a_pull_request_is_a_separate_vcs_milestone(db):
+    await make_task(db, "t1")
+    await complete(db, "t1", at=NOW - 120, pr_url="https://github.com/x/y/pull/1")
+    inputs = await collect(db)
+    assert {(f.kind, f.category) for f in inputs.facts} == {
+        ("completed", "work"),
+        ("progress", "vcs"),
+    }
+
+
+async def test_attempt_starts_and_progress_notes_are_facts(db):
+    await make_task(db, "t1", status="IN_PROGRESS")
+    await add_attempt(db, "t1", started_at=NOW - 600)
+    await note(db, "t1", "Rebased and green on 65 tests", at=NOW - 300)
+    inputs = await collect(db)
+    assert keys(inputs) == {"attempt", "comment"}
+
+
+async def test_an_ordinary_comment_is_not_progress(db):
+    """A question, a plan or chatter is history, not recorded work.
+
+    Reading every comment as progress would let a human asking "any update?"
+    manufacture an hourly digest claiming the task progressed — §8 forbids
+    both the eligibility and the fabricated highlight.
+    """
+    await make_task(db, "t1", status="READY")
+    await note(db, "t1", "Any update on this?", at=NOW - 300, kind="note",
+               author_kind="user", author_id="local")
+    await note(db, "t1", "Plan: start with the parser, then the renderer.",
+               at=NOW - 250, kind="note")
+    inputs = await collect(db)
+    assert inputs.facts == ()
+    assert inputs.active == ()
+    result = build_digest(inputs)
+    assert not result.send
+    assert result.reason == "idle_only"
+
+
+async def test_a_recorded_progress_note_alone_makes_a_window_eligible(db):
+    """The other half: an explicitly labelled note still counts as work."""
+    await make_task(db, "t1", status="IN_PROGRESS", title="Ship pools")
+    await note(db, "t1", "Migration applied; 65 tests green", at=NOW - 300)
+    inputs = await collect(db)
+    assert [(f.kind, f.category) for f in inputs.facts] == [("progress", "work")]
+    assert inputs.facts[0].detail == "Migration applied; 65 tests green"
+    assert build_digest(inputs).send
+
+
+async def test_progress_and_ordinary_comments_on_one_task_report_only_progress(db):
+    await make_task(db, "t1", status="IN_PROGRESS")
+    await note(db, "t1", "Blocked on a decision?", at=NOW - 400, kind="note")
+    await note(db, "t1", "PR #524 pushed", at=NOW - 300)
+    inputs = await collect(db)
+    assert [f.detail for f in inputs.facts] == ["PR #524 pushed"]
+
+
+async def test_updated_at_churn_alone_produces_no_facts(db):
+    await make_task(db, "t1", status="READY")
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "t1").values(updated_at=NOW - 5)
+        )
+    inputs = await collect(db)
+    assert inputs.facts == ()
+    assert inputs.active == ()
+    assert inputs.idle_tasks == 1
+    assert build_digest(inputs).send is False
+
+
+async def test_a_live_running_attempt_counts_as_active(db):
+    await make_task(db, "t1", status="IN_PROGRESS", title="Long job")
+    await add_session(db, "live", last_activity=NOW - 30, task_id="t1")
+    await add_attempt(db, "t1", started_at=NOW - 5 * HOUR, session_id="live")
+    inputs = await collect(db)
+    assert [t.task_id for t in inputs.active] == ["t1"]
+    assert inputs.facts == ()
+    result = build_digest(inputs)
+    assert (result.send, result.active_count) == (True, 1)
+
+
+async def test_a_stale_session_is_not_active(db):
+    await make_task(db, "t1", status="IN_PROGRESS")
+    await add_session(db, "stale", last_activity=NOW - 3 * HOUR, task_id="t1")
+    await add_attempt(db, "t1", started_at=NOW - 5 * HOUR, session_id="stale")
+    inputs = await collect(db)
+    assert inputs.active == ()
+    assert build_digest(inputs).send is False
+
+
+async def test_a_worker_waiting_on_a_human_is_not_active(db):
+    await make_task(db, "t1", status="IN_PROGRESS")
+    await add_session(db, "live", task_id="t1")
+    await add_attempt(db, "t1", started_at=NOW - HOUR, session_id="live")
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(agent_questions).values(
+                id="q1", session_id="live", session_name="s-live", instance_token="live",
+                task_id="t1", project_id="p", agent_id="a", turn_id="turn", claim_epoch=1,
+                question="which way?", requires_human=True, state="human",
+                created_at=NOW - 600, updated_at=NOW - 600, source_ts=NOW - 600,
+            )
+        )
+    inputs = await collect(db, window=DigestWindow(since=NOW - 0.5 * HOUR, until=NOW))
+    assert inputs.active == ()
+
+
+async def test_an_in_progress_container_with_no_attempt_is_idle_not_active(db):
+    await make_task(db, "epic", status="IN_PROGRESS", title="Epic")
+    inputs = await collect(db)
+    assert (inputs.active, inputs.facts) == ((), ())
+    assert inputs.idle_tasks == 1
+
+
+async def test_an_ended_attempt_is_not_active(db):
+    await make_task(db, "t1", status="IN_PROGRESS")
+    # No ``task_id`` on the session: creating one with a task snapshots a
+    # fresh live attempt, which is exactly what this test must not have.
+    await add_session(db, "live")
+    await add_attempt(db, "t1", started_at=NOW - 2 * HOUR, ended_at=NOW - HOUR,
+                      session_id="live")
+    inputs = await collect(db, window=DigestWindow(since=NOW - 0.5 * HOUR, until=NOW))
+    assert inputs.active == ()
+
+
+async def test_another_projects_work_is_never_collected(db):
+    await make_task(db, "t1", project_id="other", title="Secret")
+    await complete(db, "t1", at=NOW - 60, summary="secret work")
+    inputs = await collect(db, project_ids=("p",))
+    assert inputs.facts == ()
+    assert "Secret" not in str(inputs.project_names)
+
+
+async def test_lookback_picks_up_a_row_written_after_its_window_closed(db):
+    await make_task(db, "t1")
+    await complete(db, "t1", at=NOW - HOUR - 300)
+    later = DigestWindow(since=NOW, until=NOW + HOUR)
+    without = await collect(db, window=later, now=NOW + HOUR)
+    assert without.facts == ()
+    with_lookback = await collect(
+        db, window=later, now=NOW + HOUR, lookback_seconds=2 * HOUR
+    )
+    assert len(with_lookback.facts) == 1
+    # And it is reported exactly once: the next window's lookback sees it
+    # again but the fact key is already spent.
+    first = build_digest(with_lookback)
+    again = await collect(
+        db, window=DigestWindow(since=NOW + HOUR, until=NOW + 2 * HOUR),
+        now=NOW + 2 * HOUR, lookback_seconds=4 * HOUR,
+        reported_keys=first.reported_keys,
+    )
+    assert build_digest(again).send is False
+
+
+# --- provider availability: the fleet's ``system`` facts (provider-failover D19) ---
+
+
+async def transition(db, generation, from_state, to_state, *, at, provider="codex",
+                     reason="", until=None):
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(provider_availability_transitions).values(
+                provider=provider, from_state=from_state, to_state=to_state,
+                reason_code="", reason=reason, until=until, generation=generation,
+                actor="system", detail={}, at=at,
+            )
+        )
+
+
+async def one_outage(db):
+    """Down and back up inside the window, plus noise either side of it."""
+    await transition(db, 1, "available", "degraded", at=NOW - 50 * 60)
+    await transition(db, 2, "degraded", "unauthenticated", at=NOW - 40 * 60,
+                     reason="a launch died on its login dialog")
+    await transition(db, 3, "unauthenticated", "exhausted", at=NOW - 30 * 60,
+                     until=NOW + HOUR)
+    await transition(db, 4, "exhausted", "degraded", at=NOW - 10 * 60, reason="recovering")
+    await transition(db, 5, "degraded", "unauthenticated", at=NOW - 3 * HOUR)
+
+
+async def test_only_a_change_of_half_is_a_provider_fact(db):
+    await one_outage(db)
+    inputs = await collect(db)
+    facts = {fact.key: fact for fact in inputs.facts}
+    assert set(facts) == {"provider:codex:2", "provider:codex:4"}
+    down = facts["provider:codex:2"]
+    assert (down.kind, down.category, down.project_id, down.task_id) == (
+        KIND_PROVIDER, "system", "", "",
+    )
+    assert down.detail == "unavailable (unauthenticated) — a launch died on its login dialog"
+    assert facts["provider:codex:4"].detail == "launchable again (degraded) — recovering"
+
+
+def test_an_expected_recovery_is_part_of_the_fact():
+    fact = provider_fact({
+        "provider": "claude", "from_state": "available", "to_state": "exhausted",
+        "reason": "", "until": 0.0 + 90 * 60, "generation": 7, "at": 1.0,
+    })
+    assert fact.key == "provider:claude:7"
+    assert fact.detail == "unavailable (exhausted) until 1970-01-01 01:30 UTC"
+
+
+async def test_provider_facts_ignore_the_project_selection_but_obey_the_switch(db):
+    await one_outage(db)
+    scoped = await collect(db, project_ids=("p",))
+    assert {fact.key for fact in scoped.facts} == {"provider:codex:2", "provider:codex:4"}
+    off = await collect(db, provider_facts=False)
+    assert off.facts == ()
+
+
+async def test_an_outage_makes_a_quiet_window_speak_once(db):
+    await transition(db, 2, "degraded", "unauthenticated", at=NOW - 40 * 60,
+                     reason="login required")
+    inputs = await collect(db)
+    assert inputs.active == () and len(inputs.facts) == 1
+    result = build_digest(inputs, project_ids=frozenset({"p"}))
+    assert result.send is True
+    assert "1 provider change" in result.text
+    assert "• provider codex: unavailable (unauthenticated) — login required" in result.text
+    # A system fact is still subject to the category filter...
+    assert build_digest(inputs, categories=frozenset({"work"})).send is False
+    # ...and, once reported, is not reported again by a later lookback.
+    again = await collect(
+        db, window=DigestWindow(since=NOW, until=NOW + HOUR), now=NOW + HOUR,
+        lookback_seconds=2 * HOUR, reported_keys=result.reported_keys,
+        reported_highlights=result.reported_highlights,
+    )
+    assert build_digest(again).send is False
+
+
+async def test_a_second_outage_worded_like_the_first_is_still_news(db):
+    await transition(db, 2, "degraded", "unauthenticated", at=NOW - 40 * 60,
+                     reason="login required")
+    first = build_digest(await collect(db))
+    await transition(db, 6, "degraded", "unauthenticated", at=NOW + 20 * 60,
+                     reason="login required")
+    later = await collect(
+        db, window=DigestWindow(since=NOW, until=NOW + HOUR), now=NOW + HOUR,
+        lookback_seconds=2 * HOUR, reported_keys=first.reported_keys,
+        reported_highlights=first.reported_highlights,
+    )
+    result = build_digest(later)
+    assert result.send is True
+    assert result.reported_keys == frozenset({"provider:codex:6"})
+
+
+# --- re-route batches: provider-failover D19's second system producer ---
+
+
+async def test_a_reroute_batch_is_one_system_fact(db):
+    from src.database.tables import task_reroutes
+
+    for task_id in ("r1", "r2"):
+        await make_task(db, task_id, status="READY")
+    async with db._engine.begin() as conn:
+        for task_id, at in (("r1", NOW - 30 * 60), ("r2", NOW - 20 * 60)):
+            await conn.execute(
+                insert(task_reroutes).values(
+                    task_id=task_id, project_id="p", from_profile_id="standard-high-codex",
+                    to_profile_id="standard-high-claude", from_provider="codex",
+                    to_provider="claude", reason_code="provider_unavailable",
+                    batch_id="prb-codex-2", actor="system", at=at,
+                )
+            )
+        # An operator's undo is not an outage's move.
+        await conn.execute(
+            insert(task_reroutes).values(
+                task_id="r1", project_id="p", reason_code="operator_undo",
+                batch_id="prb-codex-2", actor="human:cli", at=NOW - 10 * 60,
+            )
+        )
+    inputs = await collect(db)
+    [fact] = [f for f in inputs.facts if f.key.startswith("reroute:")]
+    assert fact.key == "reroute:prb-codex-2"
+    assert (fact.category, fact.project_id) == ("system", "p")
+    assert fact.detail == "2 task(s) moved to standard-high-claude"
+    result = build_digest(inputs, project_ids=frozenset({"p"}))
+    assert "1 re-route batch" in result.text
+    off = await collect(db, provider_facts=False)
+    assert not [f for f in off.facts if f.key.startswith("reroute:")]
+
+
+async def test_pending_human_reminders_repeat_daily_and_remain_project_scoped(db):
+    from src.database.tables import wait_records
+
+    for task_id, project in [("human-owner", "p"), ("hidden-human", "other")]:
+        await make_task(db, task_id, project_id=project, status="HIBERNATED")
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(wait_records).values(
+                id=f"wait:{task_id}", project_id=project, owner_kind="task", owner_id=task_id,
+                origin="human", condition_kind="human",
+                condition=dict(kind="human", subject="task_comment", task_id=task_id),
+                source_key=f"human:task_comment:{task_id}", source_generation=1,
+                source_watermark_seq=0, verification_state="verified", evidence_ref="comment",
+                verified_at=NOW - 5 * 86400, created_at=NOW - 5 * 86400,
+                sleep_decision="hibernate", request_hash=task_id))
+    for day in (0, 1, 4):
+        result = await db.collect_digest_supervisor_facts(
+            WINDOW, now=NOW + day * 86400, project_ids=("p",))
+        reminders = result["waiting_on_you"]
+        assert len(reminders) == 1
+        assert reminders[0]["task_id"] == "human-owner"
+        assert reminders[0]["age_seconds"] == (5 + day) * 86400
+        assert result["asks"]["count"] == 0
+        morning = await db.collect_morning_report_sources(
+            since=NOW - HOUR, until=NOW + day * 86400, project_ids=("p",))
+        assert morning["waiting_on_you"] == reminders
+    async with db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.owner_id == "human-owner").values(outcome="lifted_by_supervisor"))
+    result = await db.collect_digest_supervisor_facts(WINDOW, now=NOW, project_ids=("p",))
+    assert result["waiting_on_you"] == []
+
+
+async def test_delivery_holds_are_scoped_facts_and_never_stuck_or_active(db, monkeypatch):
+    for tid, project in (("waiting", "p"), ("foreign", "other")):
+        await make_task(db, tid, project_id=project, status="READY")
+    for index in range(2):
+        await db.save_task_completion(TaskCompletion(
+            id=f"failed-{index}", task_id="waiting", outcome="fail", completed_at=NOW - 60,
+        ))
+
+    async def exclusions(ids, **kwargs):
+        return {tid: [{"code": "frontier_prerequisite_not_on_default_branch", "ref": tid,
+                       "detail": "Land source.6 on dev; refresh aq/epic"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    inputs = await collect(db, project_ids=("p",))
+    assert [row["task_id"] for row in inputs.waiting_on_delivery] == ["waiting"]
+    assert inputs.active == ()
+    brief = await db.collect_digest_supervisor_facts(WINDOW, now=NOW, project_ids=("p",))
+    assert [row["task_id"] for row in brief["waiting_on_delivery"]] == ["waiting"]
+    assert brief["stuck"] == []
