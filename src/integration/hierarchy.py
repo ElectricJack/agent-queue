@@ -23,7 +23,6 @@ from src.database.tables import (
     integration_repair_operations,
     sessions,
     task_branch_origins,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -1914,12 +1913,8 @@ class HierarchyIntegration:
         await self.db.guard_integration_mutation(
             task_id, "reparent", conn=conn, delivery=delivery,
         )
-        delivered = await conn.scalar(
-            select(task_delivery_receipts.c.id)
-            .where(task_delivery_receipts.c.source_task_id == task_id).limit(1)
-        )
-        if busy or live or delivered:
-            raise HierarchyError("delivery_target_fixed", "task has started or delivered work")
+        if busy or live:
+            raise HierarchyError("delivery_target_fixed", "task has started work")
         if origin["materialized"]:
             if await self._resolve_head(repo, task["branch_name"]) != origin["base_sha"]:
                 raise HierarchyError("delivery_target_fixed", "branch contains commits")
