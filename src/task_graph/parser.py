@@ -4,7 +4,7 @@ Implements docs/specs/implementation/supervisor-agent.md §8's
 :func:`parse_graph` / :func:`extract_graph_from_spec`.
 
 Parsing is *structural* only: it decides what the document says, never
-whether it is coherent.  Everything semantic — vars, cycles, profiles, dep
+whether it is coherent.  Everything semantic — vars, cycles, classes, dep
 types, spec sections — belongs to :mod:`src.task_graph.validator`, so a
 caller can always parse first and report every semantic problem at once
 instead of dying on the first one.
@@ -18,6 +18,12 @@ from typing import Any
 
 import yaml
 
+from src.database.queries.task_subtask_queries import (
+    MAX_SUBTASK_CONTEXT,
+    MAX_SUBTASK_TITLE,
+    MAX_SUBTASKS_PER_CALL,
+)
+from src.routing.filing import GRAPH_RULE, REFUSED_GRAPH_KEYS, is_routing_choice
 from src.task_graph.models import (
     DEFAULT_DEP_TYPE,
     GraphContext,
@@ -26,6 +32,8 @@ from src.task_graph.models import (
     GraphNode,
     GraphParent,
     GraphParseError,
+    GraphPhase,
+    GraphSubtask,
     TaskGraph,
 )
 
@@ -112,6 +120,54 @@ def _parse_context(raw: Any, node_key: str) -> tuple[GraphContext | None, list[G
     )
 
 
+def _parse_subtask(raw: Any, node_key: str) -> tuple[GraphSubtask | None, list[GraphError]]:
+    """Parse one ``subtasks`` entry: a bare title string or ``{title, context}``.
+
+    Length bounds are checked here, before anything is written, because they
+    are ``CheckConstraint``s on ``task_subtasks`` — an oversize title reaching
+    the insert would abort ``write_plan``'s whole transaction with a database
+    error instead of a reportable graph finding.
+    """
+    if isinstance(raw, str):
+        raw = {"title": raw}
+    if not isinstance(raw, dict):
+        return None, [
+            _err(
+                "bad_subtask",
+                f"'subtasks' entries must be strings or objects, got {raw!r}",
+                node_key,
+            )
+        ]
+    title = raw.get("title")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= MAX_SUBTASK_TITLE:
+        return None, [
+            _err(
+                "bad_subtask",
+                f"each subtask title must be a string of 1 to {MAX_SUBTASK_TITLE} characters, "
+                f"got {title!r}",
+                node_key,
+            )
+        ]
+    # Only an omitted key or an explicit null means "no context" — a bare
+    # YAML ``context:`` is the one way to write "unset", the same reading
+    # ``src/task_graph/formulas.py`` gives a null.  Everything else must pass
+    # the type check: coercing with ``or ""`` would have quietly accepted
+    # ``0``, ``False`` and ``[]`` while rejecting ``5``.
+    context = raw.get("context")
+    if context is None:
+        context = ""
+    if not isinstance(context, str) or len(context) > MAX_SUBTASK_CONTEXT:
+        return None, [
+            _err(
+                "bad_subtask",
+                f"subtask context must be a string of at most {MAX_SUBTASK_CONTEXT} "
+                f"characters, got {context!r}",
+                node_key,
+            )
+        ]
+    return GraphSubtask(title=title.strip(), context=context), []
+
+
 def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None, list[GraphError]]:
     errors: list[GraphError] = []
     if not isinstance(raw, dict):
@@ -152,11 +208,11 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     else:
         node.priority = priority
 
-    profile = raw.get("profile", defaults.get("profile"))
-    if profile is not None and not isinstance(profile, str):
-        errors.append(_err("bad_field_type", f"'profile' must be a string, got {profile!r}", key))
-    else:
-        node.profile = profile
+    # A node carries hints, never a route (mandatory-routing spec §5.1): a
+    # profile, a pin, a provider or a model is refused, not dropped, so the
+    # author learns the router ignores it.  ``defaults`` is checked once, in
+    # :func:`parse_graph`.
+    errors.extend(_route_key_errors(raw, "", key))
 
     intelligence_class = raw.get("intelligence_class", defaults.get("intelligence_class"))
     if intelligence_class is not None and (
@@ -166,12 +222,15 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     else:
         node.intelligence_class = intelligence_class
 
-    # Worker affinity and model/provider pins are not graph fields. Report
-    # attempted routing instead of accepting it and discarding user intent.
-    for unsupported in ("affinity_agent_id", "agent_id", "assigned_agent_id", "model", "provider", "harness"):
+    # Worker affinity is not a graph field. Report attempted placement
+    # instead of accepting it and discarding user intent.
+    for unsupported in ("affinity_agent_id", "agent_id", "assigned_agent_id"):
         if unsupported in raw or unsupported in defaults:
             errors.append(_err(
-                "unsupported_routing", f"'{unsupported}' is not supported in graphs; use profile and intelligence_class", key,
+                "unsupported_routing",
+                f"'{unsupported}' is not supported in graphs; the project's router places "
+                "the work (use intelligence_class and task_type as hints)",
+                key,
             ))
 
     task_type = raw.get("task_type", defaults.get("task_type"))
@@ -181,6 +240,14 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
         )
     else:
         node.task_type = task_type
+
+    phase = raw.get("phase", defaults.get("phase"))
+    if phase is not None and (not isinstance(phase, str) or not phase.strip()):
+        errors.append(
+            _err("bad_field_type", f"'phase' must be a nonempty string, got {phase!r}", key)
+        )
+    elif isinstance(phase, str):
+        node.phase = phase.strip()
 
     project = raw.get("project", raw.get("project_id"))
     if project is not None and not isinstance(project, str):
@@ -214,7 +281,81 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
         if ctx:
             node.context.append(ctx)
 
+    raw_subtasks = raw.get("subtasks", defaults.get("subtasks")) or []
+    if isinstance(raw_subtasks, (str, dict)):
+        raw_subtasks = [raw_subtasks]
+    if not isinstance(raw_subtasks, list):
+        errors.append(
+            _err(
+                "bad_subtask",
+                f"'subtasks' must be a list, got {type(raw_subtasks).__name__}",
+                key,
+            )
+        )
+        raw_subtasks = []
+    if len(raw_subtasks) > MAX_SUBTASKS_PER_CALL:
+        # One node's list is one authoring act, so it is capped the way one
+        # ``task_subtask_add`` call is.  The durable per-task ceiling
+        # (``MAX_SUBTASKS_PER_TASK``) is unreachable from a graph alone — the
+        # task is brand new and the base ordinal is 0 — and stays what
+        # ``add_task_subtasks`` raises for a later ``subtask-add``.
+        errors.append(
+            _err(
+                "bad_subtask",
+                f"node has {len(raw_subtasks)} subtasks; at most {MAX_SUBTASKS_PER_CALL} "
+                "may be declared on one node",
+                key,
+            )
+        )
+        raw_subtasks = []
+    for entry in raw_subtasks:
+        subtask, errs = _parse_subtask(entry, key)
+        errors.extend(errs)
+        if subtask:
+            node.subtasks.append(subtask)
+
     return node, errors
+
+
+def _parse_phase(raw: Any, index: int) -> tuple[GraphPhase | None, list[GraphError]]:
+    """Parse one ``phases`` entry: ``{key, title, label?}``.
+
+    Unlike a node there is no shorthand form — a phase is written out, because
+    its ``key`` is what every node in it references and a bare string would
+    have to serve as both key and title.
+    """
+    if not isinstance(raw, dict):
+        return None, [
+            _err("bad_phase", f"phase #{index} must be an object, got {type(raw).__name__}")
+        ]
+    key = raw.get("key")
+    if not isinstance(key, str) or not key.strip():
+        return None, [_err("missing_phase_key", f"phase #{index} is missing a 'key'")]
+    key = key.strip()
+    title = raw.get("title", "") or ""
+    if not isinstance(title, str):
+        return None, [_err("bad_phase", f"'phases.title' must be a string, got {title!r}")]
+    label = raw.get("label")
+    if label is not None and not isinstance(label, str):
+        return None, [_err("bad_phase", f"'phases.label' must be a string, got {label!r}")]
+    return GraphPhase(key=key, title=title, label=label), []
+
+
+def _route_key_errors(raw: dict, where: str, node_key: str | None) -> list[GraphError]:
+    """One ``routing_choice_forbidden`` finding per route key in *raw*.
+
+    *where* prefixes the key in the message (``defaults.``, ``parent.``).
+    """
+    return [
+        _err(
+            GRAPH_RULE,
+            f"'{where}{field}' chooses a route, which only the project's router may do; "
+            "give intelligence_class and task_type as hints instead",
+            node_key,
+        )
+        for field in REFUSED_GRAPH_KEYS
+        if field in raw and is_routing_choice(raw[field])
+    ]
 
 
 def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
@@ -224,7 +365,15 @@ def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
         return GraphParent(title=raw), []
     if not isinstance(raw, dict):
         return None, [_err("bad_parent", f"'parent' must be an object, got {type(raw).__name__}")]
-    errors: list[GraphError] = []
+    errors: list[GraphError] = _route_key_errors(raw, "parent.", None)
+    if raw.get("subtasks"):
+        errors.append(
+            _err(
+                "parent_subtasks_unsupported",
+                "'parent.subtasks' is not supported: subtasks belong to scheduled graph nodes, "
+                "not the container parent",
+            )
+        )
     labels, errs = _as_str_list(raw.get("labels"), "parent.labels", None)
     errors.extend(errs)
     priority = raw.get("priority", 100)
@@ -235,7 +384,6 @@ def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
         GraphParent(
             title=raw.get("title", "") or "",
             description=raw.get("description", "") or "",
-            profile=raw.get("profile"),
             labels=labels,
             priority=priority,
         ),
@@ -326,9 +474,24 @@ def parse_graph(source: str | dict, *, fmt: str = "auto") -> TaskGraph:
             _err("bad_defaults", f"'defaults' must be an object, got {type(defaults).__name__}")
         )
         defaults = {}
+    errors.extend(_route_key_errors(defaults, "defaults.", None))
 
     parent, parent_errors = _parse_parent(data.get("parent"))
     errors.extend(parent_errors)
+
+    raw_phases = data.get("phases")
+    phases: list[GraphPhase] = []
+    if raw_phases is not None:
+        if not isinstance(raw_phases, list):
+            errors.append(
+                _err("bad_phase", f"'phases' must be a list, got {type(raw_phases).__name__}")
+            )
+        else:
+            for index, raw_phase in enumerate(raw_phases):
+                phase, phase_errors = _parse_phase(raw_phase, index)
+                errors.extend(phase_errors)
+                if phase:
+                    phases.append(phase)
 
     raw_nodes = data.get("nodes")
     if raw_nodes is None:
@@ -361,6 +524,7 @@ def parse_graph(source: str | dict, *, fmt: str = "auto") -> TaskGraph:
         vars=graph_vars,
         defaults=defaults,
         parent=parent,
+        phases=phases,
         nodes=nodes,
     )
 

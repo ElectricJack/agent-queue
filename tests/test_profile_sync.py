@@ -27,7 +27,6 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import AgentProfile
 from src.profiles.parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
 from src.profiles.sync import (
@@ -42,7 +41,6 @@ from src.profiles.sync import (
     sync_profile_to_db,
 )
 from src.vault_watcher import VaultChange, VaultWatcher
-from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +180,9 @@ class ChangeCollector:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +355,7 @@ class TestSyncProfileToDb:
         enabled = parse_profile(
             "---\nid: autonomous\nname: Autonomous\n---\n"
             "## Config\n```json\n"
-            '{"harness": "codex", "codex_full_auto": true, '
+            '{"harness": "codex", "codex_full_auto": true, "codex_service_tier": "fast", '
             '"claude_dangerously_skip_permissions": false}\n'
             "```\n"
         )
@@ -367,18 +363,21 @@ class TestSyncProfileToDb:
         assert result.success is True
         profile = await db.get_profile("autonomous")
         assert profile.codex_full_auto is True
+        assert profile.codex_service_tier == "fast"
         assert profile.claude_dangerously_skip_permissions is False
 
         disabled = parse_profile(
             "---\nid: autonomous\nname: Autonomous\n---\n"
             "## Config\n```json\n"
-            '{"harness": "codex", "codex_full_auto": false}\n'
+            '{"harness": "codex", "codex_full_auto": false, '
+            '"codex_service_tier": "default"}\n'
             "```\n"
         )
         result = await sync_profile_to_db(disabled, db)
         assert result.success is True
         profile = await db.get_profile("autonomous")
         assert profile.codex_full_auto is False
+        assert profile.codex_service_tier == "default"
         assert profile.claude_dangerously_skip_permissions is False
 
     @pytest.mark.asyncio
@@ -5060,3 +5059,93 @@ name: {agent_type.title()} Agent
         with caplog.at_level(logging.WARNING, logger="src.profiles.sync"):
             found = _find_profile_files(str(vault))
         assert found == []
+
+
+# ---------------------------------------------------------------------------
+# Derived worker rungs on the real sync path (src/profiles/inheritance.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDerivedRungSync:
+    """A rung is a stub on disk and a complete profile in the database."""
+
+    def _vault(self, tmp_path):
+        from src.profiles.catalog import derive_rungs_from_vault
+        from src.vault import ensure_default_intelligence_classes, ensure_default_profiles
+
+        ensure_default_intelligence_classes(str(tmp_path))
+        ensure_default_profiles(str(tmp_path))
+        derive_rungs_from_vault(str(tmp_path))
+        return tmp_path / "vault" / "agent-types"
+
+    @pytest.mark.asyncio
+    async def test_a_rung_lands_in_the_database_fully_resolved(self, db, tmp_path):
+        agent_types = self._vault(tmp_path)
+        path = agent_types / "deep-high-claude" / "profile.md"
+
+        result = await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )
+
+        assert result.success, result.errors
+        profile = await db.get_profile("deep-high-claude")
+        # Its own state...
+        assert profile.default_class == "deep-high"
+        assert profile.lifecycle == "task"
+        # ...and everything inherited from the template.
+        assert profile.harness == "claude"
+        assert "Bash" in profile.harness_tools
+        assert "task_close" in profile.aq_commands
+
+    @pytest.mark.asyncio
+    async def test_editing_the_template_changes_every_rung_with_no_regeneration(
+        self, db, tmp_path
+    ):
+        agent_types = self._vault(tmp_path)
+        template = agent_types / "worker-claude" / "profile.md"
+        template.write_text(
+            template.read_text(encoding="utf-8").replace('"Bash",', '"Bash",\n    "Agent",'),
+            encoding="utf-8",
+        )
+
+        for rung in ("deep-high-claude", "fast-low-claude"):
+            path = agent_types / rung / "profile.md"
+            assert (await sync_profile_text_to_db(
+                path.read_text(encoding="utf-8"), db, source_path=str(path)
+            )).success
+            assert "Agent" in (await db.get_profile(rung)).harness_tools
+
+    @pytest.mark.asyncio
+    async def test_a_template_never_becomes_a_profile_row(self, db, tmp_path):
+        agent_types = self._vault(tmp_path)
+        path = agent_types / "worker-claude" / "profile.md"
+
+        result = await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )
+
+        # Reported as a success with no action: a scan must not log it as a
+        # failure on every boot, and nothing may be routed to it.
+        assert result.success is True
+        assert result.action == "none"
+        assert await db.get_profile("worker-claude") is None
+
+    @pytest.mark.asyncio
+    async def test_a_stub_whose_template_is_gone_does_not_overwrite_the_live_row(
+        self, db, tmp_path
+    ):
+        agent_types = self._vault(tmp_path)
+        path = agent_types / "deep-high-claude" / "profile.md"
+        assert (await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )).success
+        (agent_types / "worker-claude" / "profile.md").unlink()
+
+        result = await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )
+
+        assert result.success is False
+        assert any("to extend" in error for error in result.errors)
+        # The previously synced row is still whole.
+        assert (await db.get_profile("deep-high-claude")).harness == "claude"

@@ -1,14 +1,17 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
-import { useLocation, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useKnowledgeCapabilities } from "../../api/knowledge";
 import { useProjects } from "../../api/hooks";
-import { projectNavigation } from "../../shell/projectNavigation";
+import type { RunningTarget } from "../../api/graphLayout";
 import { useGraphLive } from "./useGraphLive";
+import { GraphStateProvider } from "./useGraphHierarchy";
 import { FINISHED_STATUSES, readTaskFilters, writeTaskFilters, type TaskFilters } from "./taskFilters";
 
 type Projects = NonNullable<ReturnType<typeof useProjects>["data"]>;
 const EMPTY_PROJECTS: Projects = [];
 interface TaskWorkspaceValue {
   projectId: string | undefined;
+  knowledgeAvailable: boolean;
   projectIds: string[];
   projects: Projects;
   isLoadingProjects: boolean;
@@ -20,35 +23,39 @@ interface TaskWorkspaceValue {
   setStatus: (status: string) => void;
   setShowCompleted: (show: boolean) => void;
   setWindow: (window: string) => void;
+  setHeld: (held: boolean) => void;
   clearFilters: () => void;
+  goToRunningWork: (target: RunningTarget) => void;
 }
 const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
 
-/** The route is the only project scope; query parameters travel with every tab. */
-export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
-  const { projectId } = useParams<{ projectId: string }>();
-  const location = useLocation();
+/**
+ * The route is the project scope; query parameters travel with every tab.
+ * `scope` overrides the route for a page that is not under
+ * /projects/:projectId — the focus home passes its `?project=`.
+ */
+export function TaskWorkspaceProvider({ children, scope }: { children: ReactNode; scope?: { projectId?: string } }) {
+  const route = useParams<{ projectId: string }>();
+  const projectId = scope ? scope.projectId : route.projectId;
+  const navigate = useNavigate();
+  const knowledge = useKnowledgeCapabilities(projectId);
+  const knowledgeAvailable = knowledge.data?.available === true;
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
   const focusId = rawFilters.focus || null;
-  const graphDefaultShowsCompleted = projectNavigation(location.pathname).tab === "graph";
+  // Entering a container no longer implies finished work: inside one the
+  // default is the same as at the root, unfinished children only.
   const filters = useMemo(() => ({
     ...rawFilters,
-    showCompleted: rawFilters.showCompleted || !!focusId || !!rawFilters.window || (graphDefaultShowsCompleted && params.get("completed") !== "0"),
-  }), [rawFilters, focusId, graphDefaultShowsCompleted, params]);
+    showCompleted: rawFilters.showCompleted || !!rawFilters.window,
+  }), [rawFilters]);
   const projectIds = useMemo(() => projectId ? [projectId] : projects.map((p) => p.id), [projectId, projects]);
   useGraphLive(projectIds);
 
   const update = useCallback((patch: Partial<TaskFilters>) => {
-    setParams((previous) => {
-      const next = writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch });
-      if (graphDefaultShowsCompleted && previous.get("completed") === "0" && !("showCompleted" in patch)) {
-        next.set("completed", "0");
-      }
-      return next;
-    }, { replace: true });
-  }, [setParams, graphDefaultShowsCompleted]);
+    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch }), { replace: true });
+  }, [setParams]);
   const setQuery = useCallback((query: string) => update({ query }), [update]);
   const setStatus = useCallback((status: string) => {
     update({ status, ...(FINISHED_STATUSES.has(status) ? { showCompleted: true } : {}) });
@@ -56,27 +63,44 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const setShowCompleted = useCallback((show: boolean) => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
-      if (current.focus) return previous;
-      const next = writeTaskFilters(previous, {
+      return writeTaskFilters(previous, {
         ...current, showCompleted: show,
         status: !show && FINISHED_STATUSES.has(current.status) ? "" : current.status,
       });
-      if (graphDefaultShowsCompleted && !show) next.set("completed", "0");
-      return next;
     }, { replace: true });
-  }, [setParams, graphDefaultShowsCompleted]);
+  }, [setParams]);
   const setWindow = useCallback((window: string) => update({ window }), [update]);
-  const setFocus = useCallback((id: string | null) => update({ focus: id ?? "" }), [update]);
+  const setHeld = useCallback((held: boolean) => update({ held }), [update]);
+  // Entering a container (or leaving one) is navigation, not a filter edit:
+  // it PUSHES, so the browser's Back button goes back up a level.
+  const setFocus = useCallback((id: string | null) => {
+    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), focus: id ?? "" }));
+  }, [setParams]);
   const clearFilters = useCallback(() => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
-      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, window: "", focus: current.focus });
+      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, window: "", held: false, focus: current.focus });
     }, { replace: true });
   }, [setParams]);
-  const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
-    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters }),
-  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters]);
-  return <TaskWorkspaceContext.Provider value={value}>{children}</TaskWorkspaceContext.Provider>;
+  // This is one navigation entry, not six independent filter edits.  Back
+  // therefore restores the caller's scope and filters in one step.
+  const goToRunningWork = useCallback((target: RunningTarget) => {
+    const next = writeTaskFilters(new URLSearchParams(), {
+      query: "", status: "", showCompleted: false, window: "", held: false,
+      focus: target.parent_task_id ?? "",
+    });
+    if (projectId === target.project_id) {
+      setParams(next);
+      return;
+    }
+    const query = next.toString();
+    navigate(`/projects/${encodeURIComponent(target.project_id)}/graph${query ? `?${query}` : ""}`);
+  }, [projectId, setParams, navigate]);
+  const value = useMemo(() => ({ knowledgeAvailable, projectId, projectIds, projects, isLoadingProjects, projectsError,
+    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters,
+    goToRunningWork }),
+  [knowledgeAvailable, projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork]);
+  return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
 }
 
 // A paired provider/hook module follows the existing pane-store convention.

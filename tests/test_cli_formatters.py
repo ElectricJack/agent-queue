@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 
+import pytest
 from rich.console import Console
 
 
@@ -69,6 +70,14 @@ def test_sparse_workspace_pool_and_profile_rows_render_without_keyerror():
     assert "Workspaces" in out
 
 
+def test_pool_status_shows_display_name_and_stable_id_as_literal_text():
+    out = _render("pool_status", {"pools": [{
+        "profile_id": "rung", "name": "Space Bunny [bold]",
+    }]})
+    assert "Space Bunny [bold]" in out
+    assert "rung" in out
+
+
 def test_task_progress_renders_a_raw_response_dict():
     """`aq task progress` crashed with AttributeError: the ``task_progress``
     spec had no proxy, so ``_render_progress`` got the raw response dict and
@@ -88,6 +97,32 @@ def test_task_progress_renders_a_raw_response_dict():
     assert "eager-impact-14: 2/5 done, 1 ready, 1 blocked, 1 in progress" in out
     assert "waves: 2, max parallelism: 2" in out
     assert "1. a, b" in out and "2. c" in out
+
+
+def test_pool_status_names_sessions_blocked_on_input():
+    out = _render(
+        "pool_status",
+        {
+            "pools": [
+                {
+                    "profile_id": "standard-high-codex",
+                    "blocked_on_input": 1,
+                    "instances": [
+                        {
+                            "name": "p-standard-high-codex--proj--abc",
+                            "state": "blocked_on_input",
+                            "input_prompt": "model-upgrade-menu",
+                            "unchanged_seconds": 1_800,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert "Blocked on input" in out
+    assert "model-upgrade-menu" in out
+    assert "unchanged 1800s" in out
 
 
 def test_task_progress_renders_a_typed_response_model():
@@ -146,11 +181,13 @@ def test_recent_activity_renders_an_empty_window_without_a_model_table():
     assert "By model" not in out
 
 
-def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason():
+@pytest.mark.parametrize("service_tier", [None, "default", "fast"])
+def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason(service_tier):
     """§6.2: one line per pool, plus the reason a project stopped growing."""
     out = _render("pool_status", {"pools": [
         {
-            "profile_id": "worker-standard-medium-claude",
+            "profile_id": "worker-standard-medium-codex",
+            "service_tier": service_tier,
             "min_active": 2, "max_active": 8, "min_per_project": 1,
             "desired": 3, "running_idle": 2, "running_busy": 1,
             "starting": 0, "draining": 0, "ready": 4,
@@ -165,6 +202,9 @@ def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason():
     ]})
     # The project is no longer a column, and placement is summarised inline.
     assert "web:2i/1b" in out and "api:1i" in out and "svc:0" in out
+    assert "Codex tier" in out
+    if service_tier is not None:
+        assert service_tier in out
     # A bare deadline is useless to an operator, so the reason travels with it.
     assert "quarantined until" in out
     assert "startup death: harness exited 1" in out
@@ -178,3 +218,202 @@ def test_pool_table_renders_a_reasonless_quarantine():
         ]},
     ]})
     assert "quarantined until" in out
+
+
+def test_review_show_renders_withdrawal_audit_dependents_and_recovery():
+    out = _render("review_show", {
+        "review": {
+            "id": "rev-1", "state": "withdrawn", "current_revision": 2,
+            "withdrawn_by": "human:local-operator", "withdrawn_via": "dashboard",
+            "withdrawn_at": 1790000000.0, "withdrawal_reason": "accidental",
+        },
+        "revision": {"revision": 2, "content": "# Recover"},
+        "gate": {"id": "gate-1", "status": "cancelled"},
+        "dependent_task_ids": ["impl-1", "impl-2"],
+    })
+    assert "human:local-operator" in out and "dashboard" in out
+    assert "Withdrawn at" in out and "accidental" in out
+    assert "gate-1" in out and "cancelled" in out
+    assert "impl-1, impl-2" in out
+    assert "aq review reopen --review-id rev-1 --revision 2" in out
+    assert "still requires approval" in out
+
+
+def test_review_show_renders_markdown_header_and_comments():
+    out = _render(
+        "review_show",
+        {
+            "success": True,
+            "review": {
+                "id": "review-1",
+                "title": "Release plan",
+                "kind": "plan",
+                "state": "changes_requested",
+                "current_revision": 3,
+            },
+            "revision": {"revision": 2, "content": "# Proposed release\n\nShip it carefully."},
+            "vault_state": "diverged",
+            "response_route": {"summary": "Request changes → new revision task on standard-high (project_default); Approve → sent to the supervisor."},
+            "dispatches": [{
+                "profile_id": "astra-high-codex", "revision": 2,
+                "with_comments": False, "task_id": "review-task", "task_state": "IN_PROGRESS",
+            }],
+            "comments": [
+                {
+                    "quote": "Ship it carefully.",
+                    "heading_path": ["Proposed release", "Safety"],
+                    "revision": 2,
+                    "resolved_in_revision": 3,
+                    "body": "Add a rollback step.",
+                }
+            ],
+        },
+    )
+
+    assert "review-1" in out and "Release plan" in out
+    assert "plan" in out and "changes_requested" in out
+    assert "2 / 3" in out and "diverged" in out
+    assert "Proposed release" in out and "Ship it carefully." in out
+    assert "Safety" in out and "revision 3" in out
+    assert "Add a rollback step." in out
+    assert "astra-high-codex" in out and "clean room" in out
+    assert "Request changes → new revision task on standard-high (project_default)" in out
+    assert "Approve → sent to the supervisor" in out
+    assert "review-task" in out and "IN_PROGRESS" in out
+
+
+def test_review_list_renders_table_and_empty_message():
+    out = _render(
+        "review_list",
+        {
+            "reviews": [
+                {
+                    "id": "review-2",
+                    "title": "API spec",
+                    "kind": "spec",
+                    "state": "submitted",
+                    "current_revision": 4,
+                    "relation": "waiting",
+                }
+            ]
+        },
+    )
+    assert "Document reviews" in out
+    assert "review-2" in out and "API spec" in out
+    assert "spec" in out and "submitted" in out and "4" in out and "waiting" in out
+
+    out = _render("review_list", {"reviews": []})
+    assert "No reviews found." in out
+
+
+def test_review_formatters_render_generated_response_models():
+    """Review-only fields stored in generated models' extras remain visible."""
+    class GeneratedModel:
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+            self.additional_properties = fields.pop("additional_properties", {})
+
+    review = GeneratedModel(
+        id="review-typed",
+        project_id="agent-queue",
+        title="Typed plan",
+        kind="plan",
+        state="submitted",
+        current_revision=4,
+        vault_path="reviews/typed.md",
+    )
+    revision = GeneratedModel(
+        additional_properties={"revision": 3, "content": "# Typed heading\n\nTyped body"}
+    )
+    comment = GeneratedModel(
+        additional_properties={
+            "quote": "Typed body",
+            "heading_path": ["Typed heading"],
+            "revision": 3,
+            "resolved_in_revision": None,
+            "body": "Please expand this.",
+        }
+    )
+
+    out = _render(
+        "review_show",
+        GeneratedModel(review=review, revision=revision, vault_state="ok", comments=[comment]),
+    )
+    assert "review-typed" in out and "3 / 4" in out
+    assert "Typed body" in out and "Please expand this." in out
+
+    review.additional_properties["relation"] = "author"
+    out = _render("review_list", GeneratedModel(reviews=[review]))
+    assert "review-typed" in out and "author" in out
+
+
+def test_task_detail_shows_the_routing_preference_and_its_verdict():
+    """`aq task show` names what was asked for and whether it decided."""
+    from types import SimpleNamespace
+
+    from src.cli.formatters import _route_fields
+
+    unrouted = SimpleNamespace(
+        route_source="unrouted", profile_id=None, intelligence_class=None, route=None,
+        prefer_target="codex", prefer_mode=None,
+    )
+    assert _route_fields(unrouted) == [
+        ("Routing preference", "codex (soft)"), ("Route", "unrouted"),
+    ]
+
+    honoured = SimpleNamespace(
+        route_source="router", profile_id="standard-high-codex",
+        intelligence_class="standard-high",
+        route={"preference": {"target": "codex", "mode": "soft", "kind": "harness",
+                              "honoured": True, "fallback_reason": None}},
+        prefer_target="codex", prefer_mode="soft",
+    )
+    assert ("Routing preference", "codex (soft) honoured") in _route_fields(honoured)
+
+    refused = SimpleNamespace(
+        route_source="router", profile_id="standard-high-claude",
+        intelligence_class="standard-high",
+        route={"preference": {"target": "codex", "mode": "strict", "kind": "profile",
+                              "honoured": False, "fallback_reason": "provider_unavailable"}},
+        prefer_target="standard-high-codex", prefer_mode="strict",
+    )
+    assert (
+        "Routing preference",
+        "standard-high-codex (strict) not honoured: provider_unavailable",
+    ) in _route_fields(refused)
+
+    # A task that names none stays exactly as quiet as it was.
+    plain = SimpleNamespace(
+        route_source="router", profile_id="standard-high-codex",
+        intelligence_class="standard-high", route={},
+        prefer_target=None, prefer_mode=None,
+    )
+    assert all(name != "Routing preference" for name, _ in _route_fields(plain))
+
+
+def test_canonical_ask_formatters_keep_count_health_version_and_full_packet():
+    result = {"items": [{"id": "ask-1", "context": {"title": "[bold]literal[/bold]"},
+                         "decision_generation": 2, "feedback_version": 7}],
+              "count": 101, "snapshot_at": 123, "source_health": "refreshing", "next_cursor": "next"}
+    out = _render("ask_list", result)
+    assert "101" in out and "refreshing" in out and "next" in out
+    assert "[bold]literal[/bold]" in out
+    detail = _render("ask_show", {"ask": result["items"][0], "expected": {
+        "decision_generation": 2, "feedback_version": 7, "source_fingerprint": "exact-source"},
+        "actions": [{"action": "decide", "enabled": False, "disabled_reason": "Only the decider"}]})
+    assert "exact-source" in detail and "Only the decider" in detail
+    packet = _render("ask_prepare_decision", {"preview": {"id": "preview-1", "packet_sha256": "sha",
+        "packet": {"domain": {"feedback": [{"original_text": "Full feedback", "disposition": "fold_in"}]}}}})
+    assert "Full feedback" in packet and "fold_in" in packet and "preview-1" in packet
+
+
+def test_ready_delivery_hold_names_prerequisite_and_target_in_list_and_show():
+    row = {"id": "consumer.4", "project_id": "p", "title": "Consumer",
+           "status": "READY", "priority": 100,
+           "claim_readiness": {"state": "waiting_on_delivery", "claimable": False,
+                               "label": "Waiting on delivery",
+                               "reason": "Land source.6 on dev; refresh aq/epic"}}
+    for command, payload in (("list_tasks", {"tasks": [row]}), ("get_task", row)):
+        text = _render(command, payload)
+        assert "Waiting on delivery" in text
+        assert "source.6" in text and "dev" in text and "aq/epic" in text

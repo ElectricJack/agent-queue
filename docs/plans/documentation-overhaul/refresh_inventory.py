@@ -15,13 +15,29 @@ page, and writes two artefacts next to this script:
 
 Usage::
 
-    python3 docs/plans/documentation-overhaul/refresh_inventory.py          # write
-    python3 docs/plans/documentation-overhaul/refresh_inventory.py --check  # verify
+    python3 .../refresh_inventory.py                    # rewrite the artefacts
+    python3 .../refresh_inventory.py --check            # coverage (every author)
+    python3 .../refresh_inventory.py --check-artefacts  # freshness (acceptance)
 
-``--check`` regenerates in memory and fails when a tracked path matches no rule
-or when the committed artefacts are stale.  That is the guarantee behind the
-foundation acceptance criterion "no unassigned catch-all left unexplained":
-adding a new file under ``src/`` without an owning rule turns the check red.
+The two halves of the check are deliberately separate, because they have
+different owners.
+
+``--check`` is the **coverage** half and is what every ticket runs before it
+pushes.  It regenerates in memory and fails only when a tracked path matches no
+rule.  That is the guarantee behind the foundation acceptance criterion "no
+unassigned catch-all left unexplained": adding a new file under ``src/``
+without an owning rule turns the check red.  When the committed artefacts have
+fallen behind the tree it says so and still exits 0 — the paths that drifted
+are printed with the shard they were assigned to, so an author can see where
+their new file landed.
+
+``--check-artefacts`` is the **freshness** half and is an acceptance gate, not
+a per-ticket check.  It additionally fails when the committed JSON no longer
+matches the tree, and the fix is to run the regenerator.  The artefacts are
+owned by the overhaul's foundation/acceptance shard: they are one 3,700-entry
+JSON pair, so twenty in-flight tickets each regenerating them on their own
+branch would conflict with each other at delivery.  One owner regenerates on a
+cadence instead.
 """
 
 from __future__ import annotations
@@ -208,9 +224,12 @@ OWNED_PAGES: list[tuple[str, str]] = [
     ("docs/guides/dashboard.md", "dashboard"),
     ("docs/guides/plugins-and-mcp.md", "plugins"),
     ("docs/guides/escalations.md", "communications"),
+    ("docs/guides/provider-outage.md", "providers"),
     ("docs/guides/operations.md", "operations"),
     ("docs/contributing/**", "contributing"),
     ("docs/reference/README.md", "reference"),
+    ("docs/reference/reference-maintenance.md", "reference"),
+    ("docs/reference/configuration-schema.json", "reference"),
     ("docs/history/**", "legacy"),
 ]
 
@@ -246,11 +265,19 @@ def _owned_page_rules() -> list[tuple[str, str, str, str, str]]:
 # First match wins, so narrower globs come first.
 RULES: list[tuple[str, str, str, str, str]] = [
     # ---------------------------------------------------------------- docs
+    ("LICENSE", "contributing", "docs/contributing/README.md", SUPPORTING,
+     "Repository license; explained with contributor and distribution policy."),
+    ("docs/plans/documentation-overhaul/final-coverage-report.md", "acceptance",
+     "docs/README.md", DOCUMENTATION,
+     "Final acceptance evidence for the documentation overhaul."),
     ("docs/plans/documentation-overhaul/*", "foundation",
      "docs/plans/documentation-overhaul/README.md", DOCUMENTATION,
      "This overhaul's own planning material."),
-    ("docs/README.md", "foundation", "docs/README.md", DOCUMENTATION,
-     "Documentation home; final navigation assembly owns it after foundation."),
+    ("docs/README.md", "acceptance", "docs/README.md", DOCUMENTATION,
+     "Documentation home and final navigation assembly."),
+    ("docs/reference/modules/README.md", "acceptance",
+     "docs/reference/modules/README.md", DOCUMENTATION,
+     "Shared module catalog index assembled at final acceptance."),
     ("docs/reference/glossary.md", "foundation", "docs/reference/glossary.md",
      DOCUMENTATION, "Shared vocabulary."),
     ("docs/contributing/documentation-style.md", "foundation",
@@ -278,10 +305,10 @@ RULES: list[tuple[str, str, str, str, str]] = [
      DOCUMENTATION, "Historical coverage report."),
     ("profile.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
      "Repository architecture briefing loaded by agents."),
-    ("CLAUDE.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
-     "Agent-facing repository instructions."),
     ("AGENTS.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
-     "Agent-facing repository instructions."),
+     "Agent-facing repository instructions (the single source of truth)."),
+    ("CLAUDE.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
+     "One-line @AGENTS.md import shim for Claude Code."),
 
     # ------------------------------------------------------------ generated
     ("packages/aq-client/**", "api", "docs/reference/api/python-client.md",
@@ -314,10 +341,14 @@ RULES: list[tuple[str, str, str, str, str]] = [
      SUPPORTING, "Playbook V1 JSON schema retained for validation."),
     ("src/playbook_v2_schema.json", "playbooks", "docs/concepts/playbooks.md",
      SUPPORTING, "Playbook V2 JSON schema."),
-    ("src/cli/CLAUDE.md", "cli", "docs/reference/cli/README.md", DOCUMENTATION,
+    ("src/cli/AGENTS.md", "cli", "docs/reference/cli/README.md", DOCUMENTATION,
      "Code-adjacent CLI authoring notes."),
-    ("dashboard/CLAUDE.md", "dashboard", "docs/guides/dashboard.md", DOCUMENTATION,
+    ("src/cli/CLAUDE.md", "cli", "docs/reference/cli/README.md", DOCUMENTATION,
+     "One-line @AGENTS.md import shim for Claude Code."),
+    ("dashboard/AGENTS.md", "dashboard", "docs/guides/dashboard.md", DOCUMENTATION,
      "Code-adjacent frontend authoring notes."),
+    ("dashboard/CLAUDE.md", "dashboard", "docs/guides/dashboard.md", DOCUMENTATION,
+     "One-line @AGENTS.md import shim for Claude Code."),
 
     # ----------------------------------------------------------- src: python
     ("src/__init__.py", "architecture", "docs/concepts/architecture.md",
@@ -347,6 +378,12 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "`aq task explain` — why a task is or is not runnable."),
     ("src/review_keys.py", "tasks", "docs/concepts/tasks.md", PRODUCTION,
      "Recognises a task whose work product is a review verdict."),
+    ("src/reviews/**", "tasks", "docs/guides/reviews.md", PRODUCTION,
+     "Document review revisions, gates, vault copies and notifications."),
+    ("src/asks/**", "communications", "docs/specs/database.md", PRODUCTION,
+     "Durable human asks, decision packets, source adapters and audit guards."),
+    ("src/object_loop/**", "tasks", "docs/specs/design/object-script-loop.md", PRODUCTION,
+     "Object evaluation receipts, evidence validation and bounded loop contracts."),
 
     ("src/orchestrator/workspace.py", "workspaces",
      "docs/concepts/projects-and-workspaces.md", PRODUCTION,
@@ -366,6 +403,24 @@ RULES: list[tuple[str, str, str, str, str]] = [
     ("src/orchestrator/git_ops.py", "workspaces",
      "docs/concepts/projects-and-workspaces.md", PRODUCTION,
      "Orchestrator-side Git operations."),
+    ("src/workspace_disable.py", "workspaces",
+     "docs/concepts/projects-and-workspaces.md", PRODUCTION,
+     "Why a workspace was disabled: the disabled_reason vocabulary."),
+    ("src/workspace_listing.py", "workspaces",
+     "docs/specs/command-handler.md", PRODUCTION,
+     "Bounded, read-only workspace owner and checkout diagnostics."),
+    ("src/workspace_ownership.py", "workspaces",
+     "docs/specs/command-handler.md", PRODUCTION,
+     "Independent checkout ownership fences and stopped idle session recovery."),
+    ("src/workspace_registration.py", "workspaces",
+     "docs/specs/command-handler.md", PRODUCTION,
+     "Missing workspace path detection and actionable registration repair guidance."),
+    ("src/warm_workspaces.py", "workspaces",
+     "docs/concepts/projects-and-workspaces.md", PRODUCTION,
+     "Reusable linked checkout manifests and warm workspace storage."),
+    ("src/build_cache.py", "workspaces",
+     "docs/concepts/projects-and-workspaces.md", PRODUCTION,
+     "Compiler cache environments and bounded cache telemetry."),
     ("src/orchestrator/**", "scheduler", "docs/concepts/scheduling.md", PRODUCTION,
      "Orchestrator cycle step."),
     ("src/scheduler.py", "scheduler", "docs/concepts/scheduling.md", PRODUCTION,
@@ -378,6 +433,54 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Pool claim bookkeeping."),
     ("src/resources/**", "scheduler", "docs/guides/resource-gating.md", PRODUCTION,
      "Per-session resource caps and the box-wide test slot semaphore."),
+    ("src/test_selection/**", "scheduler", "docs/guides/resource-gating.md", PRODUCTION,
+     "Smart test selection: test discovery, the selection catalogue, rules and policy."),
+    ("src/agent_waits.py", "scheduler", "docs/guides/agent-waits.md", PRODUCTION,
+     "Durable agent waits that hold a task open on job, task, message or timer conditions."),
+    ("src/waits/**", "scheduler", "docs/guides/agent-waits.md", PRODUCTION,
+     "Verified conditions, transactional source events, wait graph and admission."),
+    ("src/wait_runtime/**", "scheduler", "docs/guides/agent-waits.md", PRODUCTION,
+     "Hibernation, fresh-session resume and legacy wait migration."),
+    ("src/config_wait_policy.py", "vault", "docs/reference/configuration.md", PRODUCTION,
+     "Verified wait activation, deadlines, hibernation and metrics policy."),
+    ("src/agent_cron.py", "scheduler", "docs/guides/agent-cron.md", PRODUCTION,
+     "Session-owned recurring prompt arithmetic and daemon delivery adapters."),
+    ("src/jobs/__init__.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Managed-jobs package."),
+    ("src/jobs/runner.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Detached managed-job supervisor: admission locks, pipes, deadlines and fsync receipts."),
+    ("src/jobs/playbook.py", "playbooks", "docs/guides/playbook-script-runner.md",
+     PRODUCTION, "Durable script job admission, protected output, recovery and retention."),
+    ("src/jobs/script_runner.py", "playbooks", "docs/guides/playbook-script-runner.md",
+     PRODUCTION, "Pinned ordinary script processes with shared admission and bounded capture."),
+    ("src/jobs/service.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Daemon-side managed-job queue, recovery and cancellation substrate."),
+    ("src/jobs/policy.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Immutable managed-job admission contracts and deterministic queue order."),
+    ("src/jobs/adapters.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Finite managed-job command translation and queue clients."),
+    ("src/jobs/artifacts.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Fsync/rename receipts, bounded output and logical tail cursors."),
+    ("src/jobs/editor_pin.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Per-attempt content-addressed editor build pin for render jobs."),
+    ("src/jobs/e2e.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "The finite e2e managed-job preset."),
+    ("src/jobs/identity.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Managed-job process identity: boot id, start ticks and launch nonce."),
+    ("src/jobs/output.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Read-only bounded views over the runner's retained output stream."),
+    ("src/jobs/pytest_output.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Shared pytest result and failure parsing for managed-job output."),
+    ("src/jobs/result.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Managed-job result v1 rendering."),
+    ("src/jobs/workspace.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Serializes workspace mutation with pin creation on the workspace row."),
+    ("src/jobs/matter.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Finite Matter capture admission, native ownership and retained evidence."),
+    ("src/jobs/matter_capture.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Runs the pinned ME-1 capture adapter against the author's source tree."),
+    ("src/jobs/windows_owner.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Standalone Windows Job Object tree owner fenced by a device mutex."),
 
     ("src/profiles/mcp_registry.py", "plugins", "docs/guides/plugins-and-mcp.md",
      PRODUCTION, "In-memory MCP server registry backed by the vault."),
@@ -403,6 +506,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Intelligence-class parsing and live registry."),
     ("src/assignment_routing.py", "routing", "docs/concepts/agents-and-routing.md",
      PRODUCTION, "Routing state a task needs before a worker can take it."),
+    ("src/routing/**", "routing", "docs/concepts/agents-and-routing.md", PRODUCTION,
+     "Mandatory task routing: route sources and the router."),
     ("src/agent_names.py", "routing", "docs/concepts/agents-and-routing.md",
      PRODUCTION, "Agent naming rules."),
 
@@ -414,11 +519,21 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Terminal pane registry."),
     ("src/claim_file.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "`.aq/claim.json` read/write helpers."),
+    ("src/claim_preparation.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
+     "Session-launch and claim identity for deferred preparation responses."),
+    ("src/claim_timing.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
+     "Monotonic claim preparation phase timing and scrubbed diagnostics."),
+    ("src/preparation_failure.py", "sessions", "docs/guides/session-troubleshooting.md",
+     PRODUCTION, "Bounded, scrubbed preparation failure causes shared across claim surfaces."),
+    ("src/handoffs.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
+     "Structured handoff notes and the bounded wake context replacing transcripts."),
     ("src/env_scrub.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "Removes operator secrets from worker environments."),
 
     ("src/projects/**", "workspaces", "docs/concepts/projects-and-workspaces.md",
      PRODUCTION, "Project registration, onboarding and paths."),
+    ("src/policy_profiles/**", "workspaces", "docs/specs/design/policy-profiles.md",
+     PRODUCTION, "Portable project policy: allow-listed export, diff and selective import."),
     ("src/git/**", "workspaces", "docs/concepts/projects-and-workspaces.md",
      PRODUCTION, "Async Git manager, credentials and CI gate reads."),
     ("src/workspace_names.py", "workspaces",
@@ -432,6 +547,13 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Source completion, validation, publication and recovery."),
     ("src/integrations/**", "integration", "docs/concepts/integration.md",
      PRODUCTION, "External integration adapters."),
+    ("src/operator_decisions.py", "integration", "docs/concepts/integration.md",
+     PRODUCTION, "Durable operator notes, holds and releases on integration objects."),
+    ("src/releases/notes/**", "integration", "docs/guides/releases.md",
+     DOCUMENTATION, "Per-version release notes a promotion release step reads."),
+
+    ("src/reviews/**", "tasks", "docs/concepts/tasks.md", PRODUCTION,
+     "Document review diffing, notification, persistence and vault copies."),
 
     ("src/playbooks/executors/**", "playbooks", "docs/concepts/playbooks.md",
      PRODUCTION, "Playbook step executor."),
@@ -448,12 +570,20 @@ RULES: list[tuple[str, str, str, str, str]] = [
     ("src/orphan_workflow_recovery.py", "playbooks", "docs/concepts/playbooks.md",
      PRODUCTION, "Recovers workflows whose owning run disappeared."),
 
+    ("src/collaboration.py", "cli", "docs/reference/cli/README.md", PRODUCTION,
+     "Bounded task-thread collaboration policy: limits, retention and the shared typed refusal."),
     ("src/commands/contracts/**", "cli", "docs/reference/cli/contracts.md",
      PRODUCTION, "Command contract: the declared surface of one command."),
+    ("src/docs_urls.py", "cli", "docs/reference/cli/contracts.md", PRODUCTION,
+     "Builds the reference-page URL a contracted command advertises."),
     ("src/commands/**", "cli", "docs/reference/cli/README.md", PRODUCTION,
      "Command handler module — the single entry point for every state change."),
     ("src/cli/**", "cli", "docs/reference/cli/README.md", PRODUCTION,
      "`aq` command-line surface."),
+    ("src/install/**", "cli", "docs/reference/cli/install.md", PRODUCTION,
+     "Installer engine module behind `aq install`."),
+    ("src/daemon_state.py", "cli", "docs/reference/cli/install.md", PRODUCTION,
+     "Daemon PID identity and the stop marker `aq stop` and the auto-restart watchdog share."),
     ("src/tools/**", "cli", "docs/reference/cli/agent-tools.md", PRODUCTION,
      "Agent-facing tool definitions and registry."),
     ("src/prime/**", "cli", "docs/reference/cli/prime.md", PRODUCTION,
@@ -472,6 +602,11 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/editor/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
      "Backend half of the dashboard file editor."),
+    ("src/dashboard_state/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
+     "Registry of the durable, server-backed dashboard state namespaces."),
+    ("src/dashboard_server/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
+     "The dashboard server process: verified bundle plus same-origin proxy to the "
+     "daemon (docs/specs/dashboard-server.md)."),
 
     ("src/database/queries/**", "database", "docs/reference/database/queries.md",
      PRODUCTION, "Query module: the durable reads and writes for one area."),
@@ -481,13 +616,24 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Schema definition, engine and migration guard."),
     ("src/models.py", "database", "docs/reference/database/README.md", PRODUCTION,
      "Domain dataclasses shared across the system."),
+    ("src/knowledge/**", "database", "docs/specs/database.md", PRODUCTION,
+     "Durable knowledge domain: identities, revisions, search and services."),
+    ("src/records/**", "database", "docs/specs/database.md", PRODUCTION,
+     "Durable record identity and schema: validators, backfill, export and outbox."),
 
     ("src/config.py", "vault", "docs/reference/configuration.md", PRODUCTION,
      "Configuration schema and loader."),
     ("src/config_editor.py", "vault", "docs/reference/configuration.md",
      PRODUCTION, "Round-trip configuration writer."),
-    ("src/setup_wizard.py", "vault", "docs/reference/configuration.md", PRODUCTION,
-     "First-run setup wizard."),
+    ("src/config_secrets.py", "vault", "docs/reference/configuration.md",
+     PRODUCTION,
+     "Redacts credentials out of configuration reads and splices them back on write."),
+    ("src/config_tuning.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
+     "Resource-aware default tuning a fresh install is given."),
+    ("src/portable_config.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
+     "Portable config bundles: the allowlisted sections and profiles an `.aqbundle` carries."),
+    ("src/portable_setup.py", "vault", "docs/specs/portable-config.md", PRODUCTION,
+     "Typed portable setup metadata, intelligence classes and project policy sources."),
     ("src/vault*.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Vault storage, indexing and watching."),
     ("src/file_watcher.py", "vault", "docs/concepts/configuration-and-vault.md",
@@ -502,6 +648,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Layered prompt assembly."),
     ("src/prompt_manager.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Prompt template storage."),
+    ("src/task_templates.py", "vault", "docs/guides/generated-task-templates.md",
+     PRODUCTION, "Context-scoped vault templates for generated worker instructions."),
     ("src/override_handler.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Per-scope prompt overrides."),
     ("src/readme_handler.py", "vault", "docs/concepts/configuration-and-vault.md",
@@ -511,6 +659,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Fills reference stubs using the direct LLM path."),
     ("src/prompts/*.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Prompt construction helper."),
+    ("src/knowledge/**", "vault", "docs/concepts/configuration-and-vault.md",
+     PRODUCTION,
+     "Knowledge facilities: offline legacy-memory inventory and sealed manifests."),
 
     ("src/llm/providers/adapters/**", "providers", "docs/concepts/providers.md",
      PRODUCTION, "Provider wire-format adapter."),
@@ -538,19 +689,43 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/messages/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Message delivery to sessions, users and tasks."),
+    ("src/conversations/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
+     "Supervisor conversation intake, preconditions, bounds and outbound delivery port."),
     ("src/messaging/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Transport-neutral messaging port."),
     ("src/notifications/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Notification event construction."),
+    ("src/remote_links.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION,
+     "Resolves a dashboard link that is usable off the daemon host."),
+    ("src/dashboard_paths.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION,
+     "Owns the dashboard paths posted links name (focus routes)."),
     ("src/discord/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Discord gateway: digest delivery, escalation threads and intake."),
     ("src/digest/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Activity digest facts, eligibility, rendering and dispatch."),
+    ("src/reports/**", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Durable supervisor report requests and the hourly report policy."),
     ("src/escalations/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Escalation incidents, delivery outbox and inbound intake."),
+    ("src/delivery/__init__.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Shared marker, lease and retry delivery for domain-owned outboxes."),
+    ("src/delivery/dispatch.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Escalation-first, bounded dispatch across typed domain adapters."),
+    ("src/delivery/message.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Delivers one frozen outbound message without assuming a network receipt."),
+    ("src/delivery/scheduler.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Shared bounded scheduling of asks, conversations and routine reports."),
 
     ("src/doctor/**", "operations", "docs/guides/operations.md", PRODUCTION,
      "`aq doctor` check."),
+    ("src/stall_watch.py", "operations", "docs/specs/stuck-task-watch.md", PRODUCTION,
+     "Read-only stuck-task detection and supervisor summary formatting."),
+    ("src/observations/**", "operations", "docs/guides/observation-snapshots.md",
+     PRODUCTION, "Protected immutable observation snapshot pages and shared paging."),
+    ("src/benchmark/**", "operations", "docs/guides/benchmark-routing-export.md", PRODUCTION,
+     "Frozen benchmark routing and evidence export."),
     ("src/metrics/**", "operations", "docs/guides/operations.md", PRODUCTION,
      "Fleet metrics sampling."),
     ("src/logging_config.py", "operations", "docs/guides/operations.md",
@@ -587,6 +762,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Static asset served with the dashboard."),
     ("dashboard/**", "dashboard", "docs/guides/dashboard.md", SUPPORTING,
      "Frontend build or dev-server configuration."),
+    ("src/dashboard_assets/**", "contributing", "docs/contributing/releases.md",
+     SUPPORTING,
+     "Dashboard bundle staged into a release wheel and located at startup."),
 
     # ------------------------------------------------------- database schema
     ("migrations/**", "database", "docs/reference/database/migrations.md",
@@ -601,12 +779,16 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "End-to-end smoke driver."),
     ("scripts/**", "contributing", "docs/contributing/scripts.md", SUPPORTING,
      "Repository script."),
+    (".test_durations", "contributing", "docs/contributing/ci.md", SUPPORTING,
+     "Pytest duration data used to balance the default CI shards."),
     (".github/workflows/**", "contributing", "docs/contributing/ci.md", SUPPORTING,
      "GitHub Actions workflow."),
     (".github/**", "contributing", "docs/contributing/ci.md", SUPPORTING,
      "GitHub configuration or example payload."),
     ("pyproject.toml", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Python package and tooling configuration."),
+    ("LICENSE", "contributing", "docs/contributing/repo-map.md", SUPPORTING,
+     "MIT licence text; pyproject.toml carries the matching SPDX metadata."),
     ("package.json", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Repository-level npm manifest."),
     ("package-lock.json", "contributing", "docs/contributing/setup.md", SUPPORTING,
@@ -627,10 +809,12 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Vibecop plugin configuration."),
     (".mcp.json", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "MCP servers offered to agents working in this repository."),
-    ("mkdocs.yml", "legacy", "docs/history/README.md", SUPPORTING,
-     "Legacy MkDocs configuration; the overhaul publishes GitHub-rendered Markdown."),
+    (".claude/**", "contributing", "docs/contributing/setup.md", SUPPORTING,
+     "Claude Code settings for sessions in this repository (hooks and permissions)."),
     (".gitignore", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Ignore rules."),
+    (".ignore", "contributing", "docs/contributing/setup.md", SUPPORTING,
+     "Ripgrep ignore rules; re-admits gitignored trees to search."),
     (".gitattributes", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Attribute rules."),
 ]
@@ -740,11 +924,98 @@ def write(obj: dict, path: Path) -> None:
     path.write_text(json.dumps(obj, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
 
+def _rel(path: Path) -> Path:
+    """``path`` relative to the repository root, or unchanged when outside it."""
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
+
+
+def _load(path: Path) -> dict | None:
+    """Read a committed artefact, or ``None`` when it is missing or unreadable."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def stale_artefacts(inventory: dict, manifest: dict) -> list[Path]:
+    """Return the committed artefacts that no longer match the tree.
+
+    ``source_commit`` is provenance, not content: it changes with every commit,
+    so comparing it would make the check red the moment the regenerated
+    artefacts are committed.  Only the assignments are compared.
+    """
+    stale: list[Path] = []
+    for obj, path in ((inventory, INVENTORY), (manifest, OWNERSHIP)):
+        have = _load(path)
+        if have is None:
+            stale.append(_rel(path))
+            continue
+        want = dict(obj)
+        want.pop("source_commit", None)
+        have.pop("source_commit", None)
+        if have != want:
+            stale.append(_rel(path))
+    return stale
+
+
+def drift(manifest: dict) -> list[tuple[str, str, str]]:
+    """Paths the tree has gained, lost or re-assigned since the last rewrite.
+
+    Each entry is ``(sign, path, shard)`` with ``sign`` one of ``+``, ``-`` or
+    ``~``.  Returns an empty list when the committed manifest is unreadable —
+    that is reported as staleness, not as drift.
+    """
+    have = _load(OWNERSHIP)
+    if have is None:
+        return []
+    before: dict[str, dict] = have.get("modules", {})
+    after: dict[str, dict] = manifest["modules"]
+    out: list[tuple[str, str, str]] = []
+    for path in sorted(set(after) - set(before)):
+        out.append(("+", path, str(after[path]["shard"])))
+    for path in sorted(set(before) - set(after)):
+        out.append(("-", path, str(before[path].get("shard", "?"))))
+    for path in sorted(set(before) & set(after)):
+        if before[path] != after[path]:
+            out.append(("~", path, str(after[path]["shard"])))
+    return out
+
+
+def report_drift(entries: list[tuple[str, str, str]], recorded: str | None) -> None:
+    at = f" at {recorded[:12]}" if recorded else ""
+    print(
+        f"note: {len(entries)} tracked path(s) have changed since the coverage "
+        f"manifest was regenerated{at}:",
+    )
+    for sign, path, shard in entries[:20]:
+        print(f"  {sign} {path}  →  shard {shard}")
+    if len(entries) > 20:
+        print(f"  ... and {len(entries) - 20} more")
+    print(
+        "The manifest is owned by the overhaul's foundation/acceptance shard. "
+        "Do not\nregenerate it on a ticket branch — twenty branches each "
+        "rewriting a 3,700-entry\nJSON all conflict at delivery. Freshness is "
+        "an acceptance gate: --check-artefacts.",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check", action="store_true",
-        help="verify coverage and that the committed artefacts are current",
+        help="verify coverage: every tracked path has an owning rule",
+    )
+    parser.add_argument(
+        "--check-artefacts", action="store_true",
+        help=(
+            "acceptance gate: coverage, plus the committed artefacts being "
+            "current with the tree"
+        ),
     )
     args = parser.parse_args()
 
@@ -762,37 +1033,33 @@ def main() -> int:
         )
         return 1
 
-    if args.check:
-        # ``source_commit`` is provenance, not content: it changes with every
-        # commit, so comparing it would make the check red the moment the
-        # regenerated artefacts are committed.  Compare the assignments.
-        stale = []
-        recorded = None
-        for obj, path in ((inventory, INVENTORY), (manifest, OWNERSHIP)):
-            if not path.exists():
-                stale.append(path.relative_to(REPO))
-                continue
-            try:
-                have = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                stale.append(path.relative_to(REPO))
-                continue
-            recorded = recorded or have.get("source_commit")
-            want = dict(obj)
-            want.pop("source_commit", None)
-            have.pop("source_commit", None)
-            if have != want:
-                stale.append(path.relative_to(REPO))
-        if stale:
+    if args.check or args.check_artefacts:
+        recorded = (_load(OWNERSHIP) or {}).get("source_commit")
+        stale = stale_artefacts(inventory, manifest)
+        entries = drift(manifest)
+
+        if args.check_artefacts and stale:
             print("stale artefact(s): " + ", ".join(str(p) for p in stale))
+            if entries:
+                report_drift(entries, recorded)
             print("run: python3 docs/plans/documentation-overhaul/refresh_inventory.py")
             return 1
+
         print(
             f"ok — {sum(inventory['counts'].values())} tracked paths assigned "
             f"({inventory['counts'].get('production', 0)} production modules)",
         )
-        if recorded and recorded != head_commit():
-            print(f"note: artefacts last regenerated at {recorded[:12]}")
+        if args.check_artefacts:
+            if recorded and recorded != head_commit():
+                print(f"note: artefacts last regenerated at {recorded[:12]}")
+            return 0
+        if stale and entries:
+            report_drift(entries, recorded)
+        elif stale:
+            print(
+                "note: the committed artefacts are stale and are regenerated by "
+                "the foundation/acceptance shard (--check-artefacts).",
+            )
         return 0
 
     write(inventory, INVENTORY)

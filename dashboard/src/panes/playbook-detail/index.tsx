@@ -51,6 +51,10 @@ function Definition({ playbook: p, close }: { playbook: PlaybookSummary; close: 
     <div className="flex flex-wrap gap-2">
       <button className={buttonClass} disabled={disabled} onClick={() => setRunForm(!runForm)}>{pending || run.isPending ? "Running…" : p.last_run ? "Run again" : "Run now"}</button>
       <button className={buttonClass} disabled={toggle.isPending} onClick={() => toggle.mutate({ playbook_id: p.id, enabled: p.enabled === false })}>{p.enabled === false ? "Resume triggers" : "Pause triggers"}</button>
+      {/* Both links reuse the one playbook route; the graph link only names
+          the tab it wants, so selecting a playbook here reaches its graph in a
+          single click instead of landing on Source. */}
+      <Link className={buttonClass} to={`/playbooks/${encodeURIComponent(p.id)}?tab=graph`} state={{ from: `${location.pathname}${location.search}` }} onClick={close}>View graph</Link>
       <Link className={buttonClass} to={`/playbooks/${encodeURIComponent(p.id)}`} state={{ from: `${location.pathname}${location.search}` }} onClick={close}>Edit definition</Link>
       <button className={buttonClass} aria-label={`Delete playbook ${p.id}`} onClick={() => setConfirmDelete(true)}>Delete playbook</button>
     </div>
