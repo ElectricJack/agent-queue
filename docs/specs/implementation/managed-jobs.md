@@ -21,6 +21,13 @@ are inherited. This is separation on one OS account, not a sandbox.
 Publisher snapshots are standalone clones, so a foreign project whose snapshot
 has no virtual environment needs a `resources.test_interpreters` pin.
 
+The `test` preset accepts explicit serial execution as `-n 0`, `-n0`,
+`--numprocesses 0` or `--numprocesses=0`. These normalize to `-n 0` when
+xdist is available; when it is missing or explicitly disabled, the worker-count
+option is omitted. Nonzero and malformed worker-count overrides remain refused
+with `jobs.preset_denied`. Serial execution retains the usual slot admission,
+full-suite weight, workspace pin and durable producer/wait semantics.
+
 Full-suite pytest jobs use shared admission, with weight
 `max(1, test_slots - resources.jobs.full_suite_reserved_slots)`; the reserve
 defaults to two and must be a positive integer. On small boxes the full suite
@@ -90,21 +97,21 @@ revokes result/log access; owner termination cancels execution before cleanup.
 Phase 3 registers `job_submit|get|list|cancel|result|logs` contracts and grants in
 worker templates. `aq job submit --wait` and `aq test --aq-detach --aq-wait`
 commit the job, pin, output reservation and wait together. Replays retain one
-job/pin/wait, including after terminal completion. With effective project
+job/pin/wait, including after terminal completion. With the effective project
 `wait_policy.v2_enabled`, submission registers a verified `job` condition through
-the wait lifecycle in the same transaction, including the measured sleep decision
-and any suspension intent. The response's `wait` contains the verified receipt
-(`wait_id`, decision, next step and any checkpoint generation). An unavailable
-verified wait service refuses submission rather than creating a legacy wait.
-The source watermark is read before locks, then the graph fence precedes task,
-quota and workspace locks. A still-live `WAITING` claim may replay an existing
-submission but cannot create another job. A completed registration replay never
-puts an acknowledged task back into `WAITING`.
+the wait lifecycle on the same transaction, including the measured sleep decision
+and any suspension intent. The response includes the verified `wait` record and
+top-level `wait_id`, `decision`, `next_step` and any `continuation_id`/`generation`.
+An unavailable verified runtime refuses submission. The source watermark is read
+before locks; the graph fence precedes task, quota and workspace locks. A still-live
+`WAITING` claim may replay an existing submission but cannot create another job.
+Replay uses the current outcome: unacknowledged completion requires acknowledgement,
+and an acknowledged completion continues without putting the task back in `WAITING`.
 
-An explicitly disabled effective project flag retains the legacy atomic path.
+An explicitly disabled effective project flag selects the legacy atomic path.
 Legacy job waits snapshot already terminal producers and arbitrate using
 `ended_at`, so a late scan preserves completion at or before the deadline.
-Default deadlines follow the remaining
+Their default deadlines follow the remaining
 queue/run budgets plus 300 seconds, capped at 24 hours. Explicit timeout policy
 is retained in the typed match for stable replay checks. Expiry and wait
 cancellation never implicitly cancel execution or release pins.

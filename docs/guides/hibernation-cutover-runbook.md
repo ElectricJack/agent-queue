@@ -23,6 +23,14 @@ after the one-time bridge is a cutover blocker. Inspect explain/CI watcher
 composition, capability grants, all installed harnesses and failure/restart checks.
 Do not infer production readiness from unit tests alone.
 
+The atomic `job submit --wait` path selects the effective project's policy. With
+verified waits enabled it commits the job, workspace pin, verified job condition
+and any continuation intent in one transaction. Its receipt exposes `wait_id`,
+`decision`, `next_step` and, when checkpointing is required, `continuation_id` and
+`generation`. A retry uses the same job and wait. Failure rolls back producer and
+wait effects together. The legacy writer is selected only when the project's
+verified-wait flag is disabled; a missing verified runtime refuses submission.
+
 Before updating an existing install, pin all three flags false explicitly so
 new shipped defaults cannot activate work before the migration and canary:
 
@@ -33,6 +41,19 @@ wait_policy:
   scheduler_waits_enabled: false
   v1_bodies: translate
 ```
+
+On a running build that already supports `wait_policy`, the equivalent operator
+commands are:
+
+```bash
+aq system config set wait_policy.hibernation_enabled=false
+aq system config set wait_policy.v2_enabled=false
+aq system config set wait_policy.scheduler_waits_enabled=false
+aq system config set wait_policy.v1_bodies=translate
+```
+
+These commands validate, save and apply the section live. For a direct file edit,
+use `aq system reload-config` and check its applied/restart-required receipt.
 
 Back up the operator database and configuration using the normal operational
 procedure. From the operator context:
@@ -69,10 +90,14 @@ live agent sessions; do not use plain stop/start for an update.
 ## Canary, adoption and expansion
 
 Enable all three flags for one project under `wait_policy.projects.PROJECT_ID`,
-keeping global flags false. Reload configuration using the deployment's supported
-configuration path. Inspect effective project flags with `waits.schema`.
+keeping global flags false. Replace `PROJECT_ID` in the commands below with that
+project's ID. Inspect effective project flags with `waits.schema`.
 
 ```bash
+aq system config set wait_policy.projects.PROJECT_ID.v2_enabled=true
+aq system config set wait_policy.projects.PROJECT_ID.hibernation_enabled=true
+aq system config set wait_policy.projects.PROJECT_ID.scheduler_waits_enabled=true
+aq doctor --check waits.schema
 aq wait bridge --project PROJECT_ID --mode agent-waits
 aq wait bridge --project PROJECT_ID --mode agent-waits --apply
 aq wait explain --task TASK_ID --project PROJECT_ID --history
@@ -95,6 +120,16 @@ project overrides, then enable the three global flags only after evidence is
 recorded. Set `v1_bodies: refuse` after installed callers send version 2; verify a
 raw v1 registration returns `wait.upgrade_required` and `detail.example`.
 
+After those checks, the global expansion commands are:
+
+```bash
+aq system config set wait_policy.v2_enabled=true
+aq system config set wait_policy.hibernation_enabled=true
+aq system config set wait_policy.scheduler_waits_enabled=true
+aq system config set wait_policy.v1_bodies=refuse
+aq doctor --check waits.schema
+```
+
 ## Rollback without losing work
 
 Keep the new daemon and schema. First set `hibernation_enabled: false` globally
@@ -103,7 +138,21 @@ already started must finish or remain safely held. Existing parked continuations
 continue outcome dispatch, capacity admission, fresh launch and acknowledgement.
 
 Then set `v2_enabled: false` and `scheduler_waits_enabled: false` globally and in
-all project overrides, and set `v1_bodies: translate`. Reload configuration.
+all project overrides, and set `v1_bodies: translate`. For one enabled project,
+the operator sequence is below; repeat the project commands for every override:
+
+```bash
+aq system config set wait_policy.hibernation_enabled=false
+aq system config set wait_policy.projects.PROJECT_ID.hibernation_enabled=false
+aq system config set wait_policy.v2_enabled=false
+aq system config set wait_policy.projects.PROJECT_ID.v2_enabled=false
+aq system config set wait_policy.scheduler_waits_enabled=false
+aq system config set wait_policy.projects.PROJECT_ID.scheduler_waits_enabled=false
+aq system config set wait_policy.v1_bodies=translate
+aq doctor --check waits.schema
+aq doctor --check waits.orphans
+```
+
 Explicit legacy clients can again register version 1 bodies; the default CLI
 continues sending version 2, so a rollback caller uses `--schema-version 1`.
 Existing verified waits and continuations continue draining regardless of flags.
@@ -126,3 +175,25 @@ checks include the task's migration/doctor/v1/inventory/command-surface files,
 cutover and wait area tests, generated-artifact drift and the disposable swarm
 smoke (`scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh`). A passing isolated
 smoke does not authorize a worker to manage the live daemon or operator database.
+
+
+## A satisfied wait that does not resume
+
+A task in `RESUME_PENDING` must still pass capacity, provider, policy and current
+prerequisite delivery checks. In Git-first projects, resume uses the same Git
+prerequisite evidence as ordinary claims, including cross-epic delivery and parent
+containment; legacy delivery receipts alone cannot determine that admission.
+Resume refreshes Git evidence before taking the wait graph lock, then revalidates
+its identities in the reservation transaction. Missing proof and operator holds
+continue to withhold admission.
+
+The source listener can contend with scheduler reconciliation for the wait graph
+lock. It leaves its durable cursor unchanged, releases the transaction and retries
+within the lease-renewal interval. Contention does not require a listener restart
+or a manual wake. Source dispatch and deadline firing acquire the graph fence
+before the lease row, so neither waits on that graph while preventing renewal.
+
+Scheduler waits describe admission blockers; their `hibernate` decision does not
+create an agent continuation. Resolving one clears its explanatory wait and edges
+without launching an agent or demanding a checkpoint. Continuation ownership
+proof remains mandatory for hibernating task owners.

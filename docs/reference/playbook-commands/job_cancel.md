@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/job.py`](../../../src/commands/contracts/job.py) |
-| Contract fingerprint | `sha256:f61d45681ce4cbb63e7262273869f4bb3afd99dc7af4a9d14c6d2348f1021b41` |
+| Contract fingerprint | `sha256:845d9db9c4725f37cce36ea267aaa6111ec185ec1f88115db9f13fd185e25ffa` |
 
 ## Parameters
 
@@ -28,6 +28,10 @@
 |---|---|---|
 | `job` | `object` | — |
 | `wait` | `AgentWaitRecord \| object \| null` | — |
+| `wait_id` | `string \| null` | — |
+| `decision` | `object \| null` | — |
+| `continuation_id` | `string \| null` | — |
+| `generation` | `integer \| null` | — |
 | `next_step` | `string \| null` | — |
 
 ## Nested objects

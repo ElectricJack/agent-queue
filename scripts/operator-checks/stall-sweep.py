@@ -397,6 +397,27 @@ for pid, t in candidates:
                     f"route_source=unrouted; {route_rows[0]['detail']} "
                     "-> inspect the router's activation, routing events and runs"
                 )
+            refresh = [r for r in rows if r["code"] == "frontier_epic_refresh_pending"]
+            if refresh:
+                epics = sorted({
+                    epic for r in refresh
+                    for epic in (r.get("blocking_task_ids") or
+                                 [t.get("parent_task_id") or r.get("ref")])
+                    if epic and epic != tid
+                })
+                batches = sorted({batch for r in refresh
+                                  for batch in (r.get("batch_ids") or [r.get("batch_id")])
+                                  if batch})
+                commands = [f"aq integration refresh-epic --task {shlex.quote(epic)} --apply"
+                            for epic in epics]
+                action = "; ".join(commands) or "epic identity unavailable; inspect the child's parent"
+                findings.append(
+                    f"EPIC-REFRESH-NEEDED {pid} {tid} [{status} {age(t['updated_at'])}] "
+                    + "; ".join(r["detail"] for r in refresh)
+                    + (f"; blocking batches: {', '.join(batches)}" if batches else "")
+                    + f" -> {action} (existing holds and checks still apply)"
+                )
+                continue
             repair_alarm = next(
                 (r for r in rows if r["code"] == "train_repair_capacity_wait"), None
             )
@@ -685,6 +706,21 @@ if session_rows is not None:
             else:
                 findings.append(f"IDLE-WORKER {s['name']} holds {t['id']}: live holder has no verified wait; inspect activity and recovery")
 for s in sessions:
+    if (s.get("lifecycle") == "named" and s.get("profile_id") == "supervisor"
+            and s.get("state") == "running" and s.get("desired_state") == "running"):
+        health = s.get("supervisor_health") or {}
+        checked = health.get("checked_at")
+        if not isinstance(checked, (int, float)) or NOW - checked > 120:
+            findings.append(f"SUPERVISOR-UNKNOWN {s['name']}: turn health evidence unavailable or stale")
+        elif health.get("unhealthy"):
+            findings.append(
+                f"SUPERVISOR-UNHEALTHY {s['name']}: {health.get('reason')}; "
+                f"{health.get('pending_count', 0)} pending requests; "
+                f"last completed turn {health.get('last_completed_at')}; "
+                f"recovery attempts {health.get('attempts', 0)}"
+            )
+        elif not health.get("known"):
+            findings.append(f"SUPERVISOR-UNKNOWN {s['name']}: exact turn evidence unavailable")
     failures = s.get("claim_failure_count") or 0
     phase = s.get("claim_phase")
     matching_ready = sum(

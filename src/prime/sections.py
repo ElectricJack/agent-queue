@@ -937,6 +937,16 @@ def build_tool_guidance_section(
     from src.sessions.harness_registry import runs_cli
 
     body = _load_template("tool_guidance.md")
+    from src.waits.policy import enabled as waits_enabled
+
+    wait_guidance = (
+        _load_template("wait_guidance.md") if waits_enabled(config, project_id) else
+        "Verified wait registration is disabled for this project. Report a blocker once "
+        "to the project supervisor, preserve your claim, and end the turn awaiting inbox "
+        "delivery. Do not poll or retry disabled wait registration. Run tests in the "
+        "foreground with `aq test` and its resource controls."
+    )
+    body = body.replace("{wait_guidance}", wait_guidance)
     cli = next(
         (c for c in sorted(_HARNESS_GUIDANCE) if runs_cli(c, harness, registry, project_id)), None
     )
@@ -1010,11 +1020,21 @@ async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
 
 def build_completion_protocol_section(
     task_id: str, *, lifecycle: str | None = None, allow_emergent_work: bool = True,
-    development: bool = False, regenerate: str | None = None
+    development: bool = False, regenerate: str | None = None, waits_enabled: bool = True
 ) -> PrimeSection:
     """The completion protocol; *regenerate* is the development policy's command
     for rebuilding generated files, when the project has one."""
     body = _load_template("completion_protocol.md").replace("{task_id}", task_id)
+    body = body.replace("{long_work_guidance}", (
+        "For supported long work, register one durable wait and end the turn instead "
+        "(managed tests: `aq test --aq-detach --aq-wait --aq-idempotency-key KEY TEST_ARGS` "
+        "when job admission is enabled). AQ owns the wait lifecycle and delivers the "
+        "outcome; resume with `aq wait show WAIT_ID --consume --json` and act on the "
+        "recorded result."
+        if waits_enabled else
+        "Verified wait registration is disabled for this project. Keep tests in the "
+        "foreground with `aq test`; report blockers once and await supervisor inbox delivery."
+    ))
     if development:
         start = body.index("## Prepare feature history before review")
         end = body.index("## Never close over unpushed commits")
@@ -1046,11 +1066,24 @@ def build_completion_protocol_section(
     # only for lifecycle "pool", preserving all shared verification rules.
     if lifecycle == "pool":
         pool_body = _load_template("completion_protocol_pool.md").replace("{task_id}", task_id)
+        pool_body = pool_body.replace("{message_wait_guidance}", (
+            "With an active claim, use ONE durable message wait for the reply using its thread/cursor."
+            if waits_enabled else
+            "With an active claim, preserve it and end the turn awaiting the supervisor's "
+            "inbox delivery; verified wait registration is disabled for this project."
+        ))
         if pool_body:
             # The pool loop owns close/next-claim; don't also prescribe a
             # task-session close followed by drain-ack.
             shared = body[body.index("## Deliverable self-check"):]
             body = f"{pool_body}\n\n{shared}"
+    body += (
+        "\n\nIf close returns `close_in_progress`, keep the source branch frozen. "
+        "Resolve and commit in `close_merge.candidate_path`, then run "
+        "`aq integration continue-close --operation-id <id>`. Never push the parent. "
+        "Follow a returned check wait's next_step; after delivery continue the same "
+        "operation. Author-budget escalation goes only to the supervisor."
+    )
     # A profile whose policy denies ``create_task`` must not be told to file
     # emergent work — the instruction would land as a capability denial.
     emergent_work = _load_template("emergent_work.md") if allow_emergent_work else ""

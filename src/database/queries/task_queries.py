@@ -110,6 +110,25 @@ _PAUSE_OWNER_FIELDS = (
     "id", "owner_id", "session_id", "workspace_id", "fence_token", "handoff_state",
     "repository_id", "ref", "holder", "fence", "owner_role", "confirmed_workspace_id",
 )
+
+
+def settled_preparation_proved(record, identity: dict, claim_epoch) -> bool:
+    """Whether a durable ``prepare_failure`` record proves this exact attempt unwound.
+
+    The claim handler writes it only after the preparation's exception left
+    every owned git process group (``run_owned_process`` stops each group or
+    raises ``ProcessCleanupError``, which also writes the cleanup hold the
+    caller must check). A same-epoch retry stamps ``retried_at``: a later
+    attempt that died without a record is never proved by an earlier one.
+    """
+    return (
+        isinstance(record, dict) and "retried_at" not in record
+        and record.get("session_id") == identity["id"]
+        and record.get("instance_token") == identity["instance_token"]
+        and record.get("claim_epoch") == claim_epoch
+    )
+
+
 # The provider probe runs outside SQL; these fields must still match under locks.
 _SLOT_RESET_STOP_PROOF_FIELDS = (
     "id", "name", "provider", "instance_token", "state", "desired_state",
@@ -1115,6 +1134,9 @@ class TaskQueryMixin:
                               "instance_token": identity["instance_token"],
                               "claim_epoch": snapshot["claim_epoch"]}
                     for proof in snapshot.get("preparations_stopped", [])
+                ) and not settled_preparation_proved(
+                    await self._read_prepare_failure(conn, task_id), identity,
+                    snapshot["claim_epoch"],
                 ):
                     raise PauseFenceError("Interrupted preparation termination is unproved")
             current_workspaces = [dict(ws) for ws in (await conn.execute(select(*(
@@ -1571,6 +1593,24 @@ class TaskQueryMixin:
         return (await conn.execute(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))).scalar_one_or_none()
+
+    async def _read_prepare_failure(self, conn, task_id: str) -> dict | None:
+        """The decoded ``prepare_failure`` record on *conn*, or ``None``."""
+        encoded = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "prepare_failure"
+        ))).scalar_one_or_none()
+        return json.loads(encoded) if encoded is not None else None
+
+    async def settled_task_preparation(self, task_id: str) -> dict | None:
+        """The last preparation failure record, unless its cleanup is unproved."""
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        async with self._engine.begin() as conn:
+            if await conn.scalar(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+            )):
+                return None
+            return await self._read_prepare_failure(conn, task_id)
 
     async def _resume_locked(
         self, conn, task_id: str, encoded: str | None, *, defer_projection=False,
