@@ -396,3 +396,56 @@ async def test_a_reroute_batch_is_one_system_fact(db):
     assert "1 re-route batch" in result.text
     off = await collect(db, provider_facts=False)
     assert not [f for f in off.facts if f.key.startswith("reroute:")]
+
+
+async def test_pending_human_reminders_repeat_daily_and_remain_project_scoped(db):
+    from src.database.tables import wait_records
+
+    for task_id, project in [("human-owner", "p"), ("hidden-human", "other")]:
+        await make_task(db, task_id, project_id=project, status="HIBERNATED")
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(wait_records).values(
+                id=f"wait:{task_id}", project_id=project, owner_kind="task", owner_id=task_id,
+                origin="human", condition_kind="human",
+                condition=dict(kind="human", subject="task_comment", task_id=task_id),
+                source_key=f"human:task_comment:{task_id}", source_generation=1,
+                source_watermark_seq=0, verification_state="verified", evidence_ref="comment",
+                verified_at=NOW - 5 * 86400, created_at=NOW - 5 * 86400,
+                sleep_decision="hibernate", request_hash=task_id))
+    for day in (0, 1, 4):
+        result = await db.collect_digest_supervisor_facts(
+            WINDOW, now=NOW + day * 86400, project_ids=("p",))
+        reminders = result["waiting_on_you"]
+        assert len(reminders) == 1
+        assert reminders[0]["task_id"] == "human-owner"
+        assert reminders[0]["age_seconds"] == (5 + day) * 86400
+        assert result["asks"]["count"] == 0
+        morning = await db.collect_morning_report_sources(
+            since=NOW - HOUR, until=NOW + day * 86400, project_ids=("p",))
+        assert morning["waiting_on_you"] == reminders
+    async with db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.owner_id == "human-owner").values(outcome="lifted_by_supervisor"))
+    result = await db.collect_digest_supervisor_facts(WINDOW, now=NOW, project_ids=("p",))
+    assert result["waiting_on_you"] == []
+
+
+async def test_delivery_holds_are_scoped_facts_and_never_stuck_or_active(db, monkeypatch):
+    for tid, project in (("waiting", "p"), ("foreign", "other")):
+        await make_task(db, tid, project_id=project, status="READY")
+    for index in range(2):
+        await db.save_task_completion(TaskCompletion(
+            id=f"failed-{index}", task_id="waiting", outcome="fail", completed_at=NOW - 60,
+        ))
+
+    async def exclusions(ids, **kwargs):
+        return {tid: [{"code": "frontier_prerequisite_not_on_default_branch", "ref": tid,
+                       "detail": "Land source.6 on dev; refresh aq/epic"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    inputs = await collect(db, project_ids=("p",))
+    assert [row["task_id"] for row in inputs.waiting_on_delivery] == ["waiting"]
+    assert inputs.active == ()
+    brief = await db.collect_digest_supervisor_facts(WINDOW, now=NOW, project_ids=("p",))
+    assert [row["task_id"] for row in brief["waiting_on_delivery"]] == ["waiting"]
+    assert brief["stuck"] == []

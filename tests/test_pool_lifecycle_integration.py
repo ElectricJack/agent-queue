@@ -434,10 +434,15 @@ class TestFullPullLoop:
 
 
 class TestPublicPoolSleep:
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["default", "deferred"])
     async def test_sleep_terminates_idle_pool_and_reconciliation_replaces_it(
-        self, orch, db, handler
+        self, orch, db, handler, monkeypatch, response_seconds
     ):
         """Public sleep retires the exact idle worker instance, not its successor."""
+        # A zero response window forces preparation to outlive the first response.
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds
+        )
         await single_worker_pool(db)
         await ready(db, "t1")
         await orch._reconcile_pools()
@@ -480,7 +485,7 @@ class TestPublicPoolSleep:
 
         # A late operator sleep addresses the historical instance only. It
         # cannot reattach it to the checkout or drain its successor's claim.
-        claim = await scoped(handler, successor.id)._cmd_task_claim({"next": True})
+        claim = await settled_claim(scoped(handler, successor.id), {"next": True})
         assert claim["result"] == "claimed"
         slept = await handler.execute("session_sleep", {"session_id": first.id})
         assert slept["success"] and slept["desired_state"] == "stopped"

@@ -16,7 +16,7 @@ epoch, lease, nudge, drain).
 ## Start here: three commands that answer most questions
 
 ```bash
-aq task explain <task-id>     # why isn't this task running?
+aq task explain --task-id <task-id>     # why isn't this task running?
 aq session list --live        # which sessions exist right now
 aq doctor                     # is anything structurally wrong?
 ```
@@ -417,7 +417,7 @@ of the diagnosis.
 | Pool session terminated while holding a task | releases the claim, blocks the task | `needs_attention: exited_holding_task` |
 
 ```bash
-aq task explain <task-id>
+aq task explain --task-id <task-id>
 ```
 
 ```text
@@ -436,8 +436,9 @@ aq task resume --task-id <task-id>      # continue a paused task from its checkp
 > **Warning.** A row saying `stopped` is not proof that a process stopped. It
 > means "AQ last observed it stopped". Code that must actually know calls
 > [`confirm_stopped`](../../src/sessions/provider.py) — a fresh, cache-bypassing
-> probe that answers "no" when it cannot tell, and which the `subprocess`
-> provider does not implement at all. When you are about to do something
+> probe that answers "no" when it cannot tell. The `subprocess` provider checks
+> its tracked child and scans for the instance token; it still cannot adopt
+> that child after a daemon restart. When you are about to do something
 > destructive by hand (deleting a worktree, force-pushing a branch a worker may
 > still own), confirm with the operating system, not with a status column:
 >
@@ -524,7 +525,7 @@ half-held, and the failure is recorded with enough detail to act on
 **Diagnose.**
 
 ```bash
-aq task explain <task-id>
+aq task explain --task-id <task-id>
 ```
 
 ```text
@@ -636,7 +637,7 @@ escalating ladder and asks for a human instead.)
 refusal:
 
 ```bash
-aq task explain <task-id>
+aq task explain --task-id <task-id>
 aq integration status          # what still holds the branch
 ```
 
