@@ -637,3 +637,23 @@ def test_incompatible_idle_workers_rebalance_within_capped_project():
     assert not drains
     drains, _ = rebalance(candidates, since=since, now=1000)
     assert {sid for d in drains for sid in d.session_ids} == {"linux-1", "linux-2"}
+
+
+def test_workspace_kinds_keep_separate_eviction_demand_and_project_totals():
+    from src.scheduler import project_pool_candidates
+
+    ordinary = PlacementCandidate(
+        project_id="p", ready=1, live=1, project_live_total=2, project_cap=3,
+        workspace_capacity=1, quarantined=False, warm_floor=0, evictable=1,
+    )
+    native = replace(ordinary, workspace_kind="native", workspace_capacity=0, evictable=2)
+    starts, drains, starved = place_pool_actions(
+        actions=[PoolAction(K, "start", 1), PoolAction(K, "evict", 1)],
+        candidates={K: [ordinary, native]},
+    )
+    assert [(s.workspace_kind, s.reason, s.count) for s in starts] == [
+        ("project-repo", "deficit", 1), ("native", "evict", 1),
+    ]
+    assert not drains and not starved
+    [project] = project_pool_candidates([ordinary, native])
+    assert (project.ready, project.live, project.evictable) == (2, 2, 3)

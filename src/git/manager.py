@@ -170,7 +170,7 @@ class ChildPreparationConflict(GitError):
     def __init__(self, child_head, parent_head, merge_head, files, reason):
         self.child_head, self.parent_head, self.merge_head = child_head, parent_head, merge_head
         self.files = tuple(files)
-        super().__init__(reason)
+        super().__init__(f"child merge conflict in {', '.join(self.files)}: {reason}")
 
 
 class ForeignSlotClaim(GitError):
@@ -179,6 +179,10 @@ class ForeignSlotClaim(GitError):
     def __init__(self, reason, *, workspace_id="", path="", holder_task_id=None):
         self.workspace_id, self.path, self.holder_task_id = workspace_id, path, holder_task_id
         super().__init__(reason)
+
+
+class SlotSourceDisagreement(GitError):
+    """A slot whose checkout contradicts its sentinel: every claim there fails alike."""
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +561,15 @@ def _parse_status_branch_header(header: str) -> str:
 _RETAINED_VERIFY_TTL_SECONDS = 3600.0
 
 
+def _common_git_dir(git_dir: str) -> Path:
+    """Resolve a linked worktree's object-store owner, without running Git."""
+    directory = Path(git_dir)
+    common = directory / "commondir"
+    if common.is_file():
+        directory = (directory / common.read_text(encoding="utf-8").strip()).resolve()
+    return directory
+
+
 def _object_store_fingerprint(git_dir: str) -> tuple | None:
     """Every object-store file's (path, size, inode), or None if unreadable.
 
@@ -564,9 +577,11 @@ def _object_store_fingerprint(git_dir: str) -> tuple | None:
     by rename, so any new or replaced object changes it; mtime is left out
     because Git freshens existing objects on every fetch that names them.
     """
-    root = Path(git_dir) / "objects"
     entries = []
     try:
+        root = _common_git_dir(git_dir) / "objects"
+        if not root.is_dir():
+            return None
         for directory, _subdirs, files in os.walk(root):
             for name in files:
                 path = os.path.join(directory, name)
@@ -914,6 +929,38 @@ class GitManager:
             lock = self._repository_operation_locks.setdefault(key, asyncio.Lock())
         async with lock:
             yield
+
+    async def aread_blob(self, cwd: str, oid: str, *, max_bytes: int) -> bytes:
+        """Read a pinned Git blob without text decoding or an unbounded pipe.
+
+        Script proposal inputs may contain binary supporting files. Callers
+        first resolve a regular-file tree entry at an approved commit; neither
+        revision expressions nor working-tree filters are accepted here.
+        """
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid) is None or max_bytes < 0:
+            raise GitError("invalid bounded blob request")
+        proc = await asyncio.create_subprocess_exec(
+            "git", "--no-replace-objects", "cat-file", "blob", oid,
+            cwd=cwd, env=self._SUBPROCESS_ENV,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            async with asyncio.timeout(self._GIT_TIMEOUT):
+                chunks = bytearray()
+                while chunk := await proc.stdout.read(min(65536, max_bytes + 1 - len(chunks))):
+                    chunks.extend(chunk)
+                    if len(chunks) > max_bytes:
+                        raise GitError("blob exceeds input limit")
+                if await proc.wait() != 0:
+                    raise GitError("pinned blob unavailable")
+                return bytes(chunks)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            # Reap while draining the now-dead producer's pipe. Waiting without
+            # draining can hang on asyncio's paused transport after overflow.
+            await proc.communicate()
 
     async def _arun_subprocess(
         self,
@@ -2314,11 +2361,22 @@ class GitManager:
             return
         fingerprint = _object_store_fingerprint(git_dir)
         started = time.monotonic()
-        await self._run_isolated_import_git(
-            [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
-             "--no-reflogs", "--no-progress"],
-            home=home, deadline=deadline, verify_integrity=True,
-        )
+        for attempt in range(2):
+            try:
+                await self._run_isolated_import_git(
+                    [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                     "--no-reflogs", "--no-progress"],
+                    home=home, deadline=deadline, verify_integrity=True,
+                )
+                break
+            except GitError as exc:
+                if attempt or not str(exc).startswith("retained Git object integrity"):
+                    raise
+                # A linked worktree shares objects with independent writers.
+                # Re-run the full gate once after a transient pack/ref change;
+                # the original acquisition deadline still bounds both checks.
+                await asyncio.sleep(0)
+                fingerprint = _object_store_fingerprint(git_dir)
         self.record_retained_store_verified(git_dir, fingerprint, started)
 
     def retained_store_verified(self, git_dir: str) -> bool:
@@ -3733,6 +3791,40 @@ class GitManager:
             found[ref] = oid
         return found
 
+    async def als_remote_head_refs(
+        self, checkout_path: str, *, repository_url: str | None = None,
+    ) -> dict[str, str]:
+        """List all remote branch heads using this repository's read credentials."""
+        destination, token = await self._apush_destination(
+            checkout_path, "origin", repository_url=repository_url,
+        )
+        if destination is None:
+            result = await self.arun_git_result(
+                ["ls-remote", "--heads", "origin"], cwd=checkout_path,
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "remote head inventory failed")
+            output = result.stdout
+        else:
+            with tempfile.TemporaryDirectory(prefix="aq-app-heads-") as temporary:
+                home = Path(temporary)
+                home.chmod(0o700)
+                output = (await self._arun_authenticated_git(
+                    ["ls-remote", "--heads", destination], home=home,
+                    repository_url=destination, token=token,
+                    deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                    budget_seconds=self._GIT_TIMEOUT,
+                )).decode("utf-8")
+        found = {}
+        for line in output.splitlines():
+            oid, separator, ref = line.partition("\t")
+            if (not separator or not ref.startswith("refs/heads/")
+                    or not is_valid_git_oid(oid) or ref in found):
+                raise GitError("remote returned malformed or duplicate head identity")
+            _validate_ref(ref.removesuffix("^{}"))
+            found[ref] = oid
+        return found
+
     async def als_remote_qualified_refs(
         self, checkout_path: str, refs: Sequence[str], *, remote: str = "origin",
         repository_url: str | None = None,
@@ -5056,7 +5148,19 @@ class GitManager:
                               rb"notice: HEAD points to an unborn branch \([^\r\n]+\)", line,
                           )]
             if process.returncode != 0 or unexpected:
-                raise GitError("retained Git object integrity is unavailable")
+                # fsck paths and ref names are untrusted and can contain secrets.
+                # Preserve the diagnostic kind and object IDs, never raw text.
+                evidence = []
+                for line in unexpected:
+                    kind = re.match(rb"(?:missing|broken link|error|fatal|warning)\b", line)
+                    oids = re.findall(rb"(?<![0-9a-f])[0-9a-f]{40,64}(?![0-9a-f])", line)
+                    detail = (kind.group().decode("ascii") if kind else "diagnostic")
+                    if oids:
+                        detail += " " + " ".join(oid.decode("ascii") for oid in oids[:4])
+                    if detail not in evidence:
+                        evidence.append(detail)
+                detail = "; ".join(evidence[:16]) or f"fsck exit {process.returncode}"
+                raise GitError(f"retained Git object integrity is unavailable: {detail}")
         elif process.returncode == 0 and re.search(
             rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
         ):

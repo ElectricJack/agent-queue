@@ -577,6 +577,7 @@ class Orchestrator(
         self.session_lens = SessionLens(
             db=self.db,
             bus=self.bus,
+            availability=self.provider_availability,
             providers=self.session_providers,
             spec_builder=self.session_spec_builder,
             harness_registry=self.harness_registry,
@@ -630,6 +631,7 @@ class Orchestrator(
         self.integration_service = None
         # IntegrationTrain | None — the delivery engine when git_first is active.
         self.integration_train = None
+        self._batch_push_unsub = None
         #: When this process began; refreshed by ``initialize()`` for playbook recovery.
         self._process_started_at = time.time()
         self._owner_recovery_next_due: float = 0.0
@@ -1330,6 +1332,16 @@ class Orchestrator(
             if (identity.get("claim_phase") == "preparing"
                     and (identity["id"], identity["last_claim_epoch"], identity["instance_token"])
                     not in proved):
+                # No live request was cancelled above: the attempt ended before
+                # this pause (failed, cancelled by a restart, timed out). Its
+                # durable failure record proves it unwound its git children.
+                from src.database.queries.task_queries import settled_preparation_proved
+
+                if settled_preparation_proved(
+                    await self.db.settled_task_preparation(task_id), identity,
+                    identity["last_claim_epoch"],
+                ):
+                    continue
                 raise PauseFenceError(
                     "Task remains paused; interrupted preparation termination is unproved. "
                     "Source and claim are retained for guarded recovery; Resume is not cleanup."
@@ -1945,6 +1957,7 @@ class Orchestrator(
         # Archive/removal guards prove development delivery in git before
         # their transaction; the database layer has no Git of its own.
         self.db.set_delivery_observer(self.delivery_observer)
+        self.db._admission_reader = self._delivery_admission
         # Git-first promotion writes no delivery receipt, so sibling
         # prerequisites are proven from the parent branch in Git instead.
         if self.config.integration.git_first == "active":
@@ -2263,6 +2276,7 @@ class Orchestrator(
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             project_max_wait=project_max_wait,
+            publication_wake=self.bus.emit,
         )
         github_clients = {}
 
@@ -2376,12 +2390,42 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
+        from src.integration.truth_reconciler import GitTruthReconciler
+        from src.sessions.obsolete import ObsoleteClose, obsolete_owner_release_for
+
+        self.git_truth_reconciler = GitTruthReconciler(
+            self.db, self.git, data_dir=self.config.data_dir,
+            owner_recovery=owner_recovery if self.config.integration.owner_recovery_sweep else None,
+            obsolete_close=ObsoleteClose(
+                self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,
+            ),
+        )
+
+        async def reconcile_git_truth(now):
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            if self._command_handler is not None:
+                with principal_context(ExecutionPrincipal.service("git-truth-reconciler")):
+                    return await self._command_handler.execute(
+                        "integration_reconcile_git_truth", {"now": now},
+                    )
+
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
         # git_first: active hands every target to the train; the subject
         # runtimes are never built beside it.
         self.integration_train = train_for(self)
+        if self._batch_push_unsub is not None:
+            self._batch_push_unsub()
+            self._batch_push_unsub = None
+        if self.integration_train is not None:
+            from src.integration.batch_repair_publication import wake_pushed_batch
+
+            async def on_batch_push(event):
+                await wake_pushed_batch(self.db, self.integration_train, event)
+
+            self._batch_push_unsub = self.bus.subscribe("git.push", on_batch_push)
         train_active = self.integration_train is not None
         from src.integration.task_removal import settle_orphaned_parent_operations
 
@@ -2393,15 +2437,16 @@ class Orchestrator(
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
+            bus=self.bus,
             # The service drives the train through integration_train_tick.
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
+                "git truth": reconcile_git_truth,
                 "orphaned parent operations": settle_orphaned_parents,
                 "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
-                "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
                     self.db, ReviewEvidenceProducer(self.db, self.repository_git), self.git,
@@ -3291,6 +3336,9 @@ class Orchestrator(
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
             self._development_completion_unsub = None
+        if self._batch_push_unsub is not None:
+            self._batch_push_unsub()
+            self._batch_push_unsub = None
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()
@@ -3613,6 +3661,19 @@ class Orchestrator(
             # Terminal onboarding requests are durable idempotency state; a
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
+
+            # Snapshot expiry is bounded maintenance, independent of whether
+            # playbooks are enabled. Dispatch preserves the single write entry.
+            if (self._command_handler is not None
+                    and now - getattr(self, "_last_observation_cleanup", 0) >= 60):
+                self._last_observation_cleanup = now
+                try:
+                    from src.commands.principal import ExecutionPrincipal, principal_context
+
+                    with principal_context(ExecutionPrincipal.service("observation-retention")):
+                        await self._command_handler.execute("observation_snapshot_cleanup", {})
+                except Exception:
+                    logger.warning("Observation retention sweep failed", exc_info=True)
 
             # Selection records are history, not live state; a failed sweep
             # must not interrupt scheduling.
@@ -4242,7 +4303,10 @@ class Orchestrator(
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
                     retained_paths.append(publisher._store_path(repository))
+                from src.projects.storage_binding import bound_path
+
                 for path in retained_paths:
+                    path = bound_path(project.storage_binding, path)
                     extra_paths.append(str(path))
                     if origin:
                         retained_origins[str(Path(path).resolve())] = origin
@@ -4471,6 +4535,12 @@ class Orchestrator(
             except Exception:
                 logger.error("AgentWaitReconciler tick failed", exc_info=True)
             try:
+                wait_service = getattr(self, "wait_service", None)
+                if wait_service is not None:
+                    await wait_service.tick()
+            except Exception:
+                logger.error("WaitService recovery tick failed", exc_info=True)
+            try:
                 result = await self.agent_cron.tick()
                 if not result.get("success"):
                     logger.error("Agent cron tick refused: %s", result)
@@ -4603,6 +4673,14 @@ class Orchestrator(
                 previous_aspect,
                 current_aspect,
             )
+        from src.waits.resource_sources import resource_invalidation
+
+        await self.db.wait_source_commit(**resource_invalidation(
+            producer="config", identity="global",
+            revision=data.setdefault("source_revision", uuid.uuid4().hex),
+            outcome_ref="config:reload",
+            payload={"changed_sections": list(data.get("changed_sections", []))},
+        ))
         logger.info(
             "Config reloaded: updated sections: %s",
             ", ".join(data.get("changed_sections", [])),
@@ -4634,17 +4712,9 @@ class Orchestrator(
 
     async def _notify_provider_half_change(self, transition) -> None:
         """Send the D19 state-change message without blocking the evidence path."""
-        availability = self.provider_availability
-
-        async def _send() -> None:
-            try:
-                await availability.notify_state_change(
-                    transition.provider, transition.generation
-                )
-            except Exception:
-                logger.warning("provider state notification failed", exc_info=True)
-
-        asyncio.get_running_loop().create_task(_send())
+        self.provider_availability.notify_state_change_soon(
+            transition.provider, transition.generation
+        )
 
     async def _schedule(self, *, hierarchy_modes=None) -> list[AssignAction]:
         """Build scheduler state snapshot and compute task-to-agent assignments.
@@ -4688,8 +4758,25 @@ class Orchestrator(
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
         ]
+        # Containers settle independently of worker admission, which excludes
+        # them from the claim frontier.
+        withheld = await self._release_ready_containers(
+            [t.id for t in task_snapshot if t.status == TaskStatus.READY and not t.is_blocked]
+        )
+        if withheld:
+            # Releasing a parent can unblock its children in this cycle.
+            task_snapshot = [
+                task for task in await self.db.list_active_tasks(exclude_held_ready=True)
+                if task.id not in withheld and not is_supervisor_profile(task.profile_id)
+            ]
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self.db)
         delivery_admission = await self._delivery_admission(
-            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY],
+            hierarchy_modes=hierarchy_modes,
+            router_ready_projects=await self.router_readiness.ready_projects(),
         )
         task_snapshot = [
             task for task in task_snapshot
@@ -4697,19 +4784,8 @@ class Orchestrator(
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY],
-            hierarchy_modes=hierarchy_modes,
+            hierarchy_modes=delivery_admission.hierarchy_modes,
         )
-        # A flagged container (spec §7) is settle-only work and never
-        # dispatchable.  Promotion releases the ones it promotes; this catches
-        # a container that was already READY when it gained its first child
-        # (``set_parent`` on a READY task) or came back READY from PAUSED,
-        # and withholds it from the reconciler and the scheduler this cycle
-        # even if its release did not land (calm-ember-48).
-        withheld = await self._release_ready_containers(
-            [t.id for t in task_snapshot if t.status == TaskStatus.READY]
-        )
-        if withheld:
-            task_snapshot = [t for t in task_snapshot if t.id not in withheld]
         # Only routed work is launchable (mandatory routing §9.1, I3): a
         # queued task whose route the router, an override or a role did not
         # write -- unrouted, or legacy once its project's router is ready --
@@ -4780,16 +4856,11 @@ class Orchestrator(
         for p in projects:
             project_usage[p.id] = await self.db.get_project_token_usage(p.id, since=window_start)
 
-        # Active (BUSY) agent count per project — used to enforce each
-        # project's max_concurrent_agents limit.  We look up the project
-        # from the agent's current task rather than storing it on the agent
-        # directly, because agent-project affinity is transient.
-        active_counts: dict[str, int] = {}
-        for a in agents:
-            if a.state == AgentState.BUSY and a.current_task_id:
-                task = await self.db.get_task(a.current_task_id)
-                if task:
-                    active_counts[task.project_id] = active_counts.get(task.project_id, 0) + 1
+        # Session ownership, including idle pools and unconfirmed stops, is
+        # capacity. Historical agent task pointers are not execution proof.
+        from src.orchestrator.agent_reconciler import project_live_session_counts
+
+        active_counts = project_live_session_counts(live_sessions)
 
         total_used = sum(project_usage.values())
 
