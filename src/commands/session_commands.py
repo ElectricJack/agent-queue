@@ -35,6 +35,7 @@ from src.database.queries.result_queries import (
 )
 from src.database.queries.task_queries import StaleClaim
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
+from src.git.manager import GitError
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
@@ -200,6 +201,7 @@ class SessionCommandsMixin:
             "claim_failure_reason": session.claim_failure_reason,
             "claim_failure_at": session.claim_failure_at,
             "failed_preparation": session.failed_preparation,
+            "supervisor_health": session.supervisor_health,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -212,8 +214,6 @@ class SessionCommandsMixin:
     async def _cmd_supervisor_restart(self, args: dict) -> dict:
         from src.messages.session_lens import SupervisorRestartError
 
-        if error := self._agent_settings_scope_error():
-            return {"success": False, "error": error}
         name = args.get("name", "supervisor-global")
         resume = args.get("resume", False)
         session_id = args.get("session_id")
@@ -223,10 +223,27 @@ class SessionCommandsMixin:
             return {"success": False, "error": "resume must be a boolean"}
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
             return {"success": False, "error": "session_id must be a non-empty string"}
+        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and (
+            not scope.get("elevated") or scope.get("project_id") not in (None, project_id)
+        ):
+            return {"success": False, "error": "out of scope: supervisor restart"}
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, error = await operator_or_supervisor(self.db, project_id, subject="supervisor restart")
+        if error:
+            return {"success": False, "error": f"out of scope: {error}"}
+        from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
+
+        principal = current_principal()
+        if principal is not None and principal.kind is PrincipalKind.SESSION:
+            caller = await self.db.get_session(principal.session_id)
+            if caller is None or not matches_session_instance(principal, caller.instance_token):
+                return {"success": False, "error": "out of scope: stale supervisor identity"}
         lens = getattr(self.orchestrator, "session_lens", None)
         if lens is None:
             return {"success": False, "error": "Supervisor session service is unavailable"}
-        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
         try:
             session = await lens.restart_supervisor(
                 target_id=name, project_id=project_id, resume=resume,
@@ -1049,6 +1066,7 @@ class SessionCommandsMixin:
         in_flight = bool(task.assigned_agent_id) and task.status in (
             TaskStatus.ASSIGNED,
             TaskStatus.IN_PROGRESS,
+            TaskStatus.WAITING,
         )
         if not (live or locked or in_flight):
             return False
@@ -1138,6 +1156,13 @@ class SessionCommandsMixin:
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"No task '{task_id}'"}
+        if task.status in (TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+            return {
+                "success": False,
+                "code": "wait.ack_required",
+                "error": "A suspended task must acknowledge its wake before closing; "
+                "operators may use a one-shot close disposition.",
+            }
         # A crash may commit accepted repair bookkeeping before releasing its
         # original claim. The completion service revalidates its durable receipt
         # and exact held claim; this is not generic permission to re-close tasks.
@@ -1333,6 +1358,13 @@ class SessionCommandsMixin:
                 "unmet_deliverables": unwaived,
                 "error": error,
             }
+
+        if outcome == "pass" and work_dir:
+            from src.integration.stacked_branches import StackedBranches
+
+            blocker = await StackedBranches(self.db).running_blocker(task.id, workspace=work_dir)
+            if blocker:
+                return {"success": False, **blocker}
 
         # Gate passing closes on the worker's subtask checklist before writes;
         # failing closes must not be blocked on housekeeping. Decide here whether
@@ -1546,6 +1578,14 @@ class SessionCommandsMixin:
                     "error": f"integration review evidence refused: {exc}",
                 }
         completion_id = str(uuid.uuid4())
+        from src.integration.close_runtime import proposal as close_merge_proposal
+
+        try:
+            close_proposal = await close_merge_proposal(self, task, session, args)
+        except (ValueError, OSError, GitError) as exc:
+            return {"success": False, "error": str(exc), "code": "completion.source_invalid"}
+        if close_proposal is not None:
+            completion_id = close_proposal["id"]
         expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
         # The terminal transition commits inside ``complete_session_task`` and
         # the completion record is saved only after it returns.  Draft the
@@ -1657,6 +1697,36 @@ class SessionCommandsMixin:
 
         if retry_in_session:
             await self.db.discard_pending_completion(task_id, completion_id)
+            if result.get("close_merge"):
+                operation = result["close_merge"]
+                condition = operation["evidence"].get("condition")
+                if condition:
+                    operation["wait"] = await self._cmd_wait_register({
+                        "schema_version": 2, "condition": condition,
+                        "idempotency_key": "close-check:" + operation["operation_id"] + ":"
+                        + str(condition.get("job_id") or condition.get("head_sha")) + ":"
+                        + str(condition.get("check_name", "")),
+                        "claim_epoch": task.claim_epoch,
+                    })
+                    if (not operation["wait"].get("success")
+                            and operation["wait"].get("code") != "wait.already_satisfied"):
+                        from src.integration.close_merge import CloseMerge
+                        from src.integration.close_runtime import DaemonClose
+
+                        runtime = DaemonClose(self.orchestrator)
+                        async with runtime.store.visit(operation["operation_id"]):
+                            row = await runtime.store.get(operation["operation_id"])
+                            await CloseMerge(runtime.store, runtime).defer(
+                                row, "candidate_wait_registration_unavailable")
+                        # Re-enter ordinary validation with the same retained
+                        # source; the deferred operation hands delivery back.
+                        return await self._cmd_task_close(args)
+                    operation["next_step"] = (
+                        f"Candidate check wait {operation['wait']['wait_id']}: "
+                        f"{operation['wait']['next_step']}. Then "
+                        + operation["next_step"])
+                return {"success": False, "result": "close_in_progress", "task_id": task_id,
+                        "close_merge": operation, "error": operation["next_step"]}
             # Not a close: the task is still IN_PROGRESS under this session's
             # claim, and the agent has to fix the listed git issues and call
             # ``aq task close`` again.  No completion record, no claim
@@ -1971,6 +2041,10 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
         if session is not None:
+            from src.waits.holding import active_wait_for
+
+            if await active_wait_for(self.db, session) is not None:
+                return {"success": True, "ignored": "wait_active"}
             await self.db.touch_session_activity(session.id, now)
         if task.assigned_agent_id:
             try:
@@ -1978,6 +2052,9 @@ class SessionCommandsMixin:
             except Exception:
                 logger.debug("heartbeat: agent update failed", exc_info=True)
 
+        from src.integration.stacked_branches import StackedBranches
+
+        blocker = await StackedBranches(self.db).running_blocker(task.id)
         ttl = self.config.sessions.lease_ttl_seconds
         return {
             "success": True,
@@ -1985,4 +2062,5 @@ class SessionCommandsMixin:
             "session_id": session.id if session else None,
             "heartbeat_at": now,
             "lease_expires_at": now + ttl if ttl > 0 else None,
+            **({"blockers": [blocker]} if blocker else {}),
         }
