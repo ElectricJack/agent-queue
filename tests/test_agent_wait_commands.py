@@ -16,7 +16,7 @@ from src.commands.contracts import CONTRACTS
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import AppConfig
 from src.database.tables import sessions, tasks
-from src.models import AgentProfile
+from src.models import AgentProfile, SessionRecord
 from src.profiles.capabilities import DENY_ALL
 from tests.test_agent_wait_queries import NOW, env as _wait_env
 
@@ -38,7 +38,10 @@ async def commands(env):
         )
     )
     config = AppConfig()
-    orch = SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    # Exercise legacy compatibility during a flag-only rollback.
+    config.wait_policy.v2_enabled = False
+    orch = SimpleNamespace(db=env.db, config=config,
+                           bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     return CommandHandler(orch, config)
 
 
@@ -527,7 +530,7 @@ async def test_plain_message_wakes_idle_pool_holder(commands, env, monkeypatch, 
 
     await Orchestrator._deliver_messages(orch)
 
-    assert typed() == [f"Handle `aq message status {message_id} --json`."]
+    assert typed() == [f"Handle `aq message status {message_id} --json` (running it marks the message read)."]
     message = await env.db.get_message(message_id)
     assert message.delivered_at is None and message.read_at is None
     assert message.last_notified_at == NOW and message.notification_attempts == 1
@@ -640,15 +643,25 @@ async def test_operator_approval_on_the_wait_thread_satisfies_it(
     orch = await _wire_delivery(commands, env, monkeypatch, provider)
     _asked_id, wait_id = await _ask_on_thread(commands, env)
     to_kind, to_id = recipient
+    await env.db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", aq_commands=["message_send"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    await env.db.create_session(SessionRecord(
+        id="global-admin", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="boot", instance_token="global-token", started_at=NOW, state="running",
+    ))
 
     approved = await _over_api(
         commands,
         "message_send",
         {
             "to_kind": to_kind, "to_id": to_id, "thread_id": "owner:graph-filing",
-            "from_kind": "user", "from_id": "cli", "body": "APPROVED: file the graph",
+            "body": "APPROVED: file the graph",
         },
         session_id="global-admin", project_id=None, elevated=True,
+        session_instance_token="global-token",
     )
     assert approved["message"]["project_id"] == "p", approved
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
@@ -860,7 +873,10 @@ def test_wait_cli_reads_claim_epoch_and_emits_versioned_json(monkeypatch):
     assert json.loads(result.output)["data"]["wait"]["id"] == "w"
     assert calls[0] == (
         "wait_register",
-        {"kind": "task", "ref": "t", "idempotency_key": "k", "claim_epoch": 7},
+        {
+            "kind": "task", "idempotency_key": "k", "claim_epoch": 7,
+            "schema_version": 2, "condition": {"kind": "task", "task_id": "t"},
+        },
     )
     shown = CliRunner().invoke(cli, ["wait", "show", "w", "--json"])
     assert shown.exit_code == 0
@@ -990,6 +1006,7 @@ async def test_native_guidance_round_trips_to_its_authenticated_supervisor(
     asked = await _over_api(commands, "message_send", {
         "to_kind": "session", "to_id": "supervisor-p", "from_kind": "session", "from_id": "s",
         "thread_id": "owner:graph-filing", "body": "May I file the graph?",
+        "claim_epoch": 1,
     }, **_WORKER)
     asked_seq = (await env.db.get_message(asked["message_id"])).created_seq
     worker_wait = await _over_api(commands, "wait_register", {

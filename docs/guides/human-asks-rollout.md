@@ -6,8 +6,48 @@ production receipt. The approved specification is review `rev-sharp-zenith` r1,
 implementing `rev-fair-ridge` r3. See the [acceptance manifest](../reference/human-asks-implementation.md).
 
 Workers must not run production migrations, restart the daemon, enable destinations,
-or manufacture human reconciliation decisions. Commands below belong to the local
-operator, through CommandHandler. Worker and supervisor tokens cannot invoke them.
+or manufacture human reconciliation decisions. Commands run through CommandHandler.
+The reset path below also admits the live global supervisor with explicit grants;
+per-case historical dispositions remain local-operator only. Workers have no authority.
+
+## Explicit fresh start (2026-10-19 directive)
+
+For the authorized agent-queue reset, discard legacy history instead of following
+its historical reconciliation procedure below. Supervisor-global owns this path;
+workers implement and test it without touching production state.
+
+Run `aq ask legacy-reset --project-id agent-queue --max-rows 10000 --json` for a
+preview. It returns complete counts, kept review IDs, current mode/generation,
+`evidence_sha256`, and `projected` blockers. `ask.reset_bound` is an incomplete
+inventory: increase the explicit bound (maximum 100000) and rerun. No partial batch
+is committed. The preview must show `zero_blockers: true`; only the transfer marker
+may remain. Record the deployed SHA/time, actor, counts and hash as live acceptance.
+
+Only current human-decided open reviews become fresh asks with new identities and
+pending bindings. Old asks are marked discarded and hidden; old incidents/actions
+are cancelled, old delivery rows/cases/aliases/tokens/previews are removed, inputs
+revoked and bindings retired. Immutable decision records become obsolete with
+their old ask. No historical root is imported, no decision replayed and no Discord
+message sent or edited by the reset. New roots can be sent only by the normal
+sender after the separate channel switch.
+
+Before apply, use the existing cutover generation CAS to enter `transferring` (via
+`dashboard` if still in `shadow`), or use `delivery_disabled`. Preview again in that
+mode, then pass `--apply --evidence-sha256 HASH` with the same project and bound.
+Changed inventory/configuration/mode refuses the entire reset. A retry of an
+accepted hash returns the stored summary (`replayed: true`) and does not reset new
+work. Only one summary counts/hash record is written; no per-record history audit.
+
+After apply, run `aq ask reconcile --project-id agent-queue --json` and confirm its
+inventory has no blocker other than `transfers`. Use its current inventory hash
+and the existing control/redirect evidence for the separately authorized channel
+switch. Source scans cannot resurrect discarded history; new source work continues
+normally. Reset does not itself change the communication mode.
+
+The shipped supervisor grants include reset/reconcile/status/cutover. Deployment
+and profile reload add missing system grants unless capability sync is disabled.
+The handlers additionally require the live named global supervisor; project
+supervisors and workers remain denied. Test previews do not satisfy live acceptance.
 
 ## Capture evidence before deployment
 
@@ -60,8 +100,12 @@ reviews, change their bytes, invent new obligations, or infer success from age.
    Preserve old correspondence/action IDs, verified actors, archived title snapshots,
    original results and unknown status.
 6. Advance `legacy -> shadow -> dashboard` with `aq ask cutover --project-id PROJECT
-   --mode MODE --expected-generation N`. A missing row has generation 0. Read each
-   returned generation; never guess or retry a stale CAS blindly.
+   --mode MODE --expected-generation N`. Read the current generation with
+   `aq ask cutover-status --project-id PROJECT --json`: it lists each recorded
+   destination and includes the configured destination as legacy/generation 0
+   when absent. It also reports the migrated flag, first channel switch UTC and
+   immutable compatibility deadline. This read changes no state. Use the configured
+   destination's generation for the CAS; never guess or retry a stale CAS blindly.
 
 Review each historical repair case. Record the operator's decision using
 `aq ask reconcile --project-id PROJECT --apply --case-id CASE --disposition

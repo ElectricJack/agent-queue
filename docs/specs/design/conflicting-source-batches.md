@@ -51,6 +51,15 @@ expected-old publication. Green source checks, a passing worker close, or checks
 on a partial candidate cannot advance the target. Historical delivery proofs
 remain readable and do not authorize a new publication.
 
+This contract also applies to completed children collected onto their epic
+branch while other siblings are unfinished. A child/epic content conflict
+freezes the exact child source and files one ordinary batch repair; repeated
+visits and daemon restarts reuse its allocation. Target status names the merge
+conflict and repair. If source identity, stack containment or an undelivered
+prerequisite prevents admission, selection reports that blocker instead of
+silently presenting the target as idle. Such refusals never authorize a repair
+or bypass the admission guard.
+
 A passing ordinary repair close reseals its still-open batch and wakes the
 batch's delivery target, using the immutable repair input and current allocation
 number. It does not replace frozen members, spend another attempt, release a
@@ -92,8 +101,8 @@ overwriting customized or historical `source-ci-repair` delegate instructions.
 The supervisor closes obsolete historical repair PRs after their source lands.
 Cancellation-only observations keep their bounded infrastructure rerun policy.
 
-Ownership and storage-sink inventory drift is advisory in ordinary CI. The
-source inventory still discovers and charges all owned code, including relocated
-code and unreviewed sinks. Fixed size/table ceilings and the prohibition on new
+Ownership and storage-sink inventory drift has no dedicated CI guard (Jack
+2026-10-19 decision). The source inventory still discovers and charges all owned
+code, including relocated code and unreviewed sinks. Fixed size/table ceilings and the prohibition on new
 integration storage categories remain enforced. Factory-policy page length is
 advisory; its normative content and role references remain required.
