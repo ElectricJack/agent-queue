@@ -183,10 +183,12 @@ Tasks created before hierarchy mode was enabled have no reserved branch origin,
 and claiming in hierarchy mode is gated on one:
 
 ```bash
-aq integration reconcile-unmaterialized demo --expected-generation 16 --reason 'Bind pre-rollout tasks'
+aq doctor --check integration.branch_origins          # list tasks with no live origin
+aq doctor --check integration.branch_origins --fix    # backfill through a fenced mode edit
 ```
 
-That binds the safe pre-rollout tasks and reserves their origins;
+The fix re-runs the generation-fenced mode edit, which adopts published
+branches and reserves origins for absent ones;
 [`BranchMaterializationService`](../../src/integration/branch_materialization.py)
 then cuts the branches from the integration loop.
 
