@@ -80,7 +80,10 @@ TRAIN_INTEGRATION_MODES = frozenset({"hierarchy", "train", "development"})
 
 #: Stage profiles never offered as an ordinary worker route.
 _CONTROL_PROFILES = frozenset(
-    {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
+    {
+        "supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler",
+        "spec-ingest", "fidelity-reviewer",
+    }
 )
 
 
@@ -257,7 +260,10 @@ class RoutingCommandsMixin:
             except Exception:  # noqa: BLE001 - a missing cap is "one slot"
                 global_cap = None
 
+        from src.routing.policy import is_opencode_family
+
         facts: list[ProfileFacts] = []
+        from src.commands.operator_authority import is_operator_profile
         keys: set[str] = set()
         for profile in await self.db.list_profiles(conn=conn):
             harness = str(getattr(profile, "harness", "") or "")
@@ -279,6 +285,14 @@ class RoutingCommandsMixin:
                 id=profile.id,
                 harness=harness,
                 provider=key,
+                harness_family=(
+                    "opencode" if registry is not None and (
+                        is_opencode_family(
+                            harness, profile_provider(profile, registry, project_id),
+                            getattr(registry.get(harness, project_id), "command", ""),
+                        )
+                    ) else ""
+                ),
                 lifecycle=lifecycle,
                 default_class=str(getattr(profile, "default_class", "") or ""),
                 classes=frozenset(
@@ -287,6 +301,7 @@ class RoutingCommandsMixin:
                 ),
                 slots=int(slots or 0),
                 enabled=bool(getattr(profile, "enabled", True)),
+                operator=is_operator_profile(profile),
                 template=bool(getattr(profile, "template", False)),
                 read_only=bool(getattr(profile, "read_only", False)),
                 runtime=str(getattr(profile, "runtime", "") or ""),
@@ -478,11 +493,13 @@ class RoutingCommandsMixin:
             needs_task_lifecycle=any(
                 row.kind_id not in POOL_WORKSPACE_KINDS for row in requirements
             ),
-            priority=getattr(task, "priority", None),
             on_train=project is not None and getattr(
                 project, "hierarchical_integration_mode", None
             ) in TRAIN_INTEGRATION_MODES,
             blocks_work=await self.db.has_waiting_dependents(task.id),
+            failed_attempts=tuple(await self.db.get_task_meta(
+                task.id, "routing_failed_attempts",
+            ) or ()),
         )
 
     async def _cmd_task_route_plan(self, args: dict) -> dict:
@@ -731,6 +748,12 @@ class RoutingCommandsMixin:
                     "routed_at": time.time(),
                     "live_context": dict(snapshot.context),
                 }
+                if raised := plan.get("class_raised_for_risk"):
+                    # Only a plan whose risk floor raised the class carries it,
+                    # so every other route record is unchanged.
+                    route["class_raised_for_risk"] = raised
+                if escalated := plan.get("escalated_after_failure"):
+                    route["escalated_after_failure"] = escalated
                 prior = getattr(fresh, "route", None)
                 if constraints := route_constraints(fresh):
                     route["constraints"] = constraints
@@ -926,9 +949,9 @@ class RoutingCommandsMixin:
         intelligence class and a kind; an empty value clears one -- clears
         ``profile_id``, ``intelligence_class`` and the ``route`` record (its
         ``constraints`` and ``legacy`` audit stay), sets
-        ``route_source='unrouted'`` and clears the route-needed throttle, so
-        the next cascade emits ``task.route_needed`` and the project's router
-        plans the task again.  It clears an override the same way.  It also
+        ``route_source='unrouted'`` and emits ``task.route_needed`` immediately,
+        so the project's router plans the task again even if the cascade
+        filters it out. It clears an override the same way. It also
         stores the routing preference it is given (§4): ``--prefer`` names a
         harness or profile the router weighs before scoring and
         ``--prefer-mode`` chooses ``soft`` (the default) or ``strict``; an
@@ -983,6 +1006,25 @@ class RoutingCommandsMixin:
                 return {"success": False, "error": error}
             preference = {"prefer_target": target, "prefer_mode": mode}
         if not await self.db.reset_task_route(task.id, **hints, **preference):
+            # A stopped task can still have an old writer awaiting confirmed
+            # termination. Name that session instead of calling the task running.
+            fresh = await self.db.get_task(task.id)
+            if fresh is not None:
+                refusal = self._route_state_refusal(fresh, command="aq task route")
+                if refusal is not None:
+                    return refusal
+            session = await self.db.get_session_for_task(task.id)
+            if session is not None and session.state in {"starting", "running", "draining"}:
+                return {
+                    "success": False,
+                    "code": NOT_ROUTABLE,
+                    "error": (
+                        f"task '{task.id}' still has live session '{session.id}' "
+                        f"({session.state}); stop its writer with "
+                        f"`aq session kill {session.id}`, wait for confirmed termination, "
+                        "then run aq task route again"
+                    ),
+                }
             return {
                 "success": False,
                 "code": NOT_ROUTABLE,
@@ -1019,6 +1061,10 @@ class RoutingCommandsMixin:
             )
         await self._announce_route_change(task.id)
         fresh = await self.db.get_task(task.id) or task
+        project = await self.db.get_project(fresh.project_id)
+        await self.orchestrator._emit_route_needed_event(
+            fresh, router=getattr(project, "assignment_playbook_id", None),
+        )
         task_type = getattr(fresh.task_type, "value", fresh.task_type)
         return {
             "success": True,
