@@ -15,17 +15,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.database import Database
 from src.models import AgentProfile, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures" / "task_graphs"
 
 
 @pytest.fixture
-async def setup(tmp_path):
-    db = Database(lease_dsn("graph.db"))
-    await db.initialize()
+async def setup(tmp_path, reuse_database):
+    db = await reuse_database("graph.db")
     await db.create_project(Project(id="p1", name="test"))
     for profile_id in ("coding", "planner"):
         await db.create_profile(AgentProfile(id=profile_id, name=profile_id))
@@ -46,7 +43,6 @@ async def setup(tmp_path):
     handler = CommandHandler(orch, config)
     handler._active_project_id = None
     yield handler, db, str(vault_root)
-    await db.close()
 
 
 def _graph_doc() -> dict:
@@ -478,73 +474,78 @@ class TestNodeSubtasks:
         assert "the brief for two" not in summary
 
 
-class TestSubtasksUnreportable:
-    """A profile whose policy cannot tick the checklist earns a warning, not a refusal."""
+class TestSubtasksNameNoRoute:
+    """A checklist node is routed like any other: by the router, never at filing.
 
-    @staticmethod
-    def _graph() -> dict:
+    The ``subtasks_unreportable`` / ``subtasks_routing_unresolved`` warnings
+    checked the node's named or project-default profile for the subtask
+    grant; with no route at filing there is no profile to check
+    (mandatory-routing spec §5.1).
+    """
+
+    async def test_a_checklist_node_naming_a_profile_is_refused(self, setup):
+        handler, db, _vault = setup
         doc = _subtask_graph()
         doc["nodes"][0]["profile"] = "coding"
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+        assert result["success"] is False
+        assert result["code"] == "routing.choice_forbidden"
+        assert result["refused"] == ["a.profile"]
+        assert await db.list_tasks(project_id="p1") == []
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    async def test_no_profile_is_consulted_for_an_unrouted_node(self, setup, dry_run):
+        """A node is filed unrouted, so no profile's grants are checked (§8)."""
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_close"])
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph(), "dry_run": dry_run}
+        )
+        assert "error" not in result, result
+        assert [w for w in result["warnings"] if w["rule"].startswith("subtasks_")] == []
+        if not dry_run:
+            node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+            node = await db.get_task(node_id)
+            assert (node.profile_id, node.route_source) == (None, "unrouted")
+            assert len(await db.list_task_subtasks(node_id)) == 3
+
+
+class TestNodeTypeValidation:
+    """A node ``task_type`` that is not a ``TaskType`` value must be refused."""
+
+    @staticmethod
+    def _bad_type_graph() -> dict:
+        doc = _simple_graph()
+        doc["nodes"][0]["task_type"] = "review"
         return doc
 
-    async def test_warning_when_the_profile_cannot_update_subtasks(self, setup):
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_invalid_task_type_is_refused_and_creates_nothing(self, setup, dry_run):
         handler, db, _vault = setup
-        await db.update_profile("coding", aq_commands=["task_close"])
         result = await handler._cmd_create_task_graph(
-            {"project_id": "p1", "graph": self._graph()}
+            {"project_id": "p1", "graph": self._bad_type_graph(), "dry_run": dry_run}
+        )
+        assert "nothing was created" in result["error"]
+        errors = [e for e in result["errors"] if e["rule"] == "bad_task_type"]
+        assert len(errors) == 1
+        assert errors[0]["node"] == "a"
+        assert "review" in errors[0]["detail"]
+        from src.models import TASK_TYPE_VALUES
+
+        for value in sorted(TASK_TYPE_VALUES):
+            assert value in errors[0]["detail"]
+        assert await db.list_tasks(project_id="p1") == []
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_valid_task_type_passes(self, setup, dry_run):
+        handler, _db, _vault = setup
+        doc = _simple_graph()
+        doc["nodes"][0]["task_type"] = "refactor"
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": doc, "dry_run": dry_run}
         )
         assert "error" not in result
-        warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"]
-        assert len(warnings) == 1
-        assert warnings[0]["severity"] == "warning"
-        assert warnings[0]["node"] == "a"
-        assert "aq agent profile-reseed --profile-id coding --grants-only" in warnings[0]["detail"]
-        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
-        assert len(await db.list_task_subtasks(node_id)) == 3
-
-    async def test_no_warning_when_the_profile_grants_the_command(self, setup):
-        handler, db, _vault = setup
-        await db.update_profile("coding", aq_commands=["task_subtask_update"])
-        result = await handler._cmd_create_task_graph(
-            {"project_id": "p1", "graph": self._graph()}
-        )
-        assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
-
-    async def test_implicit_project_default_is_checked_in_dry_run_and_creation(self, setup):
-        handler, db, _vault = setup
-        await db.update_project("p1", default_profile_id="coding")
-        await db.update_profile("coding", aq_commands=["task_close"])
-        args = {"project_id": "p1", "graph": _subtask_graph()}
-
-        dry = await handler._cmd_create_task_graph({**args, "dry_run": True})
-        created = await handler._cmd_create_task_graph(args)
-
-        for result in (dry, created):
-            warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"]
-            assert len(warnings) == 1
-            assert warnings[0]["node"] == "a"
-            assert "profile 'coding'" in warnings[0]["detail"]
-
-    async def test_unresolvable_implicit_profile_is_reported(self, setup):
-        handler, db, _vault = setup
-        await db.create_profile(AgentProfile(id="missing", name="missing", enabled=False))
-        await db.update_project("p1", default_profile_id="missing")
-
-        result = await handler._cmd_create_task_graph(
-            {"project_id": "p1", "graph": _subtask_graph(), "dry_run": True}
-        )
-
-        warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_routing_unresolved"]
-        assert len(warnings) == 1
-        assert warnings[0]["node"] == "a"
-
-    async def test_no_warning_for_a_node_without_subtasks(self, setup):
-        handler, db, _vault = setup
-        await db.update_profile("coding", aq_commands=["task_close"])
-        doc = _simple_graph()
-        doc["nodes"][0]["profile"] = "coding"
-        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
-        assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
+        assert "bad_task_type" not in [e.get("rule") for e in result.get("errors", [])]
 
 
 def _phased_graph() -> dict:

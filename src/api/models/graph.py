@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.models.task import TaskDisplayFields
 
-class GraphTaskNode(BaseModel):
+
+class GraphTaskNode(TaskDisplayFields):
     id: str
     title: str
     status: str
@@ -17,6 +19,7 @@ class GraphTaskNode(BaseModel):
     branch_name: str | None = None
     pr_url: str | None = None
     playbook_run_id: str | None = None
+    parent_task_id: str | None = None
 
 
 class GraphEdge(BaseModel):

@@ -28,17 +28,16 @@ from src.config import (
     ReportsConfig,
     load_config,
 )
-from src.database import Database
 from src.database.tables import digest_windows, supervisor_report_requests, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.aggregate import DigestResult
+from src.digest.dispatch import marker_for
 from src.digest.eligibility import Eligibility
 from src.digest.facts import ActiveTask, DigestWindow, WorkFact
 from src.escalations.transport import SinkTransport
 from src.models import Project, Task, TaskCompletion
 from src.profiles.capabilities import DENY_ALL
 from src.reports.hourly import MAX_BRIEF_BYTES, build_hourly_brief, local_day_bounds, quiet_at
-from tests.db_fixtures import lease_dsn
 
 CHANNEL = "424242424242424242"
 BASE = 1_800_000.0
@@ -59,12 +58,10 @@ class Commands(ReportCommandsMixin):
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("report_requests"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("report_requests")
     await database.create_project(Project(id="p", name="Project P"))
     yield database
-    await database.close()
 
 
 async def completed_task(db, task_id: str, at: float) -> None:
@@ -147,7 +144,9 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert second.sent == 1
     posted = next(iter(transport.messages.values())).content
     assert "Completed t1; delivery to main is pending." in posted
-    assert posted.count("aq-dig:") == 1
+    marker = marker_for(window["id"])
+    assert posted.endswith(marker) and posted.count(marker) == 1
+    assert "aq-dig:" not in posted
     assert len(posted) <= 1200
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [
