@@ -1,0 +1,4730 @@
+{
+  "snapshot": "2026-09-09T14:44:34+00:00",
+  "branches": [
+    {
+      "name": "aq/agile-current",
+      "sha": "febec9e4347934dbf9316de045204f7d1a91cf0b",
+      "subject": "fix(pool): protect successor after recycle fence",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/agile-current",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "agile-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/agile-current",
+          "status": "COMPLETED",
+          "title": "Deliver successor-instance protection for abandoned worker recycling",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sound-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-summit",
+          "status": "COMPLETED",
+          "title": "Review: Deliver successor-instance protection for abandoned worker recycling",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: approved successor protection; operator reconciler already has the same post-CAS instance-token refusal (branch adds explanatory comment). Preserve other operator recovery logic."
+    },
+    {
+      "name": "aq/amber-crest",
+      "sha": "275b500bb107c9f42a6cf225de28684bf6eac3ae",
+      "subject": "Fence historical claim recovery to the exact repair operation",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/amber-crest",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "amber-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-crest",
+          "status": "COMPLETED",
+          "title": "Recover detached historical repair claims after pool slot reuse",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "keen-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Recover detached historical repair claims after pool slot reuse",
+          "source": "current"
+        },
+        {
+          "id": "crisp-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-torrent",
+          "status": "COMPLETED",
+          "title": "Review: Recover detached historical repair claims after pool slot reuse",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/amber-zenith",
+      "sha": "b219c4e9d7ef2ae5d600726eaf04c4e1e9bd890f",
+      "subject": "fix(explain): match typed dependency blockers",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/amber-zenith",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "amber-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-zenith",
+          "status": "COMPLETED",
+          "title": "Make task explain dependency blockers match scheduler semantics",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "grand-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-rapids",
+          "status": "COMPLETED",
+          "title": "Review: Make task explain dependency blockers match scheduler semantics",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/azure-nexus",
+      "sha": "985c03040680a1ddaa16d431982272d900ece2c0",
+      "subject": "fix(scheduler): run workspace spec scans outside scheduling cycles",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/azure-nexus",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "azure-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/azure-nexus",
+          "status": "COMPLETED",
+          "title": "Keep workspace spec scanning off the scheduler critical path",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "grand-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-lantern",
+          "status": "COMPLETED",
+          "title": "Review: Keep workspace spec scanning off the scheduler critical path",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: approved background spec scanning; operator source and watcher tests already match this implementation; use operator snapshot."
+    },
+    {
+      "name": "aq/bright-grove",
+      "sha": "92971ae88d2aebe0ed0283c47d2e81fb2d6d4b90",
+      "subject": "test(pool): repair isolated claim recovery coverage",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/bright-grove",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "bright-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-grove",
+          "status": "COMPLETED",
+          "title": "Recover idle pool workers that abandon claiming after prepare failure",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "prime-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-harbor",
+          "status": "FAILED",
+          "title": "Review: Recover idle pool workers that abandon claiming after prepare failure",
+          "source": "current"
+        },
+        {
+          "id": "sound-ember",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-ember",
+          "status": "COMPLETED",
+          "title": "Review: Recover idle pool workers that abandon claiming after prepare failure",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge."
+    },
+    {
+      "name": "aq/bright-journey",
+      "sha": "8612d27a709b48b715c9e2f847a1b752af16f4d8",
+      "subject": "fix(integration): recover unwritten resolution reservations",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/bright-journey",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "bright-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-journey",
+          "status": "COMPLETED",
+          "title": "Recover malformed unwritten parent resolution reservations",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "brisk-ember",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-ember",
+          "status": "READY",
+          "title": "Review: Recover malformed unwritten parent resolution reservations",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD: latest implementation completed, review brisk-ember (see current state). Adds migration a00000000005, which collides with existing operator migration 5; must reconcile onto current migration chain (operator head 7)."
+    },
+    {
+      "name": "aq/brisk-apex",
+      "sha": "114f6c4a53dc4576f0b1161e15604161a48748b2",
+      "subject": "fix(integration): restore parent on repair resume",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/brisk-apex",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-apex",
+          "status": "COMPLETED",
+          "title": "Restore parent collection atomically when integration repair resumes",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "grand-quest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-quest",
+          "status": "COMPLETED",
+          "title": "Review: Restore parent collection atomically when integration repair resumes",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/brisk-crest",
+      "sha": "c1836fe4732329dc71fcd7dca7fcfba2b326838c",
+      "subject": "fix(integration): adopt resolved main conflicts from green candidates",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/brisk-crest",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-crest",
+          "status": "COMPLETED",
+          "title": "Deliver green-candidate moved-main repair adoption fix",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "noble-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Deliver green-candidate moved-main repair adoption fix",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/brisk-delta",
+      "sha": "2601f3adee09dce266dd2f7afcc735b0afe1140d",
+      "subject": "fix(close): release the integration writer on a failing close",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/brisk-delta",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-delta",
+          "status": "COMPLETED",
+          "title": "Fail-close never releases the integration writer, so a train-mode pool session keeps its claim and the branch stays owned",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sound-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-lantern",
+          "status": "COMPLETED",
+          "title": "Review: Fail-close never releases the integration writer, so a train-mode pool session keeps its claim and the branch stays owned",
+          "source": "current"
+        }
+      ],
+      "action": "MERGE NEXT: release retryable integration ownership on failed close; review sound-lantern approved this exact tip. Reconcile with operator close/recovery changes."
+    },
+    {
+      "name": "aq/brisk-glacier",
+      "sha": "9a8817f060b11351a2eca379201fcc673071c961",
+      "subject": "fix(integration): accept pool tokens for conflict resolution by live held task",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/brisk-glacier",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-glacier",
+          "status": "COMPLETED",
+          "title": "Pool repair resolution principal omits live task id",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "azure-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/azure-glacier",
+          "status": "COMPLETED",
+          "title": "Review: Pool repair resolution principal omits live task id",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/brisk-journey",
+      "sha": "f645d9bb63482076838629b3c3720cae2e55035b",
+      "subject": "fix(integration): release repository lock before PR recovery writes",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/brisk-journey",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-journey",
+          "status": "COMPLETED",
+          "title": "Review and deliver the PR-link recovery lock-order correction",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "swift-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Review and deliver the PR-link recovery lock-order correction",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/brisk-pinnacle",
+      "sha": "b0dfc39599a1ad4746c608f7f725bd5aeacd237f",
+      "subject": "fix(integration): skip merge replay for already-contained candidate members",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/brisk-pinnacle",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-pinnacle",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-pinnacle",
+          "status": "COMPLETED",
+          "title": "Candidate construction replays already-integrated members and conflicts (src/integration/candidates.py::_construct)",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "keen-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Candidate construction replays already-integrated members and conflicts (src/integration/candidates.py::_construct)",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge."
+    },
+    {
+      "name": "aq/brisk-rapids",
+      "sha": "76472377de95c2c6b000df3616fcc160e5a79dc8",
+      "subject": "fix(claim): never re-serve a held task that left IN_PROGRESS",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/brisk-rapids",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "brisk-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-rapids",
+          "status": "COMPLETED",
+          "title": "Verifier task is re-offered by aq task claim but stays READY, so it can never be commented on or closed",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "prime-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-falcon",
+          "status": "IN_PROGRESS",
+          "title": "Review: Verifier task is re-offered by aq task claim but stays READY, so it can never be commented on or closed",
+          "source": "current"
+        },
+        {
+          "id": "wise-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-crest",
+          "status": "COMPLETED",
+          "title": "Review: Verifier task is re-offered by aq task claim but stays READY, so it can never be commented on or closed",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD: corrected stale-claim epoch fencing revision; latest review prime-falcon (see current state). Earlier revision was rejected for a reclaim race."
+    },
+    {
+      "name": "aq/calm-dune",
+      "sha": "90e2b8120954d3e2122bb6563500578761334591",
+      "subject": "fix(pools): recover interrupted terminal integration claims",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/calm-dune",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "calm-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-dune",
+          "status": "COMPLETED",
+          "title": "Recover a completed task whose pool claim and branch attachment survived close",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sharp-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sharp-zenith",
+          "status": "COMPLETED",
+          "title": "Review: Recover a completed task whose pool claim and branch attachment survived close",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/clear-quest",
+      "sha": "925df51151587d93e76b73a439ef5ec2108ac448",
+      "subject": "feat(integration): reconcile pre-rollout task graphs",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/clear-quest",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "clear-quest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-quest",
+          "status": "COMPLETED",
+          "title": "Bind existing unmaterialized tasks during hierarchy rollout",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "fresh-impact",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-impact",
+          "status": "COMPLETED",
+          "title": "Review: Bind existing unmaterialized tasks during hierarchy rollout",
+          "source": "current"
+        },
+        {
+          "id": "bold-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bold-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Bind existing unmaterialized tasks during hierarchy rollout",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/eager-falcon",
+      "sha": "f925bf456e2cbbb1e9f121684e21589d3ad77470",
+      "subject": "fix(integration): fence root rebuild delegate reuse",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/eager-falcon",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "eager-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/eager-falcon",
+          "status": "COMPLETED",
+          "title": "Recover root rebuild conflicts after main moves within the repair budget",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "swift-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-lantern",
+          "status": "COMPLETED",
+          "title": "Review: Recover root rebuild conflicts after main moves within the repair budget",
+          "source": "current"
+        },
+        {
+          "id": "stark-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/stark-current",
+          "status": "COMPLETED",
+          "title": "Review: Recover root rebuild conflicts after main moves within the repair budget",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/fair-willow",
+      "sha": "8de63a5c0dd2bb9985d378934da524e4cad7706e",
+      "subject": "fix(integration): re-reserve a task's fence when a close re-queues it",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/fair-willow",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "fair-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-willow",
+          "status": "COMPLETED",
+          "title": "Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "vivid-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-lantern",
+          "status": "READY",
+          "title": "Review: Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+          "source": "current"
+        },
+        {
+          "id": "steady-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-current",
+          "status": "COMPLETED",
+          "title": "Review: Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD: revised unsafe doctor repair to report-only plus durable requeue fix. Latest review vivid-lantern (see current state). Historical same-name PR #101 is not evidence for this tip."
+    },
+    {
+      "name": "aq/fleet-glacier",
+      "sha": "5482060065b8cb0dac6e14dbf8de0956e6f8435f",
+      "subject": "docs(cli): re-baseline the audit report to the collected aggregate head",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/fleet-glacier",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "fleet-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fleet-glacier",
+          "status": "COMPLETED",
+          "title": "docs(cli): audit report claims post-5d8bc501 commits are documentation-only, but two runtime repairs landed after it",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "swift-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-vault",
+          "status": "COMPLETED",
+          "title": "Review: docs(cli): audit report claims post-5d8bc501 commits are documentation-only, but two runtime repairs landed after it",
+          "source": "current"
+        }
+      ],
+      "action": "FOLD INTO CLI epic: completed documentation correction based on the CLI aggregate; do not merge its inherited CLI history separately."
+    },
+    {
+      "name": "aq/fleet-harbor",
+      "sha": "04b42fb8b111ef46451d66a0b9a2ca6a52c215b6",
+      "subject": "fix(integration): fence candidate repair recovery",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/fleet-harbor",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "fleet-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fleet-harbor",
+          "status": "COMPLETED",
+          "title": "Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "calm-orbit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-orbit",
+          "status": "FAILED",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "nimble-flare",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-flare",
+          "status": "COMPLETED",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "keen-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-cascade",
+          "status": "READY",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge."
+    },
+    {
+      "name": "aq/fresh-beacon",
+      "sha": "3136b02f34b93f6de08b764bf4593c32657958d7",
+      "subject": "fix(routing): avoid disabled worker pools",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/fresh-beacon",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "fresh-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-beacon",
+          "status": "READY",
+          "title": "Prevent automatic routing from stranding ready work on disabled worker pools",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "clear-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-willow",
+          "status": "COMPLETED",
+          "title": "Review: Prevent automatic routing from stranding ready work on disabled worker pools",
+          "source": "current"
+        }
+      ],
+      "action": "Included in operator snapshot by ancestry, but AQ task remains READY after follow-up; merging existing code does not close remaining task work."
+    },
+    {
+      "name": "aq/fresh-flare",
+      "sha": "3c2f245d591059939ebda362877f636bfb5d2759",
+      "subject": "fix(cli): explain fleet capacity separately from project occupancy",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/fresh-flare",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "fresh-flare",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-flare",
+          "status": "COMPLETED",
+          "title": "Deliver accurate fleet versus project pool capacity explanations",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "calm-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-crest",
+          "status": "COMPLETED",
+          "title": "Review: Deliver accurate fleet versus project pool capacity explanations",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/fresh-rapids",
+      "sha": "8149cc8fb5ec83daad9c2f861c684d900fb3cbeb",
+      "subject": "fix(swarm): fence orphaned pool handoff recovery",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/fresh-rapids",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "fresh-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-rapids",
+          "status": "READY",
+          "title": "Recover orphan branch ownership after failed pool claim release",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "clear-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-vault",
+          "status": "FAILED",
+          "title": "Review: Recover orphan branch ownership after failed pool claim release",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD: READY after incomplete validation/rejection; stopped-writer recovery overlaps newer operator proof paths."
+    },
+    {
+      "name": "aq/grand-apex",
+      "sha": "165663ef19b989b7eda398b7afca12ae55d0e427",
+      "subject": "test(integration): cover public stopped-pool resume recovery",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/grand-apex",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "grand-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-apex",
+          "status": "COMPLETED",
+          "title": "Finish stopped integration writer claim cleanup and safe recovery",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "noble-orbit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-orbit",
+          "status": "COMPLETED",
+          "title": "Review: Finish stopped integration writer claim cleanup and safe recovery",
+          "source": "current"
+        },
+        {
+          "id": "vivid-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-grove",
+          "status": "COMPLETED",
+          "title": "Review: Finish stopped integration writer claim cleanup and safe recovery",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/grand-vault",
+      "sha": "dec77b8cbfb9c8d0496329a554d190ca1d68fd73",
+      "subject": "Merge reviewed swift-journey recovery prerequisite",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/grand-vault",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "grand-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-vault",
+          "status": "COMPLETED",
+          "title": "Deliver canonical root-receipt eligibility and recovery migration follow-through",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sound-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-dune",
+          "status": "COMPLETED",
+          "title": "Review: Deliver canonical root-receipt eligibility and recovery migration follow-through",
+          "source": "current"
+        },
+        {
+          "id": "swift-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-apex",
+          "status": "COMPLETED",
+          "title": "Review: Deliver canonical root-receipt eligibility and recovery migration follow-through",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/integration-repairs/d3b49b4e-3651-50cf-94ee-c6650ac6687f",
+      "sha": "50edaa1990c840a63efe3f7f3b9ca9c38e72fc10",
+      "subject": "repair(integration): retain contained pool wake fix",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/integration-repairs/d3b49b4e-3651-50cf-94ee-c6650ac6687f",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "fleet-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fleet-harbor",
+          "status": "COMPLETED",
+          "title": "Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-1",
+          "project_id": "agent-queue",
+          "branch_name": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+          "status": "IN_PROGRESS",
+          "title": "Repair integration stage 1",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "calm-orbit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-orbit",
+          "status": "FAILED",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "nimble-flare",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-flare",
+          "status": "COMPLETED",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "keen-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-cascade",
+          "status": "READY",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        }
+      ],
+      "action": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes."
+    },
+    {
+      "name": "aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+      "sha": "50edaa1990c840a63efe3f7f3b9ca9c38e72fc10",
+      "subject": "repair(integration): retain contained pool wake fix",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-0",
+          "project_id": "agent-queue",
+          "branch_name": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+          "status": "BLOCKED",
+          "title": "Repair integration stage 0",
+          "source": "current"
+        },
+        {
+          "id": "repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-1",
+          "project_id": "agent-queue",
+          "branch_name": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+          "status": "IN_PROGRESS",
+          "title": "Repair integration stage 1",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes."
+    },
+    {
+      "name": "aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+      "sha": "9e8f06509b4af43ca9ba5a28a23adaf1c3a33b4d",
+      "subject": "Integrate azure-beacon",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-0",
+          "project_id": "agent-queue",
+          "branch_name": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+          "status": "BLOCKED",
+          "title": "Repair integration stage 0",
+          "source": "current"
+        },
+        {
+          "id": "repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-1",
+          "project_id": "agent-queue",
+          "branch_name": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+          "status": "IN_PROGRESS",
+          "title": "Repair integration stage 1",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes."
+    },
+    {
+      "name": "aq/keen-bridge",
+      "sha": "b43b3ed6c840789623742ff4c4e7dc3ceb020561",
+      "subject": "fix(integration): verify aggregate close without PR fallback",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-bridge",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-bridge",
+          "status": "COMPLETED",
+          "title": "Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "clear-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-journey",
+          "status": "COMPLETED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        },
+        {
+          "id": "swift-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-zenith",
+          "status": "COMPLETED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        },
+        {
+          "id": "clear-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-dune",
+          "status": "FAILED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE: new verifier-close revision after rejection; operator snapshot already contains manual-hold and replay corrections. Do not replace operator fixes with this branch wholesale."
+    },
+    {
+      "name": "aq/keen-forge",
+      "sha": "92ebcec35b17475a1a0088d3178db47ef3110a63",
+      "subject": "fix(ci): restore playbook contract and git cleanup",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-forge",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-forge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-forge",
+          "status": "COMPLETED",
+          "title": "Fix red CI on main @ 999990a7 (attempt 1)",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sound-ridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-ridge",
+          "status": "COMPLETED",
+          "title": "Review: Fix red CI on main @ 999990a7 (attempt 1)",
+          "source": "current"
+        },
+        {
+          "id": "clear-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-beacon",
+          "status": "COMPLETED",
+          "title": "Review: Fix red CI on main @ 999990a7 (attempt 1)",
+          "source": "archived"
+        }
+      ],
+      "action": "MERGE NEXT: scoped Git process-group cleanup fix; review sound-ridge approved this exact tip."
+    },
+    {
+      "name": "aq/keen-glacier",
+      "sha": "890c5536334b96faf6c4711c80083158eeda8078",
+      "subject": "feat(integration): expose a repair delegate's fence via integration_repair_fence",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-glacier",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-glacier",
+          "status": "COMPLETED",
+          "title": "Repair delegate cannot discover its fence token: no read surface exposes integration_branch_owners.fence_token to a repair session",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "calm-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-zenith",
+          "status": "COMPLETED",
+          "title": "Review: Repair delegate cannot discover its fence token: no read surface exposes integration_branch_owners.fence_token to a repair session",
+          "source": "current"
+        },
+        {
+          "id": "steady-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-bridge",
+          "status": "COMPLETED",
+          "title": "Review: Repair delegate cannot discover its fence token: no read surface exposes integration_branch_owners.fence_token to a repair session",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/keen-harbor",
+      "sha": "24dffd43416f63f84a22b1ea90c8ff25606e52c2",
+      "subject": "fix(ci): repair aggregate PostgreSQL checks",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "repair-81d0aaee-0c3a-482c-b04c-d3afe6631cbe-0",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor",
+          "status": "BLOCKED",
+          "title": "Repair integration stage 0",
+          "source": "current"
+        },
+        {
+          "id": "repair-81d0aaee-0c3a-482c-b04c-d3afe6631cbe-1",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor",
+          "status": "COMPLETED",
+          "title": "Repair integration stage 1",
+          "source": "current"
+        },
+        {
+          "id": "keen-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor",
+          "status": "PAUSED",
+          "title": "Epic: Make the aq CLI consistent, robust, and fully verifiable",
+          "source": "current"
+        },
+        {
+          "id": "verify-81d0aaee-0c3a-482c-b04c-d3afe6631cbe",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor",
+          "status": "READY",
+          "title": "Verify aggregate for keen-harbor",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD aggregate: all 16 child tips are contained. New CI repair 24dffd43 has landed on this branch since the preceding status update; no new CI was run or green result established in this inventory."
+    },
+    {
+      "name": "aq/keen-harbor.1",
+      "sha": "3a11d77064e404eb60f92b1ffaa3f76fbe596281",
+      "subject": "fix(cli): preserve partial task creation flags",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.1",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.1",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.1",
+          "status": "COMPLETED",
+          "title": "Preserve task-create flags and validate interactive/noninteractive input",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "bold-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bold-beacon",
+          "status": "COMPLETED",
+          "title": "Review: Preserve task-create flags and validate interactive/noninteractive input",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.10",
+      "sha": "b0837745263403c4d62a65ae09bf0e9fb881465f",
+      "subject": "test(cli): maintain command inventory and conformance suite",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.10",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.10",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.10",
+          "status": "COMPLETED",
+          "title": "Add a maintained command inventory and CLI conformance regression suite",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "amber-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-rapids",
+          "status": "COMPLETED",
+          "title": "Review: Add a maintained command inventory and CLI conformance regression suite",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.11",
+      "sha": "1db075b31a8ab39b306cb4d78edb99f9998bdd41",
+      "subject": "fix(testing): isolate postgres scratch databases per run",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.11",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.11",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.11",
+          "status": "COMPLETED",
+          "title": "Make CLI test preflight and scratch database isolation failures actionable",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "nimble-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-summit",
+          "status": "COMPLETED",
+          "title": "Review: Make CLI test preflight and scratch database isolation failures actionable",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.12",
+      "sha": "69e57767fdac6967ef56e4d6560a2c6934642f10",
+      "subject": "fix(e2e): validate cleanup ownership before teardown",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.12",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.12",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.12",
+          "status": "COMPLETED",
+          "title": "Cover stateful CLI workflows with disposable end-to-end smoke tests",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "vivid-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-torrent",
+          "status": "COMPLETED",
+          "title": "Review: Cover stateful CLI workflows with disposable end-to-end smoke tests",
+          "source": "current"
+        },
+        {
+          "id": "quick-stone",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-stone",
+          "status": "COMPLETED",
+          "title": "Review: Cover stateful CLI workflows with disposable end-to-end smoke tests",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.13",
+      "sha": "d380aba02651ba892dde0790475f61e0ae22b631",
+      "subject": "docs(cli): correct final audit revision provenance",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.13",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.13",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.13",
+          "status": "COMPLETED",
+          "title": "Re-audit CLI consistency and publish final per-command acceptance report",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "bright-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-beacon",
+          "status": "COMPLETED",
+          "title": "Review: Re-audit CLI consistency and publish final per-command acceptance report",
+          "source": "current"
+        },
+        {
+          "id": "nimble-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-vault",
+          "status": "COMPLETED",
+          "title": "Review: Re-audit CLI consistency and publish final per-command acceptance report",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.14",
+      "sha": "ca7d5c0646506376cab346e32207db7abd04056c",
+      "subject": "fix(task-graph): file graphs through atomic hierarchy filing on train projects",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.14",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.14",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.14",
+          "status": "COMPLETED",
+          "title": "Fix task graph creation rejected by atomic hierarchy integration guard",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "amber-stone",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-stone",
+          "status": "COMPLETED",
+          "title": "Review: Fix task graph creation rejected by atomic hierarchy integration guard",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.15",
+      "sha": "c74d7f5935ac86ad99f48a87fc67aef467752f54",
+      "subject": "fix(integration): bootstrap new root origins from the default branch",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.15",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.15",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.15",
+          "status": "COMPLETED",
+          "title": "Bootstrap new root task origins from an existing repository ref",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "swift-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-current",
+          "status": "COMPLETED",
+          "title": "Review: Bootstrap new root task origins from an existing repository ref",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.16",
+      "sha": "36378a72dc101d697ab67f25c856667c7a65a925",
+      "subject": "Report interrupted command replies without replaying possible writes",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.16",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.16",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.16",
+          "status": "COMPLETED",
+          "title": "Deliver structured unknown-outcome errors for interrupted CLI replies",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sound-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-willow",
+          "status": "COMPLETED",
+          "title": "Review: Deliver structured unknown-outcome errors for interrupted CLI replies",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.2",
+      "sha": "01536a44803b429f628cf1e6b26f4df40ea475fd",
+      "subject": "fix(cli): return a parseable envelope from single task creation",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.2",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.2",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.2",
+          "status": "COMPLETED",
+          "title": "Make task creation return a parseable success response in JSON mode",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "clear-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-cascade",
+          "status": "COMPLETED",
+          "title": "Review: Make task creation return a parseable success response in JSON mode",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.3",
+      "sha": "738d4089591492c79cb6e47122e3030a6087211a",
+      "subject": "fix(cli): envelope core plugin wrappers",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.3",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.3",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.3",
+          "status": "COMPLETED",
+          "title": "Unify success/error envelopes, brief output, and exit codes across the CLI",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "quick-ember",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-ember",
+          "status": "COMPLETED",
+          "title": "Review: Unify success/error envelopes, brief output, and exit codes across the CLI",
+          "source": "current"
+        },
+        {
+          "id": "grand-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-cascade",
+          "status": "COMPLETED",
+          "title": "Review: Unify success/error envelopes, brief output, and exit codes across the CLI",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.4",
+      "sha": "401d59437555cf0e23bdee4c06c4211e1e606684",
+      "subject": "fix(cli): keep help and schema offline",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.4",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.4",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.4",
+          "status": "COMPLETED",
+          "title": "Remove database initialization from CLI import and help discovery",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "azure-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/azure-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Remove database initialization from CLI import and help discovery",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.5",
+      "sha": "04b85dce843551bf03e90f239638470defa81eec",
+      "subject": "feat(cli): global output flags parse at every command position",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.5",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.5",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.5",
+          "status": "COMPLETED",
+          "title": "Make global output flags consistent across command positions and help",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "vivid-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-dune",
+          "status": "COMPLETED",
+          "title": "Review: Make global output flags consistent across command positions and help",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.6",
+      "sha": "d17e096b85300aa82c5be79551484e0564037d4c",
+      "subject": "feat(cli): expose requires_kinds on aq task create",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.6",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.6",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.6",
+          "status": "COMPLETED",
+          "title": "Expose task workspace requirements and guard handwritten CLI/backend parity",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "agile-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/agile-summit",
+          "status": "COMPLETED",
+          "title": "Review: Expose task workspace requirements and guard handwritten CLI/backend parity",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.7",
+      "sha": "2a76cb7c777fb775a4993170cfe80575174b1907",
+      "subject": "fix(cli): retire unimplemented ask-human surface",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.7",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.7",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.7",
+          "status": "COMPLETED",
+          "title": "Resolve the advertised but unimplemented task ask-human command",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "keen-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-apex",
+          "status": "COMPLETED",
+          "title": "Review: Resolve the advertised but unimplemented task ask-human command",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.8",
+      "sha": "64066bb9f825748d94ec493c8812756c6b68819e",
+      "subject": "fix(cli): advertise the runnable form of `aq playbook inspect-run`",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.8",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.8",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.8",
+          "status": "COMPLETED",
+          "title": "Retire or explicitly deprecate the obsolete plugin hook-log command",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "fresh-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Retire or explicitly deprecate the obsolete plugin hook-log command",
+          "source": "current"
+        },
+        {
+          "id": "solid-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-lantern",
+          "status": "COMPLETED",
+          "title": "Review: Retire or explicitly deprecate the obsolete plugin hook-log command",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/keen-harbor.9",
+      "sha": "6fa48f53ac11fa2f453b6d62f58446f99f0aa243",
+      "subject": "docs(cli): refresh aq skills, CLI module map, auth and profile guidance",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/keen-harbor.9",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "keen-harbor.9",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.9",
+          "status": "COMPLETED",
+          "title": "Refresh aq skills, command examples, auth/module docs and profile guidance",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "crisp-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-glacier",
+          "status": "COMPLETED",
+          "title": "Review: Refresh aq skills, command examples, auth/module docs and profile guidance",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only."
+    },
+    {
+      "name": "aq/nimble-cascade",
+      "sha": "43449391719b630eb3b17545a6ebd842e10c0748",
+      "subject": "Preserve hierarchy lock order during integration recovery",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/nimble-cascade",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "nimble-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-cascade",
+          "status": "COMPLETED",
+          "title": "Resume the current parent conflict through durable repair events",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "crisp-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-grove",
+          "status": "COMPLETED",
+          "title": "Review: Resume the current parent conflict through durable repair events",
+          "source": "current"
+        },
+        {
+          "id": "prime-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-bridge",
+          "status": "COMPLETED",
+          "title": "Review: Resume the current parent conflict through durable repair events",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/nimble-forge",
+      "sha": "37fcaa4a13907c27717f9c4a272a82948460c37f",
+      "subject": "fix(integration): continue repeated parent repair conflicts",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/nimble-forge",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "nimble-forge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-forge",
+          "status": "COMPLETED",
+          "title": "Continue repeated parent conflicts within the frozen repair budget",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "wise-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-zenith",
+          "status": "COMPLETED",
+          "title": "Review: Continue repeated parent conflicts within the frozen repair budget",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/noble-ridge",
+      "sha": "1db9cc5f1231a5589b8c922121ab67a190290889",
+      "subject": "fix(migrations): resolve duplicate alembic revision a00000000005",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/noble-ridge",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "repair-640ced19-c324-4f6f-b50d-8f0181d181b7-0",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge",
+          "status": "COMPLETED",
+          "title": "Repair integration stage 0",
+          "source": "current"
+        },
+        {
+          "id": "repair-640ced19-c324-4f6f-b50d-8f0181d181b7-1",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge",
+          "status": "IN_PROGRESS",
+          "title": "Repair integration stage 1",
+          "source": "current"
+        },
+        {
+          "id": "noble-ridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge",
+          "status": "BLOCKED",
+          "title": "Epic: Simplify Discord to hourly activity digests and escalation threads",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD aggregate: blocked resolution recovery; local de34e965 and remote 1db9cc5f differ. Final child acceptance remains. Several latest child tips are not Git ancestors of the remote aggregate; completion does not establish collection."
+    },
+    {
+      "name": "aq/noble-ridge",
+      "sha": "de34e965e1fda18329bf95f5dd98df7f2fa69571",
+      "subject": "fix(integration): resolve noble-ridge.11 delivery conflict",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/aq/noble-ridge",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "repair-640ced19-c324-4f6f-b50d-8f0181d181b7-0",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge",
+          "status": "COMPLETED",
+          "title": "Repair integration stage 0",
+          "source": "current"
+        },
+        {
+          "id": "repair-640ced19-c324-4f6f-b50d-8f0181d181b7-1",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge",
+          "status": "IN_PROGRESS",
+          "title": "Repair integration stage 1",
+          "source": "current"
+        },
+        {
+          "id": "noble-ridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge",
+          "status": "BLOCKED",
+          "title": "Epic: Simplify Discord to hourly activity digests and escalation threads",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD aggregate: blocked resolution recovery; local de34e965 and remote 1db9cc5f differ. Final child acceptance remains. Several latest child tips are not Git ancestors of the remote aggregate; completion does not establish collection."
+    },
+    {
+      "name": "aq/noble-ridge.1",
+      "sha": "3a6795bc6705059d4474dbc2be3536d212fb372e",
+      "subject": "feat(escalations): add durable incident and digest state",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.1",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.1",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.1",
+          "status": "COMPLETED",
+          "title": "Add durable escalation, reply, delivery and digest state",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "bold-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bold-torrent",
+          "status": "COMPLETED",
+          "title": "Review: Add durable escalation, reply, delivery and digest state",
+          "source": "current"
+        }
+      ],
+      "action": "Exact tip is already in remote Discord aggregate; final epic acceptance pending."
+    },
+    {
+      "name": "aq/noble-ridge.10",
+      "sha": "822eedb0954d3d5d91b24650f2a3f33da09e613c",
+      "subject": "test(discord): cover lifecycle resilience failures",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.10",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.10",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.10",
+          "status": "COMPLETED",
+          "title": "Verify the full Discord escalation and digest lifecycle under failures",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "bold-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bold-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Verify the full Discord escalation and digest lifecycle under failures",
+          "source": "current"
+        },
+        {
+          "id": "agile-stone",
+          "project_id": "agent-queue",
+          "branch_name": "aq/agile-stone",
+          "status": "COMPLETED",
+          "title": "Review: Verify the full Discord escalation and digest lifecycle under failures",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.11",
+      "sha": "e9b05844980e11289c82da093cd4bcdfcef5774e",
+      "subject": "docs(discord): close the retired-surface gaps and guard them with a scan",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.11",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.11",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.11",
+          "status": "COMPLETED",
+          "title": "Publish Discord simplification migration, settings and operator documentation",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "eager-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/eager-vault",
+          "status": "COMPLETED",
+          "title": "Review: Publish Discord simplification migration, settings and operator documentation",
+          "source": "current"
+        },
+        {
+          "id": "vivid-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-apex",
+          "status": "COMPLETED",
+          "title": "Review: Publish Discord simplification migration, settings and operator documentation",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.2",
+      "sha": "3a13e0e7c77b160156895b2af20dcc5522de8d9b",
+      "subject": "feat(escalations): expose verified human command surface",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.2",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.2",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.2",
+          "status": "COMPLETED",
+          "title": "Expose scoped escalation commands, human-evidence application and typed APIs",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "brisk-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-torrent",
+          "status": "COMPLETED",
+          "title": "Review: Expose scoped escalation commands, human-evidence application and typed APIs",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.3",
+      "sha": "d0309c3bf7bba1ff9b584fda572c4c3f5069701a",
+      "subject": "feat(escalations): route recovery through supervisors",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.3",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.3",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.3",
+          "status": "COMPLETED",
+          "title": "Route blocked work and worker questions through supervisor-owned escalations",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "fair-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-grove",
+          "status": "COMPLETED",
+          "title": "Review: Route blocked work and worker questions through supervisor-owned escalations",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.4",
+      "sha": "da5696e224ca767438f6638545fac1844d0d1e3c",
+      "subject": "fix(digest): scope escalation reads and bound windows by generation",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.4",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.4",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.4",
+          "status": "COMPLETED",
+          "title": "Add Discord settings, escalation inbox and digest preview/status",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "eager-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/eager-glacier",
+          "status": "COMPLETED",
+          "title": "Review: Add Discord settings, escalation inbox and digest preview/status",
+          "source": "current"
+        },
+        {
+          "id": "keen-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-rapids",
+          "status": "COMPLETED",
+          "title": "Review: Add Discord settings, escalation inbox and digest preview/status",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.5",
+      "sha": "377d5c9a89c7c1eedc4b31eee21e622676b4a5c4",
+      "subject": "fix(escalations): make a confirmed root binding durable before the next send",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.5",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.5",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.5",
+          "status": "COMPLETED",
+          "title": "Deliver and reconcile one escalation post/thread per incident",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "sharp-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sharp-willow",
+          "status": "COMPLETED",
+          "title": "Review: Deliver and reconcile one escalation post/thread per incident",
+          "source": "current"
+        },
+        {
+          "id": "prime-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-delta",
+          "status": "COMPLETED",
+          "title": "Review: Deliver and reconcile one escalation post/thread per incident",
+          "source": "current"
+        },
+        {
+          "id": "noble-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-summit",
+          "status": "COMPLETED",
+          "title": "Review: Deliver and reconcile one escalation post/thread per incident",
+          "source": "current"
+        },
+        {
+          "id": "grand-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Deliver and reconcile one escalation post/thread per incident",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.6",
+      "sha": "68aa92aa655d113cb343c607f59fdeb871a638f5",
+      "subject": "feat(escalations): correlate thread replies back to the owning supervisor",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.6",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.6",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.6",
+          "status": "COMPLETED",
+          "title": "Correlate escalation-thread replies and return them only to supervisors",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "fair-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Correlate escalation-thread replies and return them only to supervisors",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.7",
+      "sha": "b0a40a07f8b4190644ea0ed258f63b2f8bd35838",
+      "subject": "feat(digest): deterministic hourly digest eligibility, aggregation and rendering",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.7",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.7",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.7",
+          "status": "COMPLETED",
+          "title": "Build deterministic activity eligibility and concise multi-project digests",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "fleet-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fleet-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Build deterministic activity eligibility and concise multi-project digests",
+          "source": "current"
+        },
+        {
+          "id": "agile-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/agile-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Build deterministic activity eligibility and concise multi-project digests",
+          "source": "current"
+        },
+        {
+          "id": "crisp-ridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-ridge",
+          "status": "COMPLETED",
+          "title": "Review: Build deterministic activity eligibility and concise multi-project digests",
+          "source": "current"
+        }
+      ],
+      "action": "Exact tip is already in remote Discord aggregate; final epic acceptance pending."
+    },
+    {
+      "name": "aq/noble-ridge.8",
+      "sha": "08c73c618bef6a74771e0155c45e51b90c76af8a",
+      "subject": "feat(digest): schedule, reserve and deliver the hourly digest",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.8",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.8",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.8",
+          "status": "COMPLETED",
+          "title": "Schedule durable hourly digests with silent idle windows and bounded catch-up",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "bright-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Schedule durable hourly digests with silent idle windows and bounded catch-up",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-ridge.9",
+      "sha": "34b2b62e3c819a99cc55b7be03bd4d1381032ed1",
+      "subject": "refactor(discord): retire control surfaces at cutover",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-ridge.9",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-ridge.9",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-ridge.9",
+          "status": "COMPLETED",
+          "title": "Migrate pending conversations and remove Discord control/chat/streaming surfaces",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "bright-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-summit",
+          "status": "COMPLETED",
+          "title": "Review: Migrate pending conversations and remove Discord control/chat/streaming surfaces",
+          "source": "current"
+        }
+      ],
+      "action": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently."
+    },
+    {
+      "name": "aq/noble-torrent",
+      "sha": "40c90c52c7300614d08ad4199cc5f87c84414c44",
+      "subject": "fix(integration): persist root branch identity",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/noble-torrent",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "noble-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-torrent",
+          "status": "COMPLETED",
+          "title": "Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "nimble-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "quick-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-grove",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-delta",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "steady-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-zenith",
+          "status": "FAILED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-bridge",
+          "status": "READY",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD/reconcile: new durable root identity fix; review solid-bridge (see current state). Prior revisions rejected for missing runtime wiring; operator snapshot already contains runtime wiring and prerequisite guards."
+    },
+    {
+      "name": "aq/parent/keen-harbor/347e783cf25a260c27f1e7664a772260/7/bd054e4129b2a66a859408f0fa2b76b62a5d670e",
+      "sha": "bd054e4129b2a66a859408f0fa2b76b62a5d670e",
+      "subject": "style(cli): format integrated inventory metadata",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/parent/keen-harbor/347e783cf25a260c27f1e7664a772260/7/bd054e4129b2a66a859408f0fa2b76b62a5d670e",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "keen-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor",
+          "status": "PAUSED",
+          "title": "Epic: Make the aq CLI consistent, robust, and fully verifiable",
+          "source": "current"
+        },
+        {
+          "id": "verify-81d0aaee-0c3a-482c-b04c-d3afe6631cbe",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor",
+          "status": "READY",
+          "title": "Verify aggregate for keen-harbor",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [],
+      "action": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes."
+    },
+    {
+      "name": "aq/prime-beacon",
+      "sha": "282addb8d294f0cf35ecee89d485f0e5becef6a9",
+      "subject": "fix(pools): persist confirmed stop when ownership retains claim",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/prime-beacon",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "prime-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-beacon",
+          "status": "COMPLETED",
+          "title": "Record confirmed pool stop while branch ownership retains the claim",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "noble-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Record confirmed pool stop while branch ownership retains the claim",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "aq/prime-ridge",
+      "sha": "e68e3788e6292603a8c8ece66341c759afa83b77",
+      "subject": "fix(database): make startup repo backfill postgres-safe",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/prime-ridge",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "prime-ridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-ridge",
+          "status": "COMPLETED",
+          "title": "Streamline header in project command center view",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "keen-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-dune",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "current"
+        },
+        {
+          "id": "nimble-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "current"
+        },
+        {
+          "id": "sound-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "archived"
+        },
+        {
+          "id": "swift-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-cascade",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "archived"
+        }
+      ],
+      "action": "MERGE NEXT: header/graph UI changes plus PostgreSQL startup query correction; review keen-dune approved final two-commit diff."
+    },
+    {
+      "name": "aq/prime-ridge-wip",
+      "sha": "653973dd1a7b50330bba746eb918cd38e71bba9b",
+      "subject": "fix(dashboard): retain graph completed opt-out",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/prime-ridge-wip",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "prime-ridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-ridge",
+          "status": "COMPLETED",
+          "title": "Streamline header in project command center view",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "keen-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-dune",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "current"
+        },
+        {
+          "id": "nimble-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "current"
+        },
+        {
+          "id": "sound-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "archived"
+        },
+        {
+          "id": "swift-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-cascade",
+          "status": "COMPLETED",
+          "title": "Review: Streamline header in project command center view",
+          "source": "archived"
+        }
+      ],
+      "action": "Older UI work-in-progress branch; use approved aq/prime-ridge final branch, not this snapshot."
+    },
+    {
+      "name": "aq/quick-falcon",
+      "sha": "9753de13552234ed2ebe839694444925710b6fe8",
+      "subject": "fix(integration): preserve candidate repair contract results",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/quick-falcon",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "quick-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-falcon",
+          "status": "COMPLETED",
+          "title": "Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "brisk-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-dune",
+          "status": "COMPLETED",
+          "title": "Review: Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        },
+        {
+          "id": "wise-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-current",
+          "status": "COMPLETED",
+          "title": "Review: Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge."
+    },
+    {
+      "name": "aq/sharp-beacon",
+      "sha": "1a7ac2c1fdcc777e185a2f6f9aa5c1fc55dfb558",
+      "subject": "fix(integration): make legacy resume refusal atomic",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/sharp-beacon",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "sharp-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sharp-beacon",
+          "status": "COMPLETED",
+          "title": "Resume an expired repair while its exact live writer holds an unpublished resolution",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "azure-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/azure-zenith",
+          "status": "FAILED",
+          "title": "Review: Resume an expired repair while its exact live writer holds an unpublished resolution",
+          "source": "current"
+        },
+        {
+          "id": "crisp-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-delta",
+          "status": "COMPLETED",
+          "title": "Review: Resume an expired repair while its exact live writer holds an unpublished resolution",
+          "source": "current"
+        },
+        {
+          "id": "nimble-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-apex",
+          "status": "FAILED",
+          "title": "Review: Resume an expired repair while its exact live writer holds an unpublished resolution",
+          "source": "current"
+        },
+        {
+          "id": "nimble-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Resume an expired repair while its exact live writer holds an unpublished resolution",
+          "source": "current"
+        },
+        {
+          "id": "clear-flare",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-flare",
+          "status": "COMPLETED",
+          "title": "Review: Resume an expired repair while its exact live writer holds an unpublished resolution",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge."
+    },
+    {
+      "name": "aq/sharp-glacier",
+      "sha": "414f9b2381d0fced0de4f97734c7f9b1f1898a82",
+      "subject": "fix(integration): preserve escalated candidate stage budget",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/sharp-glacier",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "sharp-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sharp-glacier",
+          "status": "COMPLETED",
+          "title": "Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "steady-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-rapids",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "steady-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-apex",
+          "status": "FAILED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "clear-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "smart-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/smart-vault",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge."
+    },
+    {
+      "name": "aq/smart-horizon",
+      "sha": "f929c83db145999ca0da9ce20a7172d5ddbd70c3",
+      "subject": "fix(sessions): persist pending terminal injections",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/smart-horizon",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "smart-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/smart-horizon",
+          "status": "READY",
+          "title": "Recover AQ-injected unsubmitted terminal prompts across daemon restart",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "amber-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-apex",
+          "status": "COMPLETED",
+          "title": "Review: Recover AQ-injected unsubmitted terminal prompts across daemon restart",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD: READY after reviewer amber-apex rejected substring-based prompt matching; exact composer equality correction outstanding."
+    },
+    {
+      "name": "aq/sound-apex",
+      "sha": "82712d1ac6daecaa7c09a246e3c1a940212233c2",
+      "subject": "fix(integration): continue conflict on first human resume",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/sound-apex",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "sound-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-apex",
+          "status": "COMPLETED",
+          "title": "Continue the current parent conflict on the first human repair resume",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "stark-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/stark-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Continue the current parent conflict on the first human repair resume",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/sound-current.5",
+      "sha": "54aaca69793174cb1daaf6fea386e79e6453adb2",
+      "subject": "fix(providers): measure usage staleness from last_seen_at",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/sound-current.5",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "sound-current.5",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-current.5",
+          "status": "COMPLETED",
+          "title": "Provider usage: GET /api/providers/usage",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "wise-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-harbor",
+          "status": "COMPLETED",
+          "title": "Review: Provider usage: GET /api/providers/usage",
+          "source": "archived"
+        },
+        {
+          "id": "fair-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-summit",
+          "status": "COMPLETED",
+          "title": "Review: Provider usage: GET /api/providers/usage",
+          "source": "archived"
+        }
+      ],
+      "action": "Older provider usage-staleness change; no matching active/archived task found in queried records; PR #482 open. Hold for targeted current-code review."
+    },
+    {
+      "name": "aq/sound-nexus",
+      "sha": "ec88e246a9030d3ec100486beca247902cb1a802",
+      "subject": "Merge guarded pre-reservation repair resume",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/sound-nexus",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "sound-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-nexus",
+          "status": "COMPLETED",
+          "title": "Allow guarded operator resume of an expired pre-reservation repair writer",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "solid-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-apex",
+          "status": "COMPLETED",
+          "title": "Review: Allow guarded operator resume of an expired pre-reservation repair writer",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/swift-journey",
+      "sha": "475143b0feb4f0d8a38443ec8c17d770a59f51d9",
+      "subject": "merge: deliver operator reliability fixes",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/swift-journey",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "swift-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-journey",
+          "status": "COMPLETED",
+          "title": "Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "crisp-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-current",
+          "status": "COMPLETED",
+          "title": "Review: Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "aq/wise-lantern",
+      "sha": "fa94941f8ab151c80695ade3dd0b216b15ac63de",
+      "subject": "test(tools): register playbook delete expectation",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/wise-lantern",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "wise-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-lantern",
+          "status": "COMPLETED",
+          "title": "Allow deleting playbooks from graph, list, and individual playbook views",
+          "source": "archived"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "azure-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/azure-dune",
+          "status": "COMPLETED",
+          "title": "Review: Allow deleting playbooks from graph, list, and individual playbook views",
+          "source": "archived"
+        },
+        {
+          "id": "amber-impact",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-impact",
+          "status": "FAILED",
+          "title": "Review: Allow deleting playbooks from graph, list, and individual playbook views",
+          "source": "archived"
+        },
+        {
+          "id": "eager-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/eager-journey",
+          "status": "COMPLETED",
+          "title": "Review: Allow deleting playbooks from graph, list, and individual playbook views",
+          "source": "archived"
+        }
+      ],
+      "action": "Archived AQ task COMPLETED: playbook deletion UI/API. Old PR #472 remains open; aged three-commit diff needs comparison with current V2 playbooks before any merge."
+    },
+    {
+      "name": "aq/wise-nexus",
+      "sha": "4ff4db60413137c32eb8ff2618ac46953c1a7368",
+      "subject": "fix(integration): recover stopped stale pool writers",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/wise-nexus",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [
+        {
+          "id": "wise-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-nexus",
+          "status": "COMPLETED",
+          "title": "Recover stopped stale pool writers during integration repair handoff",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "fair-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-journey",
+          "status": "COMPLETED",
+          "title": "Review: Recover stopped stale pool writers during integration repair handoff",
+          "source": "current"
+        },
+        {
+          "id": "keen-pinnacle",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-pinnacle",
+          "status": "COMPLETED",
+          "title": "Review: Recover stopped stale pool writers during integration repair handoff",
+          "source": "current"
+        }
+      ],
+      "action": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants."
+    },
+    {
+      "name": "codex/fix-triage-routing-lifecycle",
+      "sha": "257bb840beb41bad0ba9b29f4c8b26dc5b469d57",
+      "subject": "Restore applied dependency-description migration",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/codex/fix-triage-routing-lifecycle",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "codex/mandatory-triage",
+      "sha": "c0915c2a3baa3815ff419f7a4bd204c06ba5b241",
+      "subject": "fix(triage): harden authenticated routing boundary",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/codex/mandatory-triage",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD legacy/local work: ancestry-unmerged; patch uniqueness is not proof of missing functionality. Compare current implementation/spec before proposing any merge."
+    },
+    {
+      "name": "design/global-worker-pools",
+      "sha": "c3afc8bbc0283508418f5c182b8843d6fb65b347",
+      "subject": "docs(spec): global worker pools design",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/design/global-worker-pools",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "design/hierarchical-integration-trains",
+      "sha": "e3298a0207f5d8118bdb4d063217a3fbdaabe386",
+      "subject": "docs: incorporate integration trains adversarial review",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/design/hierarchical-integration-trains",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD legacy/local work: ancestry-unmerged; patch uniqueness is not proof of missing functionality. Compare current implementation/spec before proposing any merge."
+    },
+    {
+      "name": "design/project-onboarding",
+      "sha": "3843e7a4bdfe65ac863085e923eb6eae535f2b92",
+      "subject": "docs: design dashboard project onboarding",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/design/project-onboarding",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "fix/ci-integration-boundaries",
+      "sha": "171e798060f896d1d4ffbc42de4fbd808e4cd672",
+      "subject": "feat(ci): run full suites only at integration boundaries",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/fix/ci-integration-boundaries",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "fix/feature-merge-model",
+      "sha": "8a0aea2301c38088c9ed6002601022249cc051f1",
+      "subject": "feat(integration): preserve reviewed feature ancestry with merge commits",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/fix/feature-merge-model",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery."
+    },
+    {
+      "name": "fix/profile-editor-capability-namespaces",
+      "sha": "9d52fa3bc97a4c403259062ce12fb9092b277aae",
+      "subject": "fix(profiles): round-trip the tool picker through the capability namespaces",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/fix/profile-editor-capability-namespaces",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD legacy/local work: ancestry-unmerged; patch uniqueness is not proof of missing functionality. Compare current implementation/spec before proposing any merge."
+    },
+    {
+      "name": "main",
+      "sha": "39783ab5476da90e1961f133cdea92e54a851311",
+      "subject": "fix(integration): integrate fenced rejected candidate recovery with operator CLI",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/main",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "swift-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-journey",
+          "status": "COMPLETED",
+          "title": "Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "crisp-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-current",
+          "status": "COMPLETED",
+          "title": "Review: Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "action": "MERGE via published operator branch below; local main is 151 commits ahead of origin/main, 0 behind."
+    },
+    {
+      "name": "noble-torrent-root-identity",
+      "sha": "40c90c52c7300614d08ad4199cc5f87c84414c44",
+      "subject": "fix(integration): persist root branch identity",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/noble-torrent-root-identity",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "noble-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-torrent",
+          "status": "COMPLETED",
+          "title": "Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "nimble-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "quick-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-grove",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-delta",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "steady-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-zenith",
+          "status": "FAILED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-bridge",
+          "status": "READY",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        }
+      ],
+      "action": "Local alias of aq/noble-torrent at the same tip; no separate merge."
+    },
+    {
+      "name": "safety/prime-beacon-before-prereq-rebuild",
+      "sha": "74c17a84e94bfb5e86e6677ecff47d07036abd78",
+      "subject": "fix(pools): persist confirmed stop when ownership retains claim",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/safety/prime-beacon-before-prereq-rebuild",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "prime-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-beacon",
+          "status": "COMPLETED",
+          "title": "Record confirmed pool stop while branch ownership retains the claim",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "noble-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Record confirmed pool stop while branch ownership retains the claim",
+          "source": "current"
+        }
+      ],
+      "action": "Safety backup of an earlier retained-owner stop implementation; no direct merge; keep until final delivery reconciled."
+    },
+    {
+      "name": "aq/operator-background-spec-scan-20260909",
+      "sha": "58d8c386e8da3557ed4060db5829781865e17d56",
+      "subject": "fix(scheduler): run workspace spec scans outside scheduling cycles",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-background-spec-scan-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "azure-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/azure-nexus",
+          "status": "COMPLETED",
+          "title": "Keep workspace spec scanning off the scheduler critical path",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "grand-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-lantern",
+          "status": "COMPLETED",
+          "title": "Review: Keep workspace spec scanning off the scheduler critical path",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-candidate-member-cli-20260909",
+      "sha": "21639491d35270acb83705ab048846619e1e1822",
+      "subject": "Merge guarded candidate member repair CLI for live integration recovery",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-candidate-member-cli-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "quick-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-falcon",
+          "status": "COMPLETED",
+          "title": "Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "brisk-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-dune",
+          "status": "COMPLETED",
+          "title": "Review: Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        },
+        {
+          "id": "wise-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-current",
+          "status": "COMPLETED",
+          "title": "Review: Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-candidate-rejection-recovery-20260909",
+      "sha": "39783ab5476da90e1961f133cdea92e54a851311",
+      "subject": "fix(integration): integrate fenced rejected candidate recovery with operator CLI",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-candidate-rejection-recovery-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "fleet-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fleet-harbor",
+          "status": "COMPLETED",
+          "title": "Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "calm-orbit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-orbit",
+          "status": "FAILED",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "nimble-flare",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-flare",
+          "status": "COMPLETED",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        },
+        {
+          "id": "keen-cascade",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-cascade",
+          "status": "READY",
+          "title": "Review: Recover pushed candidate resolutions for already-contained frozen members",
+          "source": "current"
+        }
+      ],
+      "action": "MERGE FIRST: full accumulated operator snapshot, identical to local main; includes the other 22 operator branch tips."
+    },
+    {
+      "name": "aq/operator-claim-loop-recovery-20260909",
+      "sha": "7aabdd3905efbc8b73da1fd92344d9559dc9a4f6",
+      "subject": "Merge abandoned claim-loop recovery with successor-instance protection",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-claim-loop-recovery-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "agile-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/agile-current",
+          "status": "COMPLETED",
+          "title": "Deliver successor-instance protection for abandoned worker recycling",
+          "source": "current"
+        },
+        {
+          "id": "bright-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-grove",
+          "status": "COMPLETED",
+          "title": "Recover idle pool workers that abandon claiming after prepare failure",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "prime-harbor",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-harbor",
+          "status": "FAILED",
+          "title": "Review: Recover idle pool workers that abandon claiming after prepare failure",
+          "source": "current"
+        },
+        {
+          "id": "sound-summit",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-summit",
+          "status": "COMPLETED",
+          "title": "Review: Deliver successor-instance protection for abandoned worker recycling",
+          "source": "current"
+        },
+        {
+          "id": "sound-ember",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-ember",
+          "status": "COMPLETED",
+          "title": "Review: Recover idle pool workers that abandon claiming after prepare failure",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-cli-response-20260909",
+      "sha": "6310cb23e7451a7ea192e557f0c2a41a15f90fe2",
+      "subject": "Report interrupted command replies without replaying possible writes",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-cli-response-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "keen-harbor.16",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-harbor.16",
+          "status": "COMPLETED",
+          "title": "Deliver structured unknown-outcome errors for interrupted CLI replies",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "sound-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-willow",
+          "status": "COMPLETED",
+          "title": "Review: Deliver structured unknown-outcome errors for interrupted CLI replies",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-closed-audit-recovery-20260909",
+      "sha": "3f61fb0b3b3219ee6a2f7af33308c39b37e15305",
+      "subject": "Adopt exact closed batch audit PR across candidate revisions",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-closed-audit-recovery-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "sharp-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sharp-glacier",
+          "status": "COMPLETED",
+          "title": "Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "steady-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-rapids",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "steady-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-apex",
+          "status": "FAILED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "clear-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "smart-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/smart-vault",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-container-hold-regression-20260909",
+      "sha": "a18e68c871012ff2f437c345ab3a7b9d70eea497",
+      "subject": "Prove operator hold blocks container transfer after reserved episode",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-container-hold-regression-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "noble-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-torrent",
+          "status": "COMPLETED",
+          "title": "Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "keen-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-bridge",
+          "status": "COMPLETED",
+          "title": "Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "nimble-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "quick-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-grove",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "clear-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-journey",
+          "status": "COMPLETED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        },
+        {
+          "id": "solid-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-delta",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "steady-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-zenith",
+          "status": "FAILED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-bridge",
+          "status": "READY",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "swift-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-zenith",
+          "status": "COMPLETED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        },
+        {
+          "id": "clear-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-dune",
+          "status": "FAILED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-fleet-explain-20260909",
+      "sha": "b4abefe0387d5377fb07fef6c94a143d1afca885",
+      "subject": "fix(cli): explain fleet capacity separately from project occupancy",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-fleet-explain-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "fresh-flare",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-flare",
+          "status": "COMPLETED",
+          "title": "Deliver accurate fleet versus project pool capacity explanations",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "calm-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/calm-crest",
+          "status": "COMPLETED",
+          "title": "Review: Deliver accurate fleet versus project pool capacity explanations",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-green-ci-retry-20260909",
+      "sha": "6990d85329ffb3ab756bdc29a0f46f2b282c4022",
+      "subject": "Merge exact-green CI recovery and preserve escalated candidate replay budgets",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-green-ci-retry-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "sharp-glacier",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sharp-glacier",
+          "status": "COMPLETED",
+          "title": "Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "steady-rapids",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-rapids",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "steady-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-apex",
+          "status": "FAILED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "clear-meadow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-meadow",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        },
+        {
+          "id": "smart-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/smart-vault",
+          "status": "COMPLETED",
+          "title": "Review: Keep exact candidate CI progressing across repair-stage deadlines",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-green-rebuild-20260909",
+      "sha": "22f8d73daff026767ebb56cb30b7fcc4abbf3380",
+      "subject": "fix(integration): adopt resolved main conflicts from green candidates",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-green-rebuild-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "brisk-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-crest",
+          "status": "COMPLETED",
+          "title": "Deliver green-candidate moved-main repair adoption fix",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "noble-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-nexus",
+          "status": "COMPLETED",
+          "title": "Review: Deliver green-candidate moved-main repair adoption fix",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-member-contract-20260909",
+      "sha": "a3b68b904e7eb73c1a07955f26a307e12a2e12bd",
+      "subject": "Merge typed candidate repair result preservation",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-member-contract-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "quick-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-falcon",
+          "status": "COMPLETED",
+          "title": "Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "brisk-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-dune",
+          "status": "COMPLETED",
+          "title": "Review: Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        },
+        {
+          "id": "wise-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-current",
+          "status": "COMPLETED",
+          "title": "Review: Expose guarded candidate-member conflict recovery through the AQ CLI",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-pr-lock-20260909",
+      "sha": "df2c438938741a537b4fa5ccd1b9e50ea98a66a4",
+      "subject": "fix(integration): release repository lock before PR recovery writes",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-pr-lock-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "brisk-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-journey",
+          "status": "COMPLETED",
+          "title": "Review and deliver the PR-link recovery lock-order correction",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "swift-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Review and deliver the PR-link recovery lock-order correction",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-pre-reservation-resume-20260909",
+      "sha": "3d28ddb7abddd85da5db967cf949775a9df6ead2",
+      "subject": "fix(integration): rearm exact repair writer before push reservation",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-pre-reservation-resume-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "sound-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-nexus",
+          "status": "COMPLETED",
+          "title": "Allow guarded operator resume of an expired pre-reservation repair writer",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "solid-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-apex",
+          "status": "COMPLETED",
+          "title": "Review: Allow guarded operator resume of an expired pre-reservation repair writer",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-prerequisite-delivery-20260909",
+      "sha": "abef631edda57af7673846737f82fe56602593c9",
+      "subject": "Integrate receipt-backed prerequisite preparation and safe container bootstrap",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-prerequisite-delivery-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "noble-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-torrent",
+          "status": "COMPLETED",
+          "title": "Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "nimble-horizon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/nimble-horizon",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "quick-grove",
+          "project_id": "agent-queue",
+          "branch_name": "aq/quick-grove",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-delta",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-delta",
+          "status": "COMPLETED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "steady-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-zenith",
+          "status": "FAILED",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        },
+        {
+          "id": "solid-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/solid-bridge",
+          "status": "READY",
+          "title": "Review: Start untouched container collection and gate dependents on delivered prerequisites",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-recovery-followups-20260909",
+      "sha": "6340eab7fc2cc5360cd13b294a1f3943110f9fd3",
+      "subject": "fix(integration): recognize canonical main delivery receipts when sealing",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-recovery-followups-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "grand-vault",
+          "project_id": "agent-queue",
+          "branch_name": "aq/grand-vault",
+          "status": "COMPLETED",
+          "title": "Deliver canonical root-receipt eligibility and recovery migration follow-through",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "sound-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/sound-dune",
+          "status": "COMPLETED",
+          "title": "Review: Deliver canonical root-receipt eligibility and recovery migration follow-through",
+          "source": "current"
+        },
+        {
+          "id": "swift-apex",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-apex",
+          "status": "COMPLETED",
+          "title": "Review: Deliver canonical root-receipt eligibility and recovery migration follow-through",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-reliability-20260909",
+      "sha": "7391eeac947d1cc43880bed40fa640209beddd5b",
+      "subject": "Fence historical claim recovery to the exact repair operation",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-reliability-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "amber-crest",
+          "project_id": "agent-queue",
+          "branch_name": "aq/amber-crest",
+          "status": "COMPLETED",
+          "title": "Recover detached historical repair claims after pool slot reuse",
+          "source": "current"
+        },
+        {
+          "id": "swift-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-journey",
+          "status": "COMPLETED",
+          "title": "Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "crisp-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-current",
+          "status": "COMPLETED",
+          "title": "Review: Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        },
+        {
+          "id": "keen-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Recover detached historical repair claims after pool slot reuse",
+          "source": "current"
+        },
+        {
+          "id": "crisp-torrent",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-torrent",
+          "status": "COMPLETED",
+          "title": "Review: Recover detached historical repair claims after pool slot reuse",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-resolution-prevalidation-20260909",
+      "sha": "6e8d4748f29c496ee5ea83f3d8cd338c4cab3b74",
+      "subject": "Validate resolution Git proof before freezing reservation",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-resolution-prevalidation-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "bright-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/bright-journey",
+          "status": "COMPLETED",
+          "title": "Recover malformed unwritten parent resolution reservations",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "brisk-ember",
+          "project_id": "agent-queue",
+          "branch_name": "aq/brisk-ember",
+          "status": "READY",
+          "title": "Review: Recover malformed unwritten parent resolution reservations",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-retained-owner-stop-20260909",
+      "sha": "56636748c3f80d0efbda2da750d50be2c3f9a66f",
+      "subject": "fix(pools): persist confirmed stop when ownership retains claim",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-retained-owner-stop-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "prime-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/prime-beacon",
+          "status": "COMPLETED",
+          "title": "Record confirmed pool stop while branch ownership retains the claim",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "noble-falcon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/noble-falcon",
+          "status": "COMPLETED",
+          "title": "Review: Record confirmed pool stop while branch ownership retains the claim",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-routing-diagnostics-20260909",
+      "sha": "e1888186985c08dbd73bb7d3350dfe540e0f5fb3",
+      "subject": "fix(cli): give executable disabled-pool recovery command",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-routing-diagnostics-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "fresh-beacon",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fresh-beacon",
+          "status": "READY",
+          "title": "Prevent automatic routing from stranding ready work on disabled worker pools",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "clear-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-willow",
+          "status": "COMPLETED",
+          "title": "Review: Prevent automatic routing from stranding ready work on disabled worker pools",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-scheduler-diagnostics-20260909",
+      "sha": "f3413ae74a8de7054191bb7fcc40b8e0c0d9d1a1",
+      "subject": "diagnostics: report long scheduler await chains without cancellation",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-scheduler-diagnostics-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "vivid-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-current",
+          "status": "READY",
+          "title": "Deliver non-interrupting long scheduler cycle diagnostics",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-stopped-pool-handoff-20260909",
+      "sha": "5df42ba798e10e4a8c80fa725cd24dd7cbd3bdf2",
+      "subject": "fix(integration): recover exact stopped pool writer attachments safely",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-stopped-pool-handoff-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "wise-nexus",
+          "project_id": "agent-queue",
+          "branch_name": "aq/wise-nexus",
+          "status": "COMPLETED",
+          "title": "Recover stopped stale pool writers during integration repair handoff",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "fair-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-journey",
+          "status": "COMPLETED",
+          "title": "Review: Recover stopped stale pool writers during integration repair handoff",
+          "source": "current"
+        },
+        {
+          "id": "keen-pinnacle",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-pinnacle",
+          "status": "COMPLETED",
+          "title": "Review: Recover stopped stale pool writers during integration repair handoff",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-stopped-verifier-recovery-20260909",
+      "sha": "a409458fdb030b0216e73e0c2076f88c48f5d528",
+      "subject": "fix(integration): prove stopped historical workspace users before verifier recovery",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-stopped-verifier-recovery-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "fair-willow",
+          "project_id": "agent-queue",
+          "branch_name": "aq/fair-willow",
+          "status": "COMPLETED",
+          "title": "Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "vivid-lantern",
+          "project_id": "agent-queue",
+          "branch_name": "aq/vivid-lantern",
+          "status": "READY",
+          "title": "Review: Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+          "source": "current"
+        },
+        {
+          "id": "steady-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/steady-current",
+          "status": "COMPLETED",
+          "title": "Review: Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "aq/operator-verifier-close-20260909",
+      "sha": "afd54e73748cbf2171c9bd05f77b6fc156305fba",
+      "subject": "Complete aggregate verifiers idempotently while honoring operator holds",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/operator-verifier-close-20260909",
+      "project": "agent-queue",
+      "group": "aq",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "keen-bridge",
+          "project_id": "agent-queue",
+          "branch_name": "aq/keen-bridge",
+          "status": "COMPLETED",
+          "title": "Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "clear-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-journey",
+          "status": "COMPLETED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        },
+        {
+          "id": "swift-zenith",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-zenith",
+          "status": "COMPLETED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        },
+        {
+          "id": "clear-dune",
+          "project_id": "agent-queue",
+          "branch_name": "aq/clear-dune",
+          "status": "FAILED",
+          "title": "Review: Keep aggregate verifier close out of legacy PR-to-main verification",
+          "source": "current"
+        }
+      ],
+      "action": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge."
+    },
+    {
+      "name": "agile-zenith/implement-notification-abstraction-plan-from-scratchpad",
+      "sha": "cc1a7b9b9c73e9cdf6ae5bd2fc336e54fcf08183",
+      "subject": "Remove legacy notification callback plumbing (Phase 4)",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/agile-zenith/implement-notification-abstraction-plan-from-scratchpad",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "aq/keen-current-10",
+      "sha": "cc5ea65ab5240b5a9e92524aa09a1920a3d3c275",
+      "subject": "fix(sessions): recover a nudge whose Enter was lost to the composer",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/aq/keen-current-10",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "crisp-lantern/build-plugin-system-for-agentqueue-extensibility",
+      "sha": "25a31ed2fb5a7d073346c84237b8190cd517033c",
+      "subject": "Add plugin management commands, Discord slash commands, and self-update flow",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/crisp-lantern/build-plugin-system-for-agentqueue-extensibility",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/claude-sessions",
+      "sha": "1f73fd514ef3bb3d050c17d31a8ebfd31f6b2e87",
+      "subject": "Use thumbs-up reaction instead of reply for injected thread messages",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/claude-sessions",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/dashboard",
+      "sha": "f956ecb5b7b449802cc9ebaab4cc9d5fe794742e",
+      "subject": "Fix text_parts called as method; it's a @property",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/dashboard",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/dashboard-refactor",
+      "sha": "ad8a59617fb63db9396ae5ea99fbc8118fdd52ae",
+      "subject": "Add project deletion with type-to-confirm danger zone",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/dashboard-refactor",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/db-rewrite",
+      "sha": "d6a1be1ed619822f955b322237d8b44ddd54d9fb",
+      "subject": "Fix closed database error when stopping in-progress tasks",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/db-rewrite",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/hooks-improvements",
+      "sha": "f785e51804bc41ad5f52599e2fa7578a9356023d",
+      "subject": "Add timeout to hook LLM invocations to prevent stuck hooks",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/hooks-improvements",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/logging-update",
+      "sha": "8a9a660f0fd84e12a8ec1201e0b1081d5b85496d",
+      "subject": "Merge upstream/main into feature/logging-update",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/logging-update",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/parallelize-tests",
+      "sha": "c53e058d4d57006a22d71704d5a320b4e776d415",
+      "subject": " Parallelize full test suite with pytest-xdist for ~5\u00d7 speedup",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/parallelize-tests",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/playbooks-in-dashboard",
+      "sha": "3e00e044b53f960401139fb423aac68d88581bbb",
+      "subject": "Fail the run when a terminal playbook node errors",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/playbooks-in-dashboard",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/plugin-logging-improvements",
+      "sha": "01f75c38827e17851802124d1e83be670c2965e4",
+      "subject": "Add contextual logger to PluginContext and fix stale config tests",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/plugin-logging-improvements",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/postgres-support",
+      "sha": "b73c98995ec6d958612f88f9f2b4243b4cbd3df4",
+      "subject": "Fix PG sequence desync after SQLite-to-Postgres migration",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/postgres-support",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/sandboxed-playbooks",
+      "sha": "debb1f52f1c0aaf5c8d9a38b36001ee5f9db7bcb",
+      "subject": "Sync docs to MCP registry, profile sandbox, and config editor changes",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/sandboxed-playbooks",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "feature/token-stuff",
+      "sha": "73744ee1c350f11ab56de2991502843dc8942f97",
+      "subject": "Add token_audit command for time-range usage breakdown",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/feature/token-stuff",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "fix/run-command-keyerror",
+      "sha": "b9154c41dbc51808d2a413724015c88ac6f6f716",
+      "subject": "Fix run_command KeyError when command or working_dir omitted",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/fix/run-command-keyerror",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "main",
+      "sha": "c3ab7b414493e793ccfc754ee0bdb8b07b112b5e",
+      "subject": "Merge remote-tracking branch 'upstream/main'",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/main",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [
+        {
+          "id": "swift-journey",
+          "project_id": "agent-queue",
+          "branch_name": "aq/swift-journey",
+          "status": "COMPLETED",
+          "title": "Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "review_tasks": [
+        {
+          "id": "crisp-current",
+          "project_id": "agent-queue",
+          "branch_name": "aq/crisp-current",
+          "status": "COMPLETED",
+          "title": "Review: Review and deliver accumulated operator reliability fixes through the integration train",
+          "source": "current"
+        }
+      ],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "merge-upstream",
+      "sha": "45becd5afe243507cf03a58bdb03c533696083ad",
+      "subject": "Merge upstream/main with conflict resolution",
+      "locations": [
+        "darcyle"
+      ],
+      "ref": "refs/remotes/darcyle/merge-upstream",
+      "project": "agent-queue",
+      "group": "upstream",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 historical upstream work; no independent main merge proposed. Establish current applicability and task ownership first."
+    },
+    {
+      "name": "aq/nimble-dune",
+      "sha": "dc8a61acdd78bfebd62de4499162ece70a6d20c8",
+      "subject": "Integrate task nimble-dune.1",
+      "locations": [
+        "origin"
+      ],
+      "ref": "refs/remotes/origin/aq/nimble-dune",
+      "project": "matter-engine-cpp",
+      "group": "matter",
+      "direct_tasks": [
+        {
+          "id": "nimble-dune",
+          "project_id": "matter-engine-cpp",
+          "branch_name": "aq/nimble-dune",
+          "status": "PAUSED",
+          "title": "Epic: Agent-facing scene inspection and precise selection",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 only first child collected; complete epic and acceptance before main delivery."
+    },
+    {
+      "name": "aq/nimble-dune.1",
+      "sha": "870fcc84fcfee94dcfd5daf685ea1aa3b3d01ff7",
+      "subject": "test(cmake): update editor graph census",
+      "locations": [
+        "local",
+        "origin"
+      ],
+      "ref": "refs/heads/aq/nimble-dune.1",
+      "project": "matter-engine-cpp",
+      "group": "matter",
+      "direct_tasks": [
+        {
+          "id": "nimble-dune.1",
+          "project_id": "matter-engine-cpp",
+          "branch_name": "aq/nimble-dune.1",
+          "status": "COMPLETED",
+          "title": "Define discoverable agent command and response contracts",
+          "source": "current"
+        }
+      ],
+      "related_tasks": [],
+      "review_tasks": [
+        {
+          "id": "stark-bridge",
+          "project_id": "matter-engine-cpp",
+          "branch_name": "aq/stark-bridge",
+          "status": "COMPLETED",
+          "title": "Review: Define discoverable agent command and response contracts",
+          "source": "current"
+        },
+        {
+          "id": "eager-pinnacle",
+          "project_id": "matter-engine-cpp",
+          "branch_name": "aq/eager-pinnacle",
+          "status": "FAILED",
+          "title": "Review: Define discoverable agent command and response contracts",
+          "source": "current"
+        }
+      ],
+      "action": "COLLECTED \u2014 deliver through nimble-dune epic, not separately."
+    },
+    {
+      "name": "claude/decal-ground-compositing-spec",
+      "sha": "9e3c25f8c82c5fccd9d59d0a76654efaf12397e9",
+      "subject": "spec: warped ground field \u2014 Wang-resolution single-field march, decals in-field",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/claude/decal-ground-compositing-spec",
+      "project": "matter-engine-cpp",
+      "group": "matter",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 local Matter feature/spec work; no matching AQ record established. Needs separate scope review."
+    },
+    {
+      "name": "claude/objective-ardinghelli-8941aa",
+      "sha": "799fae552b59621e30acff583942c7d135b357d5",
+      "subject": "Guard the ME3_CPP <-> ME3_OBJ bijection instead of trusting review",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/claude/objective-ardinghelli-8941aa",
+      "project": "matter-engine-cpp",
+      "group": "matter",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 local Matter feature/spec work; no matching AQ record established. Needs separate scope review."
+    },
+    {
+      "name": "codex/far-field-impostors",
+      "sha": "d4b6c2756dc358664788bb625f767f790b39d814",
+      "subject": "docs(redesign): R9 proxy world \u2014 occlusion-gated, nearest-first streaming",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/codex/far-field-impostors",
+      "project": "matter-engine-cpp",
+      "group": "matter",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 local Matter feature/spec work; no matching AQ record established. Needs separate scope review."
+    },
+    {
+      "name": "codex/river-hydrology",
+      "sha": "a26acbfd6d431b4e526a37f85712d20ed9a1054a",
+      "subject": "test: update staged river field contract",
+      "locations": [
+        "local"
+      ],
+      "ref": "refs/heads/codex/river-hydrology",
+      "project": "matter-engine-cpp",
+      "group": "matter",
+      "direct_tasks": [],
+      "related_tasks": [],
+      "review_tasks": [],
+      "action": "HOLD \u2014 local Matter feature/spec work; no matching AQ record established. Needs separate scope review."
+    }
+  ]
+}

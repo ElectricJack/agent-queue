@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:eaac637309b22ef461f6b0ec4af0607c6baaac204f1c5369c8ef4b39866e6b6d",
+    "artifact_sha256": "sha256:b894e6bc791942583a9ab4afa8a0731d9f036d20e7f0136bbc00103933cb2bd9",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:af1467721bd2f9a0febccfa63f2881a5aef07c7eae14fb1a2be9ee2965a8c835",
+    "contract_fingerprint": "sha256:209dc19b99329ce904a31045b4792ae440ab7acca9d5486ae9c1d3399afab5ac",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",
@@ -21,9 +21,19 @@
     "activated_at": null,
     "activated_by": null,
     "pending_event_count": 0,
-    "running_count": 0
+    "running_count": 0,
+    "source_path": null,
+    "source_sha256": null,
+    "active_source_sha256": null,
+    "source_drift": null,
+    "source_error": null
   },
   "purpose": "routine",
+  "execution_requirements": {
+    "required_features": [],
+    "required_capabilities": [],
+    "state_schema_version": null
+  },
   "event_groups": [
     {
       "event_type": "task.completed",
@@ -39,7 +49,7 @@
         "sweep-on-spec-approved"
       ],
       "node_count": 6,
-      "edge_count": 13
+      "edge_count": 14
     }
   ],
   "rules": [
@@ -95,6 +105,7 @@
   ],
   "nodes": [
     {
+      "script": null,
       "id": "ensure-review-task",
       "rule_id": "review-on-task-completed",
       "step_kind": "command",
@@ -220,7 +231,8 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+        "contract_fingerprint": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5",
+        "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/ensure_task.md",
         "renderer": "contract"
       },
       "badges": [
@@ -375,6 +387,18 @@
             "created": {
               "title": "Created",
               "type": "boolean"
+            },
+            "parent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Parent Id"
             }
           },
           "required": [
@@ -410,7 +434,7 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc"
+        "execution_fingerprint": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5"
       },
       "diagnostics": [],
       "out_degree": 4,
@@ -420,6 +444,7 @@
       }
     },
     {
+      "script": null,
       "id": "classify-risk",
       "rule_id": "review-on-task-completed",
       "step_kind": "llm",
@@ -556,6 +581,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [
@@ -736,6 +762,7 @@
       }
     },
     {
+      "script": null,
       "id": "escalate",
       "rule_id": "review-on-task-completed",
       "step_kind": "agent_task",
@@ -839,6 +866,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [
@@ -915,6 +943,8 @@
           },
           "type": "agent_task",
           "profile_id": "reviewer",
+          "intelligence_class": null,
+          "task_type": null,
           "objective": {
             "type": "literal",
             "value": "Re-review the change and record the riskiest line"
@@ -992,6 +1022,7 @@
       }
     },
     {
+      "script": null,
       "id": "await-approval",
       "rule_id": "review-on-task-completed",
       "step_kind": "wait",
@@ -1104,6 +1135,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [
@@ -1251,6 +1283,7 @@
       }
     },
     {
+      "script": null,
       "id": "review-unavailable",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1283,6 +1316,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [],
@@ -1327,6 +1361,7 @@
       }
     },
     {
+      "script": null,
       "id": "cancelled-end",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1359,6 +1394,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [],
@@ -1403,6 +1439,7 @@
       }
     },
     {
+      "script": null,
       "id": "done",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1435,6 +1472,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [],
@@ -1479,6 +1517,7 @@
       }
     },
     {
+      "script": null,
       "id": "list-downstream",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "command",
@@ -1550,9 +1589,18 @@
             "target_title": "Sweep failed",
             "reserved": true,
             "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "rejected",
+            "label": "Rejected",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": false,
+            "terminal_outcome": "failed"
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [
@@ -1599,7 +1647,8 @@
           "save_result_as": "downstream",
           "transitions": {
             "listed": "for-each-task",
-            "runtime_error": "sweep-failed"
+            "runtime_error": "sweep-failed",
+            "rejected": "sweep-failed"
           }
         },
         "resolved_inputs": [
@@ -1665,13 +1714,14 @@
           }
         }
       ],
-      "out_degree": 2,
+      "out_degree": 3,
       "position": {
         "x": 4,
         "y": 0
       }
     },
     {
+      "script": null,
       "id": "for-each-task",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "foreach",
@@ -1753,6 +1803,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [
@@ -1775,6 +1826,7 @@
           "redacted": false,
           "type_name": null
         },
+        "max_iterations": 500,
         "item_binding": "task",
         "failure_policy": "collect",
         "body_entry_step_id": "open-gate",
@@ -1895,6 +1947,7 @@
       }
     },
     {
+      "script": null,
       "id": "open-gate",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "command",
@@ -2040,7 +2093,8 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+        "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
+        "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/gate_create.md",
         "renderer": "contract"
       },
       "badges": [
@@ -2271,7 +2325,7 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d"
+        "execution_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5"
       },
       "diagnostics": [],
       "out_degree": 5,
@@ -2281,6 +2335,7 @@
       }
     },
     {
+      "script": null,
       "id": "check-gate",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "decision",
@@ -2354,6 +2409,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [],
@@ -2442,6 +2498,7 @@
       }
     },
     {
+      "script": null,
       "id": "sweep-done",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "terminal",
@@ -2474,6 +2531,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [],
@@ -2518,6 +2576,7 @@
       }
     },
     {
+      "script": null,
       "id": "sweep-failed",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "terminal",
@@ -2550,6 +2609,7 @@
           }
         ],
         "contract_fingerprint": null,
+        "docs_url": null,
         "renderer": "canonical"
       },
       "badges": [],
@@ -2872,6 +2932,18 @@
       "condition": null
     },
     {
+      "id": "sweep-on-spec-approved::list-downstream::rejected",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "list-downstream",
+      "source_port": "rejected",
+      "target": "sweep-failed",
+      "outcome": "rejected",
+      "label": "Rejected",
+      "kind": "failure",
+      "reserved": false,
+      "condition": null
+    },
+    {
       "id": "sweep-on-spec-approved::for-each-task::body",
       "rule_id": "sweep-on-spec-approved",
       "source": "for-each-task",
@@ -3093,6 +3165,7 @@
   ],
   "legend": {
     "step_kinds": {
+      "script": "Script",
       "command": "Command",
       "llm": "AI",
       "agent_task": "Delegated task",
