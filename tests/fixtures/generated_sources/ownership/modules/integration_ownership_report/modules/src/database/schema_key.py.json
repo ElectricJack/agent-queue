@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/database/schema_key.py::schema_inputs": "Generic migration drift hashing; guard installer itself is charged in full."
+  }
+}
