@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -272,9 +273,10 @@ class TestAllowlistClassifier:
         al = Allowlist(f)
         assert "jack@example.com" in al.entries
 
-        # Wait briefly so mtime can change (some filesystems have 1s resolution).
-        time.sleep(1.1)
+        previous_mtime = f.stat().st_mtime_ns
         _write_allowlist(f, senders=["jack@example.com", "jessica@example.com"])
+        # Force a detectable change even on filesystems with coarse timestamps.
+        os.utime(f, ns=(previous_mtime, previous_mtime + 2_000_000_000))
         # Reloads lazily on next access.
         assert "jessica@example.com" in al.entries
         assert len(al.entries) == 2

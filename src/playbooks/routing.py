@@ -18,6 +18,7 @@ from src.playbooks.definition import (
     step_targets,
 )
 from src.playbooks.expressions import (
+    EvaluationBudget,
     ResolutionScope,
     ValueResolutionError,
     evaluate_condition,
@@ -98,7 +99,20 @@ async def refresh_routing_activation_snapshot(
             except Exception:  # noqa: BLE001 - empty is the fail-closed state
                 logger.exception("could not refresh the routing activation snapshot")
                 rows = []
-            install_routing_activation_snapshot(manager, rows, artifact_store=artifact_store)
+            loaded = []
+            for row in rows:
+                if row.get("health") != "ready" or not row.get("active_artifact_sha256"):
+                    continue
+                try:
+                    artifact_store.load(row["active_artifact_sha256"])
+                except Exception:  # noqa: BLE001 - bad artifact cannot enter admission
+                    logger.exception(
+                        "Quarantining routing snapshot playbook %s artifact %s",
+                        row.get("playbook_id"), row["active_artifact_sha256"],
+                    )
+                    continue
+                loaded.append(row)
+            install_routing_activation_snapshot(manager, loaded, artifact_store=artifact_store)
 
     refresh = asyncio.create_task(publish())
     try:
@@ -223,10 +237,11 @@ def _artifact_command_effects(
                         f"rule {rule.id!r} targets missing step {step_id!r}"
                     )
                 if isinstance(step, DecisionStep) and match_filter:
+                    budget = EvaluationBudget()
                     target = step.default
                     try:
                         for case in step.cases:
-                            if evaluate_condition(case.when, ResolutionScope(event=event)):
+                            if evaluate_condition(case.when, ResolutionScope(event=event), budget):
                                 target = case.goto
                                 break
                     except ValueResolutionError as exc:
@@ -236,10 +251,11 @@ def _artifact_command_effects(
                     pending.append(target)
                     continue
                 if isinstance(step, CommandStep):
+                    budget = EvaluationBudget()
                     inputs: dict[str, Any] = {}
                     for name, value in step.inputs.items():
                         try:
-                            inputs[name] = resolve_value(value, ResolutionScope(event=event))
+                            inputs[name] = resolve_value(value, ResolutionScope(event=event), budget)
                         except ValueResolutionError as exc:
                             if match_filter:
                                 raise _RoutingArtifactUnavailable(

@@ -21,9 +21,97 @@ from src.config import (
     ProviderFailoverConfig,
     SchedulingConfig,
     ScratchProbeConfig,
+    WaitKindPolicy,
+    WaitPolicyConfig,
+    WaitProjectOverrides,
     load_config,
 )
 from tests.db_fixtures import lease_dsn
+
+
+@pytest.mark.parametrize("name,value", [
+    ("v2_enabled", "false"), ("hibernation_enabled", 1),
+    ("scheduler_waits_enabled", None), ("v1_bodies", "unknown"),
+    ("in_place_ceiling_seconds", 59), ("in_place_ceiling_seconds", 86401),
+    ("hibernate_margin", 0.9), ("hibernate_margin", float("nan")),
+    ("resume_cost_minutes", -1), ("resume_cost_minutes", float("inf")),
+    ("min_samples", 0), ("min_samples", True),
+    ("loop_window_registrations", -1), ("loop_window_seconds", 0),
+    ("branch_admission_deadline_seconds", -1), ("transition_budget_seconds", -1),
+    ("resume_launch_attempts", 0), ("projects", []), ("kinds", []),
+    ("resume_stall_seconds", 0), ("resume_stall_seconds", True), ("resume_stall_seconds", 86401),
+])
+def test_wait_policy_invalid_scalars_return_config_errors(name, value):
+    errors = WaitPolicyConfig(**{name: value}).validate()
+    assert any(error.section == "wait_policy" and error.field == name for error in errors)
+    assert all(isinstance(error, ConfigError) for error in errors)
+
+
+def test_wait_policy_aggregates_nested_validation_errors():
+    policy = WaitPolicyConfig(
+        projects={
+            "broken": WaitProjectOverrides(
+                resume_cost_minutes=-10, in_place_ceiling_seconds=90000,
+                kinds={
+                    "task": WaitKindPolicy(-1, -1),
+                    "unknown": WaitKindPolicy(),
+                    "human": WaitKindPolicy(),
+                },
+            ),
+        },
+    )
+    errors = {error.field for error in policy.validate()}
+    assert errors == {
+        "projects.broken.resume_cost_minutes", "projects.broken.in_place_ceiling_seconds",
+        "projects.broken.kinds.task.escalate_after_seconds",
+        "projects.broken.kinds.task.expected_duration_seconds",
+        "projects.broken.kinds.unknown", "projects.broken.kinds.human",
+    }
+    app = AppConfig(wait_policy=policy)
+    assert errors <= {error.field for error in app.validate() if error.section == "wait_policy"}
+
+
+@pytest.mark.parametrize("values,path", [
+    ({"typo": 1}, "typo"),
+    ({"kinds": {"unknown": {}}}, "kinds.unknown"),
+    ({"kinds": {"task": {"typo": 1}}}, "kinds.task.typo"),
+    ({"kinds": {"human": {"escalate_after_seconds": 3600}}}, "kinds.human"),
+    ({"projects": {"p": {"typo": 1}}}, "projects.p.typo"),
+    ({"projects": {"p": {"kinds": {"human": {}}}}}, "projects.p.kinds.human"),
+    ({"projects": {"p": {"kinds": {"job": {"typo": 1}}}}}, "projects.p.kinds.job.typo"),
+    ({"projects": {"p": {"resume_cost_minutes": -1}}}, "projects.p.resume_cost_minutes"),
+    ({"projects": {"p": {"v2_enabled": "true"}}}, "projects.p.v2_enabled"),
+    ({"projects": []}, "projects"),
+    ({"projects": {"p": []}}, "projects.p"),
+    ({"kinds": []}, "kinds"),
+    ({"kinds": {"task": []}}, "kinds.task"),
+    ({"resume_cost_minutes": "ten"}, "resume_cost_minutes"),
+    ({"metrics": []}, "metrics"),
+    ({"metrics": {"typo": 1}}, "metrics.typo"),
+    ({"metrics": {"pre_rollout_turn_rate": -1}}, "metrics.pre_rollout_turn_rate"),
+    ({"metrics": {"cohort": ""}}, "metrics.cohort"),
+    ([], "must be a mapping"),
+    (None, "must be a mapping"),
+])
+def test_wait_policy_loader_rejects_unknown_keys_and_invalid_shapes(tmp_path, values, path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_test"},
+        "wait_policy": values,
+    }))
+    with pytest.raises(ConfigValidationError) as exc:
+        load_config(str(config_file))
+    assert any("[wait_policy]" in error and path in error for error in exc.value.errors)
+
+
+@pytest.mark.parametrize("seconds", [60, 86400])
+def test_wait_policy_accepts_deadline_and_ceiling_boundaries(seconds):
+    assert WaitPolicyConfig(
+        in_place_ceiling_seconds=seconds,
+        branch_admission_deadline_seconds=seconds,
+        kinds={"task": WaitKindPolicy(seconds, 0)},
+    ).validate() == []
 
 
 class TestGitHubAppConfigValidation:
@@ -57,6 +145,23 @@ integration:
             private_key_path="/run/secrets/aq-github-app.pem",
         )
         assert "private_key" not in vars(config.integration.github_app)
+
+    @pytest.mark.parametrize("permission", ["read", "write", "admin", True, None, [], {}])
+    def test_actions_permission_load_and_validation(self, tmp_path, permission):
+        values = dict(client_id="Iv1.example", app_id=101, installation_id=202,
+                      private_key_path="/run/secrets/key.pem", actions_permission=permission)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.safe_dump({"messaging_platform": "none",
+            "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
+            "integration": {"github_app": values}}))
+        errors = GitHubAppConfig(**values).validate()
+        if isinstance(permission, str) and permission in ("read", "write"):
+            assert errors == []
+            assert load_config(str(config_file)).integration.github_app.actions_permission == permission
+        else:
+            assert any(e.field == "github_app.actions_permission" for e in errors)
+            with pytest.raises(ConfigValidationError, match="github_app"):
+                load_config(str(config_file))
 
     @pytest.mark.parametrize(
         "github_app",
@@ -947,6 +1052,72 @@ def test_pane_stream_rejects_non_positive():
     assert "pane_stream_max_sessions" in fields
 
 
+# ── sessions.worker_claude_plugin_overrides ─────────────────────────
+
+
+def test_worker_plugin_overrides_default_is_empty_and_valid():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig()
+    assert cfg.worker_claude_plugin_overrides == {}
+    assert cfg.validate() == []
+
+
+def test_worker_plugin_overrides_accepts_a_valid_name_at_marketplace_bool():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(
+        worker_claude_plugin_overrides={"fast-jev-compaction@fast-jev-compaction": False}
+    )
+    assert cfg.validate() == []
+
+
+def test_worker_plugin_overrides_rejects_a_non_mapping():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(worker_claude_plugin_overrides="not-a-mapping")  # type: ignore[arg-type]
+    errors = cfg.validate()
+    assert any(
+        e.field == "worker_claude_plugin_overrides" and "must be a mapping" in e.message
+        for e in errors
+    ), errors
+
+
+def test_worker_plugin_overrides_rejects_a_bare_name_id():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(worker_claude_plugin_overrides={"myplugin": True})
+    errors = cfg.validate()
+    assert any(
+        e.field.startswith("worker_claude_plugin_overrides.") and "name@marketplace" in e.message
+        for e in errors
+    ), errors
+
+
+def test_worker_plugin_overrides_rejects_a_non_bool_value():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(
+        worker_claude_plugin_overrides={"fast-jev-compaction@fast-jev-compaction": "nope"}  # type: ignore[dict-item]
+    )
+    errors = cfg.validate()
+    assert any(
+        e.field == "worker_claude_plugin_overrides.fast-jev-compaction@fast-jev-compaction"
+        and "must be a bool" in e.message
+        for e in errors
+    ), errors
+
+
+def test_worker_plugin_overrides_coerces_keys_to_strings():
+    """The loader stringifies keys so a YAML-integer key survives the hop."""
+    from src.config import _worker_plugin_overrides
+
+    assert _worker_plugin_overrides(None) == {}
+    loaded = _worker_plugin_overrides({1: False})
+    assert list(loaded) == ["1"]  # coercion is the loader's job
+    assert list(_worker_plugin_overrides(["a"]) ) == ["a"]  # non-mapping kept for validate()
+
+
 def test_transcript_startup_replay_limit_is_loaded_and_non_negative(tmp_path):
     from src.config import SessionsConfig
 
@@ -1057,6 +1228,16 @@ class TestSubstrateLoaderDefaults:
         assert cfg.sessions.provider == SessionsConfig().provider
         assert cfg.sessions.lease_ttl_seconds == 90
 
+    def test_idle_claim_timeout_defaults_loads_and_rejects_negative(self, tmp_path):
+        from src.config import SessionsConfig
+
+        assert SessionsConfig().idle_claim_timeout_seconds == 900
+        cfg = self._load(tmp_path, sessions={"idle_claim_timeout_seconds": 120})
+        assert cfg.sessions.idle_claim_timeout_seconds == 120
+        assert not SessionsConfig(idle_claim_timeout_seconds=0).validate()
+        errors = SessionsConfig(idle_claim_timeout_seconds=-1).validate()
+        assert any(error.field == "idle_claim_timeout_seconds" for error in errors)
+
     def test_sessions_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
             tmp_path,
@@ -1075,7 +1256,60 @@ class TestSubstrateLoaderDefaults:
     def test_worktrees_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
             tmp_path,
-            worktrees={"enabled": False, "salvage_max_bytes": 1234},
+            worktrees={"enabled": False, "salvage_max_bytes": 1234,
+                       "slot_reset_git_timeout_seconds": 900,
+                       "slot_reset_git_timeouts": {"matter-engine-cpp": 1800}},
         )
         assert cfg.worktrees.enabled is False
         assert cfg.worktrees.salvage_max_bytes == 1234
+        assert cfg.worktrees.slot_reset_git_timeout_seconds == 900
+        assert cfg.worktrees.slot_reset_git_timeouts == {"matter-engine-cpp": 1800}
+
+
+@pytest.mark.parametrize("seconds", [0, -1, True, "600", 0.5, None])
+def test_slot_reset_git_timeout_requires_positive_integer(seconds):
+    from src.config import WorktreesConfig
+
+    errors = WorktreesConfig(slot_reset_git_timeout_seconds=seconds).validate()
+    assert any(error.field == "slot_reset_git_timeout_seconds" for error in errors)
+
+
+@pytest.mark.parametrize("overrides", [None, [], {"": 600}, {"project": 0},
+                                       {"project": True}, {"project": "1800"}])
+def test_slot_reset_git_overrides_require_project_ids_and_positive_integers(overrides):
+    from src.config import WorktreesConfig
+
+    errors = WorktreesConfig(slot_reset_git_timeouts=overrides).validate()
+    assert any(error.field == "slot_reset_git_timeouts" for error in errors)
+
+
+@pytest.mark.parametrize("compact,checkpoint,cadence", [
+    (-1, 0, 40), (99999, 0, 40), (1000001, 0, 40),
+    (160000, -1, 40), (160000, 160001, 40), (160000, 120000, 0),
+])
+def test_worker_context_config_rejects_invalid_windows_or_fallback(compact, checkpoint, cadence):
+    from src.config import SessionsConfig
+
+    config = SessionsConfig(worker_context_compact_tokens=compact,
+                            worker_context_checkpoint_tokens=checkpoint,
+                            worker_context_unknown_checkpoint_turns=cadence)
+    assert any(error.field.startswith("worker_context") for error in config.validate())
+
+
+def test_worker_context_config_load_and_zero_inheritance(tmp_path):
+    import yaml
+    from src.config import load_config
+
+    path = tmp_path / "context.yaml"
+    path.write_text(yaml.safe_dump({
+        "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
+        "discord": {"bot_token": "tok", "guild_id": "123"},
+        "sessions": {
+        "worker_context_compact_tokens": 0, "worker_context_checkpoint_tokens": 100000,
+        "worker_context_unknown_checkpoint_turns": 25,
+    }}))
+    config = load_config(str(path)).sessions
+    assert config.worker_context_compact_tokens == 0
+    assert config.worker_context_checkpoint_tokens == 100000
+    assert config.worker_context_unknown_checkpoint_turns == 25
+    assert not config.validate()

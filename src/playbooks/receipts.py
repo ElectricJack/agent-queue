@@ -4,7 +4,9 @@ Package 3 child plan §9 (attempt identity) and §8.3 (the projection).
 
 Two things make a receipt safe to show an operator:
 
-* **Attempt identity is four-part** — run, step, loop iteration, attempt.
+* **Attempt identity is four-part** — run, step, loop identity, attempt.
+  Nested artifacts use the complete iteration path; historical artifacts keep
+  their scalar iteration keys in the empty-path namespace.
   The design spec's prose gives a three-part key, which collides across
   iterations of the same step inside a ``ForEachStep`` and would suppress the
   second iteration's side effect as a duplicate (§9.1, amendment 2).  The
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -68,27 +71,32 @@ REDACTED_KEY = "__redacted__"
 SENSITIVE_PREFIX = "sensitive:"
 
 
-def idempotency_key(run_id: str, step_id: str, iteration: int, attempt: int) -> str:
+def encode_iteration_path(path: Sequence[tuple[str, int]]) -> str:
+    """Canonical full-path identity; the empty string is the legacy namespace."""
+    return json.dumps(path, separators=(",", ":"), ensure_ascii=False) if path else ""
+
+
+def attempt_key(step_id: str, iteration: int, iteration_path: str = "") -> str:
+    if iteration_path:
+        return json.dumps([step_id, iteration_path], separators=(",", ":"), ensure_ascii=False)
+    return f"{step_id}:{iteration}"
+
+
+def idempotency_key(
+    run_id: str, step_id: str, iteration: int, attempt: int, iteration_path: str = "",
+) -> str:
     """Deterministic attempt identity (roadmap Package 3: run, step, loop
     iteration, attempt)."""
+    if iteration_path:
+        identity = json.dumps([run_id, step_id, iteration_path, attempt], separators=(",", ":"))
+        return "v2-path:" + hashlib.sha256(identity.encode()).hexdigest()
     loop_part = "-" if iteration < 0 else str(iteration)
     return f"{run_id}:{step_id}:{loop_part}:{attempt}"
 
 
-def _canonical(value: Any) -> str:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
-    )
-
-
 def sensitive_handle(run_id: str, path: str, value: Any) -> str:
-    """An opaque, stable stand-in for a value that must never be receipted.
-
-    Scoped to the run so the same secret in two runs does not correlate them,
-    and to the path so two fields of one result stay distinguishable.
-    """
-    digest = hashlib.sha256(f"{run_id}|{path}|{_canonical(value)}".encode()).hexdigest()
-    return f"{SENSITIVE_PREFIX}{digest[:32]}"
+    """A non-dereferenceable random redaction marker, never a secret digest."""
+    return f"{SENSITIVE_PREFIX}{uuid.uuid4().hex}"
 
 
 def project_receipt(
@@ -160,6 +168,7 @@ class StepReceipt:
     turn_index: int = -1
     operator_decision_id: str | None = None
     iteration: int = -1
+    iteration_path: str = ""
     attempt: int = 1
     idempotency_key: str = ""
     contract_fingerprint: str = ""
@@ -207,7 +216,9 @@ class StepReceipt:
             object.__setattr__(
                 self,
                 "idempotency_key",
-                idempotency_key(self.run_id, self.step_id, self.iteration, self.attempt),
+                idempotency_key(
+                    self.run_id, self.step_id, self.iteration, self.attempt, self.iteration_path,
+                ),
             )
 
 
