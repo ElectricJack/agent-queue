@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefState
 from src.models import (
     Project,
     ProjectStatus,
     TaskStatus,
 )
 from src.commands.helpers import _count_by
+from src.commands.operator_authority import local_or_operator
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class ProjectCommandsMixin:
         ]
 
         return {
+            "success": True,
             "projects": 1 if filter_project else len(projects),
             "tasks": {
                 "total": len(tasks),
@@ -61,6 +63,11 @@ class ProjectCommandsMixin:
         }
 
     async def _cmd_list_projects(self, args: dict) -> dict:
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "list_projects", args)
         projects = await self.db.list_projects()
         result = []
         for p in projects:
@@ -71,6 +78,7 @@ class ProjectCommandsMixin:
                 "status": p.status.value,
                 "credit_weight": p.credit_weight,
                 "max_concurrent_agents": p.max_concurrent_agents,
+                "supervisor_enabled": p.supervisor_enabled,
                 "workspace": ws_path,
             }
             if p.repo_url:
@@ -83,47 +91,44 @@ class ProjectCommandsMixin:
     async def _cmd_create_project(self, args: dict) -> dict:
         name = args.get("name") or args.get("project_id")
         if not name:
-            return {"error": "'name' is required to create a project"}
+            return {"success": False, "error": "'name' is required to create a project"}
         project_id = name.lower().replace(" ", "-")
 
-        # Stamp a default profile up front.  Without one, any task created
-        # without an explicit profile_id (playbook- and supervisor-created
-        # tasks, plan splits) goes READY and never gets an agent — the
-        # AgentReconciler refuses to build agents for an unresolvable
-        # profile_id.  An explicit arg wins; otherwise pick the system
-        # default.  None here is fine (no profiles synced yet) — the
-        # reconciler backfills it later.
-        default_profile_id = args.get("default_profile_id")
-        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
+        if args.get("repo_url") or args.get("create_repo"):
+            if args.get("repo_url") and args.get("create_repo"):
+                return {"success": False, "error": "repo_url and create_repo are mutually exclusive"}
+            roots = self.config.project_roots
+            root_id = args.get("root_id") or (roots[0].id if len(roots) == 1 else None)
+            if not root_id:
+                return {"success": False, "error": "Choose a configured project root with --root-id"}
+            from uuid import uuid4
+            from src.projects.github import GitHubError, parse_github_repository
 
-        eligible_profile_ids = active_catalog_profile_ids(self.config.data_dir)
-        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
-        if (
-            default_profile_id
-            and eligible_profile_ids is not None
-            and default_profile_id in catalog_ids - eligible_profile_ids
-        ):
-            return {
-                "error": (
-                    f"default profile '{default_profile_id}' is unavailable on this host; "
-                    "set up its provider and rerun aq install, or choose an active profile"
-                )
+            request = {
+                "request_id": args.get("request_id") or str(uuid4()),
+                "root_id": root_id,
+                "relative_path": args.get("relative_path") or project_id,
+                "credit_weight": args.get("credit_weight", 1.0),
+                "max_concurrent_agents": args.get("max_concurrent_agents", 2),
+                "project_name": name,
+                "project_id": project_id,
+                "default_branch": args.get("default_branch"),
             }
-        if default_profile_id:
-            profile = await self.db.get_profile(default_profile_id)
-            if profile is None:
-                return {"error": f"Profile '{default_profile_id}' not found"}
-            from src.profiles.task_execution import task_execution_profile_error
-
-            if error := task_execution_profile_error(profile):
-                return {"error": f"project default is invalid: {error}"}
-        if not default_profile_id:
-            from src.profiles.default_selection import select_default_profile_id
-
-            default_profile_id = select_default_profile_id(
-                await self.db.list_profiles(),
-                eligible_profile_ids=eligible_profile_ids,
-            )
+            if args.get("create_repo"):
+                try:
+                    repo = parse_github_repository(args["create_repo"])
+                except GitHubError as exc:
+                    return {"success": False, "error": exc.message}
+                request.update(source_mode="init", create_github=True,
+                               github_owner=repo.owner, github_repo=repo.name,
+                               github_visibility="private" if args.get("private", True) else "public")
+            else:
+                request.update(source_mode="github_clone", github_url=args["repo_url"])
+            result = await self._cmd_onboard_project(request)
+            if result.get("success"):
+                result.update(created=project_id, name=name,
+                              assignment_playbook_id=self.config.routing.default_router)
+            return result
 
         project = Project(
             id=project_id,
@@ -132,7 +137,9 @@ class ProjectCommandsMixin:
             max_concurrent_agents=args.get("max_concurrent_agents", 2),
             repo_url=args.get("repo_url", ""),
             repo_default_branch=args.get("default_branch", "main"),
-            default_profile_id=default_profile_id,
+            # Every project is bound to a router and has no default profile
+            # (mandatory-routing spec §8): the router routes every task.
+            assignment_playbook_id=self.config.routing.default_router,
         )
         await self.db.create_project(project)
 
@@ -141,31 +148,186 @@ class ProjectCommandsMixin:
 
         ensure_project_storage(self.config.data_dir, project_id)
 
+        # No workspace yet (``add_workspace`` registers one later), so the
+        # event carries no workspace fields.
+        from src.projects.events import emit_project_created, project_created_payload
+
+        await emit_project_created(
+            getattr(self.orchestrator, "bus", None),
+            project_created_payload(
+                project_id=project_id,
+                name=project.name,
+                source="command",
+                vault_root=self.config.vault_root,
+            ),
+        )
+
         return {
+            "success": True,
             "created": project_id,
             "name": project.name,
-            "default_profile_id": default_profile_id,
+            "assignment_playbook_id": project.assignment_playbook_id,
         }
+
+    async def _cmd_project_doctor(self, args: dict) -> dict:
+        """Diagnose the local-first project authorization gap without changing it."""
+        import shlex
+        from src.projects.github import GitHubError, parse_github_repository
+
+        project = await self.db.get_project(args["project_id"])
+        if project is None:
+            return {"success": False, "error": "Project not found"}
+        path = await self.db.get_project_workspace_path(project.id)
+        if project.repo_url or not path:
+            return {"success": True, "project_id": project.id, "ready": bool(project.repo_url),
+                    "code": "repository_bound" if project.repo_url else "workspace_missing"}
+        remote = await self.orchestrator.git.aget_remote_url(path)
+        try:
+            url = parse_github_repository(remote or "").clone_https
+        except GitHubError:
+            url = "OWNER/REPOSITORY"
+        command = shlex.join([
+            "aq", "project", "bind-repository", project.id, "--repo-url", url,
+            "--expected-repo-url", "", "--reason", "Authorize local-first project repository",
+        ])
+        return {"success": True, "project_id": project.id, "ready": False,
+                "code": "repository_authorization_missing", "recovery_command": command,
+                "message": "Local repository has no authorized remote. Review and run the binding command."}
+
+    async def _cmd_repair_repository_checkout(self, args: dict) -> dict:
+        """Repoint stale path fields without deleting a repository's identity."""
+        from dataclasses import asdict
+        from pathlib import Path
+
+        from src.commands.supervisor_authority import operator_or_global_supervisor
+        from src.git.manager import repository_urls_match
+        from src.workspace_registration import path_is_missing
+
+        operator_id, refusal = await operator_or_global_supervisor(self.db)
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        required = {"project_id", "repository_id", "expected_path", "replacement_path", "reason"}
+        if (set(args) - required - {"apply"} or not required <= set(args)
+                or any(not isinstance(args[k], str) or not args[k].strip() for k in required)
+                or not isinstance(args.get("apply", False), bool)):
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": "Provide project, repository, expected/replacement paths and reason"}
+        repo = await self.db.get_repo(args["repository_id"])
+        if repo is None or repo.project_id != args["project_id"]:
+            return {"success": False, "error_code": "repository_not_found",
+                    "error": "Repository not found in this project"}
+        expected = args["expected_path"]
+        replacement = args["replacement_path"]
+        fields = [field for field in ("source_path", "checkout_base_path")
+                  if getattr(repo, field) == expected]
+        if not fields:
+            return {"success": False, "error_code": "repository_checkout_stale",
+                    "error": "The expected path no longer matches the registration"}
+        if not Path(expected).is_absolute() or not path_is_missing(expected):
+            return {"success": False, "error_code": "checkout_not_missing",
+                    "error": "Expected path must be absolute and confirmed missing"}
+        if not Path(replacement).is_absolute() or not Path(replacement).is_dir() or not repo.url:
+            return {"success": False, "error_code": "replacement_unverified",
+                    "error": "Require an existing absolute checkout and a registered repository URL"}
+        replacement = str(Path(replacement).resolve())
+        try:
+            await self.orchestrator.git._arun(["rev-parse", "--git-dir"], cwd=replacement)
+            origin = await self.orchestrator.git.aget_remote_url(replacement)
+        except (GitError, OSError):
+            origin = None
+        if not origin or not repository_urls_match(repo.url, origin, base=replacement):
+            return {"success": False, "error_code": "replacement_unverified",
+                    "error": "Replacement must be a Git checkout of the registered repository"}
+        before = {**asdict(repo), "source_type": repo.source_type.value}
+        after = {**before, **dict.fromkeys(fields, replacement)}
+        if not args.get("apply", False):
+            return {"success": True, "project_id": repo.project_id, "repository_id": repo.id,
+                    "changed": False, "preview": True, "before": before, "after": after}
+        # Network/filesystem validation may have yielded; recheck the live authority
+        # and absence before committing a compare-and-swap of the full config.
+        operator_id, refusal = await operator_or_global_supervisor(self.db)
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        if not path_is_missing(expected):
+            return {"success": False, "error_code": "checkout_not_missing",
+                    "error": "The old checkout path is no longer confirmed missing"}
+        return await self.db.repair_repository_checkout(
+            repo, after=after, reason=args["reason"].strip(), operator_id=operator_id,
+        )
 
     async def _cmd_pause_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         await self.db.update_project(pid, status=ProjectStatus.PAUSED)
-        return {"paused": pid, "name": project.name}
+        await self.orchestrator.bus.emit("project.paused", {"project_id": pid})
+        if project.status != ProjectStatus.PAUSED:
+            await self._notify_project_workers(pid, paused=True)
+        return {"success": True, "paused": pid, "name": project.name}
 
     async def _cmd_resume_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         await self.db.update_project(pid, status=ProjectStatus.ACTIVE)
         # Wakes any ``task_claim`` long-poll blocked on ``not_admissible``
         # (swarm-work-model §10) — a paused project resuming is exactly the
         # kind of admission change a blocked claimer is waiting for.
         await self.orchestrator.bus.emit("project.resumed", {"project_id": pid})
-        return {"resumed": pid, "name": project.name}
+        if project.status == ProjectStatus.PAUSED:
+            await self._rearm_project_supervisor(pid)
+            await self._notify_project_workers(pid, paused=False)
+        return {"success": True, "resumed": pid, "name": project.name}
+
+    async def _rearm_project_supervisor(self, project_id: str) -> None:
+        """Want the project's named supervisor to run again after a resume.
+
+        Mirrors the wake command's re-arm: flip the supervisor's
+        ``desired_state`` to ``running`` (and clear the restart budget so this
+        counts as a fresh intent, not a retry of a failed one) so the next
+        reconciler tick respawns it. Only runs when the supervisor is
+        operator-enabled, so we never re-enable a supervisor that was off
+        before the pause.
+        """
+        if not (await self.db.get_project(project_id)).supervisor_enabled:
+            return
+        row = await self.db.get_session_by_name("n-supervisor--" + project_id)
+        if row is None or row.lifecycle != "named" or row.profile_id != "supervisor":
+            return
+        await self.db.update_session(
+            row.id, desired_state="running", restarts=0, last_activity=None,
+        )
+
+    async def _notify_project_workers(self, project_id: str, *, paused: bool) -> None:
+        """Durable safe-point notices, including workers with a pending wait."""
+        sessions = await self.db.list_sessions(project_id=project_id, live_only=True)
+        body = (
+            f"Project '{project_id}' is paused. Stop at the next safe point and preserve "
+            "progress with aq task comment. Keep your claim and wait for project resume "
+            "before continuing work, submitting reviews or requesting human decisions. "
+            "A pending wait completing does not authorize continuing while paused."
+            if paused else
+            f"Project '{project_id}' has resumed. Run aq prime to refresh your task context "
+            "and continue from your saved progress. Held human notifications are released."
+        )
+        for session in sessions:
+            if session.task_id is None:
+                continue
+            result = await self._queue_message_notification({
+                "project_id": project_id,
+                "from_kind": "system",
+                "from_id": "project-pause",
+                "to_kind": "session",
+                "to_id": session.id,
+                "subject": "Project paused" if paused else "Project resumed",
+                "body": body,
+                "priority": 0,
+                "archive_after_inject": True,
+            })
+            if result.get("error"):
+                logger.warning("Project notice to %s failed: %s", session.id, result["error"])
 
     async def _cmd_set_project_constraint(self, args: dict) -> dict:
         """Set a scheduling constraint on a project.
@@ -184,7 +346,7 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
 
         # Load existing constraint (if any) for merge/stacking behavior.
         existing = await self.db.get_project_constraint(pid)
@@ -201,6 +363,7 @@ class ProjectCommandsMixin:
 
         if not exclusive and not pause_scheduling and not max_agents_by_type:
             return {
+                "success": False,
                 "error": (
                     "At least one constraint must be set: "
                     "exclusive, max_agents_by_type, or pause_scheduling."
@@ -228,6 +391,7 @@ class ProjectCommandsMixin:
             active_fields.append(f"max_agents_by_type={constraint.max_agents_by_type}")
 
         return {
+            "success": True,
             "project_id": pid,
             "constraint_set": True,
             "active_fields": active_fields,
@@ -243,11 +407,11 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
 
         existing = await self.db.get_project_constraint(pid)
         if not existing:
-            return {"error": f"No active constraint on project '{pid}'"}
+            return {"success": False, "error": f"No active constraint on project '{pid}'"}
 
         # Check if caller wants to release specific fields only.
         fields_to_release = args.get("fields", [])
@@ -272,7 +436,7 @@ class ProjectCommandsMixin:
             if not exclusive and not pause_scheduling and not max_agents_by_type:
                 await self.db.delete_project_constraint(pid)
                 await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
-                return {"project_id": pid, "constraint_released": True, "fields": "all"}
+                return {"success": True, "project_id": pid, "constraint_released": True, "fields": "all"}
 
             updated = ProjectConstraint(
                 project_id=pid,
@@ -285,6 +449,7 @@ class ProjectCommandsMixin:
             await self.db.set_project_constraint(updated)
             await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
             return {
+                "success": True,
                 "project_id": pid,
                 "constraint_released": False,
                 "fields_released": fields_to_release,
@@ -302,13 +467,70 @@ class ProjectCommandsMixin:
         # Release the entire constraint.
         await self.db.delete_project_constraint(pid)
         await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
-        return {"project_id": pid, "constraint_released": True, "fields": "all"}
+        return {"success": True, "project_id": pid, "constraint_released": True, "fields": "all"}
+
+    async def _cmd_bind_project_repository(self, args: dict) -> dict:
+        """Authorize an initialized project's first repository, never a reassignment."""
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.projects.github import GitHubError, parse_github_repository
+
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="repository binding",
+        )
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        required = {"project_id", "repo_url", "expected_repo_url", "reason"}
+        if set(args) != required or any(not isinstance(args.get(k), str) for k in required):
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": (
+                        "Provide project_id, repo_url, expected_repo_url and reason as strings"
+                    )}
+        if not args["project_id"].strip() or not args["reason"].strip():
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": "Project ID and audit reason must be nonempty"}
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in args["repo_url"]):
+            return {"success": False, "error_code": "invalid_repository_url",
+                    "error": "Repository URL contains control characters"}
+        try:
+            repository = parse_github_repository(args["repo_url"])
+        except GitHubError as exc:
+            return {"success": False, "error_code": "invalid_repository_url", "error": exc.message}
+        project = await self.db.get_project(args["project_id"])
+        if project is None:
+            return {"success": False, "error_code": "project_not_found",
+                    "error": "Project not found"}
+        # Avoid credential selection for stale requests or a reassignment.
+        # The transactional helper repeats both checks after the network read.
+        if project.repo_url != args["expected_repo_url"]:
+            return {"success": False, "error_code": "repository_binding_stale",
+                    "error": "The expected repository URL is stale"}
+        if project.repo_url and project.repo_url != repository.clone_https:
+            return {"success": False, "error_code": "repository_already_bound",
+                    "error": "An existing repository cannot be reassigned"}
+        if not project.repo_url:
+            try:
+                await self._github_client().validate_repository(repository.html_url)
+            except GitHubError as exc:
+                return {"success": False, "error_code": exc.code.value, "error": exc.message}
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="repository binding",
+        )
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        return await self.db.bind_project_repository(
+            project.id, repo_url=repository.clone_https,
+            expected_repo_url=args["expected_repo_url"], reason=args["reason"].strip(),
+            operator_id=operator_id,
+        )
 
     async def _cmd_edit_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
+        if "repo_url" in args or "expected_repo_url" in args:
+            return {"success": False, "error_code": "repository_binding_required",
+                    "error": "Use bind_project_repository for an audited first repository binding"}
         if "review_delegate_to" in args:
             from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 
@@ -325,26 +547,30 @@ class ProjectCommandsMixin:
                     "error_code": "local_operator_only",
                     "error": "review_delegate_to must be user, supervisor, or empty",
                 }
+        from src.integration.records import PolicyActivation
+
         rollout_fields = {
-            "hierarchical_integration_mode",
             "hierarchical_integration_desired_mode",
             "hierarchical_integration_draining",
             "hierarchical_integration_generation",
         }
         if rollout_fields.intersection(args):
             return {
+                "success": False,
                 "error": (
-                    "Rollout fields cannot be edited directly; use integration_enable "
+                    "Derived rollout fields cannot be edited directly; configure policy "
                     "with an explicit expected generation."
                 )
             }
         sensitive = {
             key: args[key]
             for key in (
+                "hierarchical_integration_mode",
                 "integration_repository",
                 "integration_repository_id",
                 "hierarchical_integration_policy",
                 "integration_mode",
+                "promotion_flow",
             )
             if key in args
         }
@@ -353,6 +579,12 @@ class ProjectCommandsMixin:
             from src.commands.supervisor_authority import integration_operator
 
             principal = current_principal() or TRUSTED_LOCAL
+            if "promotion_flow" in sensitive and not local_or_operator("edit_project"):
+                return {
+                    "success": False,
+                    "error": "local_operator_only",
+                    "message": "A promotion flow is set by the operator only.",
+                }
             if principal.kind is PrincipalKind.LOCAL:
                 operator_id = principal.describe()
             elif principal.kind is PrincipalKind.SESSION:
@@ -365,17 +597,37 @@ class ProjectCommandsMixin:
                 # as to LOCAL.
                 operator_id, refusal = await integration_operator(self.db, pid)
                 if refusal is not None:
-                    return {"error": f"Integration configuration refused: {refusal}"}
+                    return {"success": False, "error": f"Integration configuration refused: {refusal}"}
             else:
                 return {
+                    "success": False,
                     "error": (
                         "Integration configuration requires LOCAL operator or supervisor "
                         "authority"
                     )
                 }
             if "expected_integration_generation" not in args:
-                return {"error": "expected_integration_generation is required"}
-            return await self._integration_control_service().configure(
+                return {"success": False, "error": "expected_integration_generation is required"}
+            if "hierarchical_integration_mode" in sensitive:
+                from src.integration.delivery_engine import engine_refusal
+
+                refusal = engine_refusal(
+                    sensitive["hierarchical_integration_mode"], self.config,
+                    orchestrator=self.orchestrator,
+                )
+                if refusal:
+                    return {"success": False, "error_code": "delivery_engine_unavailable",
+                            "error": f"no delivery engine for this project: {refusal}. "
+                                     "Restore the selected engine before enabling this mode."}
+            if "promotion_flow" in sensitive:
+                return await self._configure_promotion_flow(
+                    project, sensitive, args, operator_id=operator_id
+                )
+            return await PolicyActivation(
+                self.db, hierarchy_service_factory=self._hierarchy_integration_service
+                if sensitive.get("hierarchical_integration_mode") in {"hierarchy", "train"}
+                else None,
+            ).configure(
                 pid,
                 updates=sensitive,
                 expected_generation=int(args["expected_integration_generation"]),
@@ -383,6 +635,10 @@ class ProjectCommandsMixin:
                 operator_id=operator_id,
             )
         updates = {}
+        if "supervisor_enabled" in args:
+            if not isinstance(args["supervisor_enabled"], bool):
+                return {"success": False, "error": "supervisor_enabled must be a boolean"}
+            updates["supervisor_enabled"] = args["supervisor_enabled"]
         if "name" in args:
             updates["name"] = args["name"]
         if "credit_weight" in args:
@@ -391,45 +647,181 @@ class ProjectCommandsMixin:
             updates["max_concurrent_agents"] = args["max_concurrent_agents"]
         if "budget_limit" in args:
             updates["budget_limit"] = args["budget_limit"]
-        if "default_profile_id" in args:
-            dpid = args["default_profile_id"]
-            if dpid is not None:
-                profile = await self.db.get_profile(dpid)
-                if not profile:
-                    return {"error": f"Profile '{dpid}' not found"}
-                from src.profiles.task_execution import task_execution_profile_error
-
-                if error := task_execution_profile_error(profile):
-                    return {"error": f"project default is invalid: {error}"}
-            updates["default_profile_id"] = dpid  # None clears it
         if "assignment_playbook_id" in args:
-            playbook_id = args["assignment_playbook_id"]
-            if playbook_id is not None:
-                from src.playbooks.services import DatabaseActivationSource
-
-                ref = await DatabaseActivationSource(self.db).artifact_for(
-                    playbook_id, scope_identifier=project.id
-                )
-                if ref is None:
-                    return {"error": f"Assignment playbook '{playbook_id}' has no ready V2 activation"}
-                # Any ready pipeline may serve as a project's assignment
-                # playbook; a routing policy is ordinary authored policy.
-            updates["assignment_playbook_id"] = playbook_id
+            refusal = await self._router_binding_refusal(project, args["assignment_playbook_id"])
+            if refusal is not None:
+                return refusal
+            updates["assignment_playbook_id"] = str(args["assignment_playbook_id"]).strip()
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]
         if "review_delegate_to" in args:
             updates["review_delegate_to"] = args["review_delegate_to"] or None
+        if "git_identity_name" in args or "git_identity_email" in args:
+            identity_updates = _git_identity_updates(project, args)
+            if "error" in identity_updates:
+                return identity_updates
+            updates.update(identity_updates)
         if not updates:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, "
-                    "default_profile_id, assignment_playbook_id, repo_default_branch, or "
-                    "review_delegate_to."
+                    "assignment_playbook_id, repo_default_branch, "
+                    "review_delegate_to, supervisor_enabled, or git_identity_name/git_identity_email."
                 )
             }
         await self.db.update_project(pid, **updates)
-        return {"updated": pid, "fields": list(updates.keys())}
+        if "assignment_playbook_id" in updates:
+            from src.routing.readiness import RouterReadiness
+
+            readiness = getattr(self.orchestrator, "router_readiness", None)
+            if isinstance(readiness, RouterReadiness):
+                # The claim frontier reads the cached ready set; re-read it
+                # now rather than on the next cycle.
+                await readiness.refresh()
+        return {"success": True, "updated": pid, "fields": list(updates.keys())}
+
+    async def _router_binding_refusal(self, project, playbook_id) -> dict | None:
+        """Why *project* may not be bound to *playbook_id* (routing spec §8), or ``None``.
+
+        Re-binding is the local operator's alone.  The playbook must be a
+        router -- an activated artifact of it grants ``task_route_apply`` --
+        with an enabled system activation or one scoped to this project.  A
+        project is never unbound: the column is NOT NULL.
+        """
+        from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
+        from src.routing.readiness import BINDING_READY, artifact_grants, binding_state
+
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            return {
+                "success": False,
+                "error_code": "local_operator_only",
+                "error": "binding a project to a router requires the local operator",
+            }
+        bound = str(playbook_id or "").strip()
+        if not bound:
+            return {
+                "success": False,
+                "error_code": "router_required",
+                "error": (
+                    "a project is always bound to a router; name a routing playbook "
+                    f"(the default is '{self.config.routing.default_router}')"
+                ),
+            }
+        state, detail = binding_state(
+            project.id,
+            bound,
+            await self.db.list_playbook_activations(),
+            artifact_grants(self.orchestrator, self.config),
+        )
+        if state != BINDING_READY:
+            return {"success": False, "error_code": f"router_{state}", "error": detail}
+        return None
+
+    async def _configure_promotion_flow(
+        self, project, updates: dict, args: dict, *, operator_id: str
+    ) -> dict:
+        """Activate a promotion flow: layers 1-4, then one fenced write (§3.11).
+
+        The trust manifest is read at the designated default branch first. A
+        dry run of the fence then runs every refusal check, missing chain
+        targets are created with no database lock held (git network work never
+        waits inside the fence), and the write re-runs the checks behind the
+        same generation. A refusal writes no row; the only state one can leave
+        behind is a create-only branch at its source's tip.
+        """
+        from src.integration.promotion_steps import FlowSchema
+        from src.integration.records import PolicyActivation
+
+        pid = project.id
+        repository_id = project.integration_repository_id
+        repository = await self.db.get_repo(repository_id) if repository_id else None
+        if repository is not None and repository.project_id != pid:
+            repository = None
+        default_branch = repository.default_branch if repository else project.repo_default_branch
+        # Structural and chain errors win over a trust read failure, as in
+        # ``promote validate``; the fence re-runs layers 1-3 against the fenced
+        # default branch.
+        precheck = FlowSchema.validate(
+            updates["promotion_flow"], default_branch=default_branch or ""
+        )
+        if precheck.layer < 3:
+            problems = [problem.as_dict() for problem in precheck.problems]
+            return {"success": False, "outcome": "invalid", "project_id": pid,
+                    "error": problems[0]["code"], "problems": problems}
+        manifest: dict | None = None
+        if precheck.flow:
+            if repository is None:
+                return {
+                    "success": False,
+                    "outcome": "blocked",
+                    "project_id": pid,
+                    "error": "integration_repository_required",
+                    "message": "Designate the project's integration repository before "
+                    "activating a promotion flow.",
+                }
+            try:
+                manifest = await self._promotion_manifest(repository)
+            except Exception as exc:  # noqa: BLE001 - provider boundary; activation fails closed
+                return {
+                    "success": False,
+                    "outcome": "blocked",
+                    "error": "trust_manifest_unavailable",
+                    "message": str(exc),
+                }
+        activation = PolicyActivation(
+            self.db, hierarchy_service_factory=lambda: self._hierarchy_integration_service(),
+        )
+        fence = {
+            "expected_generation": int(args["expected_integration_generation"]),
+            "reason": str(args.get("reason") or "configure promotion flow"),
+            "operator_id": operator_id,
+            "promotion_manifest": manifest,
+        }
+        result = await activation.configure(pid, updates=dict(updates), dry_run=True, **fence)
+        created: dict[str, str] = {}
+        if result.get("outcome") == "checked":
+            flow = result["updates"]["promotion_flow"] or []
+            refusal, created = await self._create_flow_targets(pid, repository, project, flow)
+            if refusal is not None:
+                result = {"project_id": pid, "generation": result["generation"], **refusal}
+            else:
+                result = await activation.configure(pid, updates=updates, **fence)
+        if created:
+            # A create-only branch outlives a refused write; name it so the
+            # operator can delete it or simply retry, which reuses it.
+            result["created_targets"] = created
+        success = result.get("outcome") == "configured"
+        recorded = getattr(self.orchestrator, "promotion_flow_problems", None)
+        if success and isinstance(recorded, dict):
+            # The daemon-start finding described the flow this write replaced.
+            recorded.pop(pid, None)
+        if not success and result.get("outcome") == "stale":
+            result.setdefault("error", "integration_generation_stale")
+        return {"success": success, **result}
+
+    async def _create_flow_targets(
+        self, pid, repository, project, flow
+    ) -> tuple[dict | None, dict[str, str]]:
+        """Layer 4 at activation: create the flow's absent targets, create-only."""
+        from src.integration.promotion_steps import create_missing_targets
+
+        if not flow:
+            return None, {}
+        checkout = await self.db.get_project_workspace_path(pid)
+        if not checkout:
+            return {
+                "success": False,
+                "outcome": "blocked",
+                "error": "workspace_unavailable",
+                "message": "No project workspace can create the missing targets.",
+            }, {}
+        repository_url = (getattr(repository, "url", None) or project.repo_url) or None
+        return await create_missing_targets(
+            self.orchestrator.git, checkout, flow, repository_url=repository_url
+        )
 
     async def _cmd_set_default_branch(self, args: dict) -> dict:
         """Set (or change) a project's default branch.
@@ -443,11 +835,11 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
 
         branch = args.get("branch", "").strip()
         if not branch:
-            return {"error": "branch is required"}
+            return {"success": False, "error": "branch is required"}
 
         old_branch = project.repo_default_branch or "main"
 
@@ -473,34 +865,42 @@ class ProjectCommandsMixin:
                     # is created: the exact-OID push updates
                     # ``origin/<branch>`` itself, which is what every reader
                     # of the default branch consults.
-                    old_remote = f"refs/remotes/origin/{old_branch}"
                     try:
-                        await git._arun(
-                            ["rev-parse", "--verify", f"{old_remote}^{{commit}}"],
-                            cwd=ws_path,
-                        )
-                    except Exception:
-                        # The recorded default was never pushed, so the
-                        # workspace HEAD is the only source — and nothing on
-                        # origin has vetted that tree.  A root delivery gates
-                        # every tracked path for daemon bookkeeping before
-                        # pushing the same resolved OID.
+                        old_remote = f"refs/remotes/origin/{old_branch}"
                         try:
-                            await git.apush_validated_delivery(ws_path, None, "HEAD", branch)
-                        except GitError as exc:
-                            if str(exc).startswith("reserved delivery paths:"):
-                                return {
-                                    "error": (
-                                        f"refusing to create {branch} from the workspace "
-                                        f"HEAD: {exc}"
-                                    )
-                                }
-                            raise
-                    else:
-                        # The content is already on origin; pushing the
-                        # remote-tracking ref's exact OID is the whole delivery.
-                        await git.apush_validated_ref(ws_path, old_remote, branch)
-                    branch_created = True
+                            await git._arun(
+                                ["rev-parse", "--verify", f"{old_remote}^{{commit}}"],
+                                cwd=ws_path,
+                            )
+                        except Exception:
+                            # The recorded default was never pushed, so the
+                            # workspace HEAD is the only source — and nothing on
+                            # origin has vetted that tree.  A root delivery gates
+                            # every tracked path for daemon bookkeeping before
+                            # pushing the same resolved OID.
+                            try:
+                                published_oid = await git.apush_validated_delivery(
+                                    ws_path, None, "HEAD", branch)
+                            except GitError as exc:
+                                if str(exc).startswith("reserved delivery paths:"):
+                                    return {
+                                        "success": False,
+                                        "error": (
+                                            f"refusing to create {branch} from the workspace "
+                                            f"HEAD: {exc}"
+                                        )
+                                    }
+                                raise
+                        else:
+                            # The content is already on origin; pushing the
+                            # remote-tracking ref's exact OID is the whole delivery.
+                            published_oid = await git.apush_validated_ref(ws_path, old_remote, branch)
+                        branch_created = True
+                        verified = await git.als_remote_ref(ws_path, branch)
+                        if verified.state is not RemoteRefState.PRESENT or verified.oid != published_oid:
+                            raise GitError("new default branch was not verified on origin")
+                    except Exception as exc:
+                        return {"success": False, "error": f"could not verify/create default branch {branch}: {exc}"}
             except Exception as exc:
                 logger.warning(
                     "Could not verify/create branch %s for project %s: %s",
@@ -511,7 +911,7 @@ class ProjectCommandsMixin:
 
         await self.db.update_project(pid, repo_default_branch=branch)
 
-        result: dict = {
+        result: dict = {"success": True,
             "project_id": pid,
             "default_branch": branch,
             "previous_branch": old_branch,
@@ -526,10 +926,10 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         ws_path = await self.db.get_project_workspace_path(pid)
         usage = await self.db.get_project_token_usage(pid)
-        info: dict = {
+        info: dict = {"success": True,
             "id": project.id,
             "name": project.name,
             "status": project.status.value,
@@ -540,27 +940,34 @@ class ProjectCommandsMixin:
             "max_concurrent_agents": project.max_concurrent_agents,
             "total_tokens_used": project.total_tokens_used,
             "tokens_used_recent": usage,
+            "supervisor_enabled": project.supervisor_enabled,
         }
         if project.budget_limit is not None:
             info["budget_limit"] = project.budget_limit
-        if project.default_profile_id:
-            info["default_profile_id"] = project.default_profile_id
         if project.assignment_playbook_id:
             info["assignment_playbook_id"] = project.assignment_playbook_id
+        from src.git.identity import resolve_git_identity
+
+        info["git_identity_name"] = project.git_identity_name
+        info["git_identity_email"] = project.git_identity_email
+        info["git_identity"] = resolve_git_identity(self.config, project).as_dict()
         return info
 
     async def _cmd_delete_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
+        from src.integration.records import PolicyActivation
+
         if (
             project.hierarchical_integration_mode != "disabled"
             or project.hierarchical_integration_desired_mode != "disabled"
             or project.hierarchical_integration_draining
-            or await self._integration_control_service().has_active_work(pid)
+            or await PolicyActivation(self.db).has_active_work(pid)
         ):
             return {
+                "success": False,
                 "error": (
                     "Cannot delete: hierarchical integration must be disabled and drained "
                     "with no live rollout projection."
@@ -569,6 +976,7 @@ class ProjectCommandsMixin:
         tasks = await self.db.list_tasks(project_id=pid, status=TaskStatus.IN_PROGRESS)
         if tasks:
             return {
+                "success": False,
                 "error": f"Cannot delete: {len(tasks)} task(s) currently IN_PROGRESS. "
                 "Stop them first."
             }
@@ -586,4 +994,46 @@ class ProjectCommandsMixin:
                     **(exc.context or {}),
                 }
             raise
-        return {"deleted": pid, "name": project.name}
+        return {"success": True, "deleted": pid, "name": project.name}
+
+
+def _git_identity_updates(project, args: dict) -> dict:
+    """``edit_project``'s identity override: set as a pair, or clear both to inherit.
+
+    A field not supplied keeps its stored value, so changing only the email of
+    an existing override works; the result must still be a full pair or none.
+    """
+    from src.commands.git_identity_commands import agent_identity_refusal
+    from src.git.identity import GitIdentityError, validate_git_email, validate_git_name
+
+    refusal = agent_identity_refusal()
+    if refusal is not None:
+        return refusal
+    def text(value):
+        return value.strip() if isinstance(value, str) else ("" if value is None else value)
+
+    name = text(args.get("git_identity_name", project.git_identity_name))
+    email = text(args.get("git_identity_email", project.git_identity_email))
+    if not name and not email:
+        return {"git_identity_name": None, "git_identity_email": None}
+    if not name or not email:
+        return {
+            "success": False,
+            "error_code": "invalid_git_identity",
+            "error": (
+                "A project Git identity override needs both git_identity_name and "
+                "git_identity_email; clear both to inherit the installation default."
+            ),
+        }
+    try:
+        return {
+            "git_identity_name": validate_git_name(name),
+            "git_identity_email": validate_git_email(email),
+        }
+    except GitIdentityError as exc:
+        return {
+            "success": False,
+            "error_code": "invalid_git_identity",
+            "field": f"git_identity_{exc.field}",
+            "error": str(exc),
+        }

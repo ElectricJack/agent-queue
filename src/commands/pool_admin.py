@@ -7,7 +7,8 @@ retain the command's exact error dict. An absent bounds key leaves it unchanged;
 explicit ``max: None`` removes the ceiling.
 
 Optional correlation metadata is added to events without overriding domain fields.
-Vault persistence retains the commands' DB-first, logged-failure behavior.
+Bounds and lifecycle edits retain DB-first, logged-failure vault persistence.
+Display-name edits require a backup and durable source write before updating the DB.
 """
 
 from __future__ import annotations
@@ -143,6 +144,185 @@ async def _write_pool_profile_config_to_vault(handler, profile_id: str, updates:
         logger.warning(
             "pool profile edit: wrote %s but the DB re-sync failed: %s", path, result.errors
         )
+
+
+async def rename_pool(handler, args: dict) -> dict:
+    """Persist a display name without round-tripping a profile's configuration."""
+    import asyncio
+    import dataclasses
+    import json
+    import time
+    import unicodedata
+    from pathlib import Path
+
+    from src.commands.profile_commands import _patch_frontmatter_fields
+    from src.profiles.drift import _atomic_write_bytes
+    from src.profiles.parser import parse_profile
+
+    profile_id = args.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        return {"success": False, "error": "profile_id is required"}
+    profile_id = profile_id.strip()
+    if any(char in profile_id for char in "/\\:") or profile_id in {".", ".."}:
+        return {"success": False, "error": "profile_id must be a global profile ID"}
+    raw_name = args.get("name")
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        return {"success": False, "error": "name must not be empty"}
+    if any(unicodedata.category(char) == "Cc" for char in raw_name):
+        return {"success": False, "error": "name must not contain control characters"}
+    name = raw_name.strip()
+    if len(name) > 120:
+        return {"success": False, "error": "name must be 120 characters or fewer"}
+    target = await _pool_profile_target(handler, profile_id, require_pool=True)
+    if target is None:
+        return {"success": False, "error": f"no pool profile '{profile_id}'"}
+
+    path = Path(_system_profile_path(handler, profile_id))
+
+    def persist():
+        if path.is_file():
+            original = path.read_bytes()
+            markdown = _patch_frontmatter_fields(original.decode("utf-8"), {"name": name})
+            parsed = parse_profile(markdown)
+            if (
+                not parsed.is_valid
+                or parsed.frontmatter.id not in {"", profile_id}
+                or parsed.frontmatter.name != name
+            ):
+                raise ValueError("vault profile must have valid frontmatter with the matching ID")
+            if original == markdown.encode("utf-8") and target.name == name:
+                return None, None
+            backup_path = f"{path}.bak-{time.time_ns()}"
+            _atomic_write_bytes(backup_path, original, fallback_mode_source=str(path))
+            _atomic_write_bytes(str(path), markdown.encode("utf-8"))
+            return backup_path, original
+        if target.name == name:
+            return None, None
+        # Older database-only profiles have no vault source to patch. Preserve
+        # their complete row before changing the one display field.
+        backup_path = str(
+            Path(handler.config.data_dir) / "backups" / "profiles"
+            / f"{profile_id}-{time.time_ns()}.json"
+        )
+        _atomic_write_bytes(
+            backup_path, json.dumps(dataclasses.asdict(target), indent=2).encode("utf-8")
+        )
+        return backup_path, None
+
+    try:
+        backup_path, original = await asyncio.to_thread(persist)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return {"success": False, "error": f"Could not persist pool name: {exc}"}
+    if backup_path is None:
+        return {"success": True, "profile_id": profile_id, "name": name, "changed": False}
+    payload = {
+        "profile_id": profile_id,
+        "old_name": target.name,
+        "name": name,
+        "backup_path": backup_path,
+    }
+    try:
+        # Do not resync or reconstruct a derived stub: only this column changes.
+        await handler.db.update_profile(profile_id, name=name)
+        seq = await handler.db.log_event("pool.renamed", payload=json.dumps(payload))
+    except Exception:
+        if original is not None:
+            await asyncio.to_thread(_atomic_write_bytes, str(path), original)
+        await handler.db.update_profile(profile_id, name=target.name)
+        logger.exception("Could not update pool name for %s (backup %s)", profile_id, backup_path)
+        return {"success": False, "error": "Could not update or audit pool name in the database"}
+    await _emit(handler, None, "pool.renamed", {**payload, "seq": seq})
+    return {
+        "success": True,
+        "profile_id": profile_id,
+        "name": name,
+        "changed": True,
+        "backup_path": backup_path,
+    }
+
+
+async def delete_pool(handler, args: dict) -> dict:
+    """Retire a global pool without vetoes for live workers or routed work."""
+    import asyncio
+    import json
+    import shutil
+    from pathlib import Path
+
+    from src.profiles.retired_defaults import is_retired, retire_default
+
+    profile_id = args.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        return {"success": False, "error": "profile_id is required"}
+    profile_id = profile_id.strip()
+    if any(char in profile_id for char in "/\\:") or profile_id in {".", ".."}:
+        return {"success": False, "error": "profile_id must be a global profile ID"}
+    depth = args.get("depth", "profile")
+    if depth not in {"profile", "directory"}:
+        return {"success": False, "error": "depth must be profile or directory"}
+    target = await handler.db.get_profile(profile_id)
+    retired = await asyncio.to_thread(is_retired, handler.config.data_dir, profile_id)
+    if target is not None and target.lifecycle != "pool":
+        return {"success": False, "error": f"no pool profile '{profile_id}'"}
+    if target is None and not retired:
+        return {"success": False, "error": f"no pool profile '{profile_id}'"}
+
+    warnings = []
+    # Fence new claims and launches before the first slow process or file operation.
+    if target is not None:
+        await handler.db.update_profile(profile_id, enabled=False)
+    try:
+        await asyncio.to_thread(
+            retire_default, handler.config.data_dir, profile_id,
+            args.get("reason") or "pool deleted",
+        )
+        retired = True
+    except OSError as exc:
+        warnings.append(f"Could not persist retirement; install may recreate this pool: {exc}")
+
+    sessions = [s for s in await handler.db.list_sessions(lifecycle="pool", live_only=True)
+                if s.profile_id == profile_id]
+    # Persist intent for the entire fleet first. Reconciliation retries failed
+    # stops even after restart, without ever releasing an unconfirmed writer.
+    for session in sessions:
+        await handler.db.update_session(session.id, desired_state="stopped")
+    for session in sessions:
+        try:
+            await handler.orchestrator._terminate_pool_session(session, reason="profile_deleted")
+        except Exception:
+            logger.exception("pool delete: stop failed for %s", session.id)
+        current = await handler.db.get_session(session.id)
+        if current is not None and current.state != "stopped":
+            warnings.append(f"Session {session.id} is still stopping; its resources remain held.")
+
+    directory = Path(_system_profile_path(handler, profile_id)).parent
+
+    def remove_source():
+        # Never follow a profile-directory symlink when deleting vault content.
+        if directory.is_symlink():
+            directory.unlink()
+        elif depth == "directory":
+            if directory.exists():
+                shutil.rmtree(directory)
+        else:
+            (directory / "profile.md").unlink(missing_ok=True)
+
+    try:
+        await asyncio.to_thread(remove_source)
+    except OSError as exc:
+        warnings.append(f"Vault cleanup incomplete: {exc}")
+
+    # Also resets route_source and provider intent atomically. Missing rows on
+    # a repeated request are harmless; deletion is safe to retry after a timeout.
+    await handler.db.delete_profile(profile_id)
+    payload = {
+        "profile_id": profile_id,
+        "depth": depth,
+        "sessions": [s.id for s in sessions],
+        "warnings": warnings,
+    }
+    seq = await handler.db.log_event("pool.deleted", payload=json.dumps(payload))
+    await _emit(handler, None, "pool.deleted", {**payload, "seq": seq})
+    return {"success": True, "deleted": profile_id, "retired": retired, **payload}
 
 
 async def set_pool_lifecycle(
@@ -406,3 +586,58 @@ async def set_pool_bounds(
             },
         )
     return _with_audit(response, before, profile, session_actions)
+
+
+async def restore_pool_profile(
+    handler,
+    before: Mapping[str, object],
+    *,
+    correlation: Mapping[str, object] | None = None,
+) -> dict:
+    """Put a profile back to *before* (a helper's ``before`` row).  Compensates an allocation.
+
+    Built from the same helpers, so the vault, the database row and the
+    ``pool.*`` events land exactly as the single-profile commands would
+    write them: the lifecycle first (``set_pool_lifecycle``), then the pool
+    bounds (``set_pool_bounds``), then the pool-only keys a move to ``task``
+    cleared.  Only fields that differ are written, so restoring an unchanged
+    profile is a no-op.  Sessions a lifecycle change already marked stopped
+    stay stopped: a drain is not undone, and the caller reports it.
+    """
+    profile_id = str(before["id"])
+    current = await handler.db.get_profile(profile_id)
+    if current is None:
+        return {"success": False, "error": f"no profile '{profile_id}'"}
+    lifecycle = before.get("lifecycle") or "task"
+    if getattr(current, "lifecycle", "task") != lifecycle:
+        result = await set_pool_lifecycle(
+            handler, {"profile_id": profile_id, "lifecycle": lifecycle}, correlation=correlation
+        )
+        if not result.get("success"):
+            return result
+        current = await handler.db.get_profile(profile_id)
+    if lifecycle == "pool":
+        bounds: dict[str, object] = {}
+        if current.max_active != before.get("max_active"):
+            bounds["max"] = before.get("max_active")
+        restore_min = current.min_active != before.get("min_active")
+        if restore_min and before.get("min_active") is not None:
+            bounds["min"] = before.get("min_active")
+        if bounds:
+            result = await set_pool_bounds(
+                handler, {"profile_id": profile_id, **bounds}, correlation=correlation
+            )
+            if not result.get("success"):
+                return result
+        rest = {
+            field: before.get(field)
+            for field in ("min_per_project", "max_claims_per_session")
+            if field in before and getattr(current, field, None) != before.get(field)
+        }
+        if restore_min and before.get("min_active") is None:
+            # ``pool scale`` refuses an unset min; the row had none, so write it back as it was.
+            rest["min_active"] = None
+        if rest:
+            await _write_pool_profile_config(handler, profile_id, rest, require_pool=True)
+    restored = await handler.db.get_profile(profile_id)
+    return {"success": True, "profile_id": profile_id, "after": _profile_row(restored)}

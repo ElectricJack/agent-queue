@@ -18,6 +18,7 @@ from src.sessions.harness_registry import (
     _on_harness_changed,
     derive_harness_id,
     load_from_vault,
+    runs_cli,
     vault_path_for,
 )
 from src.vault_watcher import VaultChange
@@ -308,6 +309,38 @@ class TestRegistry:
         assert fast.command == "claude"
         assert fast.model_flag == "--model"
 
+    def test_runs_cli_matches_the_executable_not_the_id(self, tmp_path):
+        # Two recipes for one CLI: OpenCode on local Ollama and on OpenCode
+        # Zen.  CLI behaviour must follow the executable (noble-delta-40).
+        vault = tmp_path / "vault"
+        self._write(vault, "harnesses/opencode.md", '{"command": "/opt/bin/opencode"}',
+                    hid="opencode")
+        self._write(
+            vault, "harnesses/opencode-zen.md",
+            '{"command": "/home/u/.agent-queue/harness-bin/opencode", "provider": "opencode"}',
+            hid="opencode-zen",
+        )
+        self._write(vault, "harnesses/opencode-win.md", '{"command": "C:/bin/opencode.EXE"}',
+                    hid="opencode-win")
+        self._write(vault, "harnesses/claude.md", '{"command": "claude"}', hid="claude")
+        self._write(vault, "harnesses/oc-npx.md", '{"command": "npx", "args": ["opencode"]}',
+                    hid="oc-npx")
+        registry = HarnessRegistry()
+        load_from_vault(registry, str(vault))
+
+        assert runs_cli("opencode", "opencode-zen", registry)
+        assert runs_cli("opencode", "opencode-win", registry)
+        assert runs_cli("opencode", "opencode", registry)
+        assert not runs_cli("opencode", "claude", registry)
+        # Only the executable is read: a launcher in front of the CLI is not it.
+        assert not runs_cli("opencode", "oc-npx", registry)
+        assert not runs_cli("opencode", "unregistered", registry)
+        assert not runs_cli("opencode", "", registry)
+        assert not runs_cli("opencode", None, registry)
+        # Without a registry only the harness named after the CLI matches.
+        assert runs_cli("opencode", "opencode")
+        assert not runs_cli("opencode", "opencode-zen")
+
     def test_a_malformed_file_is_skipped_and_reported_not_fatal(self, tmp_path):
         vault = tmp_path / "vault"
         self._write(vault, "harnesses/good.md", '{"command": "ok"}', hid="good")
@@ -318,6 +351,128 @@ class TestRegistry:
         assert len(errors) == 1 and "bad.md" in errors[0]
         assert registry.get("good") is not None
         assert registry.get("bad") is None
+
+
+class TestRunsCliProjectScope:
+    """``runs_cli`` resolves the CLI in the harness file that *launches*.
+
+    A project may shadow a harness id with its own file
+    (``vault/projects/<pid>/harnesses/<name>.md``), and the launch path reads
+    it: ``orchestrator/execution.py`` and ``orchestrator/pools.py`` resolve
+    with ``task.project_id``, ``sessions/input_prompts.py`` with
+    ``session.project_id``.  When the shadow names a different executable the
+    CLI-specific behaviour must move with it, and only for that project --
+    the same id on every other project still launches the system file.
+    """
+
+    #: The hosted-pool recipe of ``noble-delta-40``: the ``opencode``
+    #: executable against the OpenCode Zen gateway.
+    _ZEN = '{"command": "/home/u/.agent-queue/harness-bin/opencode", "provider": "opencode"}'
+
+    @staticmethod
+    def _write(root, rel, cfg, hid):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_md(cfg, frontmatter=f"id: {hid}\n"), encoding="utf-8")
+
+    @classmethod
+    def _registry(cls, tmp_path, files):
+        vault = tmp_path / "vault"
+        for rel, (cfg, hid) in files.items():
+            cls._write(vault, rel, cfg, hid)
+        registry = HarnessRegistry()
+        errors = load_from_vault(registry, str(vault))
+        assert errors == []
+        return registry
+
+    def test_a_project_override_to_another_cli_leaves_only_that_project(self, tmp_path):
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+                "projects/p1/harnesses/opencode-zen.md": ('{"command": "claude"}', "opencode-zen"),
+            },
+        )
+
+        # p1 launches claude, so OpenCode's question store and prime addendum
+        # do not apply there -- and the CLI it does run is found instead.
+        assert not runs_cli("opencode", "opencode-zen", registry, "p1")
+        assert runs_cli("claude", "opencode-zen", registry, "p1")
+        # Every other scope still resolves the system file and keeps OpenCode.
+        assert runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert runs_cli("opencode", "opencode-zen", registry)
+        assert runs_cli("opencode", "opencode", registry, "p1")  # unrelated harness id
+
+    def test_the_reverse_override_grants_the_cli_to_one_project_only(self, tmp_path):
+        # A hosted recipe that launches another CLI, with p1 overriding it
+        # back to opencode: OpenCode behaviour is added, not removed.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (
+                    '{"command": "/opt/bin/codex", "provider": "opencode"}',
+                    "opencode-zen",
+                ),
+                "projects/p1/harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode-zen", registry, "p1")
+        assert not runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert not runs_cli("opencode", "opencode-zen", registry)
+        # The CLI the *system* file runs is still reported in every scope that
+        # does not override it -- an override replaces, it does not append.
+        assert runs_cli("codex", "opencode-zen", registry, "p2")
+        assert not runs_cli("codex", "opencode-zen", registry, "p1")
+
+    def test_an_override_that_keeps_the_command_keeps_the_cli(self, tmp_path):
+        # The common override changes launch flags or the provider, not the
+        # executable.  CLI behaviour follows the command, so it must survive.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+                "projects/p1/harnesses/opencode-zen.md": (
+                    (
+                        '{"command": "C:/bin/opencode.EXE", "provider": "opencode", '
+                        '"args": ["--auto"]}'
+                    ),
+                    "opencode-zen",
+                ),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode-zen", registry, "p1")  # .exe is ignored
+        assert runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert runs_cli("opencode", "opencode-zen", registry)
+
+    def test_a_project_only_harness_id_is_invisible_outside_its_project(self, tmp_path):
+        # No system file at all: p2 has no such harness to resolve, so no
+        # CLI-specific behaviour may be attributed to it there.
+        registry = self._registry(
+            tmp_path, {"projects/p1/harnesses/zen-local.md": (self._ZEN, "zen-local")}
+        )
+
+        assert runs_cli("opencode", "zen-local", registry, "p1")
+        assert not runs_cli("opencode", "zen-local", registry, "p2")
+        assert not runs_cli("opencode", "zen-local", registry)
+
+    def test_a_harness_named_after_the_cli_answers_before_the_registry(self, tmp_path):
+        # Pinned deliberately: the id match is the only answer available
+        # without a registry, so it short-circuits ahead of the registry and a
+        # project file shadowing the ``opencode`` id itself is never consulted.
+        # Renaming the id is a project's only way to opt out.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode.md": ('{"command": "/opt/bin/opencode"}', "opencode"),
+                "projects/p1/harnesses/opencode.md": ('{"command": "claude"}', "opencode"),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode", registry, "p1")
+        assert runs_cli("opencode", "opencode", registry, "p2")
+        assert runs_cli("opencode", "opencode")
 
 
 class TestRegistryWatcher:
@@ -508,10 +663,26 @@ class TestShippedDialogRulesMatchTheirScreens:
             ),
             ("claude", "mcp-trust", " New MCP server found in .mcp.json: foo\n"),
             ("claude", "rate-limit", " You are approaching your usage limit\n"),
+            # 2026-10-03: an expired Claude login quarantined nothing, so the
+            # pool reported two idle workers and relaunched into the same
+            # "Login expired · Please run /login" pane.
+            ("claude", "login-required", " Login expired · Please run /login\n"),
+            ("claude", "login-required", " OAuth token has expired · Please run /login\n"),
+            ("claude", "login-required", " Invalid API key · Please run /login\n"),
             (
                 "codex",
                 "trust-directory",
                 "  Do you trust the contents of this directory?\n\n› 1. Yes, continue\n",
+            ),
+            (
+                # Codex 0.162 renamed the screen (nimble-harbor-12).
+                "codex",
+                "trust-directory",
+                (
+                    "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+                    "  permission settings.\n\n› 1. Trust and continue\n"
+                    "  2. Back to Agent Command Center\n"
+                ),
             ),
             ("codex", "login-required", "  Sign in with ChatGPT to use Codex\n"),
             ("codex", "login-required", "  Run `codex login` to authenticate\n"),
@@ -559,6 +730,7 @@ class TestShippedInputPromptSignatures:
             ("codex", "login-required", "Run codex login to authenticate\n"),
             ("codex", "usage-limit", "You've hit your usage limit\n"),
             ("codex", "trust-or-permission", "Hooks need review\n"),
+            ("codex", "trust-or-permission", "Trust this folder? Codex can read, edit, and run\n"),
             ("codex", "press-enter-to-continue", "Press Enter to continue\n"),
             ("claude", "numbered-menu", "❯ 1. Continue\n"),
             ("claude", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
