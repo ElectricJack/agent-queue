@@ -190,8 +190,8 @@ export default function ReceiptDetail({ receipt, missingReceiptId }: ReceiptDeta
             ["JSON", receipt.script.json_status ?? "—"],
             ["process started", receipt.script.started_at == null ? "—" : formatClock(receipt.script.started_at)],
             ["process ended", receipt.script.ended_at == null ? "—" : formatClock(receipt.script.ended_at)],
-            ["capture complete", String(receipt.script.capture_complete ?? false)],
-            ["cleanup complete", String(receipt.script.cleanup_complete ?? false)],
+            ["capture complete", receipt.script.capture_complete == null ? "Unresolved" : String(receipt.script.capture_complete)],
+            ["cleanup complete", receipt.script.cleanup_complete == null ? "Unresolved" : String(receipt.script.cleanup_complete)],
           ]} />
           {Object.entries(receipt.script.output_refs ?? {}).map(([stream, reference]) => (
             <p key={stream} className="break-all font-mono text-xs text-gray-400">

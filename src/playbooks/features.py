@@ -90,14 +90,21 @@ def infer_required_features(
 def execution_metadata_from_source(
     frontmatter: Mapping[str, Any], definition: PlaybookDefinition
 ) -> TrustedExecutionMetadata | None:
-    """Pin the authored state version, defaulting to one only for a state user."""
+    """Pin source declarations without granting any caller authority."""
+    from src.playbooks.authoring import execution_source_errors
+
+    errors = execution_source_errors(frontmatter)
+    if errors:
+        raise ValueError("; ".join(errors))
+    version = None
     if "state_schema_version" in frontmatter or STATE_COMMANDS.intersection(
         referenced_commands(definition)
     ):
-        if frontmatter.get("state_schema_version", 1) is None:
-            raise ValueError("state_schema_version must be a positive integer")
+        version = frontmatter.get("state_schema_version", 1)
+    required = tuple(sorted(set(frontmatter.get("required_capabilities", ()))))
+    if version is not None or required:
         return TrustedExecutionMetadata(
-            state_schema_version=frontmatter.get("state_schema_version", 1)
+            state_schema_version=version, required_capabilities=required,
         )
     return None
 

@@ -58,7 +58,9 @@ filters and current authority. Exhausted snapshot budgets fail visibly rather
 than truncate a successful scan.
 
 Notifications require both `playbook_state_notify` and `message_send` in the current
-principal and pinned artifact grants. The message object accepts only `to_kind`,
+principal and pinned artifact grants. A notify step's artifact grants `message_send`
+when its source declares `required_capabilities: [..., message_send]`; no extra
+`message_send` step is needed, and an undeclared dependency stays denied. The message object accepts only `to_kind`,
 `to_id`, `body` (up to 16,384 characters) and optional `subject` (512 characters).
 Sender identity is server-derived: `system:playbook:<id>`. Message readback includes
 run, playbook, namespace and step provenance. Project playbooks can address only

@@ -36,7 +36,7 @@ export const CLUSTER_HEADER = 44;
 export const SEMANTIC_NODE_TYPE = "semanticStep";
 export const RULE_CLUSTER_NODE_TYPE = "ruleCluster";
 
-/** The seven step kinds of the V2 step union (`StepKind` in
+/** The eight step kinds of the V2 step union (`StepKind` in
  *  `src/api/models/playbook_v2.py`). */
 export type SemanticStepKind = GraphNodeDTO["step_kind"];
 
@@ -227,4 +227,11 @@ export interface RuleClusterNodeData extends Record<string, unknown> {
   rule: RuleClusterDTO;
   /** Diagnostics attributed to the rule itself plus each of its steps. */
   diagnosticCount: number;
+}
+
+/** Keep protected and unresolved values explicit on compact and detailed views. */
+export function valueDisplay(value: ExplanationValueDTO): string {
+  if (value.redacted || value.kind === "redacted") return "Protected value";
+  if (value.kind === "unresolved") return `Unresolved: ${value.display}`;
+  return value.display;
 }

@@ -8,6 +8,7 @@ import {
   STEP_KIND_TONES,
   UNTRAVERSED_EDGE_OPACITY,
   selectedEdgeStyle,
+  valueDisplay,
   type SemanticEdgeKind,
   type SemanticStepKind,
 } from "../types";
@@ -79,5 +80,14 @@ describe("semantic graph style maps", () => {
       expect(STEP_KIND_LABELS[kind]).toBeTruthy();
       expect(STEP_KIND_TONES[kind]).toBeTruthy();
     }
+  });
+});
+
+
+describe("value visibility", () => {
+  it("withholds protected display text and distinguishes unresolved from null", () => {
+    expect(valueDisplay({ kind: "redacted", display: "secret", redacted: true })).toBe("Protected value");
+    expect(valueDisplay({ kind: "unresolved", display: "scan.rows" })).toBe("Unresolved: scan.rows");
+    expect(valueDisplay({ kind: "literal", display: "null" })).toBe("null");
   });
 });

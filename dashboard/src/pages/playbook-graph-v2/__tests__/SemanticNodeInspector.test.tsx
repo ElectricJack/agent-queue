@@ -157,6 +157,8 @@ describe("SemanticNodeInspector", () => {
     expect(loop.getByText("downstream.tasks")).toBeInTheDocument();
     expect(loop.getByText("task")).toBeInTheDocument();
     expect(loop.getByText("collect")).toBeInTheDocument();
+    expect(loop.getByText("maximum iterations")).toBeInTheDocument();
+    expect(loop.getByText("500")).toBeInTheDocument();
     expect(loop.getByText("open-gate")).toBeInTheDocument();
     expect(loop.getByText("sweep-done")).toBeInTheDocument();
   });

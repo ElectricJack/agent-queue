@@ -440,6 +440,7 @@ class LoopNodeDetailDTO(V2Model):
     """ForEachStep only."""
 
     collection: ExplanationValueDTO
+    max_iterations: int = 500
     item_binding: str
     failure_policy: Literal["halt", "continue", "collect"]
     body_entry_step_id: str
@@ -578,6 +579,14 @@ class GraphLegendDTO(V2Model):
     edge_kinds: dict[str, str] = {}  # EdgeKind  -> label
 
 
+class ExecutionRequirementsDTO(V2Model):
+    """Reviewed requirements, never a grant or a resolved principal."""
+
+    required_features: list[str] = []
+    required_capabilities: list[str] = []
+    state_schema_version: int | None = None
+
+
 class PlaybookV2GraphResponse(V2Model):
     """Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``
     narrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and
@@ -588,6 +597,7 @@ class PlaybookV2GraphResponse(V2Model):
     artifact: ArtifactRefDTO
     activation: ActivationStateDTO
     purpose: str = "routine"  # "routine" | "assignment_routing"
+    execution_requirements: ExecutionRequirementsDTO = ExecutionRequirementsDTO()
     event_groups: list[EventGroupDTO] = []
     rules: list[RuleClusterDTO] = []
     nodes: list[GraphNodeDTO] = []
@@ -1019,7 +1029,19 @@ class PlaybookV2ShadowCompileResponse(V2Model):
 # ---------------------------------------------------------------------------
 
 
+class PlaybookSourceResyncResponse(V2Model):
+    success: bool = True
+    playbook_id: str
+    artifact_sha256: str
+    source_hash: str
+    previous_source_hash: str
+    source_path: str
+    backup_path: str | None = None
+    changed: bool
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "playbook_source_resync": PlaybookSourceResyncResponse,
     "playbook_v2_graph": PlaybookV2GraphResponse,
     "playbook_commands": PlaybookCommandCatalogResponse,
     "playbook_graph_layout_save": PlaybookGraphLayoutSaveResponse,

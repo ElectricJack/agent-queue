@@ -310,6 +310,7 @@ export default function SemanticNodeInspector({
               ["collection", <Value value={node.loop.collection} />],
               ["item binding", <span className="font-mono">{node.loop.item_binding}</span>],
               ["failure policy", node.loop.failure_policy],
+              ["maximum iterations", node.loop.max_iterations ?? 500],
               ["body entry", <span className="font-mono">{node.loop.body_entry_step_id}</span>],
               ["continuation", <span className="font-mono">{node.loop.continuation_step_id ?? "—"}</span>],
             ]}
