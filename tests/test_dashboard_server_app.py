@@ -709,47 +709,61 @@ async def test_with_the_daemon_down_the_page_loads_and_the_api_says_why(tmp_path
 
 
 async def test_the_process_serves_proxies_and_stops_on_sigterm(tmp_path):
-    """``python -m src.dashboard_server`` -- what `aq dashboard serve` runs -- end to end."""
+    """Run the real entry point with an inherited listener, including SIGTERM shutdown."""
     daemon = FakeDaemon()
     bundle = stage_bundle(tmp_path)
-    port = unused_port()
-    url = f"http://127.0.0.1:{port}"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AQ_", "AGENT_QUEUE_"))}
-    async with serve_asgi(daemon.app) as daemon_url:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "src.dashboard_server",
-            "--config", str(tmp_path / "absent.yaml"), "--bundle-dir", str(bundle),
-            "--port", str(port), "--api-url", daemon_url, "--log-level", "warning",
-            cwd=ROOT, env=env, stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            async with aiohttp.ClientSession() as client:
-                identity = await _wait_for_identity(client, url, process)
-                assert identity["pid"] == process.pid
-                assert identity["bundle"] == {
-                    "version": "9.9.9",
-                    "files": 2,
-                    "verified": True,
-                    "manifest_sha256": _manifest_digest(bundle),
-                }
-                async with client.get(url + "/settings/messaging") as deep:
-                    assert (deep.status, await deep.text()) == (200, INDEX_HTML)
-                async with client.get(url + "/api/echo") as echo:
-                    assert echo.status == 200
-                async with client.get(url + "/ready") as ready:
-                    assert ready.status == 200
-            async with connect(_ws(url) + "/ws/echo", origin=url) as ws:
-                await ws.send("ping")
-                assert await asyncio.wait_for(ws.recv(), 5) == "ping"
-                process.send_signal(signal.SIGTERM)
-                with pytest.raises(ConnectionClosed) as closed:
-                    await asyncio.wait_for(ws.recv(), 5)
-            assert closed.value.rcvd is not None and closed.value.rcvd.code == 1001
-            assert await asyncio.wait_for(process.wait(), 6) in (0, -signal.SIGTERM)
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
+    # Keep the port reserved through process startup. Selecting then releasing
+    # an unused port lets the fake daemon or another worker take it first.
+    # Only listener acquisition is injected; the real main, server and signal
+    # handling still run in the child. Busy-port failure is covered above.
+    launch = (
+        "import socket, sys;"
+        "from src.dashboard_server import __main__ as server_main;"
+        "listener = socket.socket(fileno=int(sys.argv[1]));"
+        "server_main.bind_listener = lambda host, port: listener;"
+        "raise SystemExit(server_main.main(sys.argv[2:]))"
+    )
+    with server_main.bind_listener("127.0.0.1", 0) as listener:
+        port = listener.getsockname()[1]
+        url = f"http://127.0.0.1:{port}"
+        async with serve_asgi(daemon.app) as daemon_url:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", launch, str(listener.fileno()),
+                "--config", str(tmp_path / "absent.yaml"), "--bundle-dir", str(bundle),
+                "--port", str(port), "--api-url", daemon_url,
+                "--log-level", "warning", pass_fds=(listener.fileno(),),
+                cwd=ROOT, env=env, stderr=asyncio.subprocess.PIPE,
+            )
+            listener.close()  # The child now owns the listener, including its shutdown.
+            try:
+                async with aiohttp.ClientSession() as client:
+                    identity = await _wait_for_identity(client, url, process)
+                    assert identity["pid"] == process.pid
+                    assert identity["bundle"] == {
+                        "version": "9.9.9",
+                        "files": 2,
+                        "verified": True,
+                        "manifest_sha256": _manifest_digest(bundle),
+                    }
+                    async with client.get(url + "/settings/messaging") as deep:
+                        assert (deep.status, await deep.text()) == (200, INDEX_HTML)
+                    async with client.get(url + "/api/echo") as echo:
+                        assert echo.status == 200
+                    async with client.get(url + "/ready") as ready:
+                        assert ready.status == 200
+                async with connect(_ws(url) + "/ws/echo", origin=url) as ws:
+                    await ws.send("ping")
+                    assert await asyncio.wait_for(ws.recv(), 5) == "ping"
+                    process.send_signal(signal.SIGTERM)
+                    with pytest.raises(ConnectionClosed) as closed:
+                        await asyncio.wait_for(ws.recv(), 5)
+                assert closed.value.rcvd is not None and closed.value.rcvd.code == 1001
+                assert await asyncio.wait_for(process.wait(), 6) in (0, -signal.SIGTERM)
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
 
 
 async def _wait_for_identity(client, url: str, process) -> dict:

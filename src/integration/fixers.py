@@ -65,8 +65,13 @@ class BatchFixerService:
         ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def _block(self, conn, batch, state, reason):
-        from src.integration.fixer_batches import defer_on
+        from src.integration.fixer_batches import defer_on, is_deferred
 
+        # Liveness and push probes run outside the row lock. An operator may
+        # have withdrawn this batch while the probe was in flight.
+        if ((batch["intent"] != "open" and not is_deferred(batch))
+                or state.get("status") == "aborted"):
+            return {"success": True, "outcome": "held"}
         if state["status"] == "green":
             return {"success": True, "outcome": "green"}
         # One incident per allocation, including races between launch and observation.
@@ -169,8 +174,11 @@ class BatchFixerService:
             ).with_for_update())).mappings().one_or_none()
             if batch is None:
                 return {"success": False, "outcome": "missing_batch"}
+            queue = batch["fixer_queue"] or {}
             if target_ref not in {candidate_ref(batch_id), batch["target_ref"]}:
                 raise ValueError("fixer target is not this batch's branch")
+            if (batch["fixer_state"] or {}).get("status") == "aborted":
+                return {"success": True, "outcome": "held"}
             if batch["intent"] == "aborted" and queue.get("status") in {"deferred", "companion"}:
                 return {"success": True, "outcome": "deferred", "reason": queue["reason"],
                         "session_id": (batch["fixer_state"] or {}).get("session_id")}
@@ -185,6 +193,8 @@ class BatchFixerService:
                     integration_batches.c.fixer_state["family_id"].astext == family,
                     integration_batches.c.fixer_state["session_id"].astext.is_not(None),
                 ).with_for_update())).mappings().one_or_none()
+                if owner and (owner["fixer_state"] or {}).get("status") == "aborted":
+                    return {"success": True, "outcome": "held"}
                 # Before launch retries, a failed launch blocked its family
                 # forever. A successor takes over an identity that left no process.
                 fresh = (await self._relaunchable(conn, owner["fixer_state"])
@@ -406,6 +416,8 @@ class BatchFixerService:
             if row is None:
                 return
             state = dict(row["fixer_state"] or {})
+            if state.get("status") == "aborted":
+                return
             if state and state.get("green_notified_sha") != head_sha:
                 state.update(status="green", green_sha=head_sha, green_notified_sha=head_sha)
                 await self._write(conn, batch_id, state)
@@ -450,6 +462,32 @@ class BatchFixerService:
                     sessions.c.instance_token == state["instance_token"],
                     sessions.c.task_id.is_(None),
                 ).values(desired_state="stopped"))
+
+    @staticmethod
+    async def abort_on(conn, batch, *, reason, now):
+        """Withdraw a terminal batch's fixer without releasing its retained checkout."""
+        state = dict(batch["fixer_state"] or {})
+        if not state or state.get("status") == "aborted":
+            return
+        state.update(status="aborted", abort_reason=reason)
+        await execute_batch_mutation(conn, update(integration_batches).where(
+            integration_batches.c.id == batch["id"],
+        ).values(fixer_state=state, updated_at=now))
+        identity = hashlib.sha256(f"{batch['id']}:aborted".encode()).hexdigest()
+        await insert_message_with_source_event(conn, insert(messages).values(
+            id="msg-fixer-" + identity, project_id=batch["project_id"],
+            from_kind="system", from_id="integration-train", to_kind="session",
+            to_id=state["session_id"], subject=f"Batch fixer: {batch['id']}",
+            body=f"Batch {batch['id']} was aborted: {reason}. "
+                 "Stop editing and pushing this branch. Your checkout is retained.",
+            thread_id="batch-fixer-" + batch["id"], priority=100,
+            created_at=now, archive_after_inject=1, body_kind="integration_fixer",
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        await conn.execute(update(sessions).where(
+            sessions.c.id == state["session_id"],
+            sessions.c.instance_token == state["instance_token"],
+            sessions.c.task_id.is_(None),
+        ).values(desired_state="stopped"))
 
     async def for_session(self, session_id):
         async with self.db._engine.connect() as conn:

@@ -294,6 +294,43 @@
       }
     },
     {
+      "name": "recover_retained_holder",
+      "description": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expected_proof": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "task_id",
+          "session_id",
+          "reason"
+        ]
+      }
+    },
+    {
       "name": "project_doctor",
       "description": "Check a project's repository authorization and offer an audited binding command.",
       "input_schema": {
@@ -5296,6 +5333,42 @@
       }
     },
     {
+      "name": "task_claim_abort",
+      "description": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Preparing task ID."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Exact preparing session ID."
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "instance_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "instance_token",
+          "reason"
+        ]
+      }
+    },
+    {
       "name": "task_handoff",
       "description": "Record a structured handoff (8 KiB combined UTF-8 agent text, at most 20 items per list), with daemon-observed ownership and checkout facts. Legacy subject/detail remain accepted. Empty auto hooks are no-ops. Non-auto records a restart request without performing a restart. Backs `aq handoff`.",
       "input_schema": {
@@ -5515,7 +5588,7 @@
     },
     {
       "name": "message_inbox",
-      "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+      "description": "List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor aliases and the current named session UUID share an inbox. With inject=true, return only undelivered messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed additionally returns other consumed rows for this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -12564,9 +12637,17 @@
             "title": "Project Id"
           },
           "wait_id": {
-            "minLength": 1,
-            "title": "Wait Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wait Id"
           },
           "decision": {
             "enum": [
@@ -12575,7 +12656,8 @@
               "cancel",
               "reroute",
               "escalate_to_human",
-              "requeue"
+              "requeue",
+              "retire"
             ],
             "title": "Decision",
             "type": "string"
@@ -12641,7 +12723,6 @@
           }
         },
         "required": [
-          "wait_id",
           "decision",
           "note"
         ],
@@ -12808,6 +12889,38 @@
           "response"
         ],
         "title": "WaitLiftArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_source_redispatch",
+      "description": "Reobserve one durable source event in a supervisor project.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_seq": {
+            "minimum": 1,
+            "title": "Source Seq",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_seq",
+          "note"
+        ],
+        "title": "WaitSourceRedispatchArgs",
         "type": "object"
       }
     },
@@ -15918,6 +16031,35 @@
         "type": "object"
       }
     },
+    "integration_rebind_batch_authority": {
+      "name": "integration_rebind_batch_authority",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_reconcile_expired_mutation": {
       "name": "integration_reconcile_expired_mutation",
       "description": "Local operator verifies nonce, fences, stopped authority and actual remote target.",
@@ -17472,6 +17614,30 @@
           "project_id"
         ],
         "title": "IntegrationStatusReadArgs",
+        "type": "object"
+      }
+    },
+    "integration_store_maintenance": {
+      "name": "integration_store_maintenance",
+      "description": "Preview or consolidate configured retained stores while keeping unreachable objects.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationStoreMaintenanceArgs",
         "type": "object"
       }
     },
@@ -21305,6 +21471,7 @@
     "project_doctor": "project",
     "repair_repository_checkout": "project",
     "repair_workspace_checkout": "project",
+    "recover_retained_holder": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -21429,6 +21596,7 @@
     "wait_ack": "wait",
     "wait_decide": "wait",
     "wait_lift": "wait",
+    "wait_source_redispatch": "wait",
     "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
@@ -21578,6 +21746,7 @@
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
+    "task_claim_abort": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     "knowledge_create": "knowledge",

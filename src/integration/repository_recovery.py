@@ -10,31 +10,72 @@ import re
 import stat
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, RemoteRefState, safe_git_detail
+from src.git.manager import (
+    RETAINED_FSCK_TIMEOUT_SECONDS, GitError, RemoteRefState, safe_git_detail,
+)
+from src.integration.selection_metrics import selection_count, selection_stage
 
 logger = logging.getLogger(__name__)
 _HEX = re.compile(r"[0-9a-f]+\Z")
 _LOOSE_PATH = re.compile(r"(?:[^\s:]*objects)/([0-9a-f]{2})/([0-9a-f]{38}|[0-9a-f]{62})(?![0-9a-f])")
 _FSCK = ["--no-replace-objects", "fsck", "--full", "--no-dangling", "--no-reflogs",
          "--no-progress"]
-# Every write to a retained store disables auto-gc (the stores' config and the isolated
-# import environment); this foreground run, with a valid cwd under the repository
-# transaction, replaces it.  Command-line -c beats both.
-_MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false",
-                "gc", "--auto", "--quiet"]
 _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
                     ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
-# Full object-body verification is CPU/I/O bound: the 423 MB integration cache
-# takes about a minute per pass on a healthy store. Recovery needs up to four
-# passes, so neither a pass nor their shared acquisition can use the ordinary
-# short-command budget alone.
-FSCK_TIMEOUT_SECONDS = 300
+# Recovery needs up to four full-body passes, using the same budget as the
+# pre-fetch lender check rather than the ordinary short-command timeout.
+FSCK_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
+
+
+@dataclass
+class _Checkout:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    path: Path | None = None
+
+
+_CHECKOUT_SCOPE: ContextVar[dict | None] = ContextVar("retained_checkout_scope", default=None)
+
+
+@contextmanager
+def retained_checkout_scope():
+    token = _CHECKOUT_SCOPE.set({})
+    try:
+        yield
+    finally:
+        _CHECKOUT_SCOPE.reset(token)
+
+
+async def open_retained_checkout(git, store, origin_url):
+    """Reuse one successful checkout open per tick, without caching Git authority."""
+    scope = _CHECKOUT_SCOPE.get()
+    if scope is None:
+        return await _open_retained_checkout(git, store, origin_url)
+    key = id(git), str(Path(store).absolute()), origin_url
+    checkout = scope.setdefault(key, _Checkout())
+    async with checkout.lock:
+        if checkout.path is None:
+            checkout.path = await _open_retained_checkout(git, store, origin_url)
+        return checkout.path
+
+
+async def _open_retained_checkout(git, store, origin_url):
+    """Serialize creation when the train and its truth reader share a store."""
+    store = Path(store)
+    store.parent.mkdir(parents=True, exist_ok=True)
+    async with git.arepository_transaction(str(store)):
+        if not (store / ".git").exists():
+            await git.acreate_checkout(origin_url, str(store), no_checkout=True)
+        await ensure_retained_origin(git, store, origin_url, lock_held=True)
+        await harden_retained_repository(git, store, lock_held=True)
+    return store
 
 
 async def ensure_retained_origin(git, store, origin_url, *, lock_held=False):
@@ -235,24 +276,6 @@ async def _publish_local_heads(git, store, repository_url):
         raise GitError("guarded local-only AQ branch publication failed")
 
 
-async def _maintain(git, store, git_dir):
-    """Best-effort foreground gc; a successful run makes any old gc.log obsolete."""
-    try:
-        result = await git.arun_git_result(_MAINTENANCE, cwd=str(store), lock_held=True,
-                                           env={"LC_ALL": "C"})
-    except GitError as exc:
-        logger.warning("retained cache %s maintenance failed: %s", store, exc)
-        return
-    if result.returncode:
-        logger.warning("retained cache %s maintenance failed: %s", store,
-                       safe_git_detail(result.stderr, limit=1000))
-        return
-    report = git_dir / "gc.log"
-    if report.is_file() and not report.is_symlink():
-        report.unlink()
-        logger.info("retained cache %s: removed stale gc.log after foreground gc", store)
-
-
 @asynccontextmanager
 async def _transaction(git, store, lock_held):
     if lock_held:
@@ -267,7 +290,7 @@ class RetainedRecoveryExhausted(GitError):
 
 
 async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
-                                repository_id=None, lock_held=False):
+                                repository_id=None, lock_held=False, skip_unchanged=False):
     """Recover inside the existing acquisition budget, keeping all local refs.
 
     The journal is durable even without a daemon (disposable Git fixtures). In
@@ -294,12 +317,60 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                 _write(journal, state)
 
     async def fsck():
-        return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
-                                        env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
+        with selection_stage("retained_fsck"):
+            return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
+                                            env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
 
     async def fetch(**options):
-        await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
-                                lock_held=True, **options)
+        selection_count("retained_fetch_starts")
+        with selection_stage("retained_fetch"):
+            await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
+                                    lock_held=True, **options)
+
+    async def incremental():
+        # This runs under the same repository exclusion as acquisition. A fresh
+        # advertisement alone says nothing about local integrity or missing refs.
+        with selection_stage("snapshot_ref_probe"):
+            selection_count("snapshot_ref_probes")
+            remote = await git.als_remote_snapshot_refs(str(store), repository_url=repository_url)
+            local = await git.arun_git_result(
+                ["for-each-ref", "--format=%(refname) %(objectname)",
+                 "refs/remotes/origin/", "refs/tags/", "refs/aq/provenance/"],
+                cwd=str(store), lock_held=True,
+            )
+            if local.returncode or local.stderr.strip():
+                raise GitError("retained ref inventory is unavailable")
+            refs = dict(line.split(" ", 1) for line in local.stdout.splitlines())
+            refs.pop("refs/remotes/origin/HEAD", None)
+            refs = {("refs/heads/" + ref.removeprefix("refs/remotes/origin/")
+                     if ref.startswith("refs/remotes/origin/") else ref): oid
+                    for ref, oid in refs.items()}
+            changed = sorted(ref for ref, oid in remote.items() if refs.get(ref) != oid)
+            removed = {ref: oid for ref, oid in refs.items()
+                       if ref not in remote and not ref.startswith("refs/tags/")}
+        selection_count("snapshot_changed_refs", len(changed))
+        selection_count("snapshot_removed_refs", len(removed))
+        if changed:
+            # Both authenticated transport and the credential-free local import
+            # carry only these explicit refs. Keep the complete captured inventory
+            # for lanes selecting different targets from this tick's observation.
+            await fetch(refs=changed)
+        if removed:
+            commands = ["start"]
+            for ref, oid in sorted(removed.items()):
+                destination = ("refs/remotes/origin/" + ref.removeprefix("refs/heads/")
+                               if ref.startswith("refs/heads/") else ref)
+                commands.append(f"delete {destination} {oid}")
+            commands.extend(["prepare", "commit", ""])
+            result = await git.arun_git_result(
+                ["update-ref", "--stdin"], cwd=str(store), lock_held=True,
+                stdin="\n".join(commands),
+            )
+            if result.returncode:
+                raise GitError("retained ref inventory changed during pruning")
+        if not changed:
+            selection_count("snapshot_unchanged")
+        return not changed
 
     async def acquire():
         nonlocal state
@@ -323,14 +394,18 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
-                await fetch()
+                if skip_unchanged and reusable:
+                    no_transfer = await incremental()
+                else:
+                    no_transfer = False
+                    await fetch()
             except (GitError, GitHubAccessError) as exc:
                 fetch_error = exc
             if not pending.exists() and await git.areuse_retained_verification(
                     str(directory), extend=reusable and fetch_error is None):
                 if fetch_error:
                     raise fetch_error
-                return
+                return no_transfer
             baseline = await git.aretained_store_baseline(str(directory))
             before = await fsck()
             if _clean(before) and not pending.exists():
@@ -432,7 +507,6 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             if isinstance(exc, TimeoutError):
                 raise GitError("retained Git acquisition timed out") from exc
             raise
-        await _maintain(git, store, directory)
 
 
 async def clear_retained_recovery(git, state, *, by, record):

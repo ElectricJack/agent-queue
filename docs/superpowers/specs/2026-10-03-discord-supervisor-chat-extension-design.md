@@ -234,8 +234,11 @@ supervisor's job, and it uses the same `aq` commands it has today.
 - Plain words, no headings, no bullet lists, no code blocks, no embeds, no tables.
 - One leading status glyph per post from a fixed set: `✅ landed`, `⏳ working`,
   `⚠️ stuck`, `❓ needs you`, `📄 review`, `📊 digest`, `⏸ offline`. Nothing else.
-- Exactly **one** link per post, always the last line, bare URL wrapped in `<…>` so
-  Discord does not render a preview card.
+- Updated 2026-10-26: preserve authored HTTP(S) links, including external URLs,
+  and append an explicit `[Dashboard](https://host/path)` link. This supersedes
+  the original exactly-one-link rule and URL filtering. Escape URL components,
+  retain complete targets when trimming prose, and visibly explain missing,
+  invalid or oversized links. Never claim reachability from syntax alone.
 - Ids appear once, as the link, never repeated in prose.
 
 ### 3.2 Size budget (enforced by the renderer, not the author)

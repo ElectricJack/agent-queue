@@ -20,7 +20,7 @@ export const review = {
   vault_state: "ok",
   comments: [],
   attachments: [],
-  response_route: { kind: "new_task", summary: "Request changes creates a revision task." },
+  response_route: { kind: "new_task", summary: "Request changes creates a revision task.", class_summaries: {} },
 };
 
 export const routes = {
