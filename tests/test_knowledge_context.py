@@ -34,7 +34,7 @@ async def context_setup(reuse_database):
     config.knowledge.context.discovery_max_tokens = 4000
     await seed_project(db)
     service = ContextService(db, config)
-    grants = ["knowledge_show", "knowledge_search", "knowledge_cite", "knowledge_context_deliver"]
+    grants = ["knowledge_show", "record_search", "knowledge_cite", "knowledge_context_deliver"]
     worker = await worker_principal(db, grants=grants)
     supervisor = await worker_principal(db, "supervisor", elevated=True, grants=grants)
     created = await KnowledgeService(db, config.knowledge).create(
@@ -61,6 +61,31 @@ async def test_same_worker_supervisor_payload_and_json_markdown_roundtrip(contex
     assert a.budget["fits"]
     async with db.immediate() as conn:
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 0
+
+
+async def test_shipped_spec_ingest_grants_prepare_project_knowledge_context(context_setup):
+    from pathlib import Path
+    from src.profiles.parser import parse_profile
+
+    _, _, service, worker, _, created = context_setup
+    path = Path(__file__).resolve().parents[1] / "src/profiles/defaults/spec-ingest/profile.md"
+    parsed = parse_profile(path.read_text())
+    assert parsed.is_valid, parsed.errors
+    policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+    bundle = await prepare(service, replace(worker, policy=policy))
+    assert any(item.record_id == created["record_id"] for item in bundle.items)
+    assert policy.allows_aq_command("record_search")
+    assert policy.allows_aq_command("record_capabilities")
+
+
+@pytest.mark.parametrize("search_grants", [[], ["knowledge_search"]])
+async def test_context_discovery_requires_canonical_record_search(context_setup, search_grants):
+    _, _, service, worker, _, _ = context_setup
+    reader = replace(worker, policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["knowledge_show", *search_grants],
+    ))
+    with pytest.raises(RecordError, match="record.forbidden"):
+        await prepare(service, reader)
 
 
 async def test_repeated_prime_inputs_reuse_but_refresh_and_scope_changes_do_not(context_setup):
@@ -104,6 +129,41 @@ async def test_required_overflow_persists_empty_diagnostic_and_refuses_delivery(
         await service.observe_delivery(bundle_id=bundle.bundle_id, principal=worker,
                                        claim_epoch=1, transport="test", transport_key="overflow",
                                        rendered_sha256=bundle.content_sha256)
+
+
+async def test_session_model_window_applies_to_prepare_and_delivery_recheck(context_setup, monkeypatch):
+    _, config, service, worker, _, _ = context_setup
+    window = 258400
+
+    async def observation(session):
+        assert session.id == worker.session_id
+        return {"model_context_window": window}
+
+    monkeypatch.setattr("src.sessions.context.read_context", observation)
+    # Larger than both the former 32k limit and the no-telemetry fallback.
+    required = "Required policy. " * 9000
+    bundle = await service.prepare(principal=worker, required=required,
+                                   project_ids=["p"], claim_epoch=1)
+    assert bundle.budget["fits"]
+    assert bundle.budget["requested"]["input_tokens"] == window
+    delivered = await service.observe_delivery(
+        bundle_id=bundle.bundle_id, principal=worker, claim_epoch=1,
+        transport="test", transport_key="model-window", rendered_sha256=bundle.content_sha256,
+    )
+    assert delivered["success"]
+    # A model switch rechecks the window rather than trusting a retained budget.
+    window = 32000
+    with pytest.raises(RecordError, match="context.invalidated"):
+        await service.observe_delivery(
+            bundle_id=bundle.bundle_id, principal=worker, claim_epoch=1,
+            transport="test", transport_key="smaller-model", rendered_sha256=bundle.content_sha256,
+        )
+    config.knowledge.context.input_max_tokens = 20000
+    capped = await service.prepare(principal=worker, required=required,
+                                  project_ids=["p"], claim_epoch=1,
+                                  budget=ContextBudget(input_tokens=999999))
+    assert not capped.budget["fits"]
+    assert capped.budget["requested"]["input_tokens"] == 20000
 
 
 async def test_lower_budget_drops_whole_items_with_omissions(context_setup):
@@ -171,7 +231,7 @@ async def test_redaction_scrubs_stored_excerpt_and_refuses_delivery(context_setu
 async def test_bootstrap_is_narrow_and_global_has_no_default_private_scan(context_setup):
     db, _, service, worker, _, _ = context_setup
     profile = AgentProfile(id="supervisor", name="Supervisor",
-                               aq_commands=["knowledge_show", "knowledge_search", "knowledge_share",
+                               aq_commands=["knowledge_show", "record_search", "knowledge_share",
                                             "knowledge_context_deliver"])
     global_boot = supervisor_bootstrap_principal(
         profile, project_id=None, session_id="new-global", instance_token="global-instance",
@@ -269,7 +329,9 @@ async def test_renderer_override_and_prompt_builder_use_same_bounded_bundle(cont
     assert builder.build_task_prompt() == rendered.to_markdown()
     assert rendered.to_markdown().count("Observed incident evidence.") == 1
     assert "Legacy" not in builder.build_task_prompt()
-    builder.set_core_tools([{"description": "tool schema" * config.knowledge.context.input_max_tokens}])
+    builder.set_core_tools([{
+        "description": "tool schema" * ContextBudget.from_config(config).input_tokens,
+    }])
     with pytest.raises(RecordError, match="context.required_over_budget"):
         builder.build()
 
@@ -279,6 +341,7 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
     context_setup, tmp_path, launch,
 ):
     db, config, service, worker, _, _ = context_setup
+    await db.update_project("p", supervisor_enabled=True)
     from src.messages import SessionLens
     from src.sessions import SessionProviderRegistry
     from src.sessions.fake import FakeProvider
@@ -290,7 +353,7 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
     config.sessions.provider = "fake"
     config.knowledge.context.supervisor_query = "incident"
     profile = AgentProfile(id="supervisor", name="Supervisor", harness="codex", lifecycle="named",
-                           aq_commands=["knowledge_show", "knowledge_search",
+                           aq_commands=["knowledge_show", "record_search",
                                         "knowledge_context_deliver"])
     async def load_profile(_):
         return profile
@@ -324,8 +387,9 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
         assert provider.starts[0].prompt.endswith(worker_bundle.to_markdown())
 
 
+@pytest.mark.parametrize("limit_source", ["operator", "model"])
 async def test_prime_command_returns_prepared_bundle_and_delivery_command_records_usage(
-    command_handler_factory,
+    command_handler_factory, monkeypatch, limit_source,
 ):
     from src.commands.principal import principal_context
 
@@ -336,7 +400,8 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
     config.knowledge.context.discovery_max_tokens = 4000
     worker = await worker_principal(db)
     worker = replace(worker, task_id=None, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=[*worker.policy.aq_commands, "prime", "knowledge_context_deliver"],
+        aq_commands=[*worker.policy.aq_commands, "prime", "record_search",
+                     "knowledge_context_deliver"],
     ))
     await KnowledgeService(db, config.knowledge).create(
         principal=TRUSTED_LOCAL, project_id="p", idempotency_key="prime-record",
@@ -359,11 +424,88 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
             rendered_sha256=bundle.content_sha256, claim_epoch=1,
         ))
         assert acknowledged["success"], acknowledged
-        config.knowledge.context.input_max_tokens = 100
+        if limit_source == "operator":
+            config.knowledge.context.input_max_tokens = 100
+        else:
+            from unittest.mock import AsyncMock
+
+            monkeypatch.setattr("src.sessions.context.read_context", AsyncMock(return_value={
+                "model_context_window": 100,
+            }))
         refused = await handler.execute("prime", {"_scope": scope})
         assert refused["error_code"] == "context.required_over_budget"
+        accounting = refused["context_budget"]
+        assert accounting["requested"]["input_tokens"] == 100
+        assert accounting["method"] == "upper_bound_bytes"
+        assert accounting["required_tokens"] == refused["required_body_bytes"]
+        assert accounting["diagnostic"] == "context.required_over_budget"
+        assert refused["required_section_bytes"]["completion_protocol"] > 0
+        largest = sorted(refused["required_section_bytes"].items(), key=lambda item: -item[1])[:3]
+        assert "100" in refused["error"] and "available" in refused["error"]
+        for key, size in largest:
+            assert f"{key}={size}" in refused["error"]
+        assert refused["source"] == "default"
+        assert "body" not in refused and "context_bundle" not in refused
     async with db.immediate() as conn:
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 1
+
+
+async def test_prime_fits_required_salvage_and_preserves_full_continuation_reads(
+    command_handler_factory, tmp_path,
+):
+    from src.commands.principal import principal_context
+    from src.prime import PrimeRenderer
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.data_dir = str(tmp_path)
+    config.knowledge = knowledge_config()
+    config.knowledge.context.input_max_tokens = 32768
+    config.memory.enabled = True
+    worker = await worker_principal(db, grants=["prime", "task_show", "knowledge_show", "record_search"])
+    task_id = worker.task_id
+    description = "Acceptance αβ. " * 1000 + "FINAL ACCEPTANCE"
+    salvage = "+retained change αβ\n" * 10000 + "FINAL DIFF"
+    await db.update_task(task_id, description=description)
+    await db.add_task_context(task_id, type="worktree_salvage", label="Saved changes", content=salvage)
+    comment = "Preserve the complete decision. " * 40 + "FINAL COMMENT"
+    await db.add_task_comment(task_id, comment, author_kind="agent", author_id="earlier-worker")
+    role = "Required inline policy. " + "r" * 8000
+    profile_path = tmp_path / "vault" / "agent-types" / worker.profile_id / "profile.md"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text("## Role\n" + role)
+    before = await PrimeRenderer(db, config).render_for_task(task_id, session_id=worker.session_id)
+    budget = ContextBudget.from_config(config)
+    assert budget.account(before.to_markdown())["diagnostic"] == "context.required_over_budget"
+    config.knowledge.context.enabled = True
+    worker = replace(worker, task_id=None)
+    scope = dict(kind="session", session_id=worker.session_id, project_id="p",
+                 session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
+    with principal_context(worker):
+        result = await handler.execute("prime", {"_scope": scope})
+        assert result["success"], result
+        assert result["context_bundle"]["budget"]["fits"]
+        budget.enforce(result["body"])
+        assert role in result["body"]
+        assert comment in result["body"]
+        assert "--field description" in result["body"]
+        assert "--field prime_context" in result["body"]
+        # Exercise the supported worker reads, not an unscoped database escape.
+        for field in ("description", "prime_context"):
+            chunks, offset = [], 0
+            while True:
+                page = await handler.execute("task_show", dict(
+                    _scope=scope, task_id=task_id, field=field, offset=offset, limit=4096,
+                ))
+                assert "error" not in page, page
+                chunks.append(page["content"])
+                offset = page["next_offset"]
+                if offset is None:
+                    break
+            full = "".join(chunks)
+            assert (description if field == "description" else salvage) in full
+            if field == "prime_context":
+                assert comment in full
 
 
 async def test_prime_degrades_when_the_principal_lacks_the_knowledge_show_grant(
@@ -415,7 +557,7 @@ async def test_prime_degrades_when_the_principal_lacks_the_knowledge_show_grant(
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 0
 
     granted = replace(worker, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=["prime", "knowledge_show", "knowledge_search"],
+        aq_commands=["prime", "knowledge_show", "record_search"],
     ))
     with principal_context(granted):
         delivered = await handler.execute("prime", {"_scope": scope})
@@ -486,14 +628,14 @@ async def test_prime_degradation_logs_one_warning_naming_the_missing_grant(
     assert f"task={worker.task_id or 'task-worker'}" in message
     assert "project=p" in message
     assert f"profile={worker.profile_id}" in message
-    assert "knowledge_show" in message and "knowledge_search" in message
+    assert "knowledge_show" in message and "record_search" in message
     # The refusal the document reports, and no corpus content in the log.
     assert "Common retained knowledge" not in message
     assert "prime-record" not in message
 
     # A prepared prime logs nothing: the warning is about the degradation.
     granted = replace(worker, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=["prime", "knowledge_show", "knowledge_search"],
+        aq_commands=["prime", "knowledge_show", "record_search"],
     ))
     caplog.clear()
     with (caplog.at_level(logging.WARNING, logger="src.commands.surface_commands"),
@@ -506,7 +648,7 @@ async def test_prime_degradation_logs_one_warning_naming_the_missing_grant(
 def test_context_bundle_commands_names_only_the_grants_a_bundle_actually_needs():
     """The log line's grant list must not drift from the checks it describes.
 
-    ``prepare_on`` refuses ``knowledge_search`` only when a query is supplied
+    ``prepare_on`` refuses ``record_search`` only when a query is supplied
     and the discovery budget is non-zero, so a no-query or zero-budget caller
     needs ``knowledge_show`` alone. The helper is the single source both read.
     """
@@ -517,7 +659,7 @@ def test_context_bundle_commands_names_only_the_grants_a_bundle_actually_needs()
     config.knowledge = knowledge_config()
     config.memory.enabled = True
     assert context_bundle_commands(config, "incident") == (
-        "knowledge_show", "knowledge_search")
+        "knowledge_show", "record_search")
     # No query, so lexical discovery is never reached.
     assert context_bundle_commands(config, "") == ("knowledge_show",)
     config.knowledge.context.discovery_max_items = 0
@@ -549,7 +691,7 @@ async def test_prime_keeps_surfacing_a_missing_attempt_rather_than_degrading(
     config.knowledge = knowledge_config()
     config.knowledge.context.enabled = config.memory.enabled = True
     worker = replace(await worker_principal(db, grants=[
-        "prime", "knowledge_show", "knowledge_search",
+        "prime", "knowledge_show", "record_search",
     ]), task_id=None)
     scope = dict(kind="session", session_id=worker.session_id, project_id="p",
                  session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
