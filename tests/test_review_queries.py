@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
 from src.database.tables import GATE_TYPES
-from src.models import Project, Task, TaskStatus
+from src.models import Project, ProjectStatus, Task, TaskStatus
 from src.task_names import ADJECTIVES, NOUNS
 from tests.db_fixtures import lease_dsn
 
@@ -62,12 +62,19 @@ def _review(review_id="rev-bright-harbor", **overrides) -> dict:
         "title": "Document review",
         "vault_path": f"projects/{PROJECT}/specs/2026-09-21-{review_id}.md",
         "current_revision": 1,
+        "feedback_version": 0,
+        "decision_generation": 1,
+        "pending_decision_id": None,
         "state": "in_review",
         "gate_id": None,
         "decider": "user",
         "decided_by": None,
         "decided_at": None,
         "decision_note": None,
+        "withdrawn_by": None,
+        "withdrawn_at": None,
+        "withdrawn_via": None,
+        "withdrawal_reason": None,
         "notified_revision": 0,
         "created_at": now,
         "updated_at": now,
@@ -82,6 +89,7 @@ def _revision(review_id="rev-bright-harbor", revision=1, content="# Body\n", **o
         "revision": revision,
         "content": content,
         "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "spec_kind": None,
         "submitted_by": "session:author",
         "submitted_task_id": "author-task",
         "changes_note": None,
@@ -122,6 +130,10 @@ class TestInsertAndRead:
             decided_by="human:local-operator",
             decided_at=123.5,
             decision_note="looks fine",
+            withdrawn_by="human:local-operator",
+            withdrawn_at=122.5,
+            withdrawn_via="dashboard",
+            withdrawal_reason="revise scope",
             notified_revision=1,
             decider="user_or_supervisor",
             kind="plan",
@@ -129,7 +141,7 @@ class TestInsertAndRead:
         async with db.immediate() as conn:
             await db.insert_review(review=review, revision=_revision(), conn=conn)
 
-        assert await db.get_review(review["id"]) == review
+        assert await db.get_review(review["id"]) == {**review, "held_while_paused": False}
 
     async def test_get_missing_review_is_none(self, db):
         assert await db.get_review("rev-nope-none") is None
@@ -221,7 +233,7 @@ class TestTransition:
                 conn=conn,
             )
         assert ok is False
-        assert await db.get_review("rev-bright-harbor") == before
+        assert await db.get_review("rev-bright-harbor") == {**before, "held_while_paused": False}
 
     async def test_transition_of_a_missing_review_is_false(self, db):
         async with db.immediate() as conn:
@@ -275,6 +287,42 @@ class TestRevisions:
                 await db.insert_review_revision(revision=_revision(revision=1), conn=conn)
 
 
+class TestReviewsSubmittedByTask:
+    """The close gate's evidence for a ``review`` deliverable (vivid-delta)."""
+
+    async def test_a_task_with_no_review_has_none(self, db):
+        await _submit(db)
+        assert await db.list_reviews_submitted_by_task("some-other-task") == []
+
+    async def test_the_author_task_sees_its_review_with_kind_and_state(self, db):
+        await _submit(db, kind="other", state="changes_requested")
+        assert await db.list_reviews_submitted_by_task("author-task") == [
+            {"id": "rev-bright-harbor", "kind": "other", "state": "changes_requested"}
+        ]
+
+    async def test_a_revision_task_sees_the_review_it_resubmitted(self, db):
+        await _submit(db)
+        async with db.immediate() as conn:
+            await db.insert_review_revision(
+                revision=_revision(revision=2, submitted_task_id="revise-task"), conn=conn
+            )
+        assert await db.list_reviews_submitted_by_task("revise-task") == [
+            {"id": "rev-bright-harbor", "kind": "spec", "state": "in_review"}
+        ]
+
+    async def test_each_review_is_listed_once_oldest_first(self, db):
+        await _submit(db, "rev-b-two", created_at=200.0)
+        await _submit(db, "rev-a-one", created_at=100.0)
+        async with db.immediate() as conn:
+            await db.insert_review_revision(
+                revision=_revision("rev-a-one", revision=2), conn=conn
+            )
+        assert [r["id"] for r in await db.list_reviews_submitted_by_task("author-task")] == [
+            "rev-a-one",
+            "rev-b-two",
+        ]
+
+
 # ── comments ───────────────────────────────────────────────────────────────
 
 
@@ -288,6 +336,8 @@ def _comment(cid, *, created_at, **overrides) -> dict:
         "body": f"comment {cid}",
         "author": "human:local-operator",
         "resolved_in_revision": None,
+        "source_discussion_id": None,
+        "responder_disposition": None,
         "created_at": created_at,
     }
     row.update(overrides)
@@ -366,6 +416,71 @@ class TestComments:
 
 
 class TestNotificationOutbox:
+    async def test_paused_reviews_stay_durable_and_release_on_resume(self, db):
+        await _submit(db, "rev-held")
+        await db.create_project(Project(id="active", name="Active"))
+        await _submit(db, "rev-other", project_id="active")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        assert [r["id"] for r in await db.reviews_pending_notification()] == ["rev-other"]
+        assert (await db.get_review("rev-held"))["notified_revision"] == 0
+        assert (await db.get_review("rev-held"))["held_while_paused"] is True
+        assert (await db.list_reviews(project_id=PROJECT))[0]["held_while_paused"] is True
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert {r["id"] for r in await db.reviews_pending_notification()} == {
+            "rev-held", "rev-other",
+        }
+        assert (await db.get_review("rev-held"))["held_while_paused"] is False
+
+    @pytest.mark.parametrize("state", ["withdrawn", "approved", "changes_requested"])
+    async def test_request_closed_while_paused_is_retired_not_released(self, db, state):
+        await _submit(db, "rev-closed")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-closed", from_states={"in_review"}, expected_revision=1,
+                values={"state": state}, conn=conn,
+            )
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert await db.reviews_pending_notification() == []
+        assert (await db.get_review("rev-closed"))["notified_revision"] == 1
+
+    async def test_request_closed_while_active_keeps_its_pending_announcement(self, db):
+        await _submit(db, "rev-closed")
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-closed", from_states={"in_review"}, expected_revision=1,
+                values={"state": "approved"}, conn=conn,
+            )
+        assert [r["id"] for r in await db.reviews_pending_notification()] == ["rev-closed"]
+        assert (await db.get_review("rev-closed"))["notified_revision"] == 0
+
+    async def test_revision_after_a_paused_decision_is_released_on_resume(self, db):
+        await _submit(db, "rev-revised")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-revised", from_states={"in_review"}, expected_revision=1,
+                values={"state": "changes_requested"}, conn=conn,
+            )
+            assert await db.transition_review(
+                "rev-revised", from_states={"changes_requested"}, expected_revision=1,
+                values={"state": "in_review", "current_revision": 2}, conn=conn,
+            )
+        assert await db.reviews_pending_notification() == []
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert [
+            (r["id"], r["current_revision"], r["notified_revision"])
+            for r in await db.reviews_pending_notification()
+        ] == [("rev-revised", 2, 1)]
+
+    async def test_only_human_deciders_enter_the_discord_outbox(self, db):
+        await _submit(db, "rev-internal-score", decider="supervisor")
+        await _submit(db, "rev-human-result", decider="user")
+        await _submit(db, "rev-delegated-plan", decider="user_or_supervisor")
+        assert {r["id"] for r in await db.reviews_pending_notification()} == {
+            "rev-human-result", "rev-delegated-plan",
+        }
+
     async def test_pending_until_marked_and_marking_is_monotonic(self, db):
         await _submit(db, "rev-a-one")
         await _submit(db, "rev-b-two", current_revision=3, notified_revision=3)
@@ -463,7 +578,7 @@ class TestNoTaskForeignKey:
                     )
                 ).scalars()
             )
-        assert targets == {"doc_reviews"}
+        assert targets == {"doc_reviews", "ask_decisions", "escalation_messages"}
 
 
 # ── ids ────────────────────────────────────────────────────────────────────
@@ -510,9 +625,9 @@ class TestProjectDelegation:
 # ── migration a00000000014 ─────────────────────────────────────────────────
 
 
-def _load_migration():
-    path = REPO_ROOT / "migrations" / "versions" / "a00000000014_document_reviews.py"
-    spec = importlib.util.spec_from_file_location("a00000000014", path)
+def _load_migration(name="a00000000014_document_reviews"):
+    path = REPO_ROOT / "migrations" / "versions" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -528,6 +643,68 @@ def _run(migration, *steps: str):
                 getattr(migration, step)()
 
     return _apply
+
+
+@pytest.mark.migration
+async def test_spec_kind_migration_upgrades_replays_and_checks_values(db):
+    migration = _load_migration("a00000000081_review_spec_kind")
+
+    async with db._engine.begin() as conn:
+        await conn.run_sync(_run(migration, "downgrade", "downgrade", "upgrade", "upgrade"))
+        columns = await conn.execute(text(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'doc_review_revisions' AND column_name = 'spec_kind'"
+        ))
+        assert columns.one() == ("spec_kind", "YES")
+    async with db.immediate() as conn:
+        await db.insert_review(review=_review(), revision=_revision(spec_kind="design"), conn=conn)
+    assert (await db.get_review_revision("rev-bright-harbor", 1))["spec_kind"] == "design"
+    with pytest.raises(IntegrityError):
+        async with db._engine.begin() as conn:
+            await conn.execute(text("UPDATE doc_review_revisions SET spec_kind = 'typo'"))
+
+
+@pytest.mark.migration
+async def test_supervisor_review_migration_upgrades_replays_and_guards_downgrade(db):
+    migration = _load_migration("a00000000072_object_review_decider")
+    from sqlalchemy import insert, select
+    from src.database.tables import doc_reviews
+
+    await mktask(db, "old-score")
+    await mktask(db, "old-probe", parent_task_id="old-score")
+    await mktask(db, "old-finalizer")
+    await db.set_task_meta("old-score", "object_experiment", {
+        "object_id": "rock", "purpose": "score",
+    })
+    await db.set_task_meta("old-finalizer", "object_experiment", {
+        "object_id": "rock", "purpose": "finalize",
+    })
+    async with db._engine.begin() as conn:
+        # Simulate the previous schema, then apply twice. Tests use only
+        # their leased disposable database, including these DDL statements.
+        await conn.run_sync(_run(migration, "downgrade", "downgrade"))
+        for author in ("old-score", "old-probe", "old-finalizer", "unrelated"):
+            await conn.execute(insert(doc_reviews).values(**_review(
+                "rev-" + author, author_task_id=author, decider="user_or_supervisor",
+            )))
+        await conn.run_sync(_run(migration, "upgrade", "upgrade"))
+        assert dict((await conn.execute(select(
+            doc_reviews.c.author_task_id, doc_reviews.c.decider,
+        ))).all()) == {
+            "old-score": "supervisor", "old-probe": "supervisor",
+            "old-finalizer": "user", "unrelated": "user_or_supervisor",
+        }
+        with pytest.raises(RuntimeError, match="supervisor-only reviews"):
+            await conn.run_sync(_run(migration, "downgrade"))
+        await conn.execute(text("DELETE FROM doc_reviews"))
+        await conn.run_sync(_run(migration, "downgrade", "downgrade"))
+        check = (await conn.execute(text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_doc_reviews_decider'"
+        ))).scalar_one()
+        assert "'supervisor'" not in check
+        assert "'user_or_supervisor'" in check
+        await conn.run_sync(_run(migration, "upgrade"))
 
 
 _PRE_REVISION_GATE_CHECK = (
@@ -585,6 +762,19 @@ _BEFORE = {
 }
 
 
+async def _remove_ask_transport_fixture(conn):
+    # Reconstruct the historical fixture only inside a rolled-back disposable
+    # transaction. Revision 93 deliberately has no production downgrade.
+    for statement in (
+        "ALTER TABLE conversation_inputs DROP COLUMN ask_id",
+        "ALTER TABLE outbound_deliveries DROP COLUMN ask_id CASCADE",
+        "ALTER TABLE outbound_deliveries DROP COLUMN binding_id CASCADE",
+        "DROP TABLE ask_action_tokens",
+        "DROP TABLE ask_external_bindings",
+    ):
+        await conn.execute(text(statement))
+
+
 class TestMigration:
     """Every case runs in one transaction that is rolled back (PostgreSQL DDL is
     transactional), so the leased database leaves the test at head whatever
@@ -595,10 +785,15 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                await _remove_ask_transport_fixture(conn)
+                await conn.run_sync(_run(_load_migration("a00000000096_human_ask_decisions"), "downgrade"))
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
                 await conn.execute(
-                    text("DROP TABLE doc_review_comments, doc_review_revisions, doc_reviews")
+                    text(
+                        "DROP TABLE doc_review_attachments, doc_review_comments, "
+                        "doc_review_revisions, doc_reviews"
+                    )
                 )
                 await conn.execute(text("ALTER TABLE projects DROP COLUMN review_delegate_to"))
                 await conn.execute(text("ALTER TABLE gates DROP CONSTRAINT ck_gates_type"))
@@ -650,6 +845,12 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                await _remove_ask_transport_fixture(conn)
+                await conn.run_sync(_run(_load_migration("a00000000096_human_ask_decisions"), "downgrade"))
+                # Alembic downgrades the later attachment revision before
+                # revision 14; its foreign key must be removed in that order.
+                attachments = _load_migration("a00000000046_review_attachments")
+                await conn.run_sync(_run(attachments, "downgrade"))
                 await conn.run_sync(_run(migration, "downgrade"))
                 assert await _shape(conn) == _BEFORE
                 remaining = (
@@ -669,3 +870,46 @@ class TestMigration:
                 assert await _shape(conn) == _HEAD
             finally:
                 await trans.rollback()
+
+
+async def test_review_lock_serializes_sequence_on_two_postgres_connections(db):
+    """A comment competing with a decision's source lock waits, then allocates seq 2."""
+    import asyncio
+
+    await _submit(db)
+    async with db._engine.connect() as first, db._engine.connect() as second:
+        transaction = await first.begin()
+        await db.lock_review_for_mutation("rev-bright-harbor", first)
+        await db.insert_review_comment(_comment("first", created_at=1), conn=first)
+        second_pid = (await second.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        await second.commit()
+        started = asyncio.Event()
+
+        async def insert_second():
+            async with second.begin():
+                started.set()
+                await db.insert_review_comment(_comment("second", created_at=1), conn=second)
+        pending = asyncio.create_task(insert_second())
+        try:
+            await started.wait()
+            # PostgreSQL itself proves the second connection is blocked on the
+            # first, avoiding scheduler-delay assertions disguised as races.
+            async def blocked():
+                while True:
+                    if (await first.execute(text("SELECT cardinality(pg_blocking_pids(:pid))"),
+                                            {"pid": second_pid})).scalar_one():
+                        return
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(blocked(), timeout=5)
+            assert not pending.done()
+            await transaction.commit()
+            await asyncio.wait_for(pending, timeout=5)
+        finally:
+            if transaction.is_active:
+                await transaction.rollback()
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+    assert [(row["id"], row["created_seq"]) for row in await db.list_review_comments(
+        "rev-bright-harbor",
+    )] == [("first", 1), ("second", 2)]

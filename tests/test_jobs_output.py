@@ -8,7 +8,7 @@ import uuid
 import pytest
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
 from src.jobs.result import build_result, result_digest
-from src.integration.development_result_parser import PytestOutputParser
+from src.jobs.pytest_output import PytestOutputParser
 from src.jobs.result import report_json
 
 

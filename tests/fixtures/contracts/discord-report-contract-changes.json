@@ -1,0 +1,11 @@
+{
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473",
+  "source_head": "867113dca6b293c8dada786f34cc9beb470dfa61",
+  "review_notes": "The hourly report source now documents the enforced 600-character rendered budget, including the footer and marker. The rebuilt artifact changes only source metadata and its compilation timestamp; executable rules, steps, commands, grants and transitions are unchanged. Preserve the legacy baseline and record this deliberate successor separately.",
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json": {
+      "previous_sha256": "7011f4961098c33b6a65ea0e715935611886d5300ce2f4defc1c96ad7b3ed734",
+      "sha256": "f4ceb5bfb2e4ffc3f5b7610c6e46977e3a268931e6b967121f9cdd38ef599207"
+    }
+  }
+}
