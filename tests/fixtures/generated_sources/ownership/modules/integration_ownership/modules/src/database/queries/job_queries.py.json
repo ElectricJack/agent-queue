@@ -1,0 +1,20 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/job_queries.py::JobQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/job_queries.py::JobQueriesMixin.reconcile_job_results": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/job_queries.py::unpinned_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/database/queries/job_queries.py::JobQueriesMixin.submit_job_in_transaction": {
+      "baseline_span": [
+        192,
+        313
+      ],
+      "landing_span": [
+        192,
+        313
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

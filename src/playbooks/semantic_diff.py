@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Literal
 
 from src.playbooks.definition import PlaybookDefinition, is_executable_path, step_targets
@@ -32,6 +33,7 @@ class RuleChange:
     change: DiffChange
     steps_added: list[str]
     steps_removed: list[str]
+    fields: list[FieldChange] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -53,9 +55,13 @@ class DefinitionDiff:
     executable_change: bool
     semantic_change_count: int
     presentation_change_count: int
+    integration_policy: list[FieldChange] = dataclass_field(default_factory=list)
+    execution_metadata: list[FieldChange] = dataclass_field(default_factory=list)
 
 
 def _flat(value: Any, pointer: str = "") -> dict[str, Any]:
+    if isinstance(value, (dict, list)) and not value:
+        return {pointer: value}
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for key, child in value.items():
@@ -104,7 +110,8 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
                     is_executable_path(f"/steps/{step_id}{pointer}"),
                 )
                 for pointer in sorted(set(left) | set(right))
-                if left.get(pointer) != right.get(pointer)
+                if pointer not in left or pointer not in right
+                or json.dumps(left[pointer], sort_keys=True) != json.dumps(right[pointer], sort_keys=True)
             ]
             change = "modified" if fields else "unchanged"
         for field in fields:
@@ -115,27 +122,34 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
         step_changes.append(StepChange(step_id, rule, change, fields))
     before_rules = {} if base is None else {rule.id: rule for rule in base.rules}
     after_rules = {rule.id: rule for rule in target.rules}
-    rules = [
-        RuleChange(
+    rules = []
+    for rule_id in sorted(set(before_rules) | set(after_rules)):
+        before, after = before_rules.get(rule_id), after_rules.get(rule_id)
+        fields = []
+        if before is not None and after is not None:
+            left = _flat(before.model_dump(mode="json", exclude_none=True))
+            right = _flat(after.model_dump(mode="json", exclude_none=True))
+            for pointer in sorted(set(left) | set(right)):
+                if (pointer in left and pointer in right
+                        and json.dumps(left[pointer], sort_keys=True)
+                        == json.dumps(right[pointer], sort_keys=True)):
+                    continue
+                executable = is_executable_path(f"/rules/0{pointer}")
+                fields.append(FieldChange(pointer, left.get(pointer), right.get(pointer), executable))
+                if executable:
+                    exec_count += 1
+                else:
+                    present_count += 1
+        rules.append(RuleChange(
             rule_id,
-            "added"
-            if rule_id not in before_rules
-            else "removed"
-            if rule_id not in after_rules
-            else "unchanged",
-            [
-                sid
-                for sid, step in target.steps.items()
-                if step.rule == rule_id and sid not in before_steps
-            ],
-            [
-                sid
-                for sid, step in before_steps.items()
-                if step.rule == rule_id and sid not in target.steps
-            ],
-        )
-        for rule_id in sorted(set(before_rules) | set(after_rules))
-    ]
+            "added" if before is None else "removed" if after is None
+            else "modified" if fields else "unchanged",
+            [sid for sid, step in target.steps.items()
+             if step.rule == rule_id and sid not in before_steps],
+            [sid for sid, step in before_steps.items()
+             if step.rule == rule_id and sid not in target.steps],
+            fields,
+        ))
     old_edges, new_edges = _edges(base), _edges(target)
     edges = [
         EdgeChange(
@@ -152,6 +166,24 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
         if old_contracts.get(name) != target.compiled_against.commands.get(name)
     ]
     exec_count += len(contracts) + sum(change.change != "unchanged" for change in edges)
+    before_policy = base.integration_policy if base else None
+    after_policy = target.integration_policy
+    left = _flat(before_policy.model_dump(mode="json", exclude_none=True)) if before_policy else {}
+    right = _flat(after_policy.model_dump(mode="json", exclude_none=True)) if after_policy else {}
+    policy_changes = [
+        FieldChange(f"/integration_policy{pointer}", left.get(pointer), right.get(pointer), True)
+        for pointer in sorted(set(left) | set(right))
+        if pointer not in left or pointer not in right
+                or json.dumps(left[pointer], sort_keys=True) != json.dumps(right[pointer], sort_keys=True)
+    ]
+    exec_count += len(policy_changes)
+    metadata_changes = []
+    for name in ("required_features", "trusted_execution"):
+        before = base.model_dump(mode="json", exclude_none=True).get(name) if base else None
+        after = target.model_dump(mode="json", exclude_none=True).get(name)
+        if before != after:
+            metadata_changes.append(FieldChange(f"/{name}", before, after, True))
+    exec_count += len(metadata_changes)
     return DefinitionDiff(
         rules,
         step_changes,
@@ -160,4 +192,6 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
         bool(exec_count),
         exec_count + present_count,
         present_count,
+        policy_changes,
+        metadata_changes,
     )

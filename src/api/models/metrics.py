@@ -12,6 +12,8 @@ honest gap into a 500.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -123,6 +125,9 @@ class TaskMetrics(BaseModel):
     PAUSED: float = 0
     BLOCKED: float = 0
     WAITING_INPUT: float = 0
+    WAITING: float = 0
+    HIBERNATED: float = 0
+    RESUME_PENDING: float = 0
     other: float = 0
     total: float = 0
 
@@ -174,6 +179,229 @@ class SamplerMetrics(BaseModel):
     collect_ms: float = 0
 
 
+class WaitSlotSeconds(BaseModel):
+    condition: float | None = None
+    capacity: float | None = None
+
+
+class WaitWakes(BaseModel):
+    outcome: float | None = None
+    decision: float | None = None
+    lift: float | None = None
+    launch_failed: float | None = None
+    other: float | None = None
+
+
+class WaitPriorityMetrics(BaseModel):
+    donors: float | None = None
+    reservations_pending: float | None = None
+    reservations_overdue: float | None = None
+    deadline_breaches_1h: float | None = None
+    unexplained: float | None = None
+
+
+class WaitDurationMetrics(BaseModel):
+    condition_kind: str
+    source_class: str
+    wait_duration_p50: float | None = None
+    expected_duration_seconds: float | None = None
+
+
+class WaitProjectMetrics(BaseModel):
+    resume_cost_p50: float | None = None
+    resume_cost_p95: float | None = None
+    resume_cost_minutes: float | None = None
+    summary_tokens: float | None = None
+    resume_tokens: float | None = None
+    teardown_seconds: float | None = None
+    setup_seconds: float | None = None
+    rebuild_seconds: float | None = None
+    durations: list[WaitDurationMetrics] = []
+
+
+class WaitCounterfactual(BaseModel):
+    """Estimated avoided monitoring tokens, never measured token savings."""
+
+    tokens: float | None = None
+    cohort: str
+    window: str
+
+
+class WaitMetrics(BaseModel):
+    """Observed wait accounting. Missing observations remain null at every tier.
+
+    Resume cost percentiles are seconds; configured resume_cost_minutes stays
+    in minutes. Duration/cost cohorts cover the preceding thirty days.
+    """
+
+    pending_in_place: float | None = None
+    pending_hibernated: float | None = None
+    pending_human: float | None = None
+    escalated: float | None = None
+    scheduler_by_reason: dict[str, float] = {}
+    in_place_slot_seconds_1h: float | None = None
+    released_slot_seconds_1h: WaitSlotSeconds | None = None
+    released_slot_seconds_24h: WaitSlotSeconds | None = None
+    evicted_1h: float | None = None
+    ceiling_1h: float | None = None
+    resume_cost_p50: float | None = None
+    resume_cost_p95: float | None = None
+    by_project: dict[str, WaitProjectMetrics] = {}
+    wakes_1h: WaitWakes | None = None
+    loops_1h: float | None = None
+    escalations_1h: float | None = None
+    decisions_1h: float | None = None
+    decision_seconds_p50: float | None = None
+    human_pending: float | None = None
+    human_age_max_seconds: float | None = None
+    priority: WaitPriorityMetrics | None = None
+    wait_seconds_1h: float | None = None
+    overhead_tokens_1h: float | None = None
+    tokens_saved_counterfactual: WaitCounterfactual | None = None
+
+
+class Histogram(BaseModel):
+    """Fixed millisecond buckets from src.metrics.histogram, merged by addition."""
+
+    kind: str = "hist"
+    counts: list[float] = []
+    count: float = 0
+    sum: float = 0
+    max: float = 0
+
+
+class LoopPerf(BaseModel):
+    """Event-loop drift observed by the registry's LoopLagProbe."""
+
+    drift: Histogram | None = None
+    probe_interval_ms: float | None = None
+
+
+class RoutePerf(BaseModel):
+    """Latency and status-class counters from the route middleware."""
+
+    latency: Histogram | None = None
+    status: dict[str, Any] = {}
+
+
+class StreamPerf(BaseModel):
+    """Handshake counters and open-stream gauge from the route middleware."""
+
+    handshake: Histogram | None = None
+    outcome: dict[str, Any] = {}
+    open: float | None = None
+
+
+class ApiPerf(BaseModel):
+    """Bounded route-template tables and totals from PerfRegistry.snapshot."""
+
+    all: Histogram | None = None
+    routes: dict[str, RoutePerf] = {}
+    streams: dict[str, StreamPerf] = {}
+    errors: dict[str, Any] = {}
+
+
+class PoolGauges(BaseModel):
+    """Local engine pool readings from metrics_pool_gauges, without a query."""
+
+    checked_out: float | None = None
+    overflow: float | None = None
+    size: float | None = None
+
+
+class DbPerf(BaseModel):
+    """Pool-wait and query observations from the engine's perf observers."""
+
+    pool_wait: Histogram | None = None
+    query: Histogram | None = None
+    counters: dict[str, Any] = {}
+    pool: PoolGauges = PoolGauges()
+
+
+class PressureEntry(BaseModel):
+    """One kernel PSI resource reading from the host reader."""
+
+    some_avg10: float | None = None
+    full_avg10: float | None = None
+
+
+class PressurePerf(BaseModel):
+    """HostSampler's kernel pressure readings, or null with a reason."""
+
+    cpu: PressureEntry | None = None
+    io: PressureEntry | None = None
+    memory: PressureEntry | None = None
+    reason: str | None = None
+
+
+class TestSlotsPerf(BaseModel):
+    """Test-slot occupancy from the host reader's resource semaphore snapshot."""
+
+    used: float | None = None
+    total: float | None = None
+    waiting: float | None = None
+    orphaned: float | None = None
+    reason: str | None = None
+
+
+class UngatedPerf(BaseModel):
+    """Host reader's process attribution counts and bounded worktree slot names."""
+
+    pytest_processes: float | None = None
+    unattributed: float | None = None
+    unattributed_slots: list[str] = []
+
+
+class HostPerf(BaseModel):
+    """Slow-tier HostSampler snapshot, including its cost and staleness."""
+
+    psi: PressurePerf = PressurePerf()
+    test_slots: TestSlotsPerf = TestSlotsPerf()
+    ungated: UngatedPerf = UngatedPerf()
+    host_ms: float | None = None
+    stale: bool = False
+    reason: str | None = None
+
+
+class RelayPerf(BaseModel):
+    """Dashboard-server relay deltas; unavailable until the relay is polled."""
+
+    available: bool = False
+    reason: str | None = None
+    http: Histogram | None = None
+    ws_handshake: Histogram | None = None
+    upstream_failures: dict[str, Any] = {}
+    relays_open: float | None = None
+
+
+class PerfSamplerCost(BaseModel):
+    """Instrumentation-only cost measured by MetricsSampler."""
+
+    perf_ms: float | None = None
+
+
+class OperationPerf(BaseModel):
+    """Bounded operation timing; coarser tiers average concurrency gauges."""
+
+    latency: Histogram | None = None
+    outcomes: dict[str, Any] = {}
+    in_flight: float = 0
+    peak_in_flight: float = 0
+
+
+class PerfMetrics(BaseModel):
+    """MetricsSampler's daemon and dashboard-server performance blocks."""
+
+    enabled: bool = False
+    loop: LoopPerf = LoopPerf()
+    api: ApiPerf = ApiPerf()
+    db: DbPerf = DbPerf()
+    operations: dict[str, OperationPerf] = {}
+    host: HostPerf = HostPerf()
+    relay: RelayPerf = RelayPerf()
+    sampler: PerfSamplerCost = PerfSamplerCost()
+
+
 class MetricsSample(BaseModel):
     """One point on every series.
 
@@ -193,6 +421,8 @@ class MetricsSample(BaseModel):
     throughput: ThroughputMetrics = ThroughputMetrics()
     merges_per_hour: float = 0
     sampler: SamplerMetrics = SamplerMetrics()
+    waits: WaitMetrics | None = None
+    perf: PerfMetrics = PerfMetrics()
 
 
 class MetricsSeriesResponse(BaseModel):

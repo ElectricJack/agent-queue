@@ -1,5 +1,12 @@
 # Playbook Intelligence Routing Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Route every otherwise assignable task through an LLM playbook that selects `intelligence_class` and optional provider, then leave profile, agent, capacity, workspace, and fairness decisions to the existing orchestrator.
