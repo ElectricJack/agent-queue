@@ -3,7 +3,7 @@
 
 # `release_workspace`
 
-**Release Workspace.** Admin force-release a stuck workspace lock.
+**Release Workspace.** Release only after rechecking the checkout's independent fences.
 
 | Property | Value |
 |---|---|
@@ -14,13 +14,15 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:0354db57f1b131627e740285f85811c1c44d16f5872d534f3b9c066f2c8f65b7` |
+| Contract fingerprint | `sha256:df3c7c40199307c0e70b50a1ff73074440b7a2e0a0beb5e717144995581ac1ff` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `workspace_id` | `string` | yes | — | Workspace ID to release |
+| `force` | `boolean` | no | — | Override only the exact named task protection |
+| `task_id` | `string` | no | — | Exact protected task; required with force |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -45,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using workspace_id | — | always |
+| Composite using workspace_id, force, task_id | — | always |
 
 <!-- aq:generated:end -->
 

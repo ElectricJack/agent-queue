@@ -1,0 +1,16 @@
+{
+  "reconciliation_definitions": {
+    "src/wait_runtime/restart.py::readmit": {
+      "fingerprint": "36c35d9b563f3ac858d01e25ed8f06cc029fc172cb0a5333317433793d5c31fd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/restart.py::release_continuations": {
+      "fingerprint": "e70d2a60b9b8d8b22ace97b1b0a4fbb1acd3956bd5d38220dd07e265dced59e8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/restart.py::restart_lock": {
+      "fingerprint": "6664c73c0b5b3481e7de76a19545338ffd20d9e24d1bfdad776358c52a774ca0",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

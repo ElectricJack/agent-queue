@@ -698,25 +698,39 @@ async def stalled_train_batches(
     lanes = {(row["project_id"], row["repository_id"], row["target_ref"]): row
              for row in train.status()} if train is not None else {}
     findings = []
+    measured_by_project = {}
     for row in rows:
         repair_id = (ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
                      if row["repair_attempt_count"] else None)
         repair = repairs.get(repair_id)
-        if (alert_after_seconds is None and repair is not None
-                and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}):
+        if repair is not None and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}:
             continue  # Existing task/repair capacity diagnostics own this wait.
         lane = lanes.get((row["project_id"], row["repository_id"], row["target_ref"]), {})
         progress_at = max(row["updated_at"], repair["updated_at"] if repair else 0)
-        if lane.get("batch_id") == row["batch_id"]:
+        if lane.get("batch_id") == row["batch_id"] or alert_after_seconds is not None:
             progress_at = max(progress_at, lane.get("progress_at", 0))
         policy = IntegrationTrainPolicy.model_validate(
             (row["hierarchical_integration_policy"] or {}).get("train") or {})
-        due_at = progress_at + (alert_after_seconds or policy.settling_cap_seconds)
-        if alert_after_seconds is None:
-            due_at = max(due_at, lane.get("deferred_until", 0) + 60)
-            if lane.get("running"):
-                due_at = max(due_at, lane.get("visit_started_at", 0)
-                             + train.visit_timeout_seconds + 60)
+        threshold = alert_after_seconds or policy.settling_cap_seconds
+        if alert_after_seconds is not None:
+            # Recent measured visits and CI waits can be much longer than the
+            # normal settling window. Never page during a bounded visit/retry.
+            from src.integration.delivery_watchdog import measured_threshold_on
+
+            if row["project_id"] not in measured_by_project:
+                async with ctx.db._engine.connect() as conn:
+                    measured_by_project[row["project_id"]] = await measured_threshold_on(
+                        conn, project_id=row["project_id"], now=now,
+                        min_seconds=threshold, ci_multiplier=2.0,
+                    )
+            measured = measured_by_project[row["project_id"]]
+            elapsed = (lane.get("timing") or {}).get("elapsed_seconds") or 0
+            threshold = max(threshold, measured.stuck_after_seconds, 2 * elapsed)
+        due_at = progress_at + threshold
+        due_at = max(due_at, lane.get("deferred_until", 0) + 60)
+        if lane.get("running"):
+            due_at = max(due_at, lane.get("visit_started_at", 0)
+                         + train.visit_timeout_seconds + 60)
         if now < due_at:
             continue
         findings.append({
