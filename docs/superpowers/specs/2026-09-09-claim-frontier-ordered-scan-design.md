@@ -187,6 +187,18 @@ statistics between fixtures, including column distributions left by an earlier
 Statistics setup remains outside the explained statements, and neither the
 sort prohibition nor the 64-buffer budget is relaxed.
 
+### Recovery-attempt ordering (2026-10-19)
+
+Recovery holds fence the latest attempt for the task's current project and
+creation generation, ordered by `started_at DESC, id DESC`. The ID breaks ties
+deterministically. This correlated lookup must also remain index ordered:
+`idx_task_session_attempts_recovery` covers
+`task_id, project_id, started_at, id` and supplies both descending keys via a
+backward scan. The existing task/timestamp index remains for history reads
+that do not constrain the project. Revision `a00000000101` adds the recovery
+index to existing installations; fresh baselines include it through metadata.
+The no-sort assertion and 64-buffer budget apply unchanged.
+
 ## 6. Follow-ups this leaves open
 
 * The two `task_metadata` sub-plans in the frontier predicate (container flag,

@@ -1,0 +1,59 @@
+{
+  "shared_definitions": {
+    "src/commands/git_commands.py::GitCommandsMixin._check_ci_before_merge": {
+      "baseline_span": [
+        274,
+        381
+      ],
+      "landing_span": [
+        274,
+        381
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._cmd_integration_migrate_provenance": {
+      "baseline_span": [
+        28,
+        46
+      ],
+      "landing_span": [
+        28,
+        46
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._cmd_pr_merge": {
+      "baseline_span": [
+        47,
+        215
+      ],
+      "landing_span": [
+        47,
+        215
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._cmd_task_deliver": {
+      "baseline_span": [
+        216,
+        273
+      ],
+      "landing_span": [
+        216,
+        273
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._record_pr_base": {
+      "baseline_span": [
+        382,
+        418
+      ],
+      "landing_span": [
+        382,
+        418
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    }
+  }
+}

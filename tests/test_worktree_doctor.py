@@ -25,7 +25,6 @@ from src.models import (
     Workspace,
     WorktreeSentinel,
 )
-from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,14 +32,10 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
