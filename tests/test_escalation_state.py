@@ -26,12 +26,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.config import DiscordConfig, DiscordEscalationConfig, DiscordEscalationsConfig
-from src.database import Database
 from src.database.queries.escalation_queries import ESCALATION_OUTCOMES
-from src.database.tables import escalation_deliveries, messages
+from src.database.tables import (
+    continuations, escalation_deliveries, escalations, gates, messages, wait_escalations,
+    wait_records,
+)
 from src.escalations import (
     AUTO_OBSOLETE_TASK_STATUSES,
     STALE_OBSOLETE_SECONDS,
@@ -51,22 +53,19 @@ from src.escalations.dispatch import EDIT_COALESCE_SECONDS
 from src.escalations.plan import DEFER_SECONDS, MAX_ATTEMPTS
 from src.escalations.render import render_collapsed_root, render_state_root
 from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 BASE_URL = "https://queue.example.test"
 CHANNEL = "424242424242424242"
 
 
 @pytest.fixture
-async def env():
-    db = Database(lease_dsn("escalation_state"))
-    await db.initialize()
+async def env(reuse_database):
+    db = await reuse_database("escalation_state")
     for project in ("p", "other"):
-        await db.create_project(Project(id=project, name=project))
+        await db.create_project(Project(id=project, name=project, supervisor_enabled=True))
     bus = SimpleNamespace(emit=AsyncMock())
     config = SimpleNamespace(discord=DiscordConfig())
     yield SimpleNamespace(db=db, bus=bus, config=config)
-    await db.close()
 
 
 async def notice(env, *, body_kind="task_recovery", project="p", created_at=100, thread_id=None):
@@ -474,9 +473,8 @@ class Clock:
 
 
 @pytest.fixture
-async def world():
-    db = Database(lease_dsn("escalation_stateful"))
-    await db.initialize()
+async def world(reuse_database):
+    db = await reuse_database("escalation_stateful")
     await db.create_project(Project(id="p", name="Project"))
     transport = SinkTransport()
     clock = Clock()
@@ -500,7 +498,6 @@ async def world():
         )
 
     yield SimpleNamespace(db=db, transport=transport, clock=clock, config=config, service=service)
-    await db.close()
 
 
 async def incident(world, **overrides):
@@ -1018,11 +1015,101 @@ async def test_an_open_gate_leaves_its_incident_alone(world):
     assert (await world.db.get_escalation(row["id"]))["state"] == "needs_human"
 
 
-async def test_a_completed_task_obsoletes_the_question_asked_about_it(world):
+async def test_cancelled_gate_closes_on_the_next_periodic_scan(world):
+    gate_id = await open_gate(world)
+    row = await incident(world, source_kind="gate", source_identity=gate_id)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(gates).where(gates.c.id == gate_id).values(status="cancelled"))
+    assert (await resolver(world).tick()).closed == 1
+    closed = await world.db.get_escalation(row["id"])
+    assert closed["state"] == "cancelled" and closed["outcome"] == "sweep"
+    assert closed["terminal_evidence"]["automatic_rule"] == "gate_cancelled"
+
+
+async def seed_operational_wait(world, *, outcome="pending", inputs=None, origin="agent"):
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(wait_records).values(
+            id="operational-wait", project_id="p", owner_kind="task", owner_id="owner",
+            origin=origin, condition_kind="timer", condition={}, source_key="timer",
+            source_generation=1, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="timer:1", verified_at=10, created_at=10, request_hash="hash",
+            outcome=outcome, decision_inputs=inputs or {},
+        ))
+
+
+@pytest.mark.parametrize("outcome", ["pending", "satisfied", "cancelled", "source_unavailable"])
+async def test_bound_wait_settlement_retires_old_incidents(world, outcome):
+    await seed_operational_wait(world, outcome=outcome)
+    row = await incident(world, source_kind="wait", source_identity="operational-wait:1")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(wait_escalations).values(
+            id="binding", wait_id="operational-wait", generation=1, escalation_id=row["id"],
+            raised_at=10, original_age_seconds=0,
+        ))
+    assert (await resolver(world).tick()).closed == int(outcome != "pending")
+    closed = await world.db.get_escalation(row["id"])
+    if outcome != "pending":
+        assert closed["outcome"] == "sweep"
+        assert closed["terminal_evidence"]["wait_outcomes"] == [outcome]
+
+
+@pytest.mark.parametrize("state", ["held", "queued", "acknowledged", "cancelled"])
+async def test_released_continuation_retires_its_own_hold_incident(world, state):
+    await seed_operational_wait(world)
+    await world.db.create_task(Task(id="owner", project_id="p", title="Owner", description=""))
+    await incident(world, source_kind="continuation", task_id="owner",
+                   source_identity="continuation:intent:1:stop_uncertain")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(continuations).values(
+            id="intent", task_id="owner", wait_id="operational-wait", suspension_generation=1,
+            facts={}, branch="aq/owner", prior_status="IN_PROGRESS", held_cursor_seq=0,
+            resume_state=state, hold_reason="stop_uncertain" if state == "held" else None,
+        ))
+    assert (await resolver(world).tick()).closed == int(state != "held")
+
+
+async def test_delivery_requires_bound_containment_even_after_task_completion(world):
+    await world.db.create_task(Task(id="owner", project_id="p", title="Ship", description="",
+                                    status=TaskStatus.COMPLETED))
+    row = await incident(world, source_kind="integration_delivery_stuck", task_id="owner")
+    assert (await resolver(world).tick()).closed == 0
+    await seed_operational_wait(world, outcome="satisfied", origin="integration", inputs={
+        "incident_id": "other", "delivery_watchdog_projection": True,
+    })
+    assert (await resolver(world).tick()).closed == 0
+    async with world.db.immediate() as conn:
+        await conn.execute(update(wait_records).where(wait_records.c.id == "operational-wait").values(
+            decision_inputs={"incident_id": row["id"], "head": "saved-head",
+                             "delivery_watchdog_projection": True},
+        ))
+    assert (await resolver(world).tick()).closed == 1
+    assert (await world.db.get_escalation(row["id"]))["terminal_evidence"]["head"] == "saved-head"
+
+
+async def test_periodic_scan_does_not_starve_old_incidents_behind_two_hundred_live_ones(world):
+    old = await incident(world, id="old-batch", source_kind="integration_train_stall",
+                         source_identity="removed-batch")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(escalations), [
+            {"id": f"live-{index}", "project_id": "p", "source_kind": "core",
+             "source_identity": f"live-{index}", "incident_key": f"live-{index}",
+             "supervisor_owner": "supervisor-p", "summary": "Live", "investigation": "Live",
+             "decision_requested": "Decide", "severity": "medium", "state": "needs_human",
+             "revision": 0, "created_at": 900, "updated_at": 900}
+            for index in range(205)
+        ])
+    report = await resolver(world).tick()
+    assert report.inspected == 206 and report.closed_ids == (old["id"],)
+
+
+@pytest.mark.parametrize("source_kind", [
+    "question", "task", "task_attempt", "task_recovery", "wait", "continuation",
+])
+async def test_a_completed_task_obsoletes_the_question_asked_about_it(world, source_kind):
     await world.db.create_task(
         Task(id="t-1", project_id="p", title="Ship", description="d", status=TaskStatus.COMPLETED)
     )
-    row = await incident(world, id="esc-task", task_id="t-1")
+    row = await incident(world, id="esc-task", task_id="t-1", source_kind=source_kind)
     assert (await resolver(world).tick()).closed == 1
 
     closed = await world.db.get_escalation(row["id"])
