@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/activation.py::profile_fingerprint": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
