@@ -279,6 +279,10 @@ class SurfaceCommandsMixin:
             return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
         if "integration_batch_repair" in (args.get("meta") or {}):
             return {"success": False, "error": "integration_batch_repair is reserved; use --repair-batch."}
+        if any(str(key).startswith("root_pr_conflict_refresh")
+               for key in (args.get("meta") or {})):
+            return {"success": False,
+                    "error": "root_pr_conflict_refresh is reserved for daemon-owned bot merges."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",
@@ -402,6 +406,10 @@ class SurfaceCommandsMixin:
 
         if "description" in fields_changed:
             await self._emit_task_findings_updated(task)
+        else:
+            # Closed work can lose a hold or gain its PR/source metadata without
+            # re-entering the ready frontier. Wake its integration lane too.
+            await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result
@@ -468,6 +476,11 @@ class SurfaceCommandsMixin:
             )
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
+
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
 
         from src.commands.principal import current_principal
         from src.knowledge.context import (

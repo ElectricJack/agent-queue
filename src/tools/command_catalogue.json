@@ -191,6 +191,36 @@
       }
     },
     {
+      "name": "project_relocate",
+      "description": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "owner_inventory": {
+            "type": "object"
+          },
+          "expected_digest": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "destination",
+          "owner_inventory"
+        ]
+      }
+    },
+    {
       "name": "repair_repository_checkout",
       "description": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
       "input_schema": {
@@ -504,7 +534,7 @@
               "train",
               "development"
             ],
-            "description": "LOCAL-only integration mode for new reconciler subjects."
+            "description": "LOCAL-only integration delivery mode for the Git-first train."
           },
           "promotion_flow": {
             "type": [
@@ -838,7 +868,7 @@
     },
     {
       "name": "reparent_task",
-      "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+      "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -851,6 +881,14 @@
           "root": {
             "type": "boolean",
             "default": false
+          },
+          "expected_old_generation": {
+            "type": "integer",
+            "description": "Hierarchical projects: the old parent's integration generation."
+          },
+          "expected_new_generation": {
+            "type": "integer",
+            "description": "Hierarchical projects: the new parent's integration generation."
           }
         },
         "required": [
@@ -1615,17 +1653,51 @@
     },
     {
       "name": "release_workspace",
-      "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
+      "description": "Release a stuck workspace after checking claim, session, integration and job ownership.",
       "input_schema": {
         "type": "object",
         "properties": {
           "workspace_id": {
             "type": "string",
             "description": "Workspace ID to release"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Override only the exact named task protection"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Exact protected task; required with force"
           }
         },
         "required": [
           "workspace_id"
+        ]
+      }
+    },
+    {
+      "name": "rebind_workspace",
+      "description": "Restore workspace lock columns from an existing coherent active pool claim.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Workspace to re-bind"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task holding the active claim"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Session holding that exact claim"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "task_id",
+          "session_id"
         ]
       }
     },
@@ -1875,7 +1947,7 @@
     },
     {
       "name": "supervisor_restart",
-      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1983,12 +2055,18 @@
             "enum": [
               "DEFINED",
               "READY",
+              "ASSIGNED",
               "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
               "COMPLETED",
               "FAILED",
               "BLOCKED"
             ],
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "type": "integer",
@@ -2195,13 +2273,21 @@
     },
     {
       "name": "restart_task",
-      "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+      "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
       "input_schema": {
         "type": "object",
         "properties": {
           "task_id": {
             "type": "string",
             "description": "Task ID to restart"
+          },
+          "override_hold": {
+            "type": "boolean",
+            "description": "Explicitly release the recovery hold (operator/global supervisor only)"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required reason for overriding a recovery hold"
           }
         },
         "required": [
@@ -3382,6 +3468,26 @@
       }
     },
     {
+      "name": "operational_retention",
+      "description": "Archive and collect one bounded batch of old operational records.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "Count eligible records without archiving or deletion."
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1000
+          }
+        }
+      }
+    },
+    {
       "name": "reload_config",
       "description": "Manually trigger a config hot-reload from disk. Returns a summary of which sections changed, which were applied, and which require a daemon restart.",
       "input_schema": {
@@ -3494,7 +3600,7 @@
     },
     {
       "name": "update_and_restart",
-      "description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+      "description": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -4459,13 +4565,17 @@
     },
     {
       "name": "doctor",
-      "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+      "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
       "input_schema": {
         "type": "object",
         "properties": {
           "fix": {
             "type": "boolean",
             "description": "Apply fixes for failing fixable checks, then re-run them."
+          },
+          "leave_gated": {
+            "type": "boolean",
+            "description": "Leave legacy spec proposals on their existing human gate."
           },
           "checks": {
             "type": "array",
@@ -7023,6 +7133,35 @@
       }
     },
     {
+      "name": "pool_delete",
+      "description": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "Pool profile ID to delete."
+          },
+          "depth": {
+            "type": "string",
+            "enum": [
+              "profile",
+              "directory"
+            ],
+            "default": "profile",
+            "description": "profile removes profile.md and preserves other vault content; directory removes the entire profile directory. Both retire the pool."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional retirement reason."
+          }
+        },
+        "required": [
+          "profile_id"
+        ]
+      }
+    },
+    {
       "name": "pool_rename",
       "description": "Rename a global pool's display name while keeping its profile ID, routing, bounds and task assignments unchanged. Saves the name to the profile source with a backup and emits pool.renamed. Backs `aq pool rename`.",
       "input_schema": {
@@ -8822,147 +8961,499 @@
       "name": "wait_register",
       "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
-        "required": [
-          "kind",
-          "idempotency_key"
-        ],
         "properties": {
-          "kind": {
-            "type": "string",
+          "schema_version": {
+            "default": 1,
             "enum": [
-              "job",
-              "task",
-              "message",
-              "timer"
-            ]
-          },
-          "ref": {
-            "type": "string",
-            "maxLength": 256
-          },
-          "after_seq": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "due_at": {
-            "type": "number"
-          },
-          "timeout": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "maximum": 86400
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "claim_epoch": {
-            "type": "integer",
-            "minimum": 0
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
           },
           "project_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "task_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
           },
           "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "job",
+                  "task",
+                  "message",
+                  "timer",
+                  "dependency",
+                  "ci_check",
+                  "ci_run",
+                  "pull_request",
+                  "batch",
+                  "human",
+                  "resource",
+                  "playbook_condition"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Condition"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claimed"
+          },
+          "escalate_after_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 86400,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Escalate After Seconds"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Id"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ref"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After Seq"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Due At"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 86400,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout"
+          },
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key",
             "type": "string"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
           }
-        }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "WaitRegisterArgs",
+        "type": "object"
       }
     },
     {
       "name": "wait_get",
       "description": "Read a durable wait, optionally consuming its result notification.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "consume": {
+            "default": false,
+            "title": "Consume",
+            "type": "boolean"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          }
+        },
         "required": [
           "wait_id"
         ],
-        "properties": {
-          "wait_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "consume": {
-            "type": "boolean",
-            "default": false
-          },
-          "claim_epoch": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "task_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          }
-        }
+        "title": "WaitGetArgs",
+        "type": "object"
       }
     },
     {
       "name": "wait_list",
       "description": "List the owner's durable wait history.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
         "properties": {
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
+          "schema_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
           },
           "project_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "task_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
           },
           "session_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
           }
-        }
+        },
+        "title": "WaitListArgs",
+        "type": "object"
       }
     },
     {
       "name": "wait_cancel",
       "description": "Cancel a current-claim wait and queue its result.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Id"
+          }
+        },
         "required": [
           "wait_id"
         ],
+        "title": "WaitCancelArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "integration_batch_fix",
+      "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "wait_id": {
+          "action": {
             "type": "string",
-            "minLength": 1
-          },
-          "claim_epoch": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "task_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
+            "enum": [
+              "status",
+              "push",
+              "rebind"
+            ],
+            "default": "status"
           }
         }
       }
@@ -11804,6 +12295,465 @@
       }
     },
     {
+      "name": "wait_ack",
+      "description": "Acknowledge a verified wait outcome for the held claim.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          }
+        },
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitAckArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_checkpoint",
+      "description": "Save a continuation checkpoint for the held claim's verified wait.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          }
+        },
+        "required": [
+          "wait_id",
+          "summary"
+        ],
+        "title": "WaitCheckpointArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_decide",
+      "description": "Record a supervisor decision for a verified wait.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "extend",
+              "wake",
+              "cancel",
+              "reroute",
+              "escalate_to_human",
+              "requeue"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "extend_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400,
+                "minimum": 60,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Extend Seconds"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "To"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Id"
+          }
+        },
+        "required": [
+          "wait_id",
+          "decision",
+          "note"
+        ],
+        "title": "WaitDecideArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_explain",
+      "description": "Explain a verified wait's condition, evidence and outcome.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wait Id"
+          },
+          "history": {
+            "default": false,
+            "title": "History",
+            "type": "boolean"
+          }
+        },
+        "title": "WaitExplainArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_graph",
+      "description": "Inspect the dependency graph of verified waits.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "fleet": {
+            "default": false,
+            "title": "Fleet",
+            "type": "boolean"
+          },
+          "costs": {
+            "default": false,
+            "title": "Costs",
+            "type": "boolean"
+          }
+        },
+        "title": "WaitGraphArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_lift",
+      "description": "Lift an escalated verified wait with an authorized decision.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "response": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Response",
+            "type": "string"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          }
+        },
+        "required": [
+          "wait_id",
+          "response"
+        ],
+        "title": "WaitLiftArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "playbook_script_run",
       "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
       "input_schema": {
@@ -11828,6 +12778,177 @@
           }
         },
         "additionalProperties": false
+      }
+    },
+    {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_release",
+      "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_retire",
+      "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireArgs",
+        "type": "object"
       }
     },
     {
@@ -11948,6 +13069,31 @@
         },
         "required": [
           "project_id"
+        ]
+      }
+    },
+    {
+      "name": "spec_ingest_legacy_adopt",
+      "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "type": "string"
+          },
+          "decision_id": {
+            "type": "string"
+          },
+          "packet_sha256": {
+            "type": "string"
+          },
+          "leave_gated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proposal_id"
         ]
       }
     },
@@ -12752,6 +13898,22 @@
         ],
         "title": "AskButtonArgs",
         "type": "object"
+      }
+    },
+    {
+      "name": "integration_continue_close",
+      "description": "Continue the parent merge belonging to your held task and session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        }
       }
     }
   ],
@@ -13706,6 +14868,64 @@
         "type": "object"
       }
     },
+    "integration_cutover_containment": {
+      "name": "integration_cutover_containment",
+      "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "choices": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Choices",
+            "type": "object"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Digest"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationContainmentCutoverArgs",
+        "type": "object"
+      }
+    },
     "integration_cutover_plan": {
       "name": "integration_cutover_plan",
       "description": "Authenticated hierarchical integration operational control.",
@@ -13962,6 +15182,62 @@
           "engine"
         ],
         "title": "IntegrationEngineTransferArgs",
+        "type": "object"
+      }
+    },
+    "integration_fast_forward_pr": {
+      "name": "integration_fast_forward_pr",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "pr_number": {
+            "exclusiveMinimum": 0,
+            "title": "Pr Number",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "task_id",
+          "pr_number"
+        ],
+        "title": "IntegrationFastForwardPrArgs",
         "type": "object"
       }
     },
@@ -14493,6 +15769,22 @@
         "type": "object"
       }
     },
+    "integration_reconcile_git_truth": {
+      "name": "integration_reconcile_git_truth",
+      "description": "Daemon-only repair of Git-derived integration projections.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "integration_record_delivered": {
       "name": "integration_record_delivered",
       "description": "Local operator verifies exact source on the designated default and records shipped work.",
@@ -14791,6 +16083,35 @@
             "default": false,
             "title": "Adopt Source",
             "type": "boolean"
+          },
+          "dispose_obsolete": {
+            "default": false,
+            "title": "Dispose Obsolete",
+            "type": "boolean"
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Superseded By"
+          },
+          "expected_parent_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Parent Head Sha"
           },
           "dry_run": {
             "default": true,
@@ -15437,6 +16758,59 @@
         "type": "object"
       }
     },
+    "integration_repair_target": {
+      "name": "integration_repair_target",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationRepairTargetArgs",
+        "type": "object"
+      }
+    },
     "integration_repair_timeout": {
       "name": "integration_repair_timeout",
       "description": "Expire the current repair stage once its absolute deadline has passed.",
@@ -15459,6 +16833,53 @@
           "stage"
         ],
         "title": "IntegrationRepairTimeoutArgs",
+        "type": "object"
+      }
+    },
+    "integration_rerequest_check": {
+      "name": "integration_rerequest_check",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "check_name": {
+            "minLength": 1,
+            "title": "Check Name",
+            "type": "string"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "check_name"
+        ],
+        "title": "IntegrationRerequestCheckArgs",
         "type": "object"
       }
     },
@@ -18725,6 +20146,57 @@
         "additionalProperties": false
       }
     },
+    "scheduler_wait_sync": {
+      "name": "scheduler_wait_sync",
+      "description": "Scheduler wait sync through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "initial_audit": {
+            "default": false,
+            "title": "Initial Audit",
+            "type": "boolean"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "cycle_id": {
+            "minLength": 1,
+            "title": "Cycle Id",
+            "type": "string"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          }
+        },
+        "required": [
+          "project_id",
+          "blockers",
+          "cycle_id"
+        ],
+        "title": "SchedulerWaitSyncArgs",
+        "type": "object"
+      }
+    },
     "session_attach": {
       "name": "session_attach",
       "description": "Return the shell command a human runs to attach.",
@@ -19045,91 +20517,6 @@
         }
       }
     },
-    "task_batch_review_record": {
-      "name": "task_batch_review_record",
-      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "expected_digest": {
-            "minLength": 1,
-            "title": "Expected Digest",
-            "type": "string"
-          },
-          "section_verdicts": {
-            "additionalProperties": {
-              "enum": [
-                "faithful",
-                "fixed",
-                "scope_question"
-              ],
-              "type": "string"
-            },
-            "title": "Section Verdicts",
-            "type": "object"
-          },
-          "reverse_coverage_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Reverse Coverage Verdict",
-            "type": "string"
-          },
-          "walkthrough_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Walkthrough Verdict",
-            "type": "string"
-          },
-          "structural_findings": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Structural Findings",
-            "type": "array"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "expected_digest",
-          "section_verdicts",
-          "reverse_coverage_verdict",
-          "walkthrough_verdict",
-          "structural_findings"
-        ],
-        "title": "TaskBatchReviewRecordArgs",
-        "type": "object"
-      }
-    },
     "task_failure_triage_notify": {
       "name": "task_failure_triage_notify",
       "description": "Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident.",
@@ -19252,6 +20639,99 @@
         "type": "object"
       }
     },
+    "task_split": {
+      "name": "task_split",
+      "description": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+      "input_schema": {
+        "$defs": {
+          "TaskSplitMoved": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "minLength": 1,
+                "title": "Title",
+                "type": "string"
+              },
+              "acceptance": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Acceptance",
+                "type": "array"
+              },
+              "placement": {
+                "description": "Post-delivery operations become a root; finite build work stays beside the source.",
+                "enum": [
+                  "operational_root",
+                  "child"
+                ],
+                "title": "Placement",
+                "type": "string"
+              },
+              "delivery_targets": {
+                "description": "Same-project code leaves whose verified delivery gates operational work; include the source.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "title": "Delivery Targets",
+                "type": "array"
+              }
+            },
+            "required": [
+              "title",
+              "acceptance",
+              "placement"
+            ],
+            "title": "TaskSplitMoved",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "retained_acceptance": {
+            "description": "Exact source criteria retained; together with moved.acceptance, an exhaustive partition.",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Retained Acceptance",
+            "type": "array"
+          },
+          "moved": {
+            "$ref": "#/$defs/TaskSplitMoved"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "expected_generation": {
+            "description": "Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0).",
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id",
+          "retained_acceptance",
+          "moved",
+          "reason",
+          "expected_generation"
+        ],
+        "title": "TaskSplitArgs",
+        "type": "object"
+      }
+    },
     "vault_rebuild_index": {
       "name": "vault_rebuild_index",
       "description": "Rebuild vault hub files with optional LLM-generated summaries.",
@@ -19264,6 +20744,240 @@
             "default": false
           }
         }
+      }
+    },
+    "wait_deadline_fire": {
+      "name": "wait_deadline_fire",
+      "description": "Wait deadline fire through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "deadline_type": {
+            "enum": [
+              "due",
+              "escalation",
+              "ceiling",
+              "transition",
+              "reservation"
+            ],
+            "title": "Deadline Type",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 1,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          }
+        },
+        "required": [
+          "wait_id",
+          "deadline_type",
+          "generation"
+        ],
+        "title": "WaitDeadlineFireArgs",
+        "type": "object"
+      }
+    },
+    "wait_evict": {
+      "name": "wait_evict",
+      "description": "Wait evict through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wait_id",
+          "reason"
+        ],
+        "title": "WaitEvictArgs",
+        "type": "object"
+      }
+    },
+    "wait_legacy_bridge": {
+      "name": "wait_legacy_bridge",
+      "description": "Wait legacy bridge through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "default": "agent-waits",
+            "enum": [
+              "project",
+              "agent-waits"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          }
+        },
+        "title": "WaitLegacyBridgeArgs",
+        "type": "object"
+      }
+    },
+    "wait_resume_dispatch": {
+      "name": "wait_resume_dispatch",
+      "description": "Wait resume dispatch through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "continuation_id": {
+            "minLength": 1,
+            "title": "Continuation Id",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 1,
+            "title": "Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "continuation_id",
+          "generation"
+        ],
+        "title": "WaitResumeDispatchArgs",
+        "type": "object"
+      }
+    },
+    "wait_sleep_decide": {
+      "name": "wait_sleep_decide",
+      "description": "Wait sleep decide through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          }
+        },
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitSleepDecideArgs",
+        "type": "object"
+      }
+    },
+    "wait_source_commit": {
+      "name": "wait_source_commit",
+      "description": "Wait source commit through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "source_key": {
+            "minLength": 1,
+            "title": "Source Key",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "revision": {
+            "minLength": 1,
+            "title": "Revision",
+            "type": "string"
+          },
+          "outcome_ref": {
+            "minLength": 1,
+            "title": "Outcome Ref",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Occurred At"
+          }
+        },
+        "required": [
+          "source_key",
+          "generation",
+          "revision",
+          "outcome_ref",
+          "payload"
+        ],
+        "title": "WaitSourceCommitArgs",
+        "type": "object"
       }
     },
     "workflow_pipeline_view": {
@@ -19308,6 +21022,7 @@
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "ci": "Required CI evidence and completed task audits",
+    "integration": "Author-assisted close continuations and bound batch repair",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
     "supervisor": "Supervisor session lifecycle \u2014 fresh or resumed restarts through AQ",
@@ -19342,6 +21057,8 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -19374,6 +21091,7 @@
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -19382,6 +21100,7 @@
     "list_workspace_kinds": "project",
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
+    "rebind_workspace": "project",
     "remove_workspace": "project",
     "edit_workspace": "project",
     "queue_sync_workspaces": "project",
@@ -19483,6 +21202,13 @@
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "wait_explain": "wait",
+    "wait_graph": "wait",
+    "wait_checkpoint": "wait",
+    "wait_ack": "wait",
+    "wait_decide": "wait",
+    "wait_lift": "wait",
+    "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
     "cron_list": "cron",
@@ -19523,6 +21249,7 @@
     "get_task_tree": "task",
     "task_children": "task",
     "task_progress": "task",
+    "task_split": "task",
     "reparent_task": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",
@@ -19587,6 +21314,7 @@
     "claude_usage": "system",
     "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
+    "operational_retention": "system",
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
@@ -19698,6 +21426,7 @@
     "provider_allocation_apply": "provider",
     "pool_status": "pool",
     "pool_rename": "pool",
+    "pool_delete": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",
@@ -19720,6 +21449,10 @@
     "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task",
     "ensure_fidelity_review": "task",
+    "spec_ingest_legacy_adopt": "task",
+    "task_batch_review_record": "task",
+    "task_batch_release": "task",
+    "task_batch_retire": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",
