@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/task_graph/integration_dependencies.py::import from src.database.tables import epic_dependencies, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}
