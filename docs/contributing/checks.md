@@ -29,12 +29,13 @@ run at the end of a task, never during.
 | One Python module under `src/` | `ruff check <file>` and `aq test tests/test_<area>.py` |
 | `src/database/tables.py` | A new Alembic revision (**locally, never against the operator's database**) plus `aq test tests/test_database.py tests/test_docs_sync.py` |
 | `src/api/models/*` or a codegen router | `./scripts/regenerate-api-client.sh --offline`, `./scripts/regenerate-ts-client.sh --from-file`, `aq test tests/test_api_client_contract.py` |
-| A `@click` command or command contract | `python scripts/generate-cli-command-inventory.py`, `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
+| A `@click` command or command contract | `python scripts/generate-cli-command-inventory.py`, `python scripts/gen-command-docs.py`, `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py tests/test_command_docs.py` |
 | `src/playbooks/definition.py` | `python scripts/generate-playbook-schema.py --check`, `aq test tests/test_playbook_v2_definition.py` |
-| Anything under `dashboard/src/` | `npm -w dashboard run lint`, `npm -w dashboard run typecheck`, `npm -w dashboard run test` |
+| Anything under `dashboard/src/` | `npm -w dashboard run lint`, `npm -w dashboard run typecheck`, `npm -w dashboard run test`; for layout, navigation or terminal changes also `npm -w dashboard run build && npm -w dashboard run check:layout` |
+| `src/dashboard_server/`, the daemon's `/dashboard` pointer, or how the bundle is built and staged | `aq test tests/test_dashboard_server_app.py tests/test_dashboard_server_bundle.py tests/test_dashboard_server_edge.py tests/test_dashboard_server_proxy.py tests/test_cli_dashboard_server.py tests/test_doctor_dashboard_server.py tests/test_api_dashboard_pointer.py tests/test_install_dashboard.py tests/test_release_artifact.py` |
 | Claims, pools, formulas or the task hierarchy | `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` |
 | Any page under `docs/` | `python3 docs/plans/documentation-overhaul/refresh_inventory.py --check` and the [style checklist](documentation-style.md#checking-your-page-before-you-push) |
-| Added or removed **any** tracked file | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` |
+| Added or removed **any** tracked file | `python3 docs/plans/documentation-overhaul/refresh_inventory.py --check` — the same coverage check. Do **not** regenerate the manifest; it is [foundation-owned](../documentation-map.md#who-runs-which-half). |
 
 ## The commands
 
@@ -96,10 +97,23 @@ also catches "the dashboard no longer matches the API".
 python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
-This verifies that every tracked path still has a documentation owner and that
-the committed coverage manifest matches the tree. It is fast, needs no database
-and no daemon, and it is the check that catches "somebody added a module nobody
-documents".
+This verifies that every tracked path still has a documentation owner. It is
+fast, needs no database and no daemon, and it is the check that catches
+"somebody added a module nobody documents".
+
+It does **not** fail because the committed coverage manifest has fallen behind
+the tree. It prints a `note:` naming the drifted paths and the shard each was
+assigned to, and exits 0. The manifest is
+[foundation-owned](../documentation-map.md#who-runs-which-half) and regenerated
+on a cadence; its freshness is a separate acceptance gate:
+
+```bash
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check-artefacts
+```
+
+Run that one only if you own the overhaul's foundation/acceptance shard. On a
+ticket branch, regenerating a 3,700-entry JSON is how twenty tickets collide at
+delivery.
 
 ### One broader run, at the end
 
@@ -148,14 +162,15 @@ Python at all.
 | `ruff check` | Nothing | Nothing (`ruff format` rewrites files) |
 | `aq test` | `POSTGRES_TEST_DSN`, one free test slot | Throwaway databases, removed on teardown |
 | `npm -w dashboard run …` | `npm install` done once | `node_modules/`, `packages/aq-ts-client/src/`, `dashboard/dist/` — all gitignored |
-| `refresh_inventory.py --check` | A Git checkout | Nothing (without `--check`, two JSON files) |
+| `refresh_inventory.py --check` | A Git checkout | Nothing (without a `--check…` flag, two JSON files) |
 | `scripts/e2e-smoke.sh` | Docker PostgreSQL, a free port | An isolated world under `~/.agent-queue-e2e` |
 
 ## State ownership
 
 Local checks own only disposable state: test databases, tool caches and build
 output, all outside the repository or gitignored inside it. The one check that
-writes tracked files is `refresh_inventory.py` without `--check`, and the two
+writes tracked files is `refresh_inventory.py` with no flag — which is the
+foundation/acceptance shard's job, not a ticket's — and the two
 regeneration scripts in [code generation](codegen.md) — those changes belong in
 the same commit as the input change that caused them.
 
@@ -167,7 +182,7 @@ the same commit as the input change that caused them.
 | exit `75` from `aq test` | Every slot busy for the whole timeout. | Retry. Not a test failure. |
 | `aq test: no tests were collected` | Your paths or markers excluded everything. | `--aq-dry-run` shows the exact command that ran. |
 | `ruff check` flags a generated file | You are linting something you should not. | `packages/aq-client/` is excluded by config; do not lint it by path either. |
-| `stale artefact(s)` from the inventory check | A tracked file was added or removed. | Regenerate without `--check`. |
+| `stale artefact(s)` from `--check-artefacts` | The foundation-owned manifest has fallen behind the tree. | Regenerate with no flag — but only if you own that shard. It is not a ticket's failure, and plain `--check` does not report it. |
 | A frontend command cannot resolve `@aq/ts-client` | The generated client is missing. | `./scripts/regenerate-ts-client.sh --from-file` |
 
 ## Related pages
@@ -186,6 +201,6 @@ the same commit as the input change that caused them.
 [`docs/plans/documentation-overhaul/refresh_inventory.py`](../plans/documentation-overhaul/refresh_inventory.py).
 
 ```bash
-aq test tests/test_cli_test_runner.py
+aq test tests/test_cli_test_runner.py tests/test_documentation_coverage.py
 python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```

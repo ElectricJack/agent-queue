@@ -32,11 +32,114 @@ This page is the list, in the order a change is most likely to reach them.
 | `packages/aq-ts-client/src/` | `openapi.json` + `@hey-api/openapi-ts` | `./scripts/regenerate-ts-client.sh --from-file` | **no** — gitignored |
 | [`src/playbook_v2_schema.json`](../../src/playbook_v2_schema.json) | The Playbook V2 Pydantic model | `python scripts/generate-playbook-schema.py` | yes |
 | [`docs/reference/cli-command-inventory.json`](../reference/cli-command-inventory.json) | The live `aq` Click tree | `python scripts/generate-cli-command-inventory.py` | yes |
+| [`src/tools/command_catalogue.json`](../../src/tools/command_catalogue.json) | Explicit tool definitions, categories, handler discovery, typed contracts and internal plugin schemas | `python scripts/generate-command-catalogue.py` | yes |
+| [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
+| [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
+| [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |
+| `tests/integration_ownership*.json` | Authored policy and fixed historical inputs in `tests/fixtures/generated_sources/ownership/` | `python scripts/generate-recorded-artifacts.py` | yes |
 | [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) | Shipped playbook markdown, through a human review step | `python scripts/rebuild-reviewed-playbook-artifacts.py` | yes |
-| [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` | yes |
+| [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` — **owning shard only**, see [below](#the-documentation-coverage-manifest) | yes |
 
 Every one of them has a `--check` (or an equivalent test) that answers "is the
-committed copy current?" without writing anything.
+committed copy current?" without writing anything. The coverage manifest is the
+one exception to "regenerate in the same commit as the input": its freshness
+check is `--check-artefacts` and belongs to the shard that owns the file.
+
+## One command, and never a hand merge
+
+[`scripts/regenerate-generated.sh`](../../scripts/regenerate-generated.sh)
+runs every generator above except the TS client and the
+coverage manifest, concurrently:
+
+```bash
+scripts/regenerate-generated.sh           # rewrite them all
+scripts/regenerate-generated.sh --check   # exit 1 naming each stale file; writes nothing
+scripts/regenerate-generated.sh --list    # the generated paths
+```
+
+`--check` regenerates inside a scratch copy of your working tree (tracked and
+untracked files, ignored ones excluded) and names every file that changed
+there — including a hand-written page whose generated block is stale — so it
+sees uncommitted edits and leaves the checkout alone. It is the one drift check
+for the whole set; `tests/test_generated_artifacts.py` runs it under the `slow`
+marker.
+
+[`.gitattributes`](../../.gitattributes) marks exactly the `--list` set
+`merge=aq-generated` (`tests/test_generated_artifacts.py` keeps the two in
+step). **Never hand-merge these files.** When a merge or rebase conflicts in
+one, take either side, resolve the source files, then regenerate:
+
+```bash
+git checkout --ours -- tests/selection_catalogue.json   # either side will do
+scripts/regenerate-generated.sh
+git add -A && git commit                                 # or: git rebase --continue
+```
+
+The development publisher does the same when it merges task branches, once
+the project's policy names the command (`--regenerate
+scripts/regenerate-generated.sh`, see
+[development integration](../guides/development-integration.md#conflicts-confined-to-generated-files)),
+so a conflict confined to these files never parks a candidate.
+
+The train rebuilds the entire registered generated set once when assembling a
+batch candidate, including batches whose branches changed only source files.
+Intermediate merges discard changed generated output in favor of the current
+side; additions and deletions are rebuilt too. The final sweep uses a scratch
+tree containing every member's sources and the exact requested merge bases.
+Child promotion and accepted CI-repair merges share the source merge mechanism.
+Source conflicts, failed generators and writes outside the marked paths retain
+the existing repair path. The resulting commit still requires the boundary's
+normal publication authority and verification.
+
+Ownership policy and historical measurements are authored inputs, not new
+measurements at assembly time. Their canonical copies live in
+`tests/fixtures/generated_sources/ownership/`; generation reproduces the existing
+manifest and historical report without changing ceilings, revisions or fingerprints.
+
+Reviewed playbooks similarly have explicit canonical inputs under
+`tests/fixtures/generated_sources/playbooks/`: a readable `definition.json`, the
+approved source snapshot, manifest/provenance, and diagnostics. `index.json`
+names their fixture, shipped and operator-importable projections. These inputs
+merge normally; an input conflict requires resolution. The assembly generator
+serializes approved definitions canonically and reproduces all bundle copies,
+preserving timestamps and approval hashes byte for byte. It refuses missing
+inputs or definitions/source snapshots that no longer match their manifest
+bindings. It never compiles new policy or creates an approval.
+
+`scripts/rebuild-reviewed-playbook-artifacts.py` remains the authoring command:
+after a deliberate rebuild it records the inputs and refreshes their projections.
+Review the semantic diff and approval/provenance as before. Draft `--out` builds
+and `--check` leave canonical inputs alone. Never resolve a canonical input
+conflict by selecting a generated copy or recomputing historical measurements.
+
+Isolated train regeneration uses a fixed tool lookup order: the daemon's
+interpreter directory, the daemon user's `~/.local/bin`, then `/usr/local/bin`,
+`/usr/bin` and `/bin`. A system-Python daemon can therefore find user-installed
+`openapi-python-client` and `ruff`. It does not inherit the daemon's PATH or
+credentials, and retains worker database refusal sentinels. The scripts still
+refuse missing tools and an incorrect generator version; regeneration never
+installs or relocates the toolchain.
+
+To merge the way the development publisher does locally, define the driver
+once per clone:
+
+```bash
+git config merge.aq-generated.driver 'git merge-file --quiet --ours %A %O %B'
+```
+
+It keeps your side of every overlapping hunk and never conflicts, so the file
+is stale until you regenerate. Without it Git falls back to its ordinary text
+merge. [`tests/selection_areas.yaml`](../../tests/selection_areas.yaml) is
+hand-written, but branches almost only append to it, so it is `merge=union`:
+both sides' lines are kept.
+
+GitHub does not use custom merge drivers. Generated files therefore omit
+changing aggregate metadata: the selection catalogue stores integrity hashes
+on individual module records and computes its overall digest when loaded;
+the CLI inventory computes totals with `src.cli.inventory.inventory_counts`;
+the playbook-command index stores command rows without a global count.
+Unrelated edits in separate text positions can merge normally. Regeneration
+and every drift guard still apply, including after a clean text merge.
 
 ## The API surface
 
@@ -121,19 +224,60 @@ in place.
 > precisely because findings there cannot be fixed without changing the
 > generator.
 
+#### The script leaves the environment alone
+
+Regenerating writes tracked files and nothing else. The script used to end with
+an unconditional `pip install -e packages/aq-client`, and from a worktree slot
+`pip` is the **shared** venv's: on 2026-09-20 an ordinary worker task that
+regenerated the client rewrote `site-packages/agent_queue_api_client.pth` to
+`…/.aq/worktrees/slot-1/packages/aq-client`, after which the daemon, the CLI
+and every other slot's tests imported the client from a tree that is reset onto
+another branch between tasks.
+
+An editable install is a pointer at the source directory, so regenerating in
+place already changes what is imported; the reinstall only ever mattered on a
+box that had never installed the client. So:
+
+* A plain run never calls `pip`. It ends by saying where
+  `agent_queue_api_client` imports from — this checkout, another tree, or
+  nowhere — and, outside a worker session, the command that would change that.
+* `--install` opts in. It is refused in a worker session
+  (`AQ_DB_SCOPE=worker`), and it refuses to **re-point** an install that
+  currently resolves to a different tree — the case of a linked worktree that
+  shares the main checkout's venv but carries no `AQ_DB_SCOPE`. Both refusals
+  happen before anything is regenerated. A missing or dangling install is
+  installed; one that already points here is refreshed.
+* Detection and install use the same `python3` (`importlib` for one,
+  `-m pip` for the other), so they cannot be about two different environments.
+
+Nothing in a slot needs the reinstall: `tests/test_api_client_contract.py`
+imports the client from the checkout's `packages/aq-client/`, not from the
+installed copy, and `PYTHONPATH=packages/aq-client` runs anything else against
+this tree. Guarded by
+[`tests/test_regenerate_api_client_script.py`](../../tests/test_regenerate_api_client_script.py),
+which drives a sandboxed copy of the script with stub tools.
+
 ### The TypeScript client
 
 `packages/aq-ts-client/src/` is **gitignored** — generated on demand from the
 committed `openapi.json`, so only the spec has to stay current.
 
 ```bash
+npm ci
 ./scripts/regenerate-ts-client.sh --from-file
 ```
 
+The workspace pins `@hey-api/openapi-ts` to **0.61.3**, its TypeScript peer to
+**5.7.3**, and `@hey-api/client-fetch` to **0.6.0**. The script checks those
+versions in this checkout's `node_modules` and runs the installed generator
+directly. A missing or stale install fails with an `npm ci --prefix …` recovery
+command; generation does not download tools or use an ancestor checkout or the
+`npx` cache. This also keeps fresh worker slots on the tested toolchain on Node 24.
+
 `dashboard/package.json` runs the same generation as a `pre` script before
 `dev`, `build` and `typecheck`, so the usual frontend commands regenerate it
-for you. Run the script explicitly when you want the error rather than the
-surprise — for instance,
+for you through the workspace's `generate` script. Run the script explicitly
+when you want the error rather than the surprise — for instance,
 [`scripts/e2e-dashboard.sh`](../../scripts/e2e-dashboard.sh) refuses to start
 if the directory is missing and tells you exactly this command.
 
@@ -178,6 +322,151 @@ enforcing test, and CI runs it in its own suite arm
 ([CI](ci.md#the-four-suite-arms)) so a CLI change cannot be lost in the noise
 of the default arm.
 
+## The playbook command pages
+
+Command discovery is composed in
+[`src/commands/command_inventory.py`](../../src/commands/command_inventory.py).
+It supplies handler, plugin and explicit-tool inventories to the immutable
+[`descriptor builder`](../../src/commands/descriptors.py), which imports neither
+the handler nor MCP. The contract registry, MCP registration, CLI catalogue and
+API code generator project this shared snapshot. Live plugin load/unload changes
+its generation; unloaded names remain visible with `available=False`.
+
+Descriptors carry two schema views. Playbooks prefer an existing typed contract,
+then an explicit tool definition, then a fallback schema. A proven argumentless
+handler gets a closed empty object; other uncovered handlers get an explicitly
+opaque open object. Existing transports retain explicit-tool precedence and
+their legacy empty-schema behavior. Disagreements appear in
+`DescriptorSnapshot.schema_quality_report()` instead of silently replacing either
+view. Full schemas, including local references, defaults and nullable unions,
+are preserved; generated argument models validate JSON without coercion or
+remote reference fetching.
+
+Generated contracts use generation-2 execution fingerprints. Existing typed
+contracts keep their generation-1 documents and fingerprints, pinned by
+`tests/fixtures/contracts/legacy-command-descriptors.json`, captured before the
+descriptor migration. The same fixture records transport definitions, CLI
+catalogue bytes and existing playbook artifacts. An intentional compatibility
+change must review that evidence; regenerating expected values during a test
+would conceal the change.
+
+The frozen-main refresh at `c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb`
+records its reviewed deltas in `main-refresh-contract-changes.json` alongside
+the original recording. It pins human-decision fences, migration-admission
+receipts and transport changes independently, then chains their catalogue and
+artifact digests after the observation and script deltas. Retired train bundles
+are verified at their `historical-v2` archive paths; their original records stay
+in the legacy fixture. These files are checked-in review evidence, never values
+computed by a running test.
+
+The dev refresh at `35d58eee0183bcc25252931ae5958072983606d6` adds
+`integration_release_withheld_source`. Its separate
+`withheld-source-contract-changes.json` records the typed contract fingerprint,
+transport definition and chained catalogue digest. Removing exactly that new
+fallback definition must reproduce the preceding dev catalogue byte for byte.
+The producer audit records its existing human apply authority and source/target
+fences, plus the `explain_task` addition of the blocker action; older evidence
+files remain unchanged.
+
+The fast-smooth integration epic, refreshed onto `f88abe7fd245da853bd328187f01beda41e02e41`,
+adds `integration_cutover_containment` (typed, local operator only) and the
+daemon-only `integration_reconcile_git_truth` (system scope, like
+`integration_train_tick`). `epic-integration-contract-changes.json` records both
+transport definitions, the typed contract fingerprint and the chained catalogue
+digest; removing exactly those two fallback definitions must reproduce the
+withheld-source catalogue byte for byte.
+The batch repair change at `67575c6b9a43f820d824ff2bdb7d6be41ec21db3`
+records its optional `task_set.repair_batch` argument separately in
+`batch-repair-contract-changes.json`. Removing exactly that property restores
+the publication-delegation catalogue bytes. The producer audit also records
+the reserved metadata, active-mode and assignment validation refusals, with
+worker publication tests covering the supervisor/operator authority boundary.
+
+The epic refresh merge records both frozen input catalogues in
+`epic-main-refresh-contract-changes.json`. Its deltas reconstruct either input
+byte for byte before the earlier recording chains are checked. The epic keeps
+its existing hibernation recording; the upstream recording is retained unchanged
+as `hibernation-main-refresh-contract-changes.json`.
+
+**Generated invocation remains disabled pending private-value storage and safe
+inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
+pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
+built-in handlers. Adding a handler or changing its return branches requires
+reviewing and updating that evidence. Static argument reads are diagnostic;
+they never silently expand the public schema.
+
+After reviewing a handler's return branches and contract fields, refresh its
+source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
+(repeat `--command` for each reviewed handler). The default mode, also available
+as `--check`, reports digest drift without writing. This command updates only
+the selected handler digests; return
+branches and other audit evidence stay authored. A reviewed helper requires
+`--helper <existing-helper-name>` with exactly one `--command`; this updates only
+that command's existing helper pin, preserving the handler and other helper
+digests. Repeat the command explicitly if multiple audit rows pin that helper.
+Unknown selections are refused. This workflow is separate from bulk
+generated-artifact regeneration.
+
+Generated results must be JSON objects with an actual boolean `success` at
+every producer exit, including early refusals and delegated helpers. Only the
+executor's `_consume` boundary interprets this protocol: true means success,
+false means failure, known authority refusals mean unauthorized, and dispatch
+exceptions mean runtime_error. Missing or non-boolean success, non-JSON values,
+non-finite numbers and oversized results are contract violations even without
+a result binding. Other payload keys remain intact. Typed adapters keep their
+existing outcome semantics and generation-1 fingerprints.
+
+`src/commands/resource_authorization.py` provides the dispatch and HTTP resource
+gate. The original principal survives nested dispatch; capability grants do
+not grant ownership, a live session, a held claim or human decision authority.
+Project filters cannot authorize foreign task, session, review, run or artifact
+references. Global reads require system scope, and path access uses only the
+project's repository and workspace roots. All server-owned input keys are
+rejected for playbook callers. `run_command`, `shutdown`, `restart_daemon` and
+`update_and_restart` are denied in validation, invocation and LLM tools.
+
+Existing typed commands retain their independent domain resource gates and
+refusal outcomes. Session commands with claim, recipient, digest-selection or
+administrative scope rules also retain those gates. Exact operator grants and
+live compiler assignments are verified before admitting their delegated commands;
+they do not grant access to other system resources. Untrusted dispatch exceptions
+return safe diagnostics, while the local operator retains the actionable error.
+
+Generated entries remain protected and non-retryable without preview or receipt
+projection. Only explicitly audited reads receive a read effect; other entries
+retain the conservative destructive effect. Catalogue membership grants no
+authority. Existing memory helpers and typed plugin adapters remain registered.
+
+[`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md)
+is half generated and half hand-written, page by page. Everything between
+`<!-- aq:generated:start -->` and `<!-- aq:generated:end -->` comes from the
+command contract registry — title, summary, parameter table, result fields,
+outcomes, declared effects and the execution contract. Everything outside those
+markers is prose a person wrote, and a regeneration never touches it.
+
+```bash
+python scripts/gen-command-docs.py --check
+```
+
+```text
+command documentation current: 68 command pages
+```
+
+Regenerate without `--check` after any change to a contract in
+[`src/commands/contracts/`](../../src/commands/contracts/) — a renamed
+argument, a new outcome, a reworded `CommandPresentation`. Registering a new
+command creates its page, stubbed with one `TODO` per hand-written section;
+retiring one leaves an orphaned page the check reports rather than deletes, so
+that the prose is retired deliberately.
+[`tests/test_command_docs.py`](../../tests/test_command_docs.py) is the
+enforcing test: it runs the same check, and additionally fails when a command
+has no page, a page has no command, or a `CommandPresentation` has an empty
+summary.
+
+> **Warning.** A page whose markers have been removed is refused, not
+> overwritten — the generator reports it and writes nothing, because the
+> hand-written half is not recoverable from the registry.
+
 ## Reviewed playbook artefacts
 
 `src/prompts/reviewed_playbooks/` holds compiled V2 bundles plus their digests.
@@ -198,22 +487,29 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
 ```text
-ok — 3715 tracked paths assigned (791 production modules)
+ok — 3746 tracked paths assigned (791 production modules)
 ```
 
 If it reports a path with no owner, add a rule to `RULES` in
 [`refresh_inventory.py`](../plans/documentation-overhaul/refresh_inventory.py)
-naming the owning shard, then regenerate. There is deliberately no catch-all
-rule: an unmatched path is an error, not a default assignment.
+naming the owning shard. There is deliberately no catch-all rule: an unmatched
+path is an error, not a default assignment.
+
+This is the one generated artefact you do **not** regenerate alongside your
+change. The two JSON files are owned by the documentation overhaul's
+foundation/acceptance shard
+([why](../documentation-map.md#who-runs-which-half)), which rewrites them on a
+cadence and gates their freshness separately with `--check-artefacts`. Plain
+`--check` notes the drift and exits 0.
 
 ## Inputs and outputs
 
 | Change you made | What to regenerate |
 |---|---|
 | `src/api/models/*`, a codegen router | `openapi.json`, the Python client, the TS client |
-| A `@click` command or a command contract | The CLI inventory |
+| A `@click` command or a command contract | The CLI inventory, and the playbook command pages |
 | `src/playbooks/definition.py` | The playbook JSON schema |
-| Added or deleted a tracked file | The coverage manifest |
+| Added or deleted a tracked file | Nothing — run `refresh_inventory.py --check`; the manifest is regenerated by its owning shard |
 | Shipped playbook markdown | Nothing automatic — the reviewed artefacts are a human procedure |
 | Anything under `packages/aq-client/` | Nothing. Revert it and change the input instead. |
 
@@ -222,8 +518,8 @@ rule: an unmatched path is an error, not a default assignment.
 Generated artefacts are owned by their generator. The commit that changes an
 input and the commit that regenerates the output should be the same commit —
 two green PRs on stale bases, one committing a generated file and one changing
-how it is generated, is exactly how `main` went red on 2026-09-03 and why CI
-keys `main`'s concurrency group by commit ([CI](ci.md#why-main-is-keyed-by-commit)).
+how it is generated, is exactly how `main` went red on 2026-09-03 and why work
+now reaches `main` only after CI has tested the combination ([CI](ci.md#concurrency)).
 
 ## Common failures and recovery
 
@@ -231,10 +527,16 @@ keys `main`'s concurrency group by commit ([CI](ci.md#why-main-is-keyed-by-commi
 |---|---|---|
 | `Error: openapi-python-client X is installed but packages/aq-client/ is generated by Y` | Wrong generator version. | `pip install 'openapi-python-client==Y'`. Deliberate upgrade? Bump `GENERATOR_VERSION` and commit the regenerated tree with it. |
 | `Error: ruff is not installed, and the generator's post hooks format the generated Python with it.` | No ruff on `PATH`. | `pip install -e '.[dev]'`. The generator only *warns* and exits 0 without it, which would record unformatted output as canonical. |
+| `Error: --install is refused in a worker session (AQ_DB_SCOPE=worker).` | A slot's `pip` is the environment the daemon and every other slot share. | Regenerate without `--install`; nothing in a slot needs it ([why](#the-script-leaves-the-environment-alone)). |
+| `Error: --install would re-point this environment's agent-queue-api-client` | The installed client imports from another tree — typically a worktree sharing the main checkout's venv. | Usually nothing: regenerate without `--install`. To move the install deliberately, run the `python3 -m pip install -e …` line the error prints. |
+| `import agent_queue_api_client` resolves into `.aq/worktrees/slot-N/` | A pre-2026-09-20 script ran in that slot and re-pointed the shared venv. | From the main checkout, outside a slot: `python3 -m pip install -e packages/aq-client`. |
 | `test_committed_openapi_json_matches_the_live_app_surface` fails | You changed the API surface without regenerating. | `./scripts/regenerate-api-client.sh --offline`, then the TS client. |
 | `test_generated_client_boilerplate_matches_the_recorded_digests` fails | Something under `packages/aq-client/` was hand-edited. | Regenerate; do not fix the file. |
+| `Generated files are stale:` from `scripts/regenerate-generated.sh --check` | An input changed without its artefact, or a merge combined two regenerations. | `scripts/regenerate-generated.sh`, then commit what it writes. |
+| A merge or rebase conflicts in a generated file | Both sides regenerated it. | Take either side, resolve the sources, `scripts/regenerate-generated.sh` ([above](#one-command-and-never-a-hand-merge)). Never hand-merge it. |
 | `CLI inventory stale` | New, renamed or removed command. | `python scripts/generate-cli-command-inventory.py` |
-| `stale artefact(s): …module-ownership.json` | A tracked file was added or removed. | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` |
+| `command documentation is stale` | A command contract changed, or a command was registered or retired. | `python scripts/gen-command-docs.py` — then write the new page's `TODO` sections, or retire the orphaned page. |
+| `stale artefact(s): …module-ownership.json` from `--check-artefacts` | The foundation-owned manifest has fallen behind the tree. | `python3 docs/plans/documentation-overhaul/refresh_inventory.py`, if you own that shard. Plain `--check` does not fail on this. |
 | `Failed to fetch spec — is the daemon running?` | You ran a regeneration script with no mode argument. | Use `--offline` (Python) or `--from-file` (TypeScript). |
 
 ## Related pages
@@ -251,6 +553,7 @@ keys `main`'s concurrency group by commit ([CI](ci.md#why-main-is-keyed-by-commi
 ## Source and tests
 
 [`src/api/spec.py`](../../src/api/spec.py),
+[`scripts/regenerate-generated.sh`](../../scripts/regenerate-generated.sh),
 [`scripts/regenerate-api-client.sh`](../../scripts/regenerate-api-client.sh),
 [`scripts/regenerate-ts-client.sh`](../../scripts/regenerate-ts-client.sh),
 [`scripts/generate-playbook-schema.py`](../../scripts/generate-playbook-schema.py),

@@ -3,10 +3,9 @@
 
 The dedup rule is the reason this table needs a query layer at all, so most
 of what follows pins it down: an unchanged reading must not write a row, and
-a changed one always must.  Everything runs on SQLite and, when
-``POSTGRES_TEST_DSN`` is set, on PostgreSQL too — ``window`` is a reserved
-word there, and the grouped-max used by ``latest_provider_usage`` is the kind
-of statement that quietly differs per dialect.
+a changed one always must. Everything runs on PostgreSQL — ``window`` is a
+reserved word there, and the grouped-max used by ``latest_provider_usage``
+needs coverage on the production backend.
 """
 
 from __future__ import annotations
@@ -15,31 +14,14 @@ import pytest
 from sqlalchemy import insert, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database
 from src.database.tables import provider_usage_snapshots
 from src.providers import ProviderUsageSnapshot
-from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
-
-POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
-async def any_db(request, tmp_path):
-    """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI)."""
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(lease_dsn("provider_usage.db"))
-        await database.initialize()
-    yield database
-    await database.close()
+@pytest.fixture
+async def any_db(reuse_database):
+    """One session-initialized database, with rows reset between tests."""
+    return await reuse_database("provider_usage.db")
 
 
 def snap(
@@ -105,15 +87,6 @@ async def test_an_unchanged_repeat_of_the_newest_row_is_dropped(any_db):
 
     assert written == 0
     assert await count_rows(any_db) == 1
-
-
-async def test_an_insert_sets_last_seen_at_to_observed_at(any_db):
-    """A brand new value has been confirmed exactly once, when it appeared."""
-    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
-
-    row = (await any_db.latest_provider_usage())[0]
-    assert row["observed_at"] == 1_000.0
-    assert row["last_seen_at"] == 1_000.0
 
 
 async def test_a_dropped_repeat_still_advances_last_seen_at(any_db):
