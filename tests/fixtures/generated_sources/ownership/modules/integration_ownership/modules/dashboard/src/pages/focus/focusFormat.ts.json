@@ -1,0 +1,32 @@
+{
+  "shared": {
+    "dashboard/src/pages/focus/focusFormat.ts::export function deliveryRefs(delivery: EpicDeliveryStatus): EpicDeliveryRef[] {": {
+      "baseline_span": [
+        25,
+        31
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/focus/focusFormat.ts::export function isBatchRef(ref: EpicDeliveryRef | null | undefined, batchId: string): boolean {": {
+      "baseline_span": [
+        20,
+        24
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/focus/focusFormat.ts::export function referencesBatch(": {
+      "baseline_span": [
+        32,
+        39
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/focus/focusFormat.ts::import type { EpicDeliveryRef, EpicDeliveryStatus } from \"@aq/ts-client\";": {
+      "baseline_span": [
+        1,
+        3
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

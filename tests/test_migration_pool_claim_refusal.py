@@ -19,7 +19,7 @@ pytestmark = pytest.mark.migration
 
 @pytest.mark.parametrize("revision_name,column_name", [
     ("a00000000093_pool_claim_refusal", "claim_refusal"),
-    ("a00000000096_failed_preparation_identity", "failed_preparation"),
+    ("a00000000099_failed_preparation_identity", "failed_preparation"),
 ])
 async def test_upgrade_downgrade_preserve_sessions_and_replay(revision_name, column_name):
     revision = importlib.import_module(f"migrations.versions.{revision_name}")

@@ -61,11 +61,6 @@ for arg in "$@"; do
     esac
 done
 
-if [[ "$MODE" == "--list" ]]; then
-    printf '%s\n' "${GENERATED[@]}"
-    exit 0
-fi
-
 # The same interpreter choice as regenerate-api-client.sh: the checkout's own
 # venv when it has one, python3 otherwise (some images have no `python`).
 if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
@@ -76,6 +71,19 @@ else
     echo "Error: no Python interpreter found; expected $ROOT_DIR/.venv/bin/python or python3 on PATH." >&2
     exit 1
 fi
+
+# Source recordings and module shards own policy; their projections join this registry.
+RECORDED_PATHS="$("$PYTHON" "$ROOT_DIR/scripts/generate-recorded-artifacts.py" --list)"
+mapfile -t RECORDED <<< "$RECORDED_PATHS"
+GENERATED+=("${RECORDED[@]}")
+if [[ "$MODE" == "--list" ]]; then
+    printf '%s\n' "${GENERATED[@]}"
+    exit 0
+fi
+
+# Check the original Git history/index before --check creates a fresh scratch
+# commit, and before any generator can overwrite reviewed legacy evidence.
+"$PYTHON" "$ROOT_DIR/src/integration/generated_merge_driver.py" --check-worktree "$ROOT_DIR"
 
 # Run every generator against the tree at $1.  They are independent, so they
 # run concurrently; each one's output is shown only when it fails.
@@ -91,6 +99,7 @@ regenerate() {
         names+=("$name")
     }
     step selection-catalogue "$PYTHON" scripts/generate-selection-catalogue.py
+    step recorded-artifacts "$PYTHON" scripts/generate-recorded-artifacts.py
     # These profiles have authored prose/config and generated capability blocks.
     step worker-capabilities "$PYTHON" scripts/generate-worker-capabilities.py
     # CLI inventory reads the packaged catalogue, so rebuild it first.
