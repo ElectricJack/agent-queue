@@ -405,7 +405,7 @@ async def test_a_failed_probe_maps_onto_rejected(contracted, spawned) -> None:
         "save_result_as": "probe_result",
     })
     consumed = _consume(
-        result, registration, step, SimpleNamespace(run_id="probe-run"),
+        result, registration, step, SimpleNamespace(run_id="probe-run", private_inputs=False),
         resolved_inputs={}, key="probe-key",
     )
     assert consumed.outcome == "rejected"
