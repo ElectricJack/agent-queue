@@ -152,3 +152,118 @@ CI registration seam. CLI transport is checked in `tests/test_cli_integration.py
 The affected integration area and adjacent promotion/repair checks are recorded
 on the task with their exact results. The operator's shadow week and live
 cutover scenarios remain production gates, not worker test results.
+
+## Candidate observation correction (2026-10-04)
+
+Reconciler-owned candidates read authenticated GitHub checks for the exact candidate
+SHA on every observation. The frozen batch policy supplies the required checks and
+producer; App credentials retain the existing exact-tree trust verification. Missing
+legacy evidence rows do not make these facts `none` or `pending`. Transport failures
+remain infrastructure facts and cannot reuse old green evidence. Shadow observation
+keeps the legacy snapshot path. Existing command-backed CI and promotion ports still
+own durable attestation and publication bookkeeping.
+
+Ancestry reads use the retained integration repository, where construction retains
+candidate and member objects, rather than the unrelated base checkout. Persistent
+`unknown-facts` decisions or observation failures become an error in `stall.sweep`
+after five minutes. The sweep reports the subject, batch and journal facts; it never
+changes ownership or overrides the policy's wait decision.
+
+Root and development adapters share the `root_batch` kind. Runtime due pages
+filter project integration mode before the keyset limit: root visits `train` and
+`hierarchy`, and development visits `development`. Development writer projection
+and resolved-gate scans follow the same ownership boundary. A train artifact must
+never be interpreted as a development policy.
+
+## Git-first root admission (2026-10-04)
+
+Active reconciler seals admit completed, unheld root tasks with an exact current
+PR head, absent from the default branch. Source PR CI does not gate admission:
+pending, red, cancelled, conflict, green and missing checks all remain eligible.
+The batch candidate's exact authenticated green CI is the only CI gate.
+The sealer reads Git and
+GitHub before its hierarchy transaction and reselects the task/checkpoint and
+policy generation under the lock. Legacy review and source-CI polling rows are
+not prerequisites for this path. Explicit rejected reviews, holds, gates,
+active membership, dependency ordering and migration collision checks still bind.
+The frozen admission evidence identifies `git_source_ci` as its decision path;
+it is not a human review. Existing candidate validation and publication proofs
+remain required. Changed PR identities and failed remote reads
+exclude the member with a reason, never with cached green evidence.
+
+Seal results and the reconciler action journal include each excluded candidate's
+identity and reason; an atomic audit event preserves them across seal replay.
+Admitting observations omit incomplete roots, retired or delivered sources and
+closed PRs. Missing local source objects defer to the fetching admission reader
+without blocking other sources. Sealed manifests remain immutable.
+
+## PR admission boundaries (2026-10-06)
+
+New hosted root batches require an open PR matching the repository, source branch,
+base and exact completion head. Its PR checks must be green, and reviewed admission
+also requires a current human approval with no outstanding request for changes.
+Unavailable hosted observations remain unknown and cannot admit a source. This
+gate runs before freezing a new batch; subsequent observations cannot undo its
+immutable membership or Git-proven delivery.
+
+PR admission refusals retain their named blocker and retry time. Repeated visits
+reuse that observation with exponential backoff from 60 seconds up to 600 seconds;
+a changed source, PR, branch or policy invalidates it. Unfinished exact-head check
+evidence is read from the database until its `due_at`. Final check observations
+refresh at the gate's retry boundary to detect reruns. GitHub rate-limit errors,
+including those from required-check observation, propagate to the repository-wide
+train pause, which honors GitHub's retry time.
+
+A GitHub approval counts only from a human with current repository `write` or
+`admin` permission. An explicitly supplied `ReviewRequirements.reviewers` set
+can further restrict those identities; it cannot authorize a repository outsider.
+The daemon lane passes these requirements to its hosted PR gate. Permission
+lookup failures, including 404, produce `pr_review_permission_unavailable` with
+the same refusal backoff; rate limits still reach the shared train pause. The
+GitHub review poller applies the same human write/admin check before recording
+tree evidence, so outsider reviews cannot supply epic reviewer identities.
+Permissions use GitHub's [repository permission endpoint](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+A retained URL for a closed PR produces `pr_closed` in admission and PR opening
+instead of `awaiting_pr` or `already_open`. Reopening that PR is the recovery;
+the gate re-observes it after the retry window without creating a duplicate.
+Repeating a durable parent completion with its PR already recorded returns
+`already_completed` without a GitHub read. Completion does not authorize PR
+admission; the admission gate still checks its current state and exact head.
+
+Hosted CI rate limits also propagate from the shared CI primitive adapter and
+development observer to the subject reconciler's infrastructure retry, without
+recording a CI attempt or spending a repair generation. The development trusted
+green resolver propagates the same error, so publication cannot claim green or
+publish on an unavailable observation. These legacy subject callers retain their
+bounded subject retry schedules; repository-wide train backoff belongs to the
+train caller.
+
+Development targets and roots using a retained, reviewed development policy for
+local validation keep their existing Git-based admission. The daemon must load
+and validate that pinned artifact before selecting local admission; a missing or
+invalid artifact cannot bypass the hosted gate. Local candidate jobs and their
+focused, advisory or none policy still decide publication. A local source does
+not need a hosted PR, GitHub credentials or a hosted attestation. The disposable
+CLI S20 scenario exercises this path; hosted admission is covered separately by
+the real train lane tests with deterministic GitHub transport.
+
+## Reconciler repair close handoff
+
+A root repair delegate closes through its owning reconciler, including a failed
+or blocked work outcome. The close verifies the exact session, claim, workspace
+and writer fence, preserves the clean pushed head, and detaches the checkout.
+One transaction accepts the task close, releases its branch/workspace holds and
+records an `accepted_handoff` stop proof on the subject. An accepted candidate
+resolution may already have transferred the branch; closing its original writer
+must not release a successor's fence. Stale claims and changed fences refuse.
+The proof describes relinquished write authority, so a pool process may still be
+alive. It cannot apply to a later claim or writer. CI and promotion remain the
+reconciler's decisions on the new exact head; candidate submission never invokes
+a legacy construction continuation for a reconciler-owned repository.
+
+A failed handoff is an explicit exhausted-writer fact for the pinned successor
+rule. The adapter retains the original stage deadline; it does not start a new
+writer early. Once dispatch advances the authoritative stage, observation drops
+the predecessor's cached writer identity before projecting the new delegate.
+Task sessions release their resources normally; pool sessions retain the agent's
+slot reservation while releasing the completed task's workspace hold.

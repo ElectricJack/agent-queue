@@ -254,6 +254,14 @@ SessionStart hook that also ran `aq prime --hook-json` on startup would
 double-inject. The hook is active exactly where the argv prompt is
 absent: resuming a session and returning from a PreCompact.
 
+**Prepared knowledge context rides this same envelope.** When the knowledge
+feature is enabled for the session's project, the selected records are appended
+to the `aq prime` body, so the SessionStart hook carries the identical bytes
+every other harness gets — `src/knowledge/delivery.py` only wraps them. The
+fresh-start marker above still suppresses the duplicate, and `aq prime`
+records the delivery receipt after the body is written: a receipt proves the
+bytes left, never that the model read them.
+
 **There is no `UserPromptSubmit` hook** (removed 2026-08-27). It ran
 `aq inbox --inject` at every prompt boundary, which cost ~1.3 s of Python
 interpreter startup per prompt for a delivery path the cascade's nudge

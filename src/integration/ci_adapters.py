@@ -13,8 +13,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from src.integration.ci_producers import CIProducer, LocalCIProducer, ProducerObservation, digest
-from src.integration.main_promotion import RootAttestationSubject
-from src.integration.subjects import (
+from src.integration.promotion_contracts import RootAttestationSubject
+from src.integration.runtime_contracts import (
     CIAttestArgs,
     CIObserveArgs,
     CIRequestArgs,
@@ -74,7 +74,11 @@ class CIAdapters:
 
     async def _current(self, subject: Subject, head: HeadIdentity) -> bool:
         row = await self.db.get_integration_subject(subject.id)
-        return row is not None and self._matches(Subject.from_row(row), subject, head)
+        return (
+            row is not None
+            and row.get("engine") == SubjectEngine.RECONCILER.value
+            and self._matches(Subject.from_row(row), subject, head)
+        )
 
     async def _record(
         self,
