@@ -13,12 +13,14 @@ project hierarchy and rechecks the completed task, completion identity,
 repository, branch, PR, source base and project policy generation against the
 observation. A stale observation cannot reopen newer or running work. Normal
 integration mutation guards still refuse a frozen source or a live writer.
-The reopen retains branch, origin, integration mode and routing; it appends
-feedback and clears the assignment and stored PR URL as ordinary reopening
-does. Feedback, recovery accounting and the transition commit together.
+The reopen retains branch, origin, integration mode and explicit routing;
+derived routes are recomputed normally. It appends
+feedback and clears the assignment while retaining the existing PR and retry
+counters. Feedback, recovery accounting and the transition commit together.
 
 Each leaf can reopen automatically once for a given source SHA and up to
-`root.repair.primary_attempts` times (three when absent). Accounting persists
+`root.repair.primary_attempts` times (three when absent). Zero disables that attempt
+limit. The unchanged-head guard still applies. Accounting persists
 across daemon restarts and completion generations. `on_exhausted: continue`
 permits further changed heads, but never an unchanged head. Exhaustion or an
 unchanged head produces one supervisor notification per exact completion and
@@ -29,3 +31,28 @@ source-CI repairs keep their delivery path and are not superseded by reopening.
 The corrected completion must pass its own exact PR checks and ordinary
 candidate validation before delivery. Independent healthy roots can continue
 through admission while failed roots recover.
+
+Recovery reads delivery truth for mutation, so it can wait behind the delivery
+observer's per-repository fetch. The admission gate waits for it a bounded time
+(`ROOT_PR_RECOVERY_WAIT_SECONDS`) and then defers that root as `pr_checks_red`
+with a `pending` recovery. The recovery keeps running past the visit that stopped
+waiting. A later visit takes its outcome before the root's backoff expires and
+never starts a second recovery for the same observation. A changed head, PR,
+branch, policy or completion supersedes the observation and cancels its
+recovery, so at most one recovery runs per target and root; the recovery's own
+identity recheck still refuses any outcome that went stale while it waited. A
+slow recovery therefore never spends a visit's deadline or keeps other roots
+from batching.
+
+Only the visit starting a recovery spends that bounded wait; subsequent visits
+return its pending state immediately. Admission blockers double their retry
+delay up to ten minutes. Unknown mergeability gets one short 15-second retry
+for GitHub's initial computation, then uses that same exponential backoff.
+
+Source-CI recovery can reopen successive changed heads on the original branch
+without a lineage attempt cap, including historical source-CI delegates. Root PR
+recovery uses the configured root primary attempt limit (zero means unlimited).
+Both paths refuse to reopen an exact head already repaired by either path, and
+preserve an existing bound repair writer. Containers still require their owner
+because a pool worker cannot claim them. Duplicate observations never allocate a
+second concurrent repair.

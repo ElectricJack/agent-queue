@@ -12,21 +12,20 @@ from sqlalchemy import event, update
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
-from src.database import Database
 from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.database.tables import gates as gates_table
+from src.database.tables import task_gates
 from src.database.tables import tasks as tasks_table
 from src.models import Agent, AgentState, Project, Task, TaskStatus
 from src.task_graph.layout.driver import LayoutDriver
-from tests.db_fixtures import lease_dsn, seed_task_session_attempt
+from tests.db_fixtures import seed_task_session_attempt
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("gl.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("gl.db")
     await d.create_project(Project(id="p1", name="P1"))
     yield d
-    await d.close()
 
 
 @pytest.fixture
@@ -42,25 +41,29 @@ def client_factory(db):
 async def seed(db):
     """epic e{c0,c1,pkg{g0,g1}}, root card z blocked by c0, hub with 10 dependents."""
 
-    async def mk(tid, parent=None, status=TaskStatus.DEFINED):
-        await db.create_task(
-            Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status)
-        )
-        if parent:
-            async with db._engine.begin() as conn:
+    # Build the fixed graph in one transaction while retaining the normal
+    # task and hierarchy writers, including their layout invalidation.
+    async with db._engine.begin() as conn:
+        async def mk(tid, parent=None, status=TaskStatus.DEFINED):
+            await db.create_task(
+                Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status),
+                conn=conn,
+            )
+            if parent:
                 await db.set_parent(tid, parent, conn=conn)
 
-    await mk("e")
-    await mk("c0", "e")
-    await mk("c1", "e", TaskStatus.COMPLETED)
-    await mk("pkg", "e")
-    await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
-    await mk("g1", "pkg")
-    await mk("z")
+        await mk("e")
+        await mk("c0", "e")
+        await mk("c1", "e", TaskStatus.COMPLETED)
+        await mk("pkg", "e")
+        await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
+        await mk("g1", "pkg")
+        await mk("z")
+        await mk("hub")
+        for i in range(10):
+            await mk(f"d{i}")
     await db.add_dependency("z", "c0")
-    await mk("hub")
     for i in range(10):
-        await mk(f"d{i}")
         await db.add_dependency(f"d{i}", "hub")
     await db.create_agent(Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY))
     await seed_task_session_attempt(
@@ -893,6 +896,42 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
     assert job.json()["id"] == job_id and job.json()["status"] == "queued"
 
 
+async def test_default_router_keeps_geometry_until_binding_or_version_changes(db, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from src.api import dependencies as deps
+    from src.api import graph_layout
+
+    await seed(db)
+    orch = SimpleNamespace(db=db, _command_handler=None)
+    monkeypatch.setattr(deps, "_orchestrator", orch)
+    build = Mock(wraps=graph_layout.build_graph_layout_router)
+    monkeypatch.setattr(graph_layout, "build_graph_layout_router", build)
+    load = AsyncMock(wraps=db.load_rows_for_containers)
+    monkeypatch.setattr(db, "load_rows_for_containers", load)
+    app = FastAPI()
+    app.include_router(graph_layout._build_default_router())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        for _ in range(3):
+            assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 1
+        assert load.await_count == 1
+        # Republishing a layout invalidates geometry without rebuilding routes.
+        await LayoutDriver(db).full_layout("p1", "all")
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 1
+        assert load.await_count == 2
+        # Messaging may swap the handler after startup. Never keep a stale binding.
+        orch._command_handler = _RecordingHandler(db)
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 2
+        assert load.await_count == 3
+        monkeypatch.setattr(deps, "_orchestrator", SimpleNamespace(db=db))
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 3
+
+
 async def test_tidy_refuses_an_agent_session_scope(db, scoped_client_factory):
     """The mutation is scoped like a generated command route."""
     await seed(db)
@@ -1463,15 +1502,28 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     open_gid, _ = await db.create_gate(
         project_id="p1", gate_type="human", title="review", waiter_task_ids=["z", "hub"]
     )
-    for i in range(300):
-        gid, _ = await db.create_gate(
-            project_id="p1",
-            gate_type="timer",
-            title=f"old{i}",
-            await_id=f"t{i}",
-            waiter_task_ids=["hub"],
+    # Gate lifecycle is covered separately; this test measures reads over the
+    # resulting history. Seed that history without 600 lifecycle transactions.
+    history = [
+        {
+            "id": f"historical-gate-{i}",
+            "project_id": "p1",
+            "gate_type": "timer",
+            "title": f"old{i}",
+            "await_id": f"t{i}",
+            "status": "resolved",
+            "resolved_by": "test",
+            "resolution": "done",
+            "created_at": time.time(),
+        }
+        for i in range(300)
+    ]
+    async with db._engine.begin() as conn:
+        await conn.execute(gates_table.insert(), history)
+        await conn.execute(
+            task_gates.insert(),
+            [{"task_id": "hub", "gate_id": gate["id"]} for gate in history],
         )
-        await db.resolve_gate(gid, resolved_by="test", resolution="done")
 
     statements: list[str] = []
 
@@ -2428,3 +2480,28 @@ async def test_graph_delivery_reads_never_fetch_git(db, client_factory, tmp_path
         assert epic["delivery"]["state"] == "unknown"
         assert epic["delivery"]["evidence"] == "unavailable"
     observer._store.assert_not_awaited()
+
+
+@pytest.mark.parametrize("surface", ["tiles", "list", "node"])
+async def test_layout_preserves_cached_delivery_hold(db, client_factory, monkeypatch, surface):
+    await db.create_task(Task(id="leaf", project_id="p1", title="Consumer",
+                              description="", status=TaskStatus.READY))
+    await LayoutDriver(db).full_layout("p1", "all")
+
+    async def exclusions(ids, **kwargs):
+        assert kwargs["cached_only"]
+        return {tid: [{"code": "frontier_epic_refresh_pending", "ref": "epic",
+                       "detail": "Refresh aq/epic after source.6 lands on dev"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    async with client_factory() as ac:
+        if surface == "node":
+            response = await ac.get("/api/projects/p1/graph/node/leaf?variant=all")
+        else:
+            response = await ac.post(f"/api/projects/p1/graph/{surface}", json=ALL)
+    assert response.status_code == 200
+    body = response.json()
+    [node] = [body["node"]] if surface == "node" else body["nodes"]
+    assert node["status"] == "READY"
+    assert node["claim_readiness"]["claimable"] is False
+    assert "source.6" in node["claim_readiness"]["reason"]
