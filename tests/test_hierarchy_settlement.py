@@ -112,6 +112,55 @@ class TestSettlement:
 
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
 
+    @pytest.mark.parametrize("state, settles", [("cancelled", True), ("active", False)])
+    @pytest.mark.parametrize("held", [TaskStatus.PAUSED, TaskStatus.IN_PROGRESS])
+    async def test_train_episode_owns_completion_only_while_its_operation_lives(
+        self, db, state, settles, held
+    ):
+        from src.database.tables import (
+            integration_parent_episodes,
+            integration_repair_operations,
+            projects,
+            repos,
+        )
+
+        kids = await family(db, n=1)
+        async with db.immediate() as conn:
+            from tests.test_integration_service import _minimal_policy_values
+
+            await conn.execute(update(projects).where(projects.c.id == PROJECT_ID).values(
+                hierarchical_integration_mode="train",
+                hierarchical_integration_policy=_minimal_policy_values()))
+            await conn.execute(insert(repos).values(
+                id="repo", project_id=PROJECT_ID, url="https://example/repo.git",
+                default_branch="main", checkout_base_path="/checkout", source_type="clone"))
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="ep-1", parent_task_id="p", repository_id="repo", generation=1,
+                pre_collection_checkpoint_sha="a" * 40, created_at=1.0))
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="p", repository_id="repo", branch="aq/p", generation=1,
+                checkpoint_sha="a" * 40, state="awaiting_children", version=0,
+                updated_at=1.0, episode_id="ep-1"))
+            await conn.execute(insert(integration_repair_operations).values(
+                id="op-1", target_kind="parent", parent_task_id="p", episode_id="ep-1",
+                state=state, policy_snapshot=_minimal_policy_values(), artifact_snapshot={},
+                required_check_version="v", created_at=1.0, updated_at=1.0))
+            await conn.execute(update(tasks).where(tasks.c.id == "p").values(
+                status=held.value))
+            await conn.execute(update(tasks).where(tasks.c.id == kids[0]).values(
+                status=TaskStatus.COMPLETED.value))
+
+        if held == TaskStatus.PAUSED:
+            assert ("p" in await db.stale_container_candidates()) is settles
+        # Both settlement legs complete the container through the integration
+        # guard and leave a live episode's parent alone, without raising
+        # (calm-quest-88 and the epic containers, 2026-10-07).
+        async with db._engine.begin() as conn:
+            result = await db.settle_containers({"p"}, conn=conn)
+        assert ("p" in result.settled) is settles
+        expected = TaskStatus.COMPLETED if settles else held
+        assert (await db.get_task("p")).status == expected
+
     async def test_settles_up_to_three_levels(self, db):
         await mktask(db, "g", status=TaskStatus.IN_PROGRESS)
         await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
@@ -293,3 +342,42 @@ class TestSettlementFanOutIsolation:
         # p2's task.completed still went out after p1 blew up.
         assert any("p1" in t for t in calls) and any("p2" in t for t in calls)
         assert len(orch.bus.emit.await_args_list) == 2, emitted
+
+
+async def test_held_container_never_settles(db):
+    """Design §4: an ingestion-held container stays open after its children finish.
+
+    Neither the event path (child completion) nor the backstop sweep nor the
+    stale-status leg settles it, and settling never clears the hold.
+    """
+    kids = await family(db, n=1)
+    await mktask(db, "stale", status=TaskStatus.IN_PROGRESS)
+    await mktask(db, "stale-kid", status=TaskStatus.READY)
+    await db.add_dependency("stale-kid", "stale", "parent-child")
+    async with db.immediate() as conn:
+        # A stranded BLOCKED container whose only child already finished.
+        await conn.execute(update(tasks).where(tasks.c.id == "stale")
+                           .values(status=TaskStatus.BLOCKED.value))
+        await conn.execute(update(tasks).where(tasks.c.id == "stale-kid")
+                           .values(status=TaskStatus.COMPLETED.value))
+        await conn.execute(update(tasks).where(tasks.c.id.in_(["p", "stale"]))
+                           .values(held_batch_id="batch-held"))
+    await db.transition_task(kids[0], TaskStatus.COMPLETED)
+    assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+    assert "p" not in await db.settle_candidates()
+    assert "stale" not in await db.stale_container_candidates()
+    async with db.immediate() as conn:
+        await db.settle_containers({"p", "stale"}, conn=conn)
+    assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+    assert (await db.get_task("stale")).status == TaskStatus.BLOCKED
+    async with db._engine.connect() as conn:
+        held = await conn.execute(select(tasks.c.id, tasks.c.held_batch_id)
+                                  .where(tasks.c.id.in_(["p", "stale"])))
+        assert dict(held.all()) == {"p": "batch-held", "stale": "batch-held"}
+    # Released, the same container settles on the next sweep.
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "p").values(held_batch_id=None))
+    assert "p" in await db.settle_candidates()
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "stale").values(held_batch_id=None))
+    assert "stale" in await db.stale_container_candidates()
