@@ -100,9 +100,23 @@ _PROOF_FIELDS = ("id", "name", "provider", "instance_token", "state", "desired_s
 def stop_confirmer_for(orchestrator: Any) -> StopConfirmer | None:
     """The daemon's provider-backed stop probe, or ``None`` outside the daemon.
 
-    It is the same probe ``preserve_stopped_owners`` runs, so a row this
-    module releases passed exactly the proof that sweep would take.
+    Probe the exact instance through the current session providers. Embedded
+    integrations without a provider registry may supply their own confirmer.
     """
+    registry = getattr(orchestrator, "session_providers", None)
+    config = getattr(orchestrator, "config", None)
+    if registry is not None and config is not None:
+        async def confirm_stopped(session):
+            import asyncio
+
+            from src.sessions.provider import SessionHandle
+
+            provider = registry.create(session["provider"], config)
+            return await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                session["name"], session["provider"], session["instance_token"],
+            )), timeout=10)
+
+        return confirm_stopped
     development = getattr(orchestrator, "development_integration", None)
     return getattr(development, "confirm_stopped", None)
 
