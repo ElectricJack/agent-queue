@@ -45,7 +45,7 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
 
     # Unknown project.
     missing_project = await handler._cmd_add_workspace({"project_id": "ghost"})
-    assert missing_project == {"error": "Project 'ghost' not found"}
+    assert missing_project == {"success": False, "error": "Project 'ghost' not found"}
     assert await _workspace_ids(handler) == []
 
     # Unknown kind — no project-scoped or system definition.
@@ -57,7 +57,7 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
 
     # Link without a path.
     no_path = await handler._cmd_add_workspace({"project_id": "p1", "source": "link"})
-    assert no_path == {"error": "Link workspaces require a 'path' parameter"}
+    assert no_path == {"success": False, "error": "Link workspaces require a 'path' parameter"}
     assert await _workspace_ids(handler) == []
 
     # Link to a path that is not a directory.
@@ -66,6 +66,7 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
         {"project_id": "p1", "source": "link", "path": str(ghost_dir)}
     )
     assert bad_path == {
+        "success": False,
         "error": f"Path '{os.path.realpath(ghost_dir)}' does not exist or is not a directory"
     }
     assert await _workspace_ids(handler) == []
@@ -96,7 +97,7 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
     clone_failed = await handler._cmd_add_workspace(
         {"project_id": "p1", "source": "clone", "path": str(tmp_path / "clone")}
     )
-    assert clone_failed == {"error": "Clone failed: no network"}
+    assert clone_failed == {"success": False, "error": "Clone failed: no network"}
     assert await _workspace_ids(handler) == ["ws-p2"]
 
     # init failure: same contract.
@@ -104,7 +105,7 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
     init_failed = await handler._cmd_add_workspace(
         {"project_id": "p1", "source": "init", "path": str(tmp_path / "init")}
     )
-    assert init_failed == {"error": "git init failed: bad perms"}
+    assert init_failed == {"success": False, "error": "git init failed: bad perms"}
     assert await _workspace_ids(handler) == ["ws-p2"]
 
     # Unsupported source strings fail cleanly with the same error contract
@@ -115,11 +116,15 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
         refused = await handler._cmd_add_workspace(
             {"project_id": "p1", "source": unsupported}
         )
-        assert refused == {"error": f"Unsupported workspace source_type '{unsupported}'"}
+        assert refused == {
+            "success": False,
+            "error": f"Unsupported workspace source_type '{unsupported}'",
+        }
         through_execute = await handler.execute(
             "add_workspace", {"project_id": "p1", "source": unsupported}
         )
         assert through_execute == {
+            "success": False,
             "error": f"Unsupported workspace source_type '{unsupported}'"
         }
     assert await _workspace_ids(handler) == ["ws-p2"]
@@ -183,20 +188,24 @@ async def test_edit_workspace_refuses_locked_or_duplicate_path_but_allows_forced
         )
     )
 
-    assert await handler._cmd_edit_workspace({}) == {"error": "workspace_id is required"}
+    assert await handler._cmd_edit_workspace({}) == {
+        "success": False,
+        "error": "workspace_id is required",
+    }
     assert await handler._cmd_edit_workspace({"workspace_id": "ghost"}) == {
+        "success": False,
         "error": "Workspace 'ghost' not found"
     }
 
     # Empty / non-string path.
     for bad in ("", "   ", 7, None):
         result = await handler._cmd_edit_workspace({"workspace_id": "ws-a", "workspace_path": bad})
-        assert result == {"error": "workspace_path must be a non-empty string"}
+        assert result == {"success": False, "error": "workspace_path must be a non-empty string"}
 
     # Unsupported source_type.
     assert await handler._cmd_edit_workspace(
         {"workspace_id": "ws-a", "source_type": "teleport"}
-    ) == {"error": "Unsupported source_type 'teleport'"}
+    ) == {"success": False, "error": "Unsupported source_type 'teleport'"}
 
     # Duplicate realpath: ws-b already lives there.
     duplicate = await handler._cmd_edit_workspace(
@@ -259,3 +268,31 @@ async def test_edit_workspace_refuses_locked_or_duplicate_path_but_allows_forced
     await handler._cmd_edit_workspace({"workspace_id": "ws-a", "enabled": True})
     row = await handler.db.get_workspace("ws-a")
     assert (row.enabled, row.disabled_reason, row.disabled_at) == (True, None, None)
+
+
+async def test_relocation_rechecks_lock_acquired_after_the_snapshot(ws_handler, tmp_path, monkeypatch):
+    handler = ws_handler
+    old = tmp_path / "source"
+    old.mkdir()
+    await handler.db.create_agent(Agent(id="worker", name="worker", profile_id="worker"))
+    await handler.db.create_task(Task(id="work", project_id="p1", title="work", description=""))
+    await handler.db.create_workspace(Workspace(
+        id="slot", project_id="p1", workspace_path=str(old), source_type=RepoSourceType.LINK,
+    ))
+    list_workspaces = handler.db.list_workspaces
+
+    async def acquire_during_validation(*args, **kwargs):
+        rows = await list_workspaces(*args, **kwargs)
+        held = await handler.db.acquire_workspace("p1", "worker", "work", preferred_workspace_id="slot")
+        assert held.id == "slot"
+        return rows
+
+    monkeypatch.setattr(handler.db, "list_workspaces", acquire_during_validation)
+    result = await handler._cmd_edit_workspace({
+        "workspace_id": "slot", "workspace_path": str(tmp_path / "destination"), "force": True,
+    })
+    assert "binding changed or is locked" in result["error"]
+    row = await handler.db.get_workspace("slot")
+    assert row.workspace_path == str(old)
+    assert row.locked_by_task_id == "work"
+    assert row.locked_by_agent_id == "worker"
