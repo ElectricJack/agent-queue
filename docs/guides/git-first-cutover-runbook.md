@@ -1,5 +1,11 @@
 # Git-first integration cutover: transfer, upgrade, restart, canary
 
+> Historical cutover procedure: C1 and the 2026-10-12 consumer retirement removed
+> the subject publishers and Development transfer command. The steps below document
+> that earlier rollout; use the [current train runbook](git-first-train-runbook.md)
+> and [consumer audit](../reports/2026-10-12-legacy-consumer-retirement.md) for the
+> retained runtime and safety boundaries.
+
 Operator procedure for selecting `integration.git_first: active`, the
 five-table protocol that replaces the old subject runtime as the delivery path
 for a project. The design is `projects/agent-queue/specs/2026-10-04-git-first-integration-train.md`
@@ -20,7 +26,7 @@ mode beside `reconciler_shadow` / `reconciler_active`.
 | `git_first` | What runs |
 |---|---|
 | `shadow` (default) | the old subject protocol stays authoritative; one read-only comparison of git-first facts against fetched git is logged per visit. It has no writer, no action port and no policy effect. |
-| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all, the integration outbox is not dispatched, and no green continuation is emitted. |
+| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all. Only promotion policy events are dispatched from the integration outbox; legacy events and green continuations remain stopped. |
 
 The selector refuses `IntegrationService` a train beside any subject runtime, so
 the two engines can never run concurrently.
@@ -223,8 +229,9 @@ is `tests/test_integration_train_sources.py::test_collected_two_child_epic_gets_
 
 ## 6. Confirm old-event isolation
 
-Under `active` the scheduler, the outbox and the green continuations are stopped
-for owned projects, and pending legacy events stay pending. After the restart:
+Under `active` the scheduler, legacy outbox dispatch and the green continuations
+are stopped for owned projects. Promotion policy events continue to dispatch;
+pending legacy events stay pending. After the restart:
 
 ```sql
 SELECT event_type, count(*), sum(attempts) FROM integration_outbox GROUP BY 1;

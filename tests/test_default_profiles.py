@@ -18,7 +18,12 @@ SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
 #: One generic worker per harness.  The tier x level x provider ladder was
 #: retired: a task's ``intelligence_class`` picks the model and reasoning level
 #: for the run, so profiles that differ only in ``default_class`` bought nothing.
-WORKER_PROFILE_IDS = ("worker-claude", "worker-codex")
+WORKER_PROFILE_IDS = tuple(sorted(
+    path.parent.name
+    for path in (Path(__file__).resolve().parents[1] / "src/profiles/defaults").glob(
+        "worker-*/profile.md"
+    )
+))
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:
@@ -62,6 +67,18 @@ def test_seeded_profiles_parse_without_errors(tmp_path):
         parsed = parse_profile(text)
         assert parsed.is_valid, f"{pid} parse errors: {parsed.errors}"
         assert parsed.frontmatter.id == pid
+
+
+def test_spec_ingest_display_name_is_seeded_and_operator_rename_survives(tmp_path):
+    ensure_default_profiles(str(tmp_path))
+    path = _vault_profile_path(tmp_path, "spec-ingest")
+    shipped = path.read_text(encoding="utf-8")
+    assert parse_profile(shipped).frontmatter.name == "Review Spec Ingest"
+    renamed = shipped.replace("name: Review Spec Ingest", "name: My Spec Review")
+    path.write_text(renamed, encoding="utf-8")
+
+    assert "spec-ingest" in ensure_default_profiles(str(tmp_path))["skipped"]
+    assert path.read_text(encoding="utf-8") == renamed
 
 
 def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
@@ -159,17 +176,25 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
 
     for instruction in (
         "First action on a cold start: establish the patrol",
-        "harness's scheduled jobs",
-        "about every 15 minutes, off the :00 and :30 marks",
+        "aq cron list --json",
+        "aq cron register --every 900 --offset 120",
+        "--idempotency-key supervisor-patrol-v1",
         "stall sweep",
         "aq --json message inbox --inject",
         "profile:supervisor",
         "session:<your supervisor session id>",
         "fixes",
         "Never create a second patrol",
-        "Re-establish it after every session restart",
-        "scheduler job is not",
-        "run the sweep at the start of every turn",
+        "does not run the prompt immediately",
+        "Daemon restart preserves",
+        "owner-session replacement expires it",
+        "aq cron show ID --consume --json",
+        "aq cron cancel ID",
+        "Do not also register a native harness patrol",
+        "Authentication failure stops the patrol",
+        "SWEEP-AUTH",
+        "report the single error and its recovery command",
+        "aq session token <session-id> --json",
         "never hand the human a command to run",
         "Retry up to three times",
         "equivalent authorized route",
@@ -190,7 +215,7 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
     ):
         assert repair in rules, repair
 
-    assert "~/.agent-queue/operator-checks/" not in rules
+    assert "~/.agent-queue/operator-checks/stall-sweep.py" in rules
     assert "supervisor-agent-queue" not in rules
 
 
@@ -225,8 +250,15 @@ def test_seeded_workers_have_publication_grants_without_supervisor_grants(tmp_pa
         assert not supervisor.allows_plugin_tool(command)
     for profile_id in WORKER_PROFILE_IDS:
         worker = policy_for(profile_id)
-        for command in ("git_create_pr", "git_push"):
+        for command in (
+            "git_create_pr", "git_push", "git_pull", "get_git_status", "git_log",
+            "git_diff", "git_branch", "git_changed_files",
+        ):
             assert worker.allows_plugin_tool(command), (profile_id, command)
+        for command in ("dry_run_playbook", "task_children", "task_progress"):
+            assert worker.allows_aq_command(command), (profile_id, command)
+        for command in ("run_playbook", "resume_playbook", "set_playbook_enabled"):
+            assert not worker.allows_aq_command(command), (profile_id, command)
 
 
 

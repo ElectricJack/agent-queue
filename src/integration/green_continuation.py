@@ -10,11 +10,6 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import select
-
-from src.database.tables import (
-    integration_outbox,
-)
 from src.integration.outbox import enqueue_integration_event
 
 logger = logging.getLogger(__name__)
@@ -26,12 +21,6 @@ CONTINUATION_PREFIX = "integration-green-continuation"
 RETRY_BASE_SECONDS = 60.0
 #: The longest wait between two continuations of one fingerprint.
 MAX_BACKOFF_SECONDS = 3600.0
-#: Generations after which a still-refused promotion is reported as a warning
-#: (it keeps being retried; this is only the point where a person should look).
-WARN_AFTER_GENERATIONS = 6
-#: A delivered green fact gets this long to reach ``prepare`` before the
-#: reconciler treats its promotion as lost.
-DELIVERY_GRACE_SECONDS = 60.0
 
 
 def promotion_fingerprint(
@@ -75,31 +64,6 @@ def continuation_delay(generation: int) -> float:
 
 def _dedup_prefix(batch_id: str, revision: int, fingerprint: str) -> str:
     return f"{CONTINUATION_PREFIX}:{batch_id}:{int(revision)}:{fingerprint}:"
-
-
-async def continuation_rows_on(
-    conn, *, project_id: str, batch_id: str, revision: int, fingerprint: str
-) -> list[dict[str, Any]]:
-    """Return the continuations already emitted for one fingerprint, oldest first."""
-    rows = (
-        await conn.execute(
-            select(
-                integration_outbox.c.id,
-                integration_outbox.c.dedup_key,
-                integration_outbox.c.available_at,
-                integration_outbox.c.delivered_at,
-            )
-            .where(
-                integration_outbox.c.project_id == project_id,
-                integration_outbox.c.event_type == GREEN_EVENT_TYPE,
-                integration_outbox.c.dedup_key.startswith(
-                    _dedup_prefix(batch_id, revision, fingerprint), autoescape=True
-                ),
-            )
-            .order_by(integration_outbox.c.available_at, integration_outbox.c.id)
-        )
-    ).mappings().all()
-    return [dict(row) for row in rows]
 
 
 async def enqueue_green_continuation_on(

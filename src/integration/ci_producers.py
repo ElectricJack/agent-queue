@@ -33,7 +33,7 @@ from src.integration.ci import (
     failed_run_verdict,
     is_numeric_producer_id,
 )
-from src.integration.subjects import CIEvidence, CIState, HeadIdentity, Subject
+from src.integration.runtime_contracts import CIEvidence, CIState, HeadIdentity, Subject
 from src.jobs.adapters import finite_command
 from src.jobs.policy import JobError, TERMINAL
 
@@ -210,7 +210,14 @@ class HostedCIProducer:
             checks = {check.name: check.conclusion for check in observed.payload.checks}
             identity = observed.payload.external_id
             classification, state = "conclusive", CIState.GREEN
-            details = {"receipt": observed.payload.model_dump(mode="json")}
+            receipt = observed.payload.model_dump(mode="json")
+            details = {
+                "receipt": receipt,
+                "checks": [
+                    {**check, **observed.check_details.get(check["check_run_id"], {})}
+                    for check in receipt["checks"]
+                ],
+            }
         else:
             checks = {check["name"]: check["conclusion"] for check in observed.checks}
             details = {
@@ -260,11 +267,13 @@ class LocalCIProducer:
         *,
         store: str | Path,
         plan: LocalValidationPlan,
+        workspace_batch_id: str | None = None,
         read_jobs: JobReader | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db, self.job_client, self.store = db, job_client, str(store)
         self.plan, self.clock = plan, clock
+        self.workspace_batch_id = workspace_batch_id
         self.required_check_version = plan.version
         self.read_jobs = read_jobs or self._read_jobs
 
@@ -327,7 +336,9 @@ class LocalCIProducer:
                 if job is None:
                     job = await self.job_client.submit(
                         project_id=subject.project_id,
+                        repository_id=head.repository_id,
                         operation_id=subject.id,
+                        workspace_batch_id=self.workspace_batch_id,
                         store=self.store,
                         input_ref=head.sha,
                         preset=preset,
