@@ -1,0 +1,1 @@
+Resolve conflicts across the whole frozen batch, considering every member.
