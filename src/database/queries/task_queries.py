@@ -15,7 +15,6 @@ from sqlalchemy import (
     and_,
     any_,
     bindparam,
-    case,
     delete,
     func,
     insert,
@@ -37,7 +36,6 @@ from src.database.queries.blocked_state import (
 )
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
-    admission_reservations,
     agents,
     archived_tasks,
     continuations,
@@ -64,7 +62,6 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
-    wait_priority_projection,
     wait_records,
     workspaces,
 )
@@ -113,6 +110,25 @@ _PAUSE_OWNER_FIELDS = (
     "id", "owner_id", "session_id", "workspace_id", "fence_token", "handoff_state",
     "repository_id", "ref", "holder", "fence", "owner_role", "confirmed_workspace_id",
 )
+
+
+def settled_preparation_proved(record, identity: dict, claim_epoch) -> bool:
+    """Whether a durable ``prepare_failure`` record proves this exact attempt unwound.
+
+    The claim handler writes it only after the preparation's exception left
+    every owned git process group (``run_owned_process`` stops each group or
+    raises ``ProcessCleanupError``, which also writes the cleanup hold the
+    caller must check). A same-epoch retry stamps ``retried_at``: a later
+    attempt that died without a record is never proved by an earlier one.
+    """
+    return (
+        isinstance(record, dict) and "retried_at" not in record
+        and record.get("session_id") == identity["id"]
+        and record.get("instance_token") == identity["instance_token"]
+        and record.get("claim_epoch") == claim_epoch
+    )
+
+
 # The provider probe runs outside SQL; these fields must still match under locks.
 _SLOT_RESET_STOP_PROOF_FIELDS = (
     "id", "name", "provider", "instance_token", "state", "desired_state",
@@ -1118,6 +1134,9 @@ class TaskQueryMixin:
                               "instance_token": identity["instance_token"],
                               "claim_epoch": snapshot["claim_epoch"]}
                     for proof in snapshot.get("preparations_stopped", [])
+                ) and not settled_preparation_proved(
+                    await self._read_prepare_failure(conn, task_id), identity,
+                    snapshot["claim_epoch"],
                 ):
                     raise PauseFenceError("Interrupted preparation termination is unproved")
             current_workspaces = [dict(ws) for ws in (await conn.execute(select(*(
@@ -1574,6 +1593,24 @@ class TaskQueryMixin:
         return (await conn.execute(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))).scalar_one_or_none()
+
+    async def _read_prepare_failure(self, conn, task_id: str) -> dict | None:
+        """The decoded ``prepare_failure`` record on *conn*, or ``None``."""
+        encoded = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "prepare_failure"
+        ))).scalar_one_or_none()
+        return json.loads(encoded) if encoded is not None else None
+
+    async def settled_task_preparation(self, task_id: str) -> dict | None:
+        """The last preparation failure record, unless its cleanup is unproved."""
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        async with self._engine.begin() as conn:
+            if await conn.scalar(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+            )):
+                return None
+            return await self._read_prepare_failure(conn, task_id)
 
     async def _resume_locked(
         self, conn, task_id: str, encoded: str | None, *, defer_projection=False,
@@ -2606,6 +2643,9 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
             delivery=delivery,
@@ -2697,6 +2737,9 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
+        from src.database.queries.continuation_queries import retire_task_waits
+
+        await lock_component_tasks(conn, {f"task:{task_id}"})
         if operator_delete:
             # FK writers take KEY SHARE on the task. Keep them behind the
             # deletion until every owned row (including layouts) has gone.
@@ -2706,6 +2749,10 @@ class TaskQueryMixin:
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
+        await retire_task_waits(
+            conn, task_id, reason="task_archived" if preserve_completion else "task_deleted",
+            now=time.time(),
+        )
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(
@@ -2800,23 +2847,6 @@ class TaskQueryMixin:
             .values(handoff_state="released", updated_at=time.time())
         )
 
-        # Suspension history survives removal, but may never launch again.
-        await conn.execute(update(continuations).where(
-            continuations.c.task_id == task_id,
-            continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
-        ).values(resume_state="cancelled", version=continuations.c.version + 1))
-        await conn.execute(update(admission_reservations).where(
-            (admission_reservations.c.task_id == task_id)
-            | admission_reservations.c.continuation_id.in_(
-                select(continuations.c.id).where(continuations.c.task_id == task_id)),
-        ).values(
-            task_id=None,
-            state=case((admission_reservations.c.state.in_(("pending", "overdue", "granted")),
-                        "cancelled"), else_=admission_reservations.c.state),
-        ))
-        await conn.execute(delete(wait_priority_projection).where(
-            wait_priority_projection.c.task_id == task_id,
-        ))
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.
