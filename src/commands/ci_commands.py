@@ -36,7 +36,7 @@ REPAIR_KEY_PREFIX = "ci-baseline"
 ESCALATION_KEY_PREFIX = "ci-baseline-escalation"
 #: Task metadata holding the failure a repair owns (``ci_repair_adopt``).
 REPAIR_RECORD_META = "ci_baseline_repair"
-DEFAULT_MAX_ATTEMPTS = 2
+DEFAULT_MAX_ATTEMPTS = 0
 #: Statuses that mean "this attempt is over and main is still red".
 _SPENT_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED})
 _MAX_LISTED_TESTS = 40
@@ -441,7 +441,7 @@ class CiCommandsMixin:
         Args:
             project_id: Required — the project whose repository to read.
             ref: Branch or sha to judge; default the project's default branch.
-            max_attempts: Repair attempts per failure before escalating (2).
+            max_attempts: Repair attempts per failure before escalating (0 = unlimited).
         """
         project_id = str(args.get("project_id") or "").strip()
         if not project_id:
@@ -455,8 +455,8 @@ class CiCommandsMixin:
             max_attempts = DEFAULT_MAX_ATTEMPTS if raw_max is None else int(raw_max)
         except (TypeError, ValueError):
             return {"success": False, "error": "max_attempts must be an integer"}
-        if max_attempts < 1:
-            return {"success": False, "error": "max_attempts must be at least 1"}
+        if max_attempts < 0:
+            return {"success": False, "error": "max_attempts must be non-negative"}
 
         observed = await self._observe_ci_baseline(project, ref)
         result = {
@@ -488,7 +488,8 @@ class CiCommandsMixin:
             attempts=await self._ci_repair_attempts(project_id),
         )
         attempt = len(plan.prior_attempts) + 1
-        escalated = plan.reuse_key is None and len(plan.prior_attempts) >= max_attempts
+        escalated = bool(max_attempts and plan.reuse_key is None
+                         and len(plan.prior_attempts) >= max_attempts)
         title, description = render_repair_task(
             ref=ref,
             head_sha=head_sha,
