@@ -1,36 +1,18 @@
-"""Dialect round trips for durable repair stages revision 7a1d5e9f0b2c."""
-
-from __future__ import annotations
+"""Current PostgreSQL schema contracts retained after migration squashing."""
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 
 from src.database import Database
-from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
-
-pytestmark = [pytest.mark.perf, pytest.mark.migration]
-
-PRIOR = "e4c6a8b20d31"
-REVISION = "7a1d5e9f0b2c"
-POSTGRES_DSN = ensure_worker_postgres_dsn()
-
-
-def _migrate(connection, revision: str, *, downgrade: bool = False) -> None:
-    config = Config("alembic.ini")
-    config.attributes["connection"] = connection
-    (command.downgrade if downgrade else command.upgrade)(config, revision)
+pytestmark = pytest.mark.migration
 
 
 def _assert_schema(connection) -> None:
     schema = inspect(connection)
     assert "integration_repair_stage_evidence" in schema.get_table_names()
-    columns = {
-        column["name"]: column
-        for column in schema.get_columns("integration_repair_stages")
-    }
+    columns = {column["name"]: column for column in schema.get_columns("integration_repair_stages")}
     assert {
         "writer_kind",
         "trigger_id",
@@ -52,54 +34,29 @@ def _assert_schema(connection) -> None:
         for constraint in schema.get_unique_constraints("integration_repair_operations")
     }
     assert "uq_integration_repair_operations_batch_episode" in operation_unique
+    ordinal = next(item for item in schema.get_check_constraints("integration_repair_stages")
+                   if item["name"] == "ck_integration_repair_stages_ordinal")
+    assert ordinal["sqltext"].replace(" ", "").strip("()") == "ordinal>=0"
+    # Columns that copy the active stage accept every retained stage too.
+    for table, name, column in (
+        ("integration_candidate_resolutions", "ck_integration_candidate_resolutions_stage",
+         "stage_ordinal"),
+        ("integration_candidate_ref_mutations", "ck_integration_candidate_ref_mutations_stage",
+         "operation_stage"),
+    ):
+        check = next(item for item in schema.get_check_constraints(table) if item["name"] == name)
+        assert check["sqltext"].replace(" ", "").strip("()") == f"{column}>=0"
+    source = {column["name"]: column for column in schema.get_columns("integration_source_ci")}
+    assert {"source_head", "source_base", "generation", "policy_generation", "repair_history"} <= source.keys()
+    assert str(source["evidence"]["type"]) == "JSONB"
+    assert str(source["repair_history"]["type"]) == "JSONB"
 
 
-async def test_sqlite_repair_stage_upgrade_downgrade_upgrade(tmp_path):
-    path = tmp_path / "repair-stage-migration.db"
-    database = Database(str(path))
+async def test_baseline_repair_stages_schema():
+    database = Database(lease_dsn("repair_stages"))
     await database.initialize()
-    await database.close()
-    engine = create_engine(f"sqlite:///{path}")
     try:
-        with engine.begin() as conn:
-            _migrate(conn, PRIOR, downgrade=True)
-            _migrate(conn, REVISION)
-        with engine.connect() as conn:
-            _assert_schema(conn)
-        with engine.begin() as conn:
-            _migrate(conn, PRIOR, downgrade=True)
-            _migrate(conn, REVISION)
-        with engine.connect() as conn:
-            _assert_schema(conn)
-    finally:
-        engine.dispose()
-
-
-@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_postgres_repair_stage_upgrade_downgrade_upgrade():
-    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-    from src.database.engine import create_postgres_engine
-
-    dsn = await create_scratch_database("task7a_repair_stages")
-    database = PostgreSQLDatabaseAdapter(dsn, 0, 1)
-    await database.initialize()
-    await database.close()
-    engine = create_postgres_engine(dsn, 0, 1)
-    try:
-        async def migrate(revision: str, *, downgrade: bool = False) -> None:
-            async with engine.connect() as conn:
-                await conn.run_sync(
-                    lambda sync: _migrate(sync, revision, downgrade=downgrade)
-                )
-                await conn.commit()
-
-        await migrate(PRIOR, downgrade=True)
-        await migrate(REVISION)
-        async with engine.connect() as conn:
-            await conn.run_sync(_assert_schema)
-        await migrate(PRIOR, downgrade=True)
-        await migrate(REVISION)
-        async with engine.connect() as conn:
+        async with database._engine.connect() as conn:
             await conn.run_sync(_assert_schema)
     finally:
-        await engine.dispose()
+        await database.close()

@@ -1,12 +1,17 @@
+import { useState } from "react";
 import { CommandLineIcon } from "@heroicons/react/24/outline";
 import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
+import { useProjects } from "../../api/hooks";
 import type { SessionSummary } from "../../api/hooks";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
 
-export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
+export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAgent; focusRequest?: string | null }) {
   const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
   const tmux = agent.session_provider === "tmux";
   const start = useStartAgentTerminal();
+  const { data: projects = [] } = useProjects();
+  const [projectId, setProjectId] = useState("");
+  const supervisor = agent.role === "supervisor" || agent.id === "supervisor-global";
   const sleeping = agent.session_state === "sleeping";
   const starting = agent.session_state === "starting" || agent.session_state === "stopping";
   const taskOwned = !!agent.current_task_id || agent.state === "busy";
@@ -36,13 +41,26 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
         <p className="max-w-sm text-xs leading-relaxed text-gray-500">
           {agent.session_id
             ? "Session state: " + (agent.session_state || "unknown") + ". Viewing this agent will not wake or restart it."
-            : "This worker has no live terminal. Viewing it does not start a session."}
+            : "This agent has no live terminal. Viewing it does not start a session."}
         </p>
-        <button type="button" disabled={!canStart || start.isPending}
-          onClick={() => start.mutate({ agent_id: agent.id })}
+        {supervisor ? (
+          <p className="max-w-sm text-xs text-gray-400">Supervisor access: {agent.project_id || "all projects"}.</p>
+        ) : <label className="flex w-full max-w-sm flex-col gap-1 text-left text-xs text-gray-400">
+          Project
+          <select aria-label={"Project for " + agent.name + " terminal"} value={projectId}
+            onChange={(event) => setProjectId(event.target.value)} disabled={!canStart || start.isPending}
+            className="rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-xs text-gray-200 disabled:opacity-40">
+            <option value="">No project</option>
+            {projects.filter((project) => project.status === "ACTIVE").map((project) => (
+              <option key={project.id} value={project.id}>{project.name} ({project.id})</option>
+            ))}
+          </select>
+        </label>}
+        {!agent.session_backed && <button type="button" disabled={!canStart || start.isPending}
+          onClick={() => start.mutate({ agent_id: agent.id, ...(!supervisor && projectId ? { project_id: projectId } : {}) })}
           className="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
           {start.isPending || starting ? "Starting…" : sleeping ? "Resume terminal" : "Start terminal"}
-        </button>
+        </button>}
         {!canStart && (
           <p className="max-w-sm text-xs text-gray-500">
             {taskOwned ? "The assigned task controls this session."
@@ -55,7 +73,7 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
       </div>
     );
   }
-  return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} />;
+  return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} focusRequest={focusRequest} />;
 }
 
 /**
@@ -65,7 +83,7 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
  * start button here, because starting a worker is what raising ``min_active``
  * on the Settings tab does.
  */
-export function PoolInstanceTerminal({ instance }: { instance: SessionSummary | null }) {
+export function PoolInstanceTerminal({ instance, focusRequest }: { instance: SessionSummary | null; focusRequest?: string | null }) {
   const live = instance && (instance.state === "running" || instance.state === "draining");
   // `SessionSummary.provider` is the session transport (tmux), not the LLM one.
   const tmux = !instance?.provider || instance.provider === "tmux";
@@ -86,5 +104,5 @@ export function PoolInstanceTerminal({ instance }: { instance: SessionSummary | 
       </div>
     );
   }
-  return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} />;
+  return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} focusRequest={focusRequest} />;
 }

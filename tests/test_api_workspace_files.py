@@ -11,7 +11,6 @@ from httpx import ASGITransport, AsyncClient
 from src.api import dependencies as deps
 from src.api.auth import RequestScope
 from src.api.workspace_files import build_workspace_files_router
-from src.database import Database
 from src.models import Project, RepoSourceType, Workspace
 
 
@@ -26,9 +25,8 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-async def wired(tmp_path, repo):
-    db = Database(str(tmp_path / "aq.db"))
-    await db.initialize()
+async def wired(tmp_path, repo, reuse_database):
+    db = await reuse_database("aq.db")
     await db.create_project(Project(id="proj", name="P", repo_default_branch="main"))
     await db.create_project(Project(id="other", name="O", repo_default_branch="main"))
     await db.create_workspace(Workspace(
@@ -75,7 +73,6 @@ async def wired(tmp_path, repo):
         yield _client, db, repo
     finally:
         deps._orchestrator = prev_orch
-        await db.close()
 
 
 async def test_browse_root_lists_entries(wired):

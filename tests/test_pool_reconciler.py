@@ -7,16 +7,18 @@ import logging
 import os
 import time
 import uuid
-
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
-from src.config import AppConfig, DiscordConfig
-from src.database import Database
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
+from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
+    Agent,
     AgentProfile,
     AgentState,
     Project,
@@ -27,8 +29,695 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
+
+
+@pytest.mark.parametrize("artifact", [False, True])
+async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch, artifact):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.create_task(Task(
+        id="source", project_id=PROJECT_ID, title="source", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
+    ))
+    await db.add_dependency("candidate", "source")
+    observer = AsyncMock(return_value=MagicMock(allowed=set(), counts=AsyncMock(return_value={})))
+    monkeypatch.setattr(orch, "_delivery_admission", observer)
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == int(not artifact)
+    assert observer.await_count == int(artifact)
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_pool_demand_and_claim_use_the_exact_frontier_builder(
+    orch, db, monkeypatch, rejected,
+):
+    from src.database.queries import claim_queries
+    from src.database.tables import tasks
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    original = claim_queries.claim_frontier_predicates
+
+    def frontier(*args, **kwargs):
+        predicates = original(*args, **kwargs)
+        if rejected:
+            predicates["regression_fence"] = tasks.c.id != "candidate"
+        return predicates
+
+    monkeypatch.setattr(claim_queries, "claim_frontier_predicates", frontier)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == int(not rejected)
+    async with db.immediate() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        )
+    assert selected == (None if rejected else "candidate")
+
+
+async def test_preparation_backoff_withholds_pool_demand_and_recovers(orch, db):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.set_task_meta("candidate", "claim_prepare_backoff_until", time.time() + 300)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert await db.list_sessions(lifecycle="pool") == []
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) is None
+    await db.set_task_meta("candidate", "claim_prepare_backoff_until", 0)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+
+
+async def test_contained_sibling_releases_mid_epic_without_delivery_receipt(
+    orch, db, git_first_frontier,
+):
+    from sqlalchemy import select
+
+    from src.database.tables import task_delivery_receipts
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
+    env.observer._recent.clear()
+    assert (await db.get_task("epic")).status == TaskStatus.IN_PROGRESS
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+    assert await db.claim_frontier_exclusions("second") == []
+    modes = await hierarchy_frontier_modes(db, project_ids={PROJECT_ID})
+    async with db.immediate() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+            hierarchy_mode=modes[PROJECT_ID],
+        ) == "second"
+
+
+@pytest.fixture
+async def git_first_frontier(orch, db, tmp_path):
+    """A completed sibling with retained provenance, but no delivery receipts."""
+    from types import SimpleNamespace
+
+    from src.database.tables import task_branch_origins, task_integration_checkpoints
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.integration.models import BranchKey
+    from src.integration.ownership import BranchOwnership
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import RepoConfig, TaskCompletion
+    from tests.test_delivery_consumers import Origin, git
+    from tests.test_integration_gitops import LocalGit
+
+    origin = Origin(tmp_path)
+    base = git(origin.clone, "rev-parse", "HEAD")
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    source = origin.work("first")
+    # Claim preparation imports the observed stack base into the assigned
+    # checkout. These Git-backed frontier tests need actual clone slots even
+    # though reset_slot_for_task remains a spy for its argument assertions.
+    for workspace in await db.list_workspaces(PROJECT_ID):
+        git(tmp_path, "clone", "--quiet", origin.url, workspace.workspace_path)
+    transport = LocalGit(tmp_path / "origin.git")
+    orch.git = transport
+    await db.update_profile("worker", default_class="standard-medium")
+    orch.config.worktrees.enabled = False
+    orch._worktree_slots = MagicMock(return_value=MagicMock(
+        reset_slot_for_task=AsyncMock(return_value="aq/second"),
+    ))
+    await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
+                                   source_type=RepoSourceType.CLONE, url=origin.url))
+    await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic", description="",
+                              status=TaskStatus.IN_PROGRESS, repo_id="repo", branch_name="aq/epic"))
+    for tid in ("first", "second"):
+        await ready(db, tid, intelligence_class="standard-medium")
+        await db.update_task(tid, repo_id="repo", branch_name=f"aq/{tid}")
+        await db.add_dependency(tid, "epic", "parent-child")
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"origin-{tid}", task_id=tid, repository_id="repo", branch_name=f"aq/{tid}",
+                parent_task_id="epic", parent_repository_id="repo", parent_ref="aq/epic",
+                base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=tid, repository_id="repo", branch=f"aq/{tid}",
+                checkpoint_sha=source if tid == "first" else base, updated_at=time.time(),
+            ))
+    await db.add_dependency("second", "first")
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            integration_repository_id="repo", repo_url=origin.url,
+                            hierarchical_integration_policy={
+                                "prerequisite_branches": "wait-for-parent",
+                            })
+    await db.save_task_completion(TaskCompletion(
+        id="close-first", task_id="first", outcome="pass", commits=[source], completed_at=time.time(),
+    ))
+    await GitProvenance(transport, str(origin.clone), repository_url=origin.url).write_completion(
+        CompletedSource(CompletionIdentity(PROJECT_ID, "repo", "first", "close-first"), source),
+    )
+    await db.transition_task("first", TaskStatus.COMPLETED)
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/second"), "second", "worker"
+    )
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "observer",
+                                truth=GitTruth(transport))
+    db.set_delivery_observer(observer)
+    return SimpleNamespace(origin=origin, base=base, source=source, observer=observer, git=git)
+
+
+async def _deliver_first_by_train(db, env):
+    """Run the actual reduced train and managed Git publication on the epic target."""
+    from types import SimpleNamespace
+
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.batches import Batch, BatchMember, BatchService, BatchStore
+    from src.integration.git_truth import GitTruth
+    from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
+    from src.integration.train import (
+        BatchSelection,
+        CandidateChecks,
+        IntegrationTrain,
+        TrainLane,
+        TrainTarget,
+    )
+    from src.integration.train_sources import LeasedPublish, _never_trusted
+
+    target = TrainTarget(PROJECT_ID, "repo", "refs/heads/aq/epic", kind="epic")
+    batch = Batch("sibling-batch", PROJECT_ID, "repo", target.target_ref)
+    members = (BatchMember("first", env.source, env.base),)
+    store = BatchStore(db)
+    await store.freeze(batch, members, trees={
+        "first": env.git(env.origin.clone, "rev-parse", f"{env.source}^{{tree}}"),
+    })
+    transport = env.observer.git
+    repo = RetainedRepository("repo", env.origin.clone, GitHubRepositoryBinding(123, "test/repo"),
+                              "main")
+    checks = CandidateChecks(AsyncMock(return_value=None))
+    service = BatchService(
+        store, GitOperations(db, git=transport, repository=AsyncMock(return_value=repo),
+                             authority=SubjectGitAuthority(db, trusted_green=_never_trusted)),
+        publish=LeasedPublish(db, transport), eligible=AsyncMock(return_value=True),
+        gate=checks.gate, require_attestation=False,
+    )
+
+    async def snapshot():
+        return await GitTruth(transport).snapshot(
+            str(env.origin.clone), project_id=PROJECT_ID, repository_id="repo",
+            repository_url=env.origin.url, target_ref=target.target_ref,
+        )
+
+    train = IntegrationTrain(
+        targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
+        batches=SimpleNamespace(open_batch=AsyncMock(return_value=BatchSelection(batch, members)),
+                                settle=AsyncMock()),
+        lane_for=AsyncMock(return_value=TrainLane(snapshot, service, checks)),
+        repair=SimpleNamespace(
+            allocate=AsyncMock(side_effect=AssertionError("unexpected repair")),
+            settle_green=AsyncMock(),
+        ),
+    )
+    await train.tick()
+    await train.drain()
+    [visit] = train.status()
+    assert visit["state"] == "delivered", visit
+
+
+@pytest.fixture
+def frontier_clock(monkeypatch):
+    from types import SimpleNamespace
+
+    from src.integration import delivery_observer
+
+    clock = MagicMock(return_value=100.0)
+    # Keep asyncio's real monotonic clock unchanged.
+    monkeypatch.setattr(delivery_observer, "time", SimpleNamespace(monotonic=clock))
+    return clock
+
+
+@pytest.mark.parametrize("cache_state", ["cold", "warm", "expired"])
+@pytest.mark.parametrize("stacked", [False, True])
+async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch, cache_state, stacked,
+):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.integration import stacked_branches
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    monkeypatch.setattr(stacked_branches, "time", SimpleNamespace(monotonic=frontier_clock))
+    if stacked:
+        await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+            "prerequisite_branches": "stacked",
+        })
+    if cache_state != "cold":
+        await hierarchy_frontier_modes(db)
+    if cache_state == "expired":
+        env.observer._recent = {
+            target: (stamp - env.observer.READ_MAX_AGE - 1, snapshot)
+            for target, (stamp, snapshot) in env.observer._recent.items()
+        }
+        env.observer._stack_ref_cache.clear()
+    forbidden = {}
+    for name in ("afetch_origin", "acreate_checkout", "als_remote_ref", "als_remote_refs"):
+        forbidden[name] = AsyncMock(side_effect=AssertionError(f"diagnostic called {name}"))
+        monkeypatch.setattr(env.observer.git, name, forbidden[name])
+    handler = CommandHandler(orch, orch.config)
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    # A retained sibling may be stacked when its current refs are already observed.
+    stackable = stacked and cache_state == "warm"
+    unavailable = cache_state != "warm"
+    assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
+        not stackable and not unavailable
+    )
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is unavailable
+    if unavailable:
+        reason = next(reason for reason in explained["reasons"]
+                      if reason["code"] == "delivery_evidence_unavailable")
+        assert "has not loaded yet" in reason["detail"]
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["ready"] == int(stackable)
+    for call in forbidden.values():
+        call.assert_not_awaited()
+
+
+async def _frontier(orch, db, env, handler, expected, *, evidence_unavailable=False):
+    """Assert one tick's view through the real scheduler, pool, explain and doctor consumers."""
+    from src.doctor.models import DoctorContext
+    from src.doctor.task_checks import _check_ready_frontier_exclusions
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    modes = await hierarchy_frontier_modes(db)
+    env.observer.prerequisite_view = AsyncMock(wraps=env.observer.prerequisite_view)
+    await orch._schedule(hierarchy_modes=modes)
+    assert ("second" in orch._last_scheduler_state.hierarchy_runnable_task_ids) is expected
+    measurement = await orch._measure_pools(hierarchy_modes=modes)
+    assert measurement.demand[PoolKey("worker")] == int(expected)
+    env.observer.prerequisite_view.assert_not_awaited()
+    assert await db.is_hierarchy_task_runnable("second") is expected
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+               for r in explained["reasons"]) is (not expected and not evidence_unavailable)
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is evidence_unavailable
+    diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
+    assert any(
+        row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
+        for row in diagnosis.data.get("tasks", [])
+    ) is not expected
+    return modes
+
+
+async def _claim_second(orch, db, handler, modes):
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    assert session.state == "running"
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+
+
+@pytest.mark.parametrize("delivery", ["train", "external_fast_forward"])
+async def test_git_first_delivery_releases_scheduler_pool_and_claim(
+    orch, db, git_first_frontier, frontier_clock, delivery,
+):
+    from sqlalchemy import select
+
+    from src.commands.handler import CommandHandler
+    from src.database.tables import task_delivery_receipts
+
+    env = git_first_frontier
+    handler = CommandHandler(orch, orch.config)
+
+    async def frontier(expected, *, evidence_unavailable=False):
+        return await _frontier(orch, db, env, handler, expected,
+                               evidence_unavailable=evidence_unavailable)
+
+    await frontier(False)
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert await db.list_sessions(lifecycle="pool") == []
+
+    if delivery == "train":
+        await _deliver_first_by_train(db, env)
+    else:
+        # An authorized external writer bypasses train receipts and cache invalidation.
+        env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
+    # The old advisory observation may withhold newly delivered work until expiry.
+    await frontier(False, evidence_unavailable=True)
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
+    modes = await frontier(True)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    await _claim_second(orch, db, handler, modes)
+
+
+async def _completed_container(db, env, children=("group-a", "group-b")):
+    """A completed organizational sibling of "second": no close of its own; its children
+    each completed with retained provenance on their own branches (bold-zenith-11.21)."""
+    from src.database.tables import task_branch_origins
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+
+    await db.create_task(Task(id="group", project_id=PROJECT_ID, title="group", description="",
+                              status=TaskStatus.READY, repo_id="repo", parent_task_id="epic"))
+    sources = {}
+    for tid in children:
+        sources[tid] = env.origin.work(tid)
+        await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description="",
+                                  status=TaskStatus.READY, repo_id="repo",
+                                  branch_name=f"aq/{tid}", parent_task_id="group"))
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"origin-{tid}", task_id=tid, repository_id="repo", branch_name=f"aq/{tid}",
+                parent_task_id="group", parent_repository_id="repo", parent_ref="aq/epic",
+                base_sha=env.base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+        await db.save_task_completion(TaskCompletion(
+            id=f"close-{tid}", task_id=tid, outcome="pass", commits=[sources[tid]],
+            completed_at=time.time(),
+        ))
+        await GitProvenance(env.observer.git, str(env.origin.clone),
+                            repository_url=env.origin.url).write_completion(CompletedSource(
+            CompletionIdentity(PROJECT_ID, "repo", tid, f"close-{tid}"), sources[tid],
+        ))
+        await db.transition_task(tid, TaskStatus.COMPLETED)
+    await db.transition_task("group", TaskStatus.COMPLETED)
+    await db.add_dependency("second", "group")
+    return sources
+
+
+def _fast_forward_epic(env, *branches):
+    """Someone else's merge, pushed as a fast-forward of the epic: no train, no receipts."""
+    env.git(env.origin.clone, "fetch", "-q", "origin")
+    env.git(env.origin.clone, "checkout", "-q", "-B", "epic-writer", "origin/aq/epic")
+    for branch in branches:
+        env.git(env.origin.clone, "merge", "-q", "--no-ff", "-m", f"merge {branch}",
+                f"origin/{branch}")
+    env.git(env.origin.clone, "push", "-q", "origin", "epic-writer:aq/epic")
+
+
+async def test_container_sibling_contained_by_external_fast_forward_releases_dependent(
+    orch, db, git_first_frontier, frontier_clock,
+):
+    """wise-nexus-33: an epic already containing every child of a completed container
+    sibling by Git releases the dependent, though the container has no close of its own."""
+    from sqlalchemy import select
+
+    from src.commands.handler import CommandHandler
+    from src.database.tables import task_delivery_receipts
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    handler = CommandHandler(orch, orch.config)
+    await _completed_container(db, env)
+
+    async def frontier(expected, *, evidence_unavailable=False):
+        return await _frontier(orch, db, env, handler, expected,
+                               evidence_unavailable=evidence_unavailable)
+
+    await frontier(False)
+    # The leaf sibling and one child are contained; the other child is not.
+    _fast_forward_epic(env, "aq/first", "aq/group-a")
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
+    modes = await frontier(False)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first"}
+    _fast_forward_epic(env, "aq/group-b")
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
+    modes = await frontier(True)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first", "group"}
+    view = await env.observer.prerequisite_view(PROJECT_ID)
+    assert view.siblings.evidence["group"].reason == "children_contained"
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    await _claim_second(orch, db, handler, modes)
+    # Reopening a child withdraws the container's proof.
+    await db.transition_task("group-b", TaskStatus.READY)
+    assert (await hierarchy_frontier_modes(db))[PROJECT_ID].delivered_prerequisite_ids == {
+        "first",
+    }
+
+
+async def test_container_sibling_shadow_mode_still_requires_receipts(
+    orch, db, git_first_frontier,
+):
+    """Without a truth-bearing observer the sibling stays excluded as unknown evidence.
+
+    Receipts no longer prove delivery (fast-smooth §3.3), so a missing observer
+    withholds the dependent and explain names the unavailable evidence.
+    """
+    from src.commands.handler import CommandHandler
+    from src.integration.delivery_observer import prerequisite_observer
+
+    env = git_first_frontier
+    await _completed_container(db, env)
+    _fast_forward_epic(env, "aq/first", "aq/group-a", "aq/group-b")
+    db.set_delivery_observer(None)
+    assert prerequisite_observer(db) is None
+    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False,
+                    evidence_unavailable=True)
+
+
+async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.integration import stacked_branches
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    # Explain reads cached stack refs only; a busy runner must not age them out.
+    monkeypatch.setattr(stacked_branches, "time", SimpleNamespace(monotonic=frontier_clock))
+    handler = CommandHandler(orch, orch.config)
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "stacked",
+    })
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].stackable_prerequisite_ids == {"first"}
+    assert not modes[PROJECT_ID].delivered_prerequisite_ids
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 1
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    assert await db.is_hierarchy_task_runnable("second")
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                   for r in explained["reasons"])
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "wait-for-parent",
+    })
+    assert not await db.is_hierarchy_task_runnable("second")
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "stacked",
+    })
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+    prepare = orch._worktree_slots().reset_slot_for_task
+    assert prepare.await_args.kwargs["base_branch"] == env.source
+    assert env.git(env.origin.clone, "rev-parse", "origin/aq/epic") == env.base
+
+
+async def test_git_first_advisory_cycles_reuse_fetch_until_bound(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from src.commands.handler import CommandHandler
+    from src.doctor.models import DoctorContext
+    from src.doctor.task_checks import _check_ready_frontier_exclusions
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    fetch = AsyncMock(wraps=env.observer.git.afetch_origin)
+    monkeypatch.setattr(env.observer.git, "afetch_origin", fetch)
+    handler = CommandHandler(orch, orch.config)
+
+    async def advisory_cycle():
+        await orch._schedule()
+        assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+        assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+        assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+        assert await db.is_hierarchy_task_runnable("second")
+        explained = await handler._cmd_explain_task({"task_id": "second"})
+        assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                       for r in explained["reasons"])
+        diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
+        assert not any(row["task_id"] == "second" for row in diagnosis.data.get("tasks", []))
+
+    await advisory_cycle()
+    assert fetch.await_count == 1
+    for age in (5.0, 15.0, env.observer.READ_MAX_AGE):
+        frontier_clock.return_value = 100.0 + age
+        await advisory_cycle()
+        assert fetch.await_count == 1
+    frontier_clock.return_value += 0.01
+    await advisory_cycle()
+    assert fetch.await_count == 2
+    await advisory_cycle()
+    assert fetch.await_count == 2
+
+
+async def test_git_first_expired_advisory_snapshot_fails_closed_on_fetch_error(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from src.git.manager import GitError
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    fetch = AsyncMock(side_effect=GitError("remote unavailable"))
+    monkeypatch.setattr(env.observer.git, "afetch_origin", fetch)
+    # A successful observation can be reused only inside the bound.
+    frontier_clock.return_value += env.observer.READ_MAX_AGE
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    fetch.assert_not_awaited()
+    frontier_clock.return_value += 0.01
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == frozenset()
+    fetch.assert_awaited_once()
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 0
+
+
+async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from src.commands.handler import CommandHandler
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    fetch = AsyncMock(wraps=env.observer.git.afetch_origin)
+    monkeypatch.setattr(env.observer.git, "afetch_origin", fetch)
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first"}
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    fetch.assert_awaited_once()
+    handler = CommandHandler(orch, orch.config)
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+
+    env.git(env.origin.clone, "push", "--force", "origin", f"{env.base}:aq/epic")
+    # A tick already holding its advisory view can still see runnable work.
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert fetch.await_count == 1
+    # A new advisory read detects the rewind without fetching again.
+    assert not await db.is_hierarchy_task_runnable("second")
+    assert fetch.await_count == 1
+    for expected_fetches in (2, 3):
+        result = await handler._cmd_task_claim({"next": True})
+        assert result["result"] == "no_ready_work", result
+        assert fetch.await_count == expected_fetches
+        assert (await db.get_task("second")).status is TaskStatus.READY
+    prepare = orch._worktree_slots().reset_slot_for_task
+    prepare.assert_not_awaited()
+    # Even the immediately preceding failed claim's observation is not reused.
+    env.git(env.origin.clone, "push", "origin", f"{env.source}:aq/epic")
+    delivery_head = AsyncMock(wraps=db.hierarchy_prerequisite_delivery_head)
+    monkeypatch.setattr(db, "hierarchy_prerequisite_delivery_head", delivery_head)
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+    # Admission refetches once; workspace preparation separately observes the
+    # current parent tip and retained prerequisite stack before activation.
+    assert fetch.await_count == 6
+    delivery_head.assert_awaited_once_with("second")
+    prepare.assert_awaited_once()
+    assert prepare.await_args.args[1].id == "second"
+    assert prepare.await_args.kwargs == {
+        "base_branch": env.source,
+        "target_branch": "aq/second",
+        "preserve_branch": True,
+    }
+
+
+@pytest.mark.parametrize("movement", ["rewind", "retarget", "generation", "unstable", "shadow"])
+async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
+    orch, db, git_first_frontier, movement, monkeypatch,
+):
+    from src.commands.handler import CommandHandler
+    from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+    from src.database.tables import task_delivery_receipts
+    from src.models import TaskCompletion
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    if movement == "rewind":
+        env.git(env.origin.clone, "push", "--force", "origin", f"{env.base}:aq/epic")
+    elif movement == "retarget":
+        await db.update_task("epic", branch_name="aq/another-epic")
+    elif movement == "generation":
+        # Model a new completed generation without provenance. The prior one proves nothing.
+        await db.save_task_completion(TaskCompletion(
+            id="close-first-again", task_id="first", outcome="pass", commits=[env.source],
+            completed_at=time.time(),
+        ))
+        await db.set_task_meta("first", DEVELOPMENT_COMPLETION_ID_KEY, "close-first-again")
+    elif movement == "unstable":
+        view = await env.observer.prerequisite_view(PROJECT_ID)
+        monkeypatch.setattr(type(view), "fresh", AsyncMock(return_value=False))
+        env.observer.prerequisite_view = AsyncMock(return_value=view)
+    else:
+        env.observer.truth = None
+
+    if movement in {"rewind", "unstable"}:
+        # A perfectly matching old receipt must not override current Git truth.
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="misleading-receipt", domain_key="first-delivery", source_task_id="first",
+                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
+                reviewed_head_sha=env.source, before_sha=env.base, squash_sha=env.source,
+                after_sha=env.source, disposition="code", created_at=time.time(),
+            ))
+
+    assert not await db.is_hierarchy_task_runnable("second")
+    assert await db.count_ready_by_profile(PROJECT_ID) == {}
+    await orch._schedule()
+    assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
+    # DB-invalidated identities give a negative result. A rewind invalidates
+    # the bounded advisory cache; display does not fetch a replacement proof.
+    assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
+        movement in {"retarget", "generation"}
+    )
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (
+        movement in {"rewind", "shadow"}
+    )
+    if movement == "unstable":
+        # The mocked freshness failure checks no refs, so it must not poison
+        # otherwise valid cached display evidence. Decisions above still withhold.
+        assert all(snapshot._freshness.get(snapshot.target_ref, True)
+                   for _, snapshot in env.observer._recent.values())
 
 
 class _FakeSlotManager:
@@ -60,9 +749,11 @@ class _FakeSlotManager:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await database.resolve_workspace_kind("__system__", "project-repo")
+    await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
         AgentProfile(
@@ -80,7 +771,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -88,7 +778,7 @@ async def orch(db, tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -122,7 +812,8 @@ async def orch(db, tmp_path):
             process_names=("claude",),
         )
     )
-    return o
+    yield o
+    await o.wait_for_pool_launches(cancel=True)
 
 
 async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
@@ -133,10 +824,229 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
             title=tid,
             description=tid,
             status=TaskStatus.READY,
-            profile_id=profile_id,
+            profile_id=profile_id, route_source=route_source_for(profile_id),
             intelligence_class=intelligence_class,
         )
     )
+
+
+@pytest.mark.parametrize("state,ordinal,expected", [
+    ("active", 0, True), ("escalated", 0, True),
+    ("completed", 0, False), ("cancelled", 0, False), ("active", 1, False),
+])
+async def test_train_repair_demand_claim_and_alarm_use_current_stage(
+    orch, db, state, ordinal, expected,
+):
+    from src.database.tables import integration_repair_operations, integration_repair_stages
+    from src.doctor.models import DoctorContext
+    from src.doctor.stall_checks import _waiting_train_repairs
+    from src.scheduler import PoolKey
+
+    await ready(db, "ordinary")
+    await ready(db, "repair")
+    # Ordinary priority and affinity would otherwise beat this repair.
+    await db.update_task("ordinary", priority=0, affinity_agent_id="probe")
+    await db.update_task("repair", priority=100)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_repair_operations).values(
+            id="op", target_kind="batch", batch_id="train", episode_id="episode",
+            active_stage=0, state=state, policy_snapshot={}, artifact_snapshot={},
+            required_check_version="v1", created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="op", ordinal=ordinal, policy={}, repair_task_id="repair",
+            writer_kind="repair_delegate", starting_sha="a" * 40, state="active",
+        ))
+    measurement = await orch._measure_pools()
+    [candidate] = measurement.candidates[PoolKey("worker")]
+    assert candidate.repair_ready == int(expected)
+    async with db.immediate() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        )
+        if expected:
+            # The repair probe locks its row even inside COALESCE: another
+            # claimant skips it and can still take ordinary affinity work.
+            async with db.immediate() as other:
+                assert await db.select_ready_for_profile(
+                    other, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+                ) == "ordinary"
+    assert selected == ("repair" if expected else "ordinary")
+    bindings = await _waiting_train_repairs(DoctorContext(db=db, config=orch.config), ["repair", "ordinary"])
+    assert bindings == ({"repair": {"batch_id": "train", "operation_id": "op"}}
+                        if expected else {})
+    # The same frontier fence must withhold urgent demand too.
+    await db.set_task_meta("repair", "claim_prepare_backoff_until", time.time() + 300)
+    [candidate] = (await orch._measure_pools()).candidates[PoolKey("worker")]
+    assert candidate.repair_ready == 0
+
+
+async def test_pool_watchdog_reports_and_recovers_eligible_demand(orch, db, caplog):
+    await ready(db, "stranded")
+    # No cascade tick: reproduce a scheduler blocked in unrelated housekeeping.
+    for _ in range(2):
+        await orch._check_pool_progress()
+    assert await db.list_sessions(lifecycle="pool") == []
+    assert "pool.scaler_stalled" not in caplog.text
+
+    await orch._check_pool_progress()
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    assert session.state == "running"
+    [payload] = [call.args[1] for call in orch.bus.emit.await_args_list
+                 if call.args[0] == "pool.scaler_stalled"]
+    assert payload == {"profile_id": "worker", "desired": 1, "live": 0,
+                       "ready": 1, "ticks": 3, "recovery": "reconcile"}
+    events = await db.get_recent_events(event_type="pool.scaler_stalled")
+    assert len(events) == 1
+    # An idle worker can serve this demand now; clear the continuous incident.
+    await orch._check_pool_progress()
+    assert not orch._pool_progress_observations
+    assert caplog.text.count("pool.scaler_stalled") == 1
+
+
+async def test_pool_watchdog_deduplicates_and_resets_on_start(orch, db, monkeypatch, caplog):
+    from src.scheduler import PoolKey
+
+    await ready(db, "stranded")
+    recovery = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", recovery)
+    for _ in range(5):
+        await orch._check_pool_progress()
+    assert recovery.await_count == 3
+    assert caplog.text.count("pool.scaler_stalled") == 1
+    assert len(await db.get_recent_events(event_type="pool.scaler_stalled")) == 1
+    orch._pool_last_start = {PoolKey("worker"): 1.0}
+    await orch._check_pool_progress()
+    assert recovery.await_count == 3
+    await orch._check_pool_progress()
+    await orch._check_pool_progress()
+    assert recovery.await_count == 4
+    assert caplog.text.count("pool.scaler_stalled") == 2
+
+
+@pytest.mark.parametrize("blocker", [
+    "no_demand", "profile_disabled", "sessions_disabled", "swarm_disabled",
+    "profile_cap", "global_cap", "project_cap", "workspace", "quarantine", "provider",
+])
+async def test_pool_watchdog_respects_admission_and_capacity(orch, db, monkeypatch, caplog, blocker):
+    await ready(db, "task")
+    if blocker == "no_demand":
+        await db.transition_task("task", TaskStatus.FAILED)
+    elif blocker == "profile_disabled":
+        await db.update_profile("worker", enabled=False)
+    elif blocker == "sessions_disabled":
+        orch.config.sessions.enabled = False
+    elif blocker == "swarm_disabled":
+        orch.config.swarm.enabled = False
+    elif blocker == "profile_cap":
+        await db.update_profile("worker", max_active=0)
+    elif blocker == "global_cap":
+        orch.config.swarm.global_max_active = 0
+    elif blocker == "project_cap":
+        await db.update_project(PROJECT_ID, max_concurrent_agents=0)
+    elif blocker == "workspace":
+        monkeypatch.setattr(db, "count_available_workspaces", AsyncMock(return_value=0))
+    elif blocker == "quarantine":
+        orch._quarantine_pool(PROJECT_ID, "worker", "test")
+    elif blocker == "provider":
+        orch.provider_availability = MagicMock()
+        orch.provider_availability.suppresses.return_value = True
+    for _ in range(4):
+        await orch._check_pool_progress()
+    assert "pool.scaler_stalled" not in caplog.text
+    assert not orch._pool_progress_observations
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_pool_watchdog_preserves_live_launch_and_reaps_cancelled_bookkeeping(
+    orch, db, monkeypatch, caplog,
+):
+    import asyncio
+
+    from src.orchestrator.pools import PoolLaunch
+
+    await ready(db, "task")
+    launch = PoolLaunch(PROJECT_ID, "worker")
+    launch.task = asyncio.create_task(asyncio.Event().wait())
+    orch._pool_launches = {launch.session_id: launch}
+    try:
+        for _ in range(4):
+            await orch._check_pool_progress()
+        assert "pool.scaler_stalled" not in caplog.text
+        assert not launch.task.done()
+        assert await db.list_sessions(lifecycle="pool") == []
+        launch.task.cancel()
+        await asyncio.gather(launch.task, return_exceptions=True)
+        for _ in range(3):
+            await orch._check_pool_progress()
+        await orch.wait_for_pool_launches()
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+        assert "pool.scaler_stalled" in caplog.text
+        assert not orch._pool_launches
+    finally:
+        launch.task.cancel()
+        await asyncio.gather(launch.task, return_exceptions=True)
+
+
+async def test_pool_reconcile_timeout_releases_lock_for_recovery(orch, db, monkeypatch, caplog):
+    import asyncio
+
+    import src.orchestrator.pools as pools
+
+    await ready(db, "task")
+    original = orch._measure_pools
+    cancelled = asyncio.Event()
+
+    async def stuck(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(pools, "POOL_RECONCILE_TIMEOUT", 0.01)
+    monkeypatch.setattr(orch, "_measure_pools", stuck)
+    await orch._reconcile_pools()
+    assert cancelled.is_set()
+    assert not orch._pool_reconcile_lock().locked()
+    assert "Pool reconciliation timed out" in caplog.text
+    monkeypatch.setattr(orch, "_measure_pools", original)
+    monkeypatch.setattr(pools, "POOL_RECONCILE_TIMEOUT", 30)
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_pool_reconcile_and_watchdog_never_overlap(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    original = orch._measure_pools
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def measure(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    measurement = AsyncMock(side_effect=measure)
+    monkeypatch.setattr(orch, "_measure_pools", measurement)
+    first = asyncio.create_task(orch._reconcile_pools())
+    await entered.wait()
+    second = asyncio.create_task(orch._reconcile_pools())
+    try:
+        await orch._check_pool_progress()
+        await asyncio.sleep(0)
+        assert measurement.await_count == 1
+        release.set()
+        await asyncio.gather(first, second)
+        await orch.wait_for_pool_launches()
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+    finally:
+        release.set()
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
 
 
 class TestReconcilePools:
@@ -186,6 +1096,7 @@ class TestReconcilePools:
         for t in ("t1", "t2", "t3"):
             await ready(db, t)
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         pool = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
         assert len(pool) == 2  # max_active
         assert all(s.agent_id for s in pool)
@@ -217,12 +1128,14 @@ class TestReconcilePools:
 
     async def test_no_audit_row_when_nothing_scales(self, orch, db):
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.get_recent_events(event_type="pool.scaled") == []
 
     async def test_no_starts_when_disabled(self, orch, db):
         orch.config.swarm.enabled = False
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
 
     async def test_starved_pool_starts_nothing_when_no_workspace(self, orch, db):
@@ -230,6 +1143,7 @@ class TestReconcilePools:
             await db.delete_workspace(ws.id)
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
         assert await db.list_agents() == []
         # A starved pool is expected, not exceptional -- it must not
@@ -240,6 +1154,7 @@ class TestReconcilePools:
         orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
 
     async def test_drain_marks_idle_sessions_after_grace(self, orch, db):
@@ -248,24 +1163,30 @@ class TestReconcilePools:
         # (or possible) to make the session count as idle supply.
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session_id = (await db.list_sessions(lifecycle="pool"))[0].id
         await db.delete_task("t1")
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert (await db.get_session(session_id)).desired_state == "stopped"
 
     async def test_disabled_profile_starts_nothing_and_drains_idle_workers(self, orch, db):
         """The operator switch sizes the pool to zero without deleting it."""
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session_id = (await db.list_sessions(lifecycle="pool"))[0].id
 
         await db.update_profile("worker", enabled=False)
         await ready(db, "t2")
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         # No new worker for the newly ready task, and the idle one is drained.
         assert len(await db.list_sessions(lifecycle="pool")) == 1
@@ -274,13 +1195,16 @@ class TestReconcilePools:
     async def test_disabled_profile_leaves_a_worker_on_a_task_alone(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = (await db.list_sessions(lifecycle="pool"))[0]
         await db.update_session(session.id, task_id="t1")
 
         await db.update_profile("worker", enabled=False)
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         # Busy supply floors ``desired``: the task it holds runs to completion.
         assert (await db.get_session(session.id)).desired_state == "running"
@@ -291,6 +1215,7 @@ class TestReconcilePools:
 
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         session = (await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID))[0]
         assert str(uuid.UUID(session.id)) == session.id
@@ -313,6 +1238,7 @@ class TestReconcilePools:
         monkeypatch.setattr(db, "acquire_one_unlocked", _boom)
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         workers = await db.list_agents()
         assert len(workers) == 1 and workers[0].state == AgentState.IDLE
@@ -323,7 +1249,38 @@ class TestReconcilePools:
         until = orch._pool_quarantine.get((PROJECT_ID, "worker"))
         assert until is not None and until > time.time()
 
-    async def test_worktree_mode_grows_a_slot_and_starts(self, orch, db, tmp_path):
+    async def test_failed_acquisition_yields_next_tick_to_other_project(self, orch, db, tmp_path):
+        orch.config.swarm.max_starts_per_tick = 1
+        await db.create_project(Project(id="other", name="other"))
+        await db.create_workspace(Workspace(
+            id="other-ws", project_id="other", workspace_path=str(tmp_path / "other"),
+            source_type=RepoSourceType.LINK, kind_id="project-repo",
+        ))
+        for i in range(3):
+            await ready(db, f"backlog-{i}")
+        await db.create_task(Task(
+            id="other-task", project_id="other", title="other", description="",
+            status=TaskStatus.READY, profile_id="worker", route_source="legacy",
+        ))
+        acquire = db.acquire_one_unlocked
+
+        async def fail_busy_project(**kwargs):
+            if kwargs["project_id"] == PROJECT_ID:
+                return None
+            return await acquire(**kwargs)
+
+        db.acquire_one_unlocked = fail_busy_project
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        assert await db.list_sessions(lifecycle="pool") == []
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        sessions = await db.list_sessions(lifecycle="pool")
+        assert len(sessions) == 1
+        assert sessions[0].project_id == "other"
+
+    @pytest.mark.parametrize("workers", [1, 2])
+    async def test_worktree_mode_grows_a_slot_and_starts(self, orch, db, tmp_path, workers):
         orch.config.worktrees.enabled = True
         orch._worktree_slot_manager = _FakeSlotManager(db)
 
@@ -344,17 +1301,21 @@ class TestReconcilePools:
         )
         await db.create_workspace(base)
 
-        await ready(db, "t1")
+        for i in range(workers):
+            await ready(db, f"task-{i}")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         pool = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
-        assert len(pool) == 1
+        assert len(pool) == workers
         slots = await db.list_slots_for_base("base0")
-        assert len(slots) == 1 and slots[0].locked_by_agent_id == pool[0].agent_id
+        assert len(slots) == workers
+        assert {slot.locked_by_agent_id for slot in slots} == {row.agent_id for row in pool}
 
     async def test_terminate_pool_session_full_teardown(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = (await db.list_sessions(lifecycle="pool"))[0]
         claim_path = os.path.join(session.work_dir, CLAIM_FILE)
         write_claim_file(session.work_dir, {"task_id": "t1"})
@@ -368,6 +1329,67 @@ class TestReconcilePools:
         updated = await db.get_session(session.id)
         assert updated.state == "stopped"
         assert not os.path.exists(claim_path)
+
+    @pytest.mark.parametrize("stop_confirmed", [False, True])
+    @pytest.mark.parametrize("refusal_drain", [False, True])
+    async def test_terminate_pool_session_retains_attached_integration_owner(
+        self, orch, db, monkeypatch, stop_confirmed, refusal_drain
+    ):
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        session = (await db.list_sessions(lifecycle="pool"))[0]
+        claim_path = os.path.join(session.work_dir, CLAIM_FILE)
+        await db.update_session(session.id, task_id="t1", claim_phase="active")
+        await db.update_task("t1", status=TaskStatus.IN_PROGRESS, assigned_agent_id=session.agent_id)
+        await db.update_agent(session.agent_id, current_task_id="t1")
+        workspace = await db.get_workspace_for_agent(session.agent_id)
+        await db.update_workspace(workspace.id, locked_by_task_id="t1")
+        write_claim_file(session.work_dir, {"task_id": "t1", "claim_epoch": 0})
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1", repository_id="repo-1", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="attached",
+                    session_id=session.id, workspace_id=workspace.id,
+                    created_at=time.time(), updated_at=time.time(),
+                )
+            )
+
+        # Teardown must observe the active claim, not the pre-claim launch row.
+        session = await db.get_session(session.id)
+        if refusal_drain:
+            await db.update_session(
+                session.id, claim_phase="preparing", last_claim_epoch=0,
+                claim_failure_count=2, claim_failure_reason="index.lock",
+            )
+            session = await db.record_pool_claim_failure(
+                session.id, instance_token=session.instance_token,
+                claim_epoch=0, reason="index.lock", now=time.time(),
+            )
+            assert session.desired_state == "stopped"
+            assert not (await db.get_workspace(workspace.id)).enabled
+
+        if not stop_confirmed:
+            # The fake confirms a stop from its registry; a provider that
+            # cannot prove the exit must leave the session unstopped.
+            provider = orch.session_providers.create(session.provider, orch.config)
+            monkeypatch.setattr(provider, "confirm_stopped", AsyncMock(return_value=False))
+
+        await orch._terminate_pool_session(
+            session, reason="claim_refusals" if refusal_drain else "integration_owner",
+        )
+
+        updated = await db.get_session(session.id)
+        agent = await db.get_agent(session.agent_id)
+        # A confirmed exit is recorded (recovery needs it) without releasing
+        # anything the attached owner still holds.
+        assert (updated.state == "stopped") is stop_confirmed
+        assert updated.task_id == "t1"
+        assert agent.state is not AgentState.IDLE
+        assert (await db.get_workspace(workspace.id)).locked_by_agent_id == session.agent_id
+        assert (await db.get_workspace(workspace.id)).enabled is not refusal_drain
+        assert os.path.exists(claim_path)
 
     async def test_startup_warns_when_pool_profiles_but_swarm_disabled(self, orch, caplog):
         """I5 / ruling P2-17: say out loud that the flag strands pool work."""
@@ -404,6 +1426,7 @@ class TestReconcilePools:
     async def test_schedule_excludes_pool_profile_task_and_pool_agent(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         pool_sessions = await db.list_sessions(lifecycle="pool")
         assert len(pool_sessions) == 1
         pool_agent_id = pool_sessions[0].agent_id
@@ -427,6 +1450,7 @@ async def test_durable_pool_reuses_definition_after_teardown(orch, db):
     await db.create_agent(Agent(id="configured-worker", name="Keeper", profile_id="worker", model="fixed-model"))
     await ready(db, "task-a")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     first = (await db.list_sessions(lifecycle="pool"))[0]
     assert first.agent_id == "configured-worker"
     assert first.model == "fixed-model" and first.llm_provider == "anthropic"
@@ -445,6 +1469,7 @@ async def test_durable_pool_reuses_definition_after_teardown(orch, db):
 async def test_pool_stop_failure_keeps_worker_and_workspace_unavailable(orch, db, monkeypatch):
     await ready(db, "task-a")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     record = (await db.list_sessions(lifecycle="pool"))[0]
     provider = orch.session_providers.create(record.provider, orch.config)
     monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("cannot confirm exit")))
@@ -457,20 +1482,67 @@ async def test_pool_stop_failure_keeps_worker_and_workspace_unavailable(orch, db
 async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db):
     await ready(db, "pooled")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
-    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    # Ordinary task capabilities still reuse idle definitions; role routes
+    # have their own durable identity contract, exercised below.
+    await db.create_profile(AgentProfile(id="specialist", name="Specialist", harness="claude"))
     await ready(
-        db, "push", profile_id="reviewer", intelligence_class="standard-medium"
+        db, "push", profile_id="specialist", intelligence_class="standard-medium"
     )
     actions = await orch._schedule()
     assert [(a.task_id, a.agent_id) for a in actions] == [("push", row.agent_id)]
     assert (await db.get_agent(row.agent_id)).profile_id == "worker"
 
 
+@pytest.mark.parametrize("existing_role", [False, True])
+async def test_stopped_pool_worker_cannot_take_role_assignment(orch, db, existing_role):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch._terminate_pool_session(row, reason="rotate")
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    if existing_role:
+        await db.create_agent(Agent(id="role-agent", name="Review Work", profile_id="reviewer"))
+    await ready(db, "push", profile_id="reviewer", intelligence_class="standard-medium")
+    actions = await orch._schedule()
+    assert len(actions) == 1 and actions[0].task_id == "push"
+    assert actions[0].agent_id != row.agent_id
+    role = await db.get_agent(actions[0].agent_id)
+    assert role.profile_id == "reviewer"
+    if existing_role:
+        assert role.id == "role-agent" and role.name == "Review Work"
+    assert len([agent for agent in await db.list_agents() if agent.profile_id == "reviewer"]) == 1
+    assert (await db.get_agent(row.agent_id)).profile_id == "worker"
+
+
+async def test_idle_pool_session_uses_push_cap_until_confirmed_stopped(orch, db):
+    await db.update_project(PROJECT_ID, max_concurrent_agents=1)
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    assert row.task_id is None
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    await ready(db, "push", profile_id="reviewer", intelligence_class="standard-medium")
+
+    assert await orch._schedule() == []
+    assert orch._last_scheduler_state.project_active_agent_counts == {PROJECT_ID: 1}
+    assert not any(agent.profile_id == "reviewer" for agent in await db.list_agents())
+
+    await orch._terminate_pool_session(row, reason="rotate")
+
+    actions = await orch._schedule()
+    assert [action.task_id for action in actions] == ["push"]
+    assert orch._last_scheduler_state.project_active_agent_counts == {}
+
+
 async def test_repeated_pool_teardown_does_not_steal_new_launch_reservation(orch, db):
     await ready(db, "pooled")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
     assert await db.reserve_idle_agent(row.agent_id)
@@ -499,16 +1571,20 @@ async def test_first_pool_claim_survives_launch_completion(orch, db, monkeypatch
 
     monkeypatch.setattr(db, "create_session", claim_immediately_after_insert)
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     agent = await db.get_agent(row.agent_id)
     assert agent.state == AgentState.BUSY and agent.current_task_id == "pooled"
-    assert visible_states == [AgentState.IDLE]
+    # Registration is observable while the agent remains reserved; launch
+    # acknowledgement must preserve the claim made during that window.
+    assert visible_states == [AgentState.BUSY]
 
 
 async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, monkeypatch):
     import asyncio
     await ready(db, "pooled")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     provider = orch.session_providers.create(row.provider, orch.config)
     original_stop = provider.stop
@@ -525,3 +1601,700 @@ async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, m
     )
     assert stop.await_count == 1
     assert (await db.get_agent(row.agent_id)).state == AgentState.IDLE
+
+
+@pytest.mark.parametrize("changed", ["instance", "claim"])
+async def test_late_pool_teardown_preserves_current_instance_and_claim(orch, db, changed):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    old = (await db.list_sessions(lifecycle="pool"))[0]
+    if changed == "instance":
+        await db.update_session(old.id, instance_token="replacement")
+    else:
+        await db.update_session(old.id, task_id="pooled", last_claim_epoch=1, claim_phase="active")
+    before = await db.get_session(old.id)
+    agent_before = await db.get_agent(old.agent_id)
+    await orch._terminate_pool_session(old, reason="context_thrash")
+    assert await db.get_session(old.id) == before
+    assert await db.get_agent(old.agent_id) == agent_before
+
+
+# ---------------------------------------------------------------------------
+# Global keying: one pool per profile, placement decides the project.
+# ---------------------------------------------------------------------------
+
+
+async def second_project(db, *, path="/tmp/second-ws"):
+    """A second ACTIVE project with one free ``project-repo`` workspace."""
+    await db.create_project(Project(id="second", name="Second"))
+    await db.create_workspace(
+        Workspace(
+            id="second-ws",
+            project_id="second",
+            workspace_path=path,
+            source_type=RepoSourceType.LINK,
+            kind_id="project-repo",
+        )
+    )
+
+
+async def test_measure_pools_aggregates_projects_under_one_profile_key(orch, db, tmp_path):
+    """Two projects, one profile, one pool — with the per-project breakdown and
+    a placement candidate each kept alongside the aggregate."""
+    from src.scheduler import PoolKey
+
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await ready(db, "t1")
+    await ready(db, "t2")
+    await db.update_task("t2", project_id="second")
+
+    measurement = await orch._measure_pools()
+
+    key = PoolKey("worker")
+    assert set(measurement.supply) == {key}
+    assert set(measurement.bounds) == {key}
+    assert measurement.bounds[key] == (0, 2)  # the profile's own bounds, once
+    assert measurement.demand[key] == 2  # summed across both projects
+    assert set(measurement.supply[key].by_project) == {PROJECT_ID, "second"}
+    assert {c.project_id for c in measurement.candidates[key]} == {PROJECT_ID, "second"}
+    assert set(measurement.projects) == {PROJECT_ID, "second"}
+
+
+async def test_idle_worker_whose_claim_loop_went_silent_is_not_supply(orch, db):
+    """swift-dune: a worker parked on a usage-limit screen must not absorb demand.
+
+    Two such sessions counted as idle supply on 2026-09-21, so the sizer saw
+    its demand met and a READY task waited behind workers that never claim.
+    """
+    from src.pool_claims import pool_claim_loop_stall_seconds
+    from src.scheduler import PoolKey
+
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    stuck = (await db.list_sessions(lifecycle="pool"))[0]
+    sup = (await orch._measure_pools()).supply[PoolKey("worker")]
+    assert (sup.running_idle, sup.unresponsive) == (1, 0)
+
+    # Nothing has entered ``task_claim`` from it for two long-poll windows.
+    silent_since = time.time() - pool_claim_loop_stall_seconds(orch.config.swarm) - 1
+    await db.update_session(stuck.id, last_activity=silent_since, started_at=silent_since)
+    sup = (await orch._measure_pools()).supply[PoolKey("worker")]
+    assert (sup.running_idle, sup.unresponsive, sup.idle_session_ids) == (0, 1, [])
+    assert sup.by_project[PROJECT_ID].unresponsive == 1
+    assert sup.by_project[PROJECT_ID].idle_session_ids == []
+
+    # ...so the ready task gets a working session of its own.
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    live = [s for s in await db.list_sessions(lifecycle="pool") if s.id != stuck.id]
+    assert len(live) == 1 and live[0].state == "running"
+    assert (await db.get_session(stuck.id)).desired_state == "running"
+
+
+async def test_draining_idle_worker_is_not_supply_and_the_ready_task_gets_a_new_one(orch, db):
+    """fair-grove-86: a worker retired after its task never absorbs new demand.
+
+    ``fresh_context_per_task`` leaves a closed worker idle at its prompt with
+    ``desired_state='stopped'`` until the session reconciler tears it down.
+    Until then it is draining: not idle, not offered to a drain, not part of
+    placement's ``live`` -- so READY work behind it still gets a worker.
+    """
+    from src.scheduler import PoolKey
+
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    retired = (await db.list_sessions(lifecycle="pool"))[0]
+    await db.update_session(retired.id, desired_state="stopped")
+
+    measurement = await orch._measure_pools()
+    sup = measurement.supply[PoolKey("worker")]
+    assert (sup.draining, sup.running_idle, sup.idle_session_ids) == (1, 0, [])
+    (cand,) = measurement.candidates[PoolKey("worker")]
+    assert (cand.live, cand.project_live_total, cand.idle_session_ids) == (0, 0, ())
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    live = [s for s in await db.list_sessions(lifecycle="pool") if s.id != retired.id]
+    assert len(live) == 1 and (live[0].state, live[0].desired_state) == ("running", "running")
+
+
+async def test_measure_pools_records_placement_inputs_per_project(orch, db, tmp_path):
+    from src.scheduler import PoolKey
+
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    orch._pool_quarantine[("second", "worker")] = time.time() + 60
+    await ready(db, "t1")
+
+    measurement = await orch._measure_pools()
+    by_project = {c.project_id: c for c in measurement.candidates[PoolKey("worker")]}
+
+    assert by_project["second"].quarantined is True
+    assert by_project[PROJECT_ID].quarantined is False
+    assert by_project[PROJECT_ID].workspace_capacity == 2  # the fixture's two links
+    assert by_project[PROJECT_ID].ready == 1
+    assert by_project["second"].ready == 0
+    # ``max_concurrent_agents`` is a placement input now, not a pool bound.
+    project = await db.get_project(PROJECT_ID)
+    assert by_project[PROJECT_ID].project_cap == project.max_concurrent_agents
+
+
+async def test_quarantined_project_does_not_burn_the_fleets_start_budget(orch, db, tmp_path):
+    """Quarantine is an eligibility predicate, checked before a start is spent.
+
+    It used to be checked *after* the sizer had already picked a key, so a
+    single broken project could consume the tick's whole start budget and
+    leave a healthy one with nothing.
+    """
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
+    await ready(db, "t1")
+    await ready(db, "t2")
+    await db.update_task("t2", project_id="second")
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert [s.project_id for s in sessions] == ["second"]
+
+
+async def test_every_project_quarantined_starves_rather_than_starting(orch, db, tmp_path):
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    now = time.time()
+    orch._pool_quarantine[(PROJECT_ID, "worker")] = now + 60
+    orch._pool_quarantine[("second", "worker")] = now + 60
+    await ready(db, "t1")
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    assert await db.list_sessions(lifecycle="pool") == []
+    assert await db.get_recent_events(event_type="pool.scaled") == []
+
+
+async def test_pool_scaled_payload_carries_the_placement_reason(orch, db):
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    scaled = [
+        call.args[1] for call in orch.bus.emit.await_args_list if call.args[0] == "pool.scaled"
+    ]
+    assert len(scaled) == 1
+    assert scaled[0]["project_id"] == PROJECT_ID
+    assert scaled[0]["profile_id"] == "worker"
+    assert scaled[0]["kind"] == "start"
+    assert scaled[0]["placement_reason"] == "deficit"
+
+
+async def test_drain_event_reports_the_project_the_worker_actually_left(orch, db):
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    await db.delete_task("t1")
+    orch.config.swarm.scale_down_grace = 0
+    orch.bus.emit.reset_mock()
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    drains = [
+        call.args[1]
+        for call in orch.bus.emit.await_args_list
+        if call.args[0] == "pool.scaled" and call.args[1]["kind"] == "drain"
+    ]
+    assert [(d["project_id"], d["count"]) for d in drains] == [(PROJECT_ID, 1)]
+    # A drain has no placement reason: nothing was placed.
+    assert "placement_reason" not in drains[0]
+
+
+async def test_global_cap_bounds_the_whole_fleet(orch, db, tmp_path):
+    """``global_cap`` was hardcoded ``None`` at the call site, so the fleet had no
+    box-wide bound at all.  It now resolves to ``resources.max_concurrent_agents``
+    unless ``swarm.global_max_active`` overrides it."""
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    orch.config.resources.max_concurrent_agents = 1
+    await ready(db, "t1")
+    await ready(db, "t2")
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_swarm_global_max_active_overrides_the_resource_cap(orch, db):
+    orch.config.resources.max_concurrent_agents = 8
+    orch.config.swarm.global_max_active = 1
+    await ready(db, "t1")
+    await ready(db, "t2")
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_starvation_is_reported_once_per_condition_not_once_per_tick(orch, db, caplog):
+    """The pool step runs every five seconds, and a fleet with nowhere to put a
+    worker stays that way until an operator acts.  One warning per condition,
+    not one per tick — the same restraint the quarantine window buys."""
+    for ws in await db.list_workspaces(PROJECT_ID):
+        await db.delete_workspace(ws.id)
+    await ready(db, "t1")
+
+    with caplog.at_level(logging.WARNING, logger="src.orchestrator.pools"):
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        first = [r.getMessage() for r in caplog.records if r.name == "src.orchestrator.pools"]
+        caplog.clear()
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        second = [r.getMessage() for r in caplog.records if r.name == "src.orchestrator.pools"]
+
+    assert len(first) == 1
+    assert "no eligible project" in first[0] and "no workspace capacity" in first[0]
+    assert second == []
+
+
+async def test_all_quarantined_starvation_does_not_re_warn_over_the_quarantine(orch, db, caplog):
+    """``_quarantine_pool`` already said this, once, with the startup output
+    attached; a second warning per tick is the wall of noise it exists to stop."""
+    orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
+    await ready(db, "t1")
+
+    with caplog.at_level(logging.WARNING, logger="src.orchestrator.pools"):
+        await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+
+    assert [r for r in caplog.records if r.name == "src.orchestrator.pools"] == []
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_min_per_project_parks_a_warm_worker_in_every_eligible_project(
+    orch, db, tmp_path
+):
+    """The knob that buys back what global sizing costs: a stated per-project
+    reservation raises the fleet floor *and* is placed where it was promised,
+    with no ready work anywhere."""
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await db.update_profile("worker", min_active=0, max_active=4, min_per_project=1)
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert sorted(s.project_id for s in sessions) == ["proj", "second"]
+    reasons = {
+        call.args[1]["project_id"]: call.args[1].get("placement_reason")
+        for call in orch.bus.emit.await_args_list
+        if call.args[0] == "pool.scaled"
+    }
+    assert reasons == {"proj": "warm_floor", "second": "warm_floor"}
+
+
+async def test_a_quarantined_project_holds_no_warm_reservation_open(orch, db, tmp_path):
+    """``min_per_project`` raises the effective floor only for projects that could
+    actually host the worker — otherwise a broken project would park a slot of
+    the fleet's floor against a project that cannot use it."""
+    from src.scheduler import PoolKey
+
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await db.update_profile("worker", min_active=0, max_active=4, min_per_project=1)
+    orch._pool_quarantine[("second", "worker")] = time.time() + 60
+
+    measurement = await orch._measure_pools()
+
+    assert measurement.bounds[PoolKey("worker")] == (1, 4)
+
+
+async def test_reconcile_relocates_idle_capacity_without_raising_global_cap(orch, db, tmp_path):
+    """A full pool can serve a new project's queue after its old queue empties."""
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await db.update_profile("worker", max_active=1)
+    orch.config.swarm.global_max_active = 1
+    orch.config.swarm.scale_down_grace = 0
+    await ready(db, "old-demand")
+    await db.update_task("old-demand", project_id="second")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert len(sessions) == 1
+    old = sessions[0]
+    assert old.project_id == "second"
+    await db.update_session(old.id, state="running")
+    await db.delete_task("old-demand")
+    await ready(db, "new-demand")
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+
+    assert (await db.get_session(old.id)).desired_state == "stopped"
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+    # A later sizing pass, after retirement, may launch in the demanding project.
+    await db.update_session(old.id, state="stopped")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    successors = [s for s in await db.list_sessions(lifecycle="pool") if s.id != old.id]
+    assert len(successors) == 1
+    assert successors[0].project_id == PROJECT_ID
+    assert (await db.get_task("new-demand")).status is TaskStatus.READY
+
+
+async def test_slow_launch_does_not_block_other_project_or_oversubscribe(orch, db, tmp_path, monkeypatch):
+    import asyncio
+
+    from src.scheduler import PoolKey
+
+    await ready(db, "slow-task")
+    await db.create_project(Project(id="second", name="Second"))
+    await db.create_workspace(Workspace(id="second-ws", project_id="second",
+        workspace_path=str(tmp_path / "second"), source_type=RepoSourceType.LINK,
+        kind_id="project-repo"))
+    await db.create_task(Task(id="fast-task", project_id="second", title="Fast",
+        description="", status=TaskStatus.READY, profile_id="worker", route_source="legacy"))
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered, release, fast_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def start(spec):
+        if "--proj--" in spec.session_name:
+            entered.set()
+            await release.wait()
+        result = await original(spec)
+        if "--second--" in spec.session_name:
+            fast_started.set()
+        return result
+
+    monkeypatch.setattr(provider, "start", start)
+    await asyncio.wait_for(orch._reconcile_pools(), timeout=5)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await asyncio.wait_for(fast_started.wait(), timeout=5)
+    # The slow launch has a committed STARTING row and reserved capacity.
+    measurement = await orch._measure_pools()
+    supply = measurement.supply[PoolKey("worker")]
+    assert supply.starting + supply.running_idle + supply.running_busy == 2
+    for _ in range(3):
+        await orch._reconcile_pools()
+    assert len(provider.starts) == 1
+    assert len(orch._pool_launches) == 1
+    release.set()
+    await orch.wait_for_pool_launches()
+    rows = await db.list_sessions(lifecycle="pool")
+    assert {row.project_id for row in rows} == {PROJECT_ID, "second"}
+    assert len({row.agent_id for row in rows}) == 2
+    assert not orch._pool_launches
+
+
+async def test_cancelled_background_start_stops_process_and_releases_resources(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered = asyncio.Event()
+
+    async def start(spec):
+        result = await original(spec)
+        entered.set()
+        await asyncio.Event().wait()
+        return result
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    assert any(ws.locked_by_agent_id for ws in await db.list_workspaces(PROJECT_ID))
+    await orch.wait_for_pool_launches(cancel=True)
+    assert not orch._pool_launches
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1
+    assert rows[0].state == rows[0].desired_state == "stopped"
+    assert rows[0].ended_at and rows[0].end_reason == "launch_failed"
+    assert all(ws.locked_by_agent_id is None for ws in await db.list_workspaces(PROJECT_ID))
+    assert all(agent.state == AgentState.IDLE for agent in await db.list_agents())
+    assert provider.sessions == {}
+
+
+async def test_cancelled_reservation_waits_for_commit_before_releasing(orch, db, monkeypatch):
+    import asyncio
+
+    from src.models import Agent
+
+    await db.create_agent(Agent(id="existing", name="Existing", profile_id="worker"))
+    original = db.reserve_idle_agent
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def reserve(agent_id):
+        result = await original(agent_id)
+        entered.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(db, "reserve_idle_agent", reserve)
+    task = asyncio.create_task(orch._launch_pool_session(
+        await db.get_project(PROJECT_ID), await db.get_profile("worker")))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (await db.get_agent("existing")).state == AgentState.IDLE
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_live_slow_launch_identity_survives_reconciler_reservation_timeout(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    entered, release = asyncio.Event(), asyncio.Event()
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+
+    async def start(spec):
+        entered.set()
+        await release.wait()
+        return await original(spec)
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    agent_id = next(iter(orch._launching_pool_agent_ids()))
+    await db.update_agent(agent_id, last_heartbeat=time.time() - 300)
+    await orch._schedule()
+    assert (await db.get_agent(agent_id)).state == AgentState.BUSY
+    release.set()
+    await orch.wait_for_pool_launches()
+
+
+@pytest.mark.parametrize("constraint", ["global", "project", "workspace"])
+async def test_pending_launch_reserves_shared_capacity_across_profiles(orch, db, monkeypatch, constraint):
+    import asyncio
+
+    await db.create_profile(AgentProfile(id="other", name="Other", lifecycle="pool",
+        min_active=0, max_active=2, harness="claude"))
+    await ready(db, "task-a")
+    await ready(db, "task-b", profile_id="other")
+    if constraint == "global":
+        orch.config.resources.max_concurrent_agents = 1
+    elif constraint == "project":
+        await db.update_project(PROJECT_ID, max_concurrent_agents=1)
+    else:
+        await db.delete_workspace("ws1")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered, release = asyncio.Event(), asyncio.Event()
+    attempted = []
+
+    async def start(spec):
+        attempted.append(spec)
+        entered.set()
+        await release.wait()
+        return await original(spec)
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    for _ in range(3):
+        await orch._reconcile_pools()
+    assert len(attempted) == 1
+    assert len(orch._pool_launches) == 1
+    release.set()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_slow_provider_does_not_hide_another_free_workspace(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "first")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    first, second, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    attempts = []
+
+    async def start(spec):
+        attempts.append(spec)
+        (first if len(attempts) == 1 else second).set()
+        await release.wait()
+        return await original(spec)
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(first.wait(), timeout=5)
+    await ready(db, "second")
+    await orch._reconcile_pools()
+    await asyncio.wait_for(second.wait(), timeout=5)
+    assert len(orch._pool_launches) == 2
+    release.set()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 2
+
+
+async def test_cancelled_start_keeps_resources_when_process_stop_is_unconfirmed(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered = asyncio.Event()
+
+    async def start(spec):
+        await original(spec)
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(provider, "start", start)
+    monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("unknown process state")))
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await orch.wait_for_pool_launches(cancel=True)
+    assert provider.sessions
+    assert any(ws.locked_by_agent_id for ws in await db.list_workspaces(PROJECT_ID))
+    # The registered writer retains its BUSY reservation until reconciliation
+    # proves termination; it no longer needs an untracked ERROR placeholder.
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1 and rows[0].state == "starting"
+    assert all(agent.state == AgentState.BUSY for agent in await db.list_agents())
+    assert not orch._pool_launches
+
+
+async def test_cancellation_after_session_insert_preserves_durable_owner(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    entered = asyncio.Event()
+
+    async def emit(event, *args, **kwargs):
+        if event == "pool.session_started":
+            entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(orch.bus, "emit", emit)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    before = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch.wait_for_pool_launches(cancel=True)
+    after = await db.get_session(before.id)
+    assert after.state == "running"
+    assert (await db.get_workspace_for_agent(after.agent_id)) is not None
+    provider = orch.session_providers.create("fake", orch.config)
+    assert len(provider.sessions) == 1
+    assert not orch._pool_launches
+
+
+async def test_timeout_pool_cleanup_respects_wait_but_operator_stop_wins(orch, db, monkeypatch):
+    from src.models import TaskStatus
+
+    await ready(db, "waiting")
+    sid = await orch._launch_pool_session(await db.get_project(PROJECT_ID), await db.get_profile("worker"))
+    row = await db.get_session(sid)
+    await db.transition_task("waiting", TaskStatus.IN_PROGRESS, assigned_agent_id=row.agent_id)
+    task = await db.get_task("waiting")
+    await db.update_agent(row.agent_id, state=AgentState.BUSY, current_task_id="waiting")
+    await db.update_session(sid, task_id="waiting", claim_phase="active", last_claim_epoch=task.claim_epoch)
+    now = time.time()
+    wait = await db.register_agent_wait(
+        identity={"session_id": sid, "instance_token": row.instance_token,
+                  "project_id": PROJECT_ID, "claim_epoch": task.claim_epoch, "elevated": False},
+        kind="timer", match={"due_at": now + 1000}, deadline_at=now + 2000,
+        idempotency_key="pool-cleanup", now=now,
+    )
+    row = await db.get_session(sid)
+    for reason in ("stalled", "stuck_timeout", "prepare_timeout", "claim_loop_stalled"):
+        await orch._terminate_pool_session(row, reason=reason)
+        current = await db.get_session(sid)
+        assert current.state == "running" and current.task_id == "waiting"
+        assert (await db.get_agent(row.agent_id)).state == AgentState.BUSY
+        assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
+    await orch._terminate_pool_session(row, reason="operator")
+    assert (await db.get_session(sid)).state == "stopped"
+    await db.reconcile_agent_waits(now=now + 1)
+    assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("status,expected_busy", [
+    (TaskStatus.WAITING, 1), (TaskStatus.HIBERNATED, 0),
+])
+async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expected_busy):
+    from src.scheduler import PoolKey
+
+    await ready(db, "held")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    session = (await db.list_sessions(lifecycle="pool"))[0]
+    await db.transition_task("held", status, force=True)
+    await db.update_session(session.id, task_id="held", claim_phase="active")
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == 0
+    supply = measurement.supply[PoolKey("worker")]
+    assert supply.running_busy == expected_busy
+    assert supply.running_idle == 0
+
+
+async def test_native_demand_launches_matching_workspace_and_counts_supply_once(orch, db, tmp_path):
+    from src.scheduler import PoolKey, project_pool_candidates
+
+    kind = await db.resolve_workspace_kind(PROJECT_ID, "project-repo")
+    await db.upsert_workspace_kind(replace(kind, id="native", project_id=PROJECT_ID))
+    await db.create_workspace(Workspace(id="native", project_id=PROJECT_ID,
+                                       workspace_path=str(tmp_path / "native"),
+                                       source_type=RepoSourceType.LINK, kind_id="native"))
+    await ready(db, "native-task")
+    await db.add_task_workspace_requirements("native-task", [("native", None)])
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1
+    assert rows[0].work_dir == str(tmp_path / "native")
+    measurement = await orch._measure_pools()
+    key = PoolKey("worker")
+    assert measurement.supply[key].running_idle == 1
+    assert measurement.supply[key].by_project[PROJECT_ID].running_idle == 1
+    native = next(c for c in measurement.candidates[key] if c.workspace_kind == "native")
+    ordinary = next(c for c in measurement.candidates[key] if c.workspace_kind == "project-repo")
+    assert (native.ready, len(native.idle_session_ids)) == (1, 1)
+    assert (ordinary.ready, len(ordinary.idle_session_ids)) == (0, 0)
+    assert len(project_pool_candidates(measurement.candidates[key])) == 1
+
+
+async def test_admission_view_projects_identical_ids_counts_and_reasons(
+    orch, db, git_first_frontier,
+):
+    from src.database.tables import task_branch_origins
+    from src.models import Task, TaskStatus
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    await db.create_task(Task(
+        id="independent", project_id=PROJECT_ID, title="Independent", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+        repo_id="repo", branch_name="aq/independent",
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("independent", "epic", conn=conn, integration_authorized=True)
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin-independent", task_id="independent", repository_id="repo",
+            branch_name="aq/independent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    view = await orch._delivery_admission(["second", "independent"])
+    assert view.allowed == {"second", "independent"}
+    assert await view.counts(PROJECT_ID) == {"worker": 2}
+    assert not any(view.reasons.values())
+    assert set(await db.hierarchy_runnable_task_ids(
+        view.candidate_ids, hierarchy_modes=view.hierarchy_modes,
+    )) == view.allowed
+
+    env.observer.truth = None
+    unknown = await orch._delivery_admission(["second", "independent"])
+    assert unknown.allowed == {"independent"}
+    assert await unknown.counts(PROJECT_ID) == {"worker": 1}
+    assert [reason["code"] for reason in unknown.reasons["second"]] == [
+        "delivery_evidence_unavailable",
+    ]
+    assert not unknown.reasons.get("independent")

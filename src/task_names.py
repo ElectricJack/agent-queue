@@ -99,14 +99,37 @@ def naming_depth(task_id: str) -> int:
 
 
 async def _task_identity_exists(conn, name: str) -> bool:
+    """Whether *name* is taken by a task, an archive, or surviving integration identity.
+
+    Checkpoints, branch origins (retired ones too: they can still carry a
+    pending discard of the branch) and branch fences are keyed by task id and
+    outlive a deleted task.  A task minted onto that name would inherit them —
+    its close then verifies the predecessor's fence (steady-willow).
+    """
     from sqlalchemy import select, union_all
-    from src.database.tables import archived_tasks, tasks
+
+    from src.database.tables import (
+        archived_tasks,
+        integration_branch_owners,
+        task_branch_origins,
+        task_integration_checkpoints,
+        tasks,
+    )
 
     row = (
         await conn.execute(
             union_all(
                 select(tasks.c.id).where(tasks.c.id == name),
                 select(archived_tasks.c.id).where(archived_tasks.c.id == name),
+                select(task_integration_checkpoints.c.task_id).where(
+                    task_integration_checkpoints.c.task_id == name
+                ),
+                select(task_branch_origins.c.task_id).where(
+                    task_branch_origins.c.task_id == name
+                ),
+                select(integration_branch_owners.c.owner_id).where(
+                    integration_branch_owners.c.owner_id == name
+                ),
             ).limit(1)
         )
     ).first()
@@ -114,7 +137,7 @@ async def _task_identity_exists(conn, name: str) -> bool:
 
 
 async def fresh_root_id(conn) -> str:
-    """A fresh adjective-noun root id, reserving active and archived identities."""
+    """A fresh adjective-noun root id, reserving every identity the name still keys."""
 
     for _ in range(_MAX_RETRIES):
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}"

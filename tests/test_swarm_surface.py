@@ -9,17 +9,47 @@ import pytest
 from click.testing import CliRunner
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.models import Project
+from src.models import AgentProfile, Project
 from src.orchestrator import Orchestrator
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 def defs():
     return {d["name"]: d for d in _ALL_TOOL_DEFINITIONS}
+
+
+def test_task_show_field_page_survives_cli_rendering(monkeypatch):
+    from src.cli import tasks
+    from src.cli.app import cli
+
+    sent = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, command, args=None):
+            sent.update(command=command, args=args)
+            return {"success": True, "id": "t1", "field": "description", "content": "[literal]",
+                    "offset": 20, "next_offset": 29, "total_chars": 100}
+
+    monkeypatch.setattr(tasks, "_get_client", lambda *a, **k: FakeClient())
+    result = CliRunner().invoke(cli, ["task", "show", "t1", "--field", "description",
+                                     "--offset", "20", "--limit", "100"])
+    assert result.exit_code == 0, result.output
+    assert "[literal]" in result.output
+    assert "--offset 29 --limit 100" in result.output
+    assert sent == {"command": "task_show", "args": {
+        "task_id": "t1", "field": "description", "offset": 20, "limit": 100,
+    }}
 
 
 def test_task_claim_definition():
@@ -280,13 +310,13 @@ def test_cli_claim_timeout_is_long():
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
+    db = Database(lease_dsn("test.db"))
     await db.initialize()
     await db.create_project(Project(id=PROJECT_ID, name="p"))
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     orch = Orchestrator(cfg)
@@ -308,6 +338,44 @@ async def test_pool_status_empty(handler):
     assert res == {"success": True, "pools": []}
 
 
+async def test_a_pool_with_no_active_project_is_still_listed(handler):
+    """A fresh install's default pool exists before its first project.
+
+    The measurement walks active projects, so with none the status said "No
+    worker pools configured." while a pool was configured.
+    """
+    from src.models import ProjectStatus
+
+    await handler.db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
+    await handler.db.create_profile(
+        AgentProfile(
+            id="standard-high-claude", name="Standard high", lifecycle="pool",
+            harness="claude", default_class="standard-high", min_active=0, max_active=4,
+        )
+    )
+    await handler.db.create_profile(
+        AgentProfile(id="deep-high-claude", name="Deep", lifecycle="task", harness="claude")
+    )
+
+    pools = (await handler._cmd_pool_status({}))["pools"]
+
+    assert [row["profile_id"] for row in pools] == ["standard-high-claude"]
+    row = pools[0]
+    assert (row["min_active"], row["max_active"], row["running_busy"]) == (0, 4, 0)
+    assert row["projects"] == [] and "no active project" in row["note"]
+
+
+async def test_a_project_filter_does_not_invent_unplaced_pools(handler):
+    from src.models import ProjectStatus
+
+    await handler.db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
+    await handler.db.create_profile(
+        AgentProfile(id="standard-high-claude", name="S", lifecycle="pool", harness="claude")
+    )
+
+    assert (await handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"] == []
+
+
 async def test_pool_scale_requires_min_or_max(handler):
     res = await handler._cmd_pool_scale({"profile_id": "worker"})
     assert res == {"success": False, "error": "nothing to change: pass min and/or max"}
@@ -317,6 +385,33 @@ def test_skill_documents_worker_loop():
     text = open("src/skills/aq-tasks/SKILL.md", encoding="utf-8").read()
     assert "aq task claim --next" in text and "--claim-next" in text
     assert "--outcome pass|fail" in text and "needs_context" not in text
+
+
+def test_skill_documents_planner_scoped_graph_filing():
+    """Planner guidance distinguishes held-parent filing from phased planning."""
+    from src.api.scope import AGENT_COMMAND_SET
+    from src.profiles.parser import parse_profile
+
+    skill = open("src/skills/aq-tasks/SKILL.md", encoding="utf-8").read()
+    planner = parse_profile(
+        open("src/profiles/defaults/planner/profile.md", encoding="utf-8").read()
+    )
+    supervisor = parse_profile(
+        open("src/profiles/defaults/supervisor/profile.md", encoding="utf-8").read()
+    )
+
+    assert planner.errors == []
+    assert supervisor.errors == []
+    assert "create_task_graph" in AGENT_COMMAND_SET
+    assert "create_task_graph" in planner.capabilities["aq_commands"]
+    assert {"create_task", "create_task_graph", "phase_create"} <= set(
+        supervisor.capabilities["aq_commands"]
+    )
+    assert "**Supervisor or loopback workflow.**" in skill
+    assert "**Planner workflow.**" in skill
+    assert "fenced to the planning task it holds" in skill
+    assert "`phases:` needs a root graph" in skill
+    assert "**Checklist ownership.**" in skill
 
 
 # ─────────────────── pool scale writes the vault (spec §14) ──────────────
@@ -335,9 +430,11 @@ Do the work.
 
 ```json
 {
+  "harness": "fake",
   "lifecycle": "pool",
   "min_active": 1,
-  "max_active": 2
+  "max_active": 2,
+  "default_class": "deep-high"
 }
 ```
 
@@ -396,13 +493,17 @@ async def test_pool_scale_db_row_matches_vault(pool_handler, tmp_path):
     assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
 
 
-async def test_pool_scale_accepts_project_id_as_a_deprecated_no_op(pool_handler, tmp_path):
-    """Existing scripts keep working, and are told the argument is ignored."""
+async def test_pool_scale_ignores_project_id_without_warning(pool_handler, tmp_path):
+    """The deprecation window is over: the argument is simply not pool identity.
+
+    It stays accepted so existing scripts keep working, but a pool is a
+    profile now and there is nothing left to warn about.
+    """
     res = await pool_handler._cmd_pool_scale(
         {"project_id": PROJECT_ID, "profile_id": "worker", "min": 2, "max": 5}
     )
     assert res["success"], res
-    assert res["warnings"] and "deprecated" in res["warnings"][0]
+    assert res["warnings"] == []
     system = await pool_handler.db.get_profile("worker")
     assert (system.min_active, system.max_active) == (2, 5)
     assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
@@ -617,6 +718,20 @@ async def test_pool_scale_reports_each_project_cap(pool_handler):
     assert caps[PROJECT_ID]["effective_max_active"] == 2
 
 
+async def test_pool_scale_effective_max_folds_in_the_box_wide_ceiling(pool_handler):
+    """``swarm.global_max_active`` bounds a pool no project cap would have."""
+    await pool_handler.db.update_project(PROJECT_ID, max_concurrent_agents=50)
+    pool_handler.config.swarm.global_max_active = 3
+
+    scaled = await pool_handler._cmd_pool_scale({"profile_id": "worker", "max": 9})
+    assert scaled["success"], scaled
+    caps = {row["project_id"]: row for row in scaled["project_caps"]}
+    assert caps[PROJECT_ID]["max_concurrent_agents"] == 50
+    # Neither the pool's own max nor this project's generous cap is the
+    # binding constraint -- the box-wide ceiling is.
+    assert caps[PROJECT_ID]["effective_max_active"] == 3
+
+
 async def test_disabled_pool_stays_listed_and_is_sized_to_zero(pool_handler):
     """A disabled pool keeps its row (that is what re-enables it) at desired 0.
 
@@ -665,9 +780,10 @@ async def test_disabled_pool_stays_listed_and_is_sized_to_zero(pool_handler):
     assert (restored["min_active"], restored["max_active"]) == (1, 2)
 
 
-async def test_pool_status_includes_live_instance_detail(pool_handler):
+async def test_pool_status_includes_live_instance_detail(pool_handler, monkeypatch):
     """The dashboard needs the actual worker behind each aggregate row."""
     import time
+    from types import SimpleNamespace
 
     from src.models import SessionRecord
 
@@ -690,15 +806,298 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         )
     )
 
+    # Database and pool measurement latency must not change the elapsed time
+    # asserted here. Replace only this command module's clock.
+    monkeypatch.setattr("src.commands.ops_commands.time", SimpleNamespace(time=lambda: now))
     result = await pool_handler._cmd_pool_status({"project_id": PROJECT_ID})
     instance = result["pools"][0]["instances"][0]
     assert instance == {
         "session_id": "pool-1",
+        "project_id": PROJECT_ID,
         "name": "p-worker--proj--deadbeef",
         "state": "running",
         "task_id": None,
         "task_title": None,
-        "idle_seconds": pytest.approx(12, abs=2),
-        "started_at": pytest.approx(now - 30, abs=2),
+        "idle_seconds": 12,
+        "started_at": now - 30,
         "quarantine_reason": None,
     }
+
+
+async def test_pool_status_marks_stable_interactive_prompt_as_blocked(pool_handler):
+    """A matched prompt is visible as input-blocked, never merely idle."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.models import SessionRecord
+    from src.sessions.harness_parser import Harness
+    from src.sessions.input_prompts import InputPromptSignature
+
+    now = time.time()
+    await pool_handler.db.create_session(
+        SessionRecord(
+            id="pool-blocked",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="codex",
+            provider="fake",
+            name="p-worker--proj--blocked",
+            lifecycle="pool",
+            work_dir="/tmp/pool-blocked",
+            epoch="test",
+            instance_token="token-blocked",
+            started_at=now - 900,
+            last_activity=now - 600,
+            state="running",
+        )
+    )
+    pool_handler.orchestrator.harness_registry.upsert(
+        Harness(
+            id="codex",
+            command="codex",
+            input_prompts=(
+                InputPromptSignature(
+                    name="model-upgrade-menu",
+                    pattern="Try new model.*Use existing model",
+                    is_regex=True,
+                ),
+            ),
+        )
+    )
+    provider = SimpleNamespace(
+        supports=lambda _capability: True,
+        peek=AsyncMock(return_value="Try new model\nUse existing model\n"),
+    )
+    pool_handler.orchestrator.session_providers = SimpleNamespace(
+        create=lambda *_args: provider
+    )
+
+    row = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+
+    assert row["running_idle"] == 0
+    assert row["blocked_on_input"] == 1
+    instance = row["instances"][0]
+    assert instance["state"] == "blocked_on_input"
+    assert instance["input_prompt"] == "model-upgrade-menu"
+    assert instance["unchanged_seconds"] == pytest.approx(600, abs=2)
+
+
+async def test_pool_status_exposes_task_lifecycle_sessions_outside_the_pool(pool_handler):
+    """Unpooled work remains visible without inflating pool supply."""
+    import time
+
+    from src.models import SessionRecord, Task, TaskStatus
+
+    now = time.time()
+    await pool_handler.db.create_profile(
+        AgentProfile(
+            id="legacy-deep", name="Legacy deep", lifecycle="task", harness="fake",
+            default_class="deep-high",
+        )
+    )
+    await pool_handler.db.create_task(
+        Task(
+            id="outside-task", project_id=PROJECT_ID, title="Outside", description="",
+            status=TaskStatus.IN_PROGRESS, profile_id="legacy-deep", route_source="legacy",
+        )
+    )
+    await pool_handler.db.create_session(
+        SessionRecord(
+            id="task-1", project_id=PROJECT_ID, profile_id="legacy-deep", harness="fake",
+            provider="fake", name="legacy-deep--proj", lifecycle="task", work_dir="/tmp/task-1",
+            epoch="test", instance_token="token", started_at=now - 20, state="running",
+            task_id="outside-task", intelligence_class="deep-high",
+        )
+    )
+
+    row = (await pool_handler._cmd_pool_status({}))["pools"][0]
+
+    assert row["running_busy"] == 0
+    assert row["outside_pools"] == [{
+        "session_id": "task-1", "project_id": PROJECT_ID, "profile_id": "legacy-deep",
+        "harness": "fake", "intelligence_class": "deep-high", "name": "legacy-deep--proj",
+        "state": "running", "task_id": "outside-task", "task_title": "Outside",
+        "started_at": pytest.approx(now - 20, abs=2),
+    }]
+
+
+async def test_pool_status_batches_session_task_titles_and_reuses_measurement(
+    pool_handler, monkeypatch
+):
+    """Adding projects and sessions must not add profile or task-detail reads."""
+    import time
+
+    from src.models import SessionRecord, Task, TaskStatus
+
+    await pool_handler.db.create_project(Project(id="second", name="Second"))
+    now = time.time()
+    for suffix, project_id in (("a", PROJECT_ID), ("b", "second")):
+        task_id = f"pool-task-{suffix}"
+        await pool_handler.db.create_task(
+            Task(
+                id=task_id, project_id=project_id, title=f"Pool task {suffix}",
+                description="", status=TaskStatus.IN_PROGRESS, profile_id="worker",
+                route_source="legacy",
+            )
+        )
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id=f"pool-{suffix}", project_id=project_id, profile_id="worker",
+                harness="fake", provider="fake", name=f"pool--{suffix}", lifecycle="pool",
+                work_dir=f"/tmp/{suffix}", epoch="test", instance_token=f"token-{suffix}",
+                started_at=now - 20, state="running", task_id=task_id,
+            )
+        )
+
+    calls = {"profiles": 0, "pool_sessions": 0, "titles": 0}
+    real_profiles = pool_handler.db.list_profiles
+    real_sessions = pool_handler.db.list_sessions
+    real_titles = pool_handler.db.get_task_titles
+
+    async def counted_profiles():
+        calls["profiles"] += 1
+        return await real_profiles()
+
+    async def counted_sessions(**kwargs):
+        if kwargs.get("lifecycle") == "pool":
+            calls["pool_sessions"] += 1
+        return await real_sessions(**kwargs)
+
+    async def counted_titles(task_ids):
+        calls["titles"] += 1
+        return await real_titles(task_ids)
+
+    async def no_single_task_read(_task_id):
+        pytest.fail("pool status performed a per-session get_task read")
+
+    monkeypatch.setattr(pool_handler.db, "list_profiles", counted_profiles)
+    monkeypatch.setattr(pool_handler.db, "list_sessions", counted_sessions)
+    monkeypatch.setattr(pool_handler.db, "get_task_titles", counted_titles)
+    monkeypatch.setattr(pool_handler.db, "get_task", no_single_task_read)
+
+    rows = (await pool_handler._cmd_pool_status({}))["pools"]
+
+    assert calls == {"profiles": 1, "pool_sessions": 1, "titles": 1}
+    assert {item["task_title"] for item in rows[0]["instances"]} == {
+        "Pool task a", "Pool task b"
+    }
+
+
+# ──────────────── pool_status is one row per profile (§6.1) ──────────────
+
+
+async def test_pool_status_reports_one_row_per_profile_across_projects(pool_handler):
+    """Bounds and supply are fleet-wide; placement is nested, not multiplied."""
+    import time
+
+    from src.models import SessionRecord
+
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+    now = time.time()
+    for suffix, project_id in (("a", PROJECT_ID), ("b", "other-project")):
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id="pool-" + suffix, project_id=project_id, profile_id="worker",
+                harness="fake", provider="fake", name="p-worker--" + suffix,
+                lifecycle="pool", work_dir="/tmp/" + suffix, epoch="test",
+                instance_token="token-" + suffix, started_at=now - 30,
+                last_activity=now - 5, state="running",
+            )
+        )
+
+    result = await pool_handler._cmd_pool_status({})
+    assert [row["profile_id"] for row in result["pools"]] == ["worker"]
+    row = result["pools"][0]
+    assert "project_id" not in row and "quarantined_until" not in row
+    # Two projects, two idle workers, one pool.
+    assert row["running_idle"] == 2
+    assert [p["project_id"] for p in row["projects"]] == ["other-project", PROJECT_ID]
+    assert {p["running_idle"] for p in row["projects"]} == {1}
+    assert {i["project_id"] for i in row["instances"]} == {PROJECT_ID, "other-project"}
+    assert row["min_per_project"] == 0
+
+
+@pytest.mark.parametrize("supervisor", [False, True])
+async def test_pool_status_project_id_filters_the_view_not_the_pool(pool_handler, supervisor):
+    """``--project-id`` narrows ``projects``/``instances``; bounds stay global."""
+    import time
+
+    from src.models import SessionRecord
+
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+    now = time.time()
+    for suffix, project_id in (("a", PROJECT_ID), ("b", "other-project")):
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id="pool-" + suffix, project_id=project_id, profile_id="worker",
+                harness="fake", provider="fake", name="p-worker--" + suffix,
+                lifecycle="pool", work_dir="/tmp/" + suffix, epoch="test",
+                instance_token="token-" + suffix, started_at=now - 30,
+                last_activity=now - 5, state="running",
+            )
+        )
+
+    if supervisor:
+        pool_handler.config.security.capability_enforcement = "enforce"
+        await pool_handler.db.create_profile(AgentProfile(
+            id="supervisor", name="Supervisor", lifecycle="named", harness="fake",
+            aq_commands=["pool_status"], harness_tools=[], plugin_tools=[],
+        ))
+        await pool_handler.db.create_session(SessionRecord(
+            id="sup", project_id=PROJECT_ID, profile_id="supervisor", harness="fake",
+            provider="fake", name="sup", lifecycle="named", work_dir="/tmp/sup",
+            epoch="test", instance_token="sup-token", started_at=now, state="running",
+        ))
+        # Omit the filter, as direct dispatch and a project patrol may do.
+        result = await pool_handler.execute("pool_status", {"_scope": {
+            "kind": "session", "session_id": "sup", "project_id": PROJECT_ID,
+            "elevated": True,
+        }})
+    else:
+        result = await pool_handler._cmd_pool_status({"project_id": PROJECT_ID})
+    assert result["success"], result
+    filtered = result["pools"][0]
+    assert [p["project_id"] for p in filtered["projects"]] == [PROJECT_ID]
+    assert [i["session_id"] for i in filtered["instances"]] == ["pool-a"]
+    # The pool itself did not shrink to one project: bounds and the supply
+    # totals are the fleet's, which is what the sizer acts on.
+    assert (filtered["min_active"], filtered["max_active"]) == (1, 2)
+    assert filtered["running_idle"] == 2
+
+
+async def test_pool_status_nests_quarantine_under_the_project_that_earned_it(pool_handler):
+    """A quarantine is per (project, profile) and never a property of a pool."""
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+    pool_handler.orchestrator._quarantine_pool(
+        PROJECT_ID, "worker", "unknown harness 'fake'"
+    )
+
+    row = (await pool_handler._cmd_pool_status({}))["pools"][0]
+    by_project = {p["project_id"]: p for p in row["projects"]}
+    assert by_project[PROJECT_ID]["quarantined_until"] is not None
+    assert "unknown harness" in by_project[PROJECT_ID]["quarantined_reason"]
+    assert by_project["other-project"]["quarantined_until"] is None
+    assert by_project["other-project"]["quarantined_reason"] is None
+
+
+async def test_pool_status_reports_the_per_project_warm_floor(pool_handler):
+    """``min_per_project`` raises the effective floor and is reported as itself."""
+    await pool_handler.db.update_profile("worker", min_per_project=2, max_active=9)
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+
+    row = (await pool_handler._cmd_pool_status({}))["pools"][0]
+    assert row["min_per_project"] == 2
+    # A reservation only counts for a project that could actually host the
+    # worker.  Neither project has a workspace here, so neither holds one
+    # open against the rest of the fleet and the global floor stands.
+    assert {p["workspace_capacity"] for p in row["projects"]} == {0}
+    assert row["min_active"] == 1
+
+
+async def test_list_profiles_surfaces_the_per_project_warm_floor(pool_handler):
+    """An operator sizing a fleet needs all three bounds in one place."""
+    await pool_handler.db.update_profile("worker", min_per_project=1)
+    listed = await pool_handler._cmd_list_profiles({})
+    worker = next(p for p in listed["profiles"] if p["id"] == "worker")
+    assert (worker["min_active"], worker["max_active"], worker["min_per_project"]) == (1, 2, 1)

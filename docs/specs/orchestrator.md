@@ -4,6 +4,14 @@ tags: [spec, orchestrator, core]
 
 # Orchestrator Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 This document describes the design and behaviour of the orchestrator subsystem in sufficient
 detail to reimplement it from scratch.  It covers the event bus, task-name generation,
 orchestrator initialisation, the scheduling cycle, every major internal operation, and the
@@ -27,7 +35,7 @@ scheduling or coordination.  All promotion, assignment, and retry decisions are 
 and derive purely from database state.  LLM calls occur only inside agent adapters (doing
 real work) and, optionally, inside the plan parser when `use_llm_parser` is enabled.
 
-See [[design/playbooks]] and [[design/agent-coordination]] for the extended orchestration model.
+See [design/playbooks](design/playbooks.md) and [design/agent-coordination](design/agent-coordination.md) for the extended orchestration model.
 
 **Concurrency model.**  Everything runs inside a single asyncio event loop.  Each executing
 task is launched as an `asyncio.Task` background coroutine.  The orchestrator keeps a
@@ -157,7 +165,7 @@ The constructor creates all sub-objects but performs no I/O:
 | `config` | `AppConfig` | Full application config |
 | `db` | `Database` | SQLite persistence layer |
 | `bus` | `EventBus` | In-process pub/sub |
-| `budget` | `BudgetManager` | Global daily token budget |
+| `budget` | `BudgetManager` | Global daily token budget; the reload target for `global_token_budget_daily` and the value `_schedule` puts in `SchedulerState.global_budget` |
 | `git` | `GitManager` | Git operations wrapper |
 | `_adapter_factory` | optional | Factory for creating agent adapters |
 | `_adapters` | `dict[str, adapter]` | `agent_id -> running adapter` |
@@ -217,7 +225,27 @@ than left stuck in IN_PROGRESS forever.
 
 `run_one_cycle()` is the top-level method called by the outer loop on every tick.  It
 executes the following steps in strict order, wrapped in a single broad `try/except` that
-logs unexpected errors with a full traceback but does not crash the loop.
+logs unexpected errors with a full traceback but does not crash the loop. Pool and session
+reconciliation run at their usual positions on a healthy cycle. After an earlier step fails,
+the error handler attempts whichever reconciler was not reached, independently, so one
+failure cannot strand pool starts or session teardown. A cycle logs at most one traceback
+for its original error and one for each failed reconciler.
+
+Pool convergence also has a backstop independent of the scheduling cycle. Every
+30 seconds it observes claimable demand and uses the same sizing and placement
+rules to check for an eligible start. After three consecutive observations with
+no successful start and no launch in flight, it logs and persists
+`pool.scaler_stalled` once per continuous condition and retries normal pool
+reconciliation. Capacity limits, disabled profiles, provider suppression and
+quarantine remain authoritative; lack of eligible capacity is not a scaler stall.
+Successful starts or disappearance of eligible demand reset the observation.
+
+Pool reconciliation is serialized with this backstop and bounded to 30 seconds,
+including measurement and audit writes. A timeout logs the stalled pass, releases
+the reconciliation lock and allows a later pass to retry. Background launches
+retain their capacity reservations and session ownership; they are not cancelled
+by a reconciliation timeout. Completed launch bookkeeping is reaped before
+measurement. The backstop ends with the scheduler on shutdown.
 
 ```
 Step 0   _sweep_resolve_pr_ci_gates     — resolve satisfied pr-merged/ci-run gates (polls `gh` via `_poll_pr_merged`, `src/orchestrator/pr_polling.py`)
@@ -334,8 +362,9 @@ Collects all state needed by `Scheduler.schedule` and delegates to it:
 2. For each project, compute token usage in the rolling window:
    `window_start = now - (config.scheduling.rolling_window_hours * 3600)`
    `project_usage[p.id] = db.get_project_token_usage(p.id, since=window_start)`
-3. Count active agents per project by iterating agents whose state is `BUSY` or `STARTING`
-   and looking up their `current_task_id`.
+3. Count live sessions (`starting`, `running`, `draining`) by `session.project_id`,
+   including idle pool workers and unconfirmed stops. Historical agent task pointers
+   do not consume project capacity. The agent reconciler uses the same count.
 4. Sum all per-project usage to get `total_used`.
 5. Build a `SchedulerState` dataclass and call `Scheduler.schedule(state)`.
 
@@ -461,7 +490,7 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see [[specs/prompt-builder]]).
+Task execution context is assembled using `PromptBuilder` (see [specs/prompt-builder](prompt-builder.md)).
 The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
 to compose system metadata, execution rules, upstream dependency summaries, agent role
 instructions, and the task description into a single prompt string.
@@ -512,7 +541,9 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
   instructions; this phase only *checks* the resulting git state against the
   task's **effective integration mode** (`_effective_integration_mode`: plan-
   subtask parent's task-level override → task override → project policy →
-  config `integration.default_mode`) and reopens the task with feedback when
+  config `integration.default_mode`, where a `pull_request` default resolves
+  to `direct` on a repository on disk —
+  `src/integration/delivery_path.py`) and reopens the task with feedback when
   something is off. On pipeline success the task always transitions to
   `COMPLETED`: in `pull_request` mode it completes **unmerged** with `pr_url`
   recorded on the row (the review pipeline's `pr-merged` gates own the
@@ -562,7 +593,8 @@ assigning new tasks to this project.
 Poll `db.list_active_tasks` (excluding `COMPLETED`, `FAILED`, `BLOCKED`) every 10 seconds,
 filtering out the sync task itself.  Wait up to 3 600 seconds (1 hour).  If the timeout
 expires, transition the sync task to `FAILED` with `context="sync_timeout_waiting_for_tasks"`
-and return.  Progress is reported to the notification channel every 60 seconds.
+and return. Progress is recorded in state/events; Discord does not emit direct
+workflow progress notifications.
 
 **Early-out: workspaces already synced.**
 After active tasks have drained, re-check whether any workspace actually needs merging.
@@ -602,7 +634,7 @@ Executed in a `finally` block so it runs regardless of success or failure:
 ### Design Invariants
 
 The workspace sync workflow preserves these invariants across all code paths.
-See [[specs/git]] §10 for the full design principles reference.
+See [specs/git](git.md) §10 for the full design principles reference.
 
 | Invariant | Guarantee |
 |---|---|
@@ -616,7 +648,7 @@ See [[specs/git]] §10 for the full design principles reference.
 ### Resolved Gaps
 
 Most previously identified workspace sync gaps have been resolved. See
-[[specs/git]] §11 for the full gap catalogue.
+[specs/git](git.md) §11 for the full gap catalogue.
 
 | Gap | Location in this spec | Resolution |
 |-----|----------------------|------------|
@@ -941,7 +973,7 @@ db.transition_task(task_id, PAUSED, context="tokens_exhausted", resume_after=...
 - `PAUSED_RATE_LIMIT`: `config.pause_retry.rate_limit_backoff_seconds`
 - `PAUSED_TOKENS`: `config.pause_retry.token_exhaustion_retry_seconds`
 
-A brief notification is sent to the task thread or notifications channel.
+The state transition is captured by the event log and appears in the dashboard and hourly digest. Discord does not create a task thread or emit a direct lifecycle notification.
 
 ### Global pause (`pause()` / `resume()`)
 
@@ -980,6 +1012,111 @@ Allowed state: IN_PROGRESS only.  Any other state returns an error string.
 5. Notify the channel.
 6. Call `_notify_stuck_chain(task)`.
 7. Return `None`.
+
+An unproven integration handoff retains the claim and workspace. If the writer
+subsequently dies, `integration release-owner` may prove its exact termination,
+preserve its work and release those resources. This does not authorize generic
+recovery of `productive_death`, nor does a route change amend an incident snapshot.
+
+A failed session close restores its slot before proving the integration handoff.
+That restoration must preserve the task branch and HEAD: moving a clean, pushed
+checkout to the default branch invalidates the following exact-tip proof. The
+handoff itself detaches the verified task tip before releasing its owner. Pool
+close uses the held claim and checkout proof; task-lifecycle close additionally
+requires the provider to confirm the writer stopped. Missing proof retains the
+attachment, regardless of harness or model.
+
+Retry preparation reclaims only the owner fence it observed. A newer attachment
+must remain untouched even when it belongs to the same task. An attachment already
+bound to the preparing session and workspace is reused; a pending handoff for that
+same preparation stays fenced and never initiates its own detach. A stopped pool
+session whose task binding was cleared can still prove its old handoff through its
+ended attempt and fresh provider confirmation. Recovery holds the owner, session,
+agent and workspace rows through checkout verification and detach, refuses reused
+identities, and accepts a fully unlocked slot and an idle or retired unbound agent.
+
+For a stranded `BLOCKED/session_close_hard_failure`, a project supervisor may
+preview `aq integration release-owner --task-id TASK_ID --dry-run`, then apply
+without `--dry-run`. The command requires a stopped session and fresh provider
+confirmation, preserves unpublished work, and rechecks the owner fence and
+checkout ownership before release. It does not turn a hard failure into success
+or grant automatic recovery. An intentional retry uses `aq task restart TASK_ID`
+after the attachment is released and the failure has been reviewed.
+
+For an ordinary hierarchy/train producer in `BLOCKED/session_not_live`, an
+operator may complete that intentional handoff with `aq task resume` **after** an
+operator-backed owner-release audit and a subsequent explicit route override.
+Resume rechecks the exact stopped pool worker, current released branch fence,
+canonical branch origin/checkpoint, and all existing recovery budgets, project
+limits, dependencies, gates, holds and resource/question guards. Live or retired
+integration-operation delegates remain under their operation's authority. An
+existing recovery hold is not implicitly cleared. For an audited supervisor
+recovery hold, use `aq task recover --decision retry --expected-hold-at <decided_at>`
+with the current incident id and a reason to explicitly release that exact hold
+through the same proof checks. Human/manual holds cannot use this handoff path.
+The transaction records the release audit and route override, consumes one worker
+retry and one supervisor recovery, and retains the preserved Git ref/SHA for
+successor preparation. The successor verifies that ref and canonical lineage
+before resetting its workspace; divergence or missing proof refuses preparation.
+No counter, gate or origin is reset.
+
+Incident `retry_allowed` and its next action reflect the execution-end and routing
+guards as well as the attention reason and remaining budgets. Provider liveness
+is always freshly confirmed when executing a recovery decision.
+
+A recovery incident identifies one failure generation: the stopped attempt (or,
+with no attempt, the durable failure transition) of one claim epoch. A later
+diagnosis of the **same** stopped attempt, such as a vetoed stale-binding unwind
+relabelling `context_thrash` as `claim_binding_stale`, is a *reclassification*,
+not a new failure. The scan keeps the incident id (hashed from the stored
+`identity_reason`), its pending or `hold` decision, `decided_at` and the
+provenance comment that proves it, and every budget and counter. It updates
+`reason`, appends one `{from, to, at}` entry to `reason_history`, writes one
+audit comment, and sends no new notification. Repeated scans of an unchanged
+diagnosis are idempotent. Automatic retry requires every diagnosis the incident
+ever recorded to be retryable, so a non-retryable failure is never relabelled as
+automatically recoverable. A recovery decision against a diagnosis the scan has
+not yet recorded is refused, and a prepared human packet pins the live diagnosis,
+so it goes stale (`ask.stale_source`) instead of transferring approval. An
+incident whose `retry` or `release` decision is already recorded is closed; a
+later diagnosis opens a new, undecided incident rather than inheriting it. A new
+attempt, a new claim epoch or a new no-attempt failure transition opens a new
+incident. Legacy incidents without `identity_reason` use their `reason`; no
+migration or hold clearing is needed.
+
+A recovery incident whose current decision is `hold` excludes its task from
+the pool claim frontier, named claims, and pool demand even if the task is
+otherwise `READY`. Claims, demand, and frontier diagnostics share this check.
+The hold remains effective until explicitly released through the recovery
+controls above. A recorded `retry` decision permits a new claim even though
+its incident's `retry_allowed` is false: that flag describes whether another
+recovery decision is allowed, not whether an approved attempt can run.
+
+An operator or live named **global** supervisor can explicitly release a held
+incident with `aq task recover --operator-release --decision release
+--task-id TASK --incident-id INCIDENT --expected-hold-at DECIDED_AT --reason WHY`.
+This command records the previous decision and the releasing principal without
+changing task state, routing, counters, resources or integration ownership.
+It also handles a stale hold on a task already resumed to READY. Incident and
+hold timestamp must both still match; active or completed tasks cannot be released.
+An integration delegate must use this release-only form and continue through
+its operation's controls. Project supervisors and workers cannot authorize it.
+
+For an ordinary BLOCKED task, the same flag with `--decision retry` authorizes
+an intentional retry of a reviewed failure even when its attention or session
+exit reason is not automatically retryable. It still requires a current incident,
+a freshly confirmed stopped worker, unchanged routing, remaining recovery and
+worker budgets, an active project, satisfied dependencies/gates, and no held
+resources, manual pauses, questions or integration owner. No counter is reset.
+
+Supervisor-authored holds on active train repair delegates or `slot_reset_failed`
+incidents have a 15-minute deadline. The failure scan reconciles older holds too.
+At expiry it preserves the hold and sends one durable escalation notice to both
+the project and global supervisors, naming the exact incident, hold timestamp,
+owner and available controls. Expiry ends the silent wait, never authorizes
+execution. Repeated scans do not resend the notice. Human/operator holds remain
+explicit and do not expire. A project supervisor must escalate a held train
+repair promptly: it blocks every delivery through that train.
 
 ---
 
@@ -1099,7 +1236,7 @@ where `sync_and_merge()` applies its rebase-before-merge fallback.
 ## 18. Automation Initialization
 
 Automation is owned entirely by the playbook subsystem — see
-[[design/playbooks|Playbooks]].  The former `HookEngine` and `RuleManager` were removed in
+[Playbooks](design/playbooks.md).  The former `HookEngine` and `RuleManager` were removed in
 playbooks spec §13 Phase 3; the `hooks` / `hook_runs` tables, their commands, and the
 `hook_engine` config section no longer exist.
 
