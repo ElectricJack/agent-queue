@@ -350,6 +350,18 @@ artifact SHA with `aq task close --commit <vault-commit-sha>` so the completion
 record names the delivered artifact rather than the source slot's HEAD. Any
 source changes must follow the normal exact-push delivery rule.
 
+A no-code task in development delivery mode closes under the same proof
+without a vault artifact. A task is no-code when it closes `--work-outcome
+no-op`, its profile is `read_only`, or its profile declares
+`needs_workspace: false` (`spec-ingest`, `triage`), all decided in
+`GitOpsMixin._task_produces_no_code()`. Such a role writes database rows such
+as a committed task batch and holds no `git_push` grant, so its slot branch is
+never published. Once the slot is proven clean and ahead of nothing, the close
+records no artifact. `record_worker_completion` (`src/integration/provenance.py`)
+then requires the task's remote branch to be absent and its HEAD to be an
+ancestor of the target tip. A remote branch that exists must still equal HEAD
+exactly.
+
 To **move** a project's vault workspace, edit the project-scoped `vault` workspace row (or via a CLI/MCP command) — set `workspace_path` to the new location. Memory subsystem and prompt builder read the vault location from the attachment, not from a hard-coded path.
 
 The current hard-coded `~/.agent-queue/vault/projects/<pid>/` becomes the *default* for the synthesized vault workspace, not a fixed assumption baked into the code. Note the distinction made in §4: this only moves the vault *content* (notes, memory, knowledge bases), not the kind-definition directory `vault/projects/<pid>/workspace-kinds/`, which stays under the system vault root.
