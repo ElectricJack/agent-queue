@@ -66,7 +66,6 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -674,7 +673,7 @@ FRONTIER_PREDICATE_DETAILS = {
         "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
         "parent origin and each completed blocks sibling delivered to the shared parent or "
         "proven on its own task branch under the project stacked policy; "
-        "Git-first uses current Git proof, shadow uses matching code receipts after rework"
+        "only current Git proof can satisfy delivery; an absent observer is unknown"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",
     "has_children": "the task must have no children (a parent is a container)",
@@ -688,6 +687,24 @@ FRONTIER_PREDICATE_DETAILS = {
         "the project's router is not ready); the project's router routes it"
     ),
 }
+
+
+async def retire_owner_attachments(conn, task_id, sessions, workspaces, error, now, *,
+                                   exclusive=False):
+    """Retire *sessions*' branch attachments (every live one if *exclusive*) or raise *error*."""
+    owners = (await conn.execute(select(integration_branch_owners).where(
+        integration_branch_owners.c.owner_id == task_id,
+        integration_branch_owners.c.handoff_state.not_in(("released", "reserved")),
+        *(() if exclusive else (integration_branch_owners.c.session_id.in_(sessions),)),
+    ).with_for_update())).mappings().all()
+    for owner in owners:
+        if (owner["handoff_state"] != "attached" or owner["session_id"] not in sessions
+                or owner["workspace_id"] not in workspaces):
+            raise error
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ).values(handoff_state="reserved", session_id=None, workspace_id=None,
+                 confirmed_workspace_id=owner["workspace_id"], updated_at=now))
 
 
 class ClaimQueryMixin:
@@ -715,13 +732,14 @@ class ClaimQueryMixin:
     async def claim_frontier_exclusions_many(
         self, task_ids, *, router_ready=None, cached_only=False,
         hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
+        display_unavailable=None,
     ) -> dict[str, list[dict]]:
         """Batch the same predicate evaluation used by explain; never fetch Git for display."""
         if not task_ids:
             return {}
-        from src.integration.delivery_observer import hierarchy_frontier_modes
+        from src.integration.delivery_observer import hierarchy_frontier_modes, prerequisite_observer
 
-        unavailable = {}
+        unavailable = display_unavailable if display_unavailable is not None else {}
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
@@ -795,16 +813,23 @@ class ClaimQueryMixin:
         result = {}
         for row in rows:
             task_id = row["id"]
+            mode = modes.get(row["project_id"])
+            unknown_delivery = (prerequisite_observer(self) is None
+                                or bool(mode and mode.observation_unavailable))
             exclusions = [
                 {
                     "code": ("delivery_evidence_unavailable"
-                             if name in display_predicates and row["display_" + name]
-                             else f"frontier_{name}"),
+                             if (name in display_predicates and row["display_" + name])
+                             or (unknown_delivery and name in {
+                                 "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                             }) else f"frontier_{name}"),
                     "detail": (
                         "Delivery evidence has not loaded yet; claim frontier eligibility "
                         f"for {name} is unknown (snapshot_unavailable)"
-                        if name in display_predicates and row["display_" + name]
-                        else "Pool claim frontier excludes this READY task: "
+                        if (name in display_predicates and row["display_" + name])
+                        or (unknown_delivery and name in {
+                            "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                        }) else "Pool claim frontier excludes this READY task: "
                         + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
                     ),
                     "ref": task_id,
@@ -823,12 +848,13 @@ class ClaimQueryMixin:
                 sources = cross_sources.get(task_id, [])
                 missing = set().union(*(entry["default"] for entry in unavailable.values()))
                 exclusions.extend({
-                    "code": ("delivery_evidence_unavailable" if tid in missing
+                    "code": ("delivery_evidence_unavailable" if unknown_delivery or tid in missing
                              else "prerequisite_not_on_default_branch"),
                     "ref": tid, "epic_id": parent,
                     "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
                                "default-branch delivery is unknown (snapshot_unavailable)"
-                               if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                               if unknown_delivery or tid in missing
+                               else f"Prerequisite {tid} (epic {parent or tid}) "
                                "is not proven on the default branch"),
                     }
                     for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
@@ -1019,12 +1045,15 @@ class ClaimQueryMixin:
         reservation_first=False,
         effective_priority=False,
         workspace_kind: str = "project-repo",
-    ) -> str | None:
+    ) -> str | dict | None:
         """Select the §10 frontier with FOR UPDATE SKIP LOCKED.
 
         Allow/exclude sets are request-scoped Git admission decisions, re-proven
         on each attempt. A pre-read *hierarchy_mode* only filters candidates:
         the task is re-fenced under lock and preparation re-reads the project.
+
+        With reservation_first, return task/reservation identities together,
+        probing reservations before repairs and affinity in the same statement.
 
         Prefer active train repairs, then this agent's affinity rows, then all admissible rows.
         scans order by priority/created_at so an index can stop at LIMIT 1.
@@ -1212,7 +1241,7 @@ class ClaimQueryMixin:
         only after fresh process death and guarded publication proofs. Recheck
         every persisted identity here. Pause wins; no route or profile changes.
         """
-        from src.database.tables import continuations, integration_branch_owners, wait_records
+        from src.database.tables import continuations, wait_records
         from src.waits.conditions import WaitError
         from src.waits.sources import execute_task_status_mutation
 
@@ -1241,21 +1270,11 @@ class ClaimQueryMixin:
             raise WaitError("continuation.stale_generation", "park ownership changed")
         paused = task["status"] == "PAUSED"
         resolved = wait["outcome"] != "pending"
-        owners = (await conn.execute(select(integration_branch_owners).where(
-            integration_branch_owners.c.owner_id == task_id,
-            integration_branch_owners.c.session_id == session_id,
-            integration_branch_owners.c.handoff_state != "released",
-        ).with_for_update())).mappings().all()
-        for owner in owners:
-            if (owner["handoff_state"] != "attached" or not detached_workspace_id
-                    or owner["workspace_id"] != detached_workspace_id):
-                raise WaitError("continuation.stop_uncertain", "branch detach proof changed")
-            # Retain the domain owner's fence and branch reservation. Only its
-            # stopped process attachment is retired; no transfer is authorized.
-            await conn.execute(update(integration_branch_owners).where(
-                integration_branch_owners.c.id == owner["id"],
-            ).values(handoff_state="reserved", session_id=None, workspace_id=None,
-                     confirmed_workspace_id=detached_workspace_id, updated_at=now))
+        # Only the stopped process attachment is retired; no transfer is authorized.
+        await retire_owner_attachments(
+            conn, task_id, {session_id}, {detached_workspace_id} - {None},
+            WaitError("continuation.stop_uncertain", "branch detach proof changed"), now,
+        )
         await execute_task_status_mutation(conn, update(tasks).where(
             tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
         ).values(status="PAUSED" if paused else "RESUME_PENDING" if resolved else "HIBERNATED",
@@ -1674,6 +1693,19 @@ class ClaimQueryMixin:
         async with self.immediate() as conn:
             return await _run(conn)
 
+    async def _manually_paused_claim(self, conn, task_id) -> bool:
+        """Whether a manual pause owns *task_id*'s claim, locking its row.
+
+        The pause's stop path proves the preparation ended and releases the
+        workspace it snapshotted; a timeout release would strand that pause.
+        """
+        return bool(task_id) and (await conn.execute(
+            select(tasks.c.id).where(
+                tasks.c.id == task_id, tasks.c.status == TaskStatus.PAUSED.value,
+                tasks.c.resume_after.is_(None),
+            ).with_for_update()
+        )).first() is not None
+
     async def _release_claim_on(
         self,
         conn,
@@ -1717,6 +1749,7 @@ class ClaimQueryMixin:
         if preparation_expired_before is not None and (
             row["claim_phase"] not in ("claiming", "preparing")
             or (row["claim_phase_at"] or 0.0) > preparation_expired_before
+            or await self._manually_paused_claim(conn, task_id)
         ):
             return out
         # A task close may race pool reconciliation: the reconciler can
@@ -2460,25 +2493,6 @@ class ClaimQueryMixin:
                 "id": record["id"],
                 "detail": f"completion record {record['id']} (outcome {record['outcome']})",
             }
-        else:
-            receipt = (
-                await conn.execute(
-                    select(task_delivery_receipts.c.id, task_delivery_receipts.c.disposition)
-                    .where(
-                        task_delivery_receipts.c.source_task_id == task_id,
-                        task_delivery_receipts.c.disposition.in_(("code", "noop")),
-                        task_delivery_receipts.c.created_at >= attempt_started,
-                    )
-                    .order_by(task_delivery_receipts.c.created_at.desc())
-                    .limit(1)
-                )
-            ).mappings().first()
-            if receipt is not None:
-                evidence = {
-                    "kind": "delivery_receipt",
-                    "id": receipt["id"],
-                    "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
-                }
         if evidence is None:
             marker = (
                 await conn.execute(
