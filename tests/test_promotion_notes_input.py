@@ -38,6 +38,7 @@ from src.integration.promotion_notes import (
     step_pr_body,
 )
 from src.profiles.capabilities import DENY_ALL
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git
 from tests.test_integration_gitops import setup as setup
 from tests.test_promote_commands import _supervisor, request
@@ -281,7 +282,13 @@ async def test_normal_worker_cannot_assemble_cross_task_notes_or_prepare(promote
 async def test_request_pr_renders_source_summary_and_migration_guidance(promote_env):
     e = promote_env
     step = await configure(e, notes_kind="file_template", bootstrap=e.source)
-    source = commit(e.repo.store, {"feature.txt": "feature\n", "migrations/versions/feature.py": "migration\n"}, base=e.source)
+    source = commit(e.repo.store, {
+        "feature.txt": "feature\n",
+        "migrations/versions/feature.py": (
+            "revision = 'feature'\ndown_revision = None\n"
+            "def upgrade():\n    pass\n"
+        ),
+    }, base=e.source)
     head = merge_source(e, e.source, source, "feature")
     await task_row(e, "feature", summary="Adds useful release behavior")
     value = await notes(e, step, head)
@@ -544,7 +551,10 @@ async def test_outstanding_hotfix_refuses_before_notes_range(promote_env, comman
         await conn.execute(update(tasks).where(tasks.c.id == "pending-backmerge").values(status="DEFINED"))
         await conn.execute(insert(task_metadata).values(
             task_id="pending-backmerge", key="backmerge",
-            value=json.dumps({"source_sha": hotfix, "target_ref": "refs/heads/main"}),
+            # Include the daemon's originating branch identity while preserving
+            # the DEFINED outstanding-debt regression from the E2 review.
+            value=json.dumps({"source_sha": hotfix, "target_ref": "refs/heads/main",
+                              "origin_ref": "refs/heads/main"}),
         ))
     args = {"project_id": "p", "step_id": "release"}
     if command in {"prepare", "prepare_older_version"}:
