@@ -1,5 +1,11 @@
 # Dashboard performance investigation — task system, PostgreSQL, task graph
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-04
 **Goal:** make the dashboard feel snappy with thousands of tasks.
 **Method:** code reading plus measurement against a throwaway PostgreSQL 18 database
