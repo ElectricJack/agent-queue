@@ -113,7 +113,8 @@ class PRRepairPublication:
                                    f"the PR or repair: {', '.join(sorted({*live, *repair_live}))}")
                 result["root_task_id"] = root
                 if dry_run:
-                    await self._heads(store, repo.url, source, branch, old, tip, base_oid)
+                    result["remote_base_oid"] = await self._heads(
+                        store, repo.url, source, branch, old, tip, base_branch, base_oid)
                     result["outcome"] = "would_publish" if old != tip else "already_published"
                     return
                 fence = await self.locks.acquire_on(
@@ -123,13 +124,14 @@ class PRRepairPublication:
                 async with self.locks.exclusion(fence, conn=conn):
                     if self._pr(await client.pull_request(url), binding) != pr_identity:
                         raise _Refused("changed", "the PR changed before publication")
-                    await self._heads(store, repo.url, source, branch, old, tip, base_oid)
+                    remote_base_oid = result["remote_base_oid"] = await self._heads(
+                        store, repo.url, source, branch, old, tip, base_branch, base_oid)
                     result["outcome"] = "already_published"
                     if old != tip:
                         if await self.git.apush_validated_delivery(
                             store, old, tip, branch, expected_remote_oid=old,
                             repository_url=repo.url, identity_policy=policy,
-                            inherited_oids=(old, base_oid), event_bus=self.event_bus,
+                            inherited_oids=(old, base_oid, remote_base_oid), event_bus=self.event_bus,
                             project_id=project.id,
                         ) != tip:
                             raise _Refused("blocked", "the push did not confirm the repair head")
@@ -158,15 +160,21 @@ class PRRepairPublication:
         _validate_ref(base_branch)
         return branch, oid, base_branch, base_oid
 
-    async def _heads(self, store, url, source, target, old, tip, base_oid):
+    async def _heads(self, store, url, source, target, old, tip, base_branch, base_oid):
         for ref, expected in ((source, tip), (target, old)):
             remote = await self.git.als_remote_ref(store, ref, repository_url=url)
             if remote.state is not RemoteRefState.PRESENT:
                 raise _Refused("blocked", f"remote branch {ref} is unavailable")
             if remote.oid != expected:
                 raise _Refused("changed", f"remote branch {ref} moved to {remote.oid}")
-        # Only authenticated, published base history is inherited, never arbitrary
-        # local refs or the repair's own already-published commits.
-        await self.git._arun(["cat-file", "-e", f"{base_oid}^{{commit}}"], cwd=store)
+        # GitHub's PR base SHA may lag its branch. Inherit the authenticated
+        # remote tip as well, never local refs or the repair's own commits.
+        remote_base = await self.git.als_remote_ref(store, base_branch, repository_url=url)
+        if (remote_base.state is not RemoteRefState.PRESENT
+                or not is_valid_git_oid(remote_base.oid)):
+            raise _Refused("blocked", f"remote base branch {base_branch} is unavailable")
+        for oid in {base_oid, remote_base.oid}:
+            await self.git._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=store)
         if await self.git.ais_ancestor(store, old, tip, strict=True) is not True:
             raise _Refused("not_eligible", "the repair head does not descend from the PR head")
+        return remote_base.oid
