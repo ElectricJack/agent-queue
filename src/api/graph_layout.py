@@ -57,6 +57,7 @@ from src.api.models.graph_layout import (
 )
 from src.api.scope import check_request_scope
 from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.task_graph.activity import load_activity
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
@@ -170,6 +171,17 @@ def _failed_phase_holds(holds: dict[str, dict]) -> dict[str, dict]:
     }
 
 
+def _with_activity(deliveries: dict, activity: dict) -> dict[str, tuple]:
+    """Pair each node's delivery projection with its rolled-up activity.
+
+    Activity comes from its own read, so it survives a delivery read failure.
+    """
+    return {
+        task_id: (deliveries.get(task_id), activity.get(task_id, {}))
+        for task_id in deliveries.keys() | activity.keys()
+    }
+
+
 def _node(
     row,
     task,
@@ -185,8 +197,10 @@ def _node(
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
     phase_order, phase_label = _phase_fields((phase_meta or {}).get(task["id"]))
+    delivery, activity = (deliveries or {}).get(task["id"], (None, {}))
     return LayoutNode(
         **task,
+        **activity,
         x=box.x,
         y=box.y,
         w=box.w,
@@ -206,7 +220,7 @@ def _node(
         phase_order=phase_order,
         phase_label=phase_label,
         phase_hold=(phase_holds or {}).get(task["id"]),
-        delivery=(deliveries or {}).get(task["id"]),
+        delivery=delivery,
         review_waits=(review_waits or {}).get(task["id"], []),
     )
 
@@ -217,22 +231,33 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
     # geometry back out of a process-wide cache.
     geometry_cache: OrderedDict[tuple, _Geometry] = OrderedDict()
 
-    async def _deliveries(rows: list) -> dict[str, dict]:
-        """The epic delivery projection for the rows that have children.
+    async def _deliveries(project_id: str, rows_with_tasks: list) -> dict[str, tuple]:
+        """The epic delivery projection and activity for rows with children.
 
         One batched read for the whole response (plus collection readiness
         for the few epics whose children are all done); a read failure
         leaves ``delivery`` unset rather than failing the layout response.
         """
-        ids = [row.task_id for row in rows if (row.agg_children or 0) > 0]
+        ids = [row.task_id for row, _ in rows_with_tasks if (row.agg_children or 0) > 0]
+        from src.task_graph.readiness import load_readiness
+
+        # Each endpoint already joined the current task row. Reuse it rather
+        # than paying another task SELECT on every viewport request.
+        readiness = await load_readiness(db, [
+            {**task, "project_id": project_id} for _, task in rows_with_tasks
+        ])
         if not ids:
-            return {}
+            return _with_activity({}, readiness)
         from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
         projection = EpicDeliveryProjection(
-            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None))
+            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None)),
+            cached_only=True,
         )
-        return await projection.for_tasks(ids)
+        activity = await load_activity(db, ids)
+        for tid, fields in readiness.items():
+            activity.setdefault(tid, {}).update(fields)
+        return _with_activity(await projection.for_tasks(ids), activity)
 
     async def _project_or_404(project_id: str):
         if await db.get_project(project_id) is None:
@@ -680,7 +705,9 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
             )
         )
-        deliveries = await _deliveries([with_tasks[t][0] for t in visible if t in with_tasks])
+        deliveries = await _deliveries(
+            project_id, [with_tasks[t] for t in visible if t in with_tasks],
+        )
         review_waits = (
             await db.list_review_waits_for_tasks(list(with_tasks)) if with_tasks else {}
         )
@@ -824,7 +851,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
             )
         )
-        deliveries = await _deliveries([rows[t] for t in page])
+        deliveries = await _deliveries(project_id, [all_rows[t] for t in page])
         review_waits = await db.list_review_waits_for_tasks(page) if page else {}
         nodes = [
             _node(
@@ -915,7 +942,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 subtask_counts=subtask_counts,
                 phase_meta=phase_meta,
                 phase_holds=phase_holds,
-                deliveries=await _deliveries([row]),
+                deliveries=await _deliveries(project_id, [(row, task)]),
                 review_waits=await db.list_review_waits_for_tasks([task_id]),
             ),
             ancestors=ancestors,
@@ -1057,17 +1084,26 @@ def _build_default_router() -> APIRouter:
     from src.api import dependencies as deps
 
     router = APIRouter()
+    binding = None
+    bound_router = None
 
     def _inner() -> APIRouter:
+        nonlocal binding, bound_router
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         # The orchestrator keeps its handler private and lets the messaging
         # adapter swap it after startup, so read the live one the same way
         # ``deps.get_command_handler`` does.
-        return build_graph_layout_router(
-            db=orch.db, command_handler=getattr(orch, "_command_handler", None)
-        )
+        handler = getattr(orch, "_command_handler", None)
+        current = (orch, orch.db, handler)
+        if binding is None or any(a is not b for a, b in zip(binding, current)):
+            # Route construction is synchronous and owns the geometry cache.
+            # Rebuilding here on every read both blocks the event loop and
+            # throws away all layout_version-scoped geometry between pans.
+            bound_router = build_graph_layout_router(db=orch.db, command_handler=handler)
+            binding = current
+        return bound_router
 
     async def _call(path: str, method: str, **kwargs):
         for route in _inner().routes:
