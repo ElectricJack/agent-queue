@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/owner_recovery.py::OwnerRecovery._record_refusal::f7e5b1e1bf48966088184b97a76a8a04ebfc6d9f42ce942b5292a0f5e5eaa685": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1055,
+      "owner": "OwnerRecovery._record_refusal",
+      "owner_fingerprint": "3dae8793f5a92394d44af5f555fc8682b55402c43cf9d0959f4c53309c38e00b",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/owner_recovery.py::OwnerRecovery._release::67a057ee30845b7389fde9526fa8831803349998640cab32472820f1d00a18a2": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 848,
+      "owner": "OwnerRecovery._release",
+      "owner_fingerprint": "8f2434e5e4384ea06d7f1dca9644e832f81999e2553c746bc8e23454d1fe2ed9",
+      "reason": "Audits the fenced owner release after claim reconciliation and workspace unlock; the notification records recovery evidence and does not authorize ref replay or duplicate task lifecycle."
+    }
+  }
+}

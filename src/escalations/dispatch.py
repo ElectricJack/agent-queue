@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.escalations.facts import (
+    INTERNAL_DELIVERY_ERROR,
     KIND_ACK,
     KIND_RELAY,
     KIND_RESOLUTION,
@@ -85,8 +86,8 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120.0
 #: Reconciliation re-derives the whole desired set for every open incident, so
 #: it runs on its own slower cadence than the pump.  Nothing is lost by the
-#: gap: a new incident's first delivery is enqueued by the next pass and the
-#: outbox is what actually orders the work.
+#: gap: creation enqueues the first delivery atomically; reconciliation
+#: repairs legacy gaps and queues follow-ups. The outbox orders the work.
 RECONCILE_INTERVAL_SECONDS = 30.0
 #: A closed incident stops being re-derived once its resolution has had ample
 #: time to go out; without this the newest hundred rows would be re-queried
@@ -282,6 +283,8 @@ class EscalationDeliveryService:
                 return []
             incident = row
         facts = EscalationFacts.from_row(incident)
+        if facts.source_kind == "wait" and facts.wants_human_delivery:
+            await self.db.retry_suppressed_escalation_root(facts.id, now=self._clock())
         deliveries = await self.db.list_escalation_deliveries(facts.id)
         messages = await self.db.list_escalation_messages(facts.id)
         plan = plan_deliveries(
@@ -344,6 +347,10 @@ class EscalationDeliveryService:
 
     async def _before_write(self, row: MutableMapping[str, Any]) -> None:
         await self._ensure_project_active(row)
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        blocked = getattr(self.db, "legacy_human_delivery_blocked", None)
+        if incident and blocked and await blocked(incident["project_id"]):
+            raise _ProjectPaused
         # A later pause must retain the attempt so resume searches for posts
         # whose receipt is only recorded once this whole delivery finishes.
         row["external_write_started"] = True
@@ -496,14 +503,17 @@ class EscalationDeliveryService:
             return
         facts = EscalationFacts.from_row(incident)
         await self._ensure_project_active(row)
-        if not facts.wants_human_delivery:
+        if not facts.wants_human_delivery and not (
+            facts.is_terminal and row["kind"] in ROOT_EDIT_KINDS
+            and facts.source_kind != "supervisor_delivery"
+        ):
             # Also fences rows queued by an older daemon, including retries
             # and follow-ups on a root that was posted before the cutover.
             await self._finish(
                 row,
                 report,
                 status="unknown",
-                last_error="supervisor delivery incident is internal-only; nothing was sent",
+                last_error=INTERNAL_DELIVERY_ERROR,
             )
             return
         channel_id = self._channel_id
@@ -826,6 +836,20 @@ class EscalationDeliveryService:
     ) -> None:
         channel_id = self._channel_id
         generation = int(row["generation"])
+        if (
+            facts.is_terminal
+            and not binding.has_root
+            and not row.get("root_message_id")
+            and int(row["attempt_count"]) == 1
+        ):
+            # Creation queues the root before any transport runs. A decision
+            # accepted in that interval must retain the never-posted silence
+            # rule; previous attempts still need receipt reconciliation below.
+            await self._finish(
+                row, report, status="unknown",
+                last_error="terminal incident was never posted; delivery withheld",
+            )
+            return
         if binding.has_root and binding.generation > generation:
             await self._finish(
                 row,

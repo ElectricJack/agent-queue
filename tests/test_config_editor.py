@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -331,6 +333,19 @@ class TestGetConfigCommand:
         assert result["config"]["discord"]["bot_token"] == "${MY_TOKEN}"
         assert "scheduling" in result["hot_reloadable"]
         assert "discord" in result["restart_required"]
+
+    @pytest.mark.asyncio
+    async def test_config_exposes_install_tracking_defaults_and_deployment_history(self, handler_with_config):
+        from src.install.deploy_history import record_deploy
+
+        handler, _ = handler_with_config
+        record_deploy(Path(handler.config.data_dir), "rolled_back", branch="dev", target="b" * 40,
+                      message="Previous version restored", automatic=True)
+        result = await handler.execute("get_config", {"section": "deploy"})
+        assert result["config"]["deploy"]["track_branch"] is None
+        assert result["config"]["deploy"]["poll_interval_seconds"] == 300
+        assert result["deployment_history"][-1]["outcome"] == "rolled_back"
+        assert result["deployment_history"][-1]["branch"] == "dev"
 
     @pytest.mark.asyncio
     async def test_section_filter(self, handler_with_config):

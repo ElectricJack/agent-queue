@@ -60,12 +60,10 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("escalation_delivery"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("escalation_delivery")
     await database.create_project(Project(id="p", name="Project"))
     yield database
-    await database.close()
 
 
 async def make_incident(db: Database, **overrides):
@@ -101,6 +99,26 @@ def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **
         clock=clock or Clock(),
         **kwargs,
     )
+
+
+async def test_old_incident_is_delivered_even_outside_the_newest_hundred_scan(db):
+    await make_incident(db)
+    async with db.immediate() as conn:
+        for index in range(101):
+            await db.create_escalation(
+                conn=conn, id=f"new-{index}", project_id="p", source_kind="gate",
+                source_identity=f"gate-{index}", incident_key=f"gate:{index}",
+                supervisor_owner="supervisor-p", task_title=f"Approve proposal {index}",
+                summary="Project work is waiting for a proposal decision",
+                investigation="The supervisor reviewed the proposed task batch",
+                decision_requested="Approve the proposed tasks?", severity="medium",
+                now=20.0 + index,
+            )
+    assert "esc-1" not in {row["id"] for row in await db.list_escalations(limit=100)}
+    service = make_service(db, SinkTransport())
+    await service.tick(limit=1)
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["status"] == "sent"
 
 
 def facts_for(row) -> EscalationFacts:
@@ -159,7 +177,9 @@ async def test_reply_at_root_write_boundary_suppresses_the_pending_human_notific
 async def test_reply_at_later_write_boundaries_suppresses_the_old_question(db, boundary):
     await make_incident(db)
     sink = SinkTransport()
-    clock = Clock()
+    # Begin before the reminder deadline so the later tick produces the
+    # state edit where the reply is injected, rather than an earlier tick.
+    clock = Clock(now=10.0)
     config = make_config()
     config.escalations.stateful = True
     config.escalation.reminder_minutes = 5
@@ -212,6 +232,24 @@ async def test_answered_incident_repairs_partial_thread_without_repeating_the_qu
     thread_text = [item.content for item in sink.messages.values() if item.thread_id]
     assert len(thread_text) == 1
     assert all("Decision needed" not in text and "Options:" not in text for text in thread_text)
+
+
+async def test_terminal_incident_with_an_unattempted_atomic_root_stays_silent(db):
+    incident = await make_incident(db)
+    await db.transition_escalation(
+        incident["id"], expected_revision=incident["revision"], new_state="cancelled",
+        terminal_outcome="Handled in the dashboard", now=20,
+    )
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    await service.tick()
+    await service.tick()
+    assert sink.calls == []
+    [root] = [row for row in await db.list_escalation_deliveries(incident["id"])
+              if row["kind"] == "root"]
+    assert root["status"] == "unknown"
+    assert root["receipt_confirmed_at"] is None
+    assert "never posted" in root["last_error"]
 
 
 @pytest.mark.parametrize("source_kind", ["task_attempt", "gate"])
@@ -368,19 +406,27 @@ async def test_pause_does_not_spend_retries_or_reclaim_expired_leases(db, expire
 
 
 @pytest.mark.parametrize("state", ["needs_human", "reply_received", "resolved", "stale"])
-def test_supervisor_delivery_plans_never_post_or_replace_a_human_notice(state):
+@pytest.mark.parametrize("source_kind", [
+    "supervisor_delivery", "wait", "continuation", "integration_train_stall",
+    "integration_delivery_stuck",
+])
+def test_operational_plans_never_post_or_replace_a_human_notice(state, source_kind):
     facts = EscalationFacts(
         id="internal", project_id="p", state=state, revision=0, severity="high",
         summary="Supervisor offline", investigation="Internal delivery delay",
-        decision_requested="Restore delivery", source_kind="supervisor_delivery",
+        decision_requested="Restore delivery", source_kind=source_kind,
     )
     assert not plan_deliveries(facts, deliveries=[], messages=[]).deliveries
     assert plan_replacement(facts, []) is None
 
 
 @pytest.mark.parametrize("kind", ["root", "ack", "relay", "resolution"])
-async def test_legacy_supervisor_delivery_rows_never_call_the_human_transport(db, kind):
-    incident = await make_incident(db, source_kind="supervisor_delivery")
+@pytest.mark.parametrize("source_kind", [
+    "supervisor_delivery", "wait", "continuation", "integration_train_stall",
+    "integration_delivery_stuck",
+])
+async def test_legacy_operational_rows_never_call_the_human_transport(db, kind, source_kind):
+    incident = await make_incident(db, source_kind=source_kind)
     await db.enqueue_escalation_delivery(
         incident["id"], dedup_key=f"legacy:{kind}", kind=kind, payload={}, available_at=10,
     )
@@ -938,7 +984,8 @@ async def test_disabling_the_external_surface_sends_nothing_and_says_so(db):
 
     assert report.skipped == "discord.escalation.enabled is false"
     assert sink.calls == []
-    assert await db.list_escalation_deliveries("esc-1") == []
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["status"] == "pending" and root["attempt_count"] == 0
 
 
 async def test_a_persisted_reply_is_acknowledged_once_in_the_thread(db):

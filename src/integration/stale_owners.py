@@ -86,6 +86,7 @@ from src.integration.owner_recovery import (
     _project_ids,
     _Refusal,
 )
+from src.integration.row_query import select_row
 
 #: The ``principal``-bearing event written for each released lease.
 LEASE_RELEASED_EVENT = "integration.stale_lease_released"
@@ -301,7 +302,7 @@ class StaleOwnerRelease(OwnerRecovery):
         refs: dict[str, str],
         default_branch: str,
         worktrees: list[dict[str, Any]],
-        live_dirs: set[str],
+        live_dirs: dict[str, str],
     ) -> tuple[str, str]:
         branch = branch_of(row["ref"]) or ""
         origin_sha = refs.get(f"refs/remotes/origin/{branch}")
@@ -312,7 +313,8 @@ class StaleOwnerRelease(OwnerRecovery):
                     continue
                 if os.path.realpath(path) in live_dirs:
                     return CHECKOUT_IN_USE, (
-                        f"{branch} is checked out at {path}, where a live session works"
+                        f"{branch} is checked out at {path}, where live session "
+                        f"{live_dirs[os.path.realpath(path)]} works"
                     )
                 head = entry.get("head")
                 if await self._dirty(path) or (
@@ -355,15 +357,7 @@ class StaleOwnerRelease(OwnerRecovery):
         async with self.db.immediate() as conn:
             for project_id in await _project_ids(conn, row["repository_id"]):
                 await self.db.lock_hierarchy_project(conn, project_id)
-            current = (
-                (
-                    await conn.execute(
-                        select(owners).where(owners.c.id == row["id"]).with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            current = await select_row(conn, owners, owners.c.id == row['id'], lock=True)
             if current is None or any(
                 current[field] != row[field]
                 for field in ("fence_token", "handoff_state", "owner_id", "owner_role", "ref")
@@ -436,15 +430,7 @@ class StaleOwnerRelease(OwnerRecovery):
         async with self.db.immediate() as conn:
             if not dry_run:
                 await self.db.lock_hierarchy_project(conn, project_id)
-            lease = (
-                (
-                    await conn.execute(
-                        select(leases).where(leases.c.project_id == project_id).with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            lease = await select_row(conn, leases, leases.c.project_id == project_id, lock=True)
             if lease is None:
                 return []
             batch = (

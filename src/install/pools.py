@@ -69,9 +69,13 @@ def _profiles_root(data_dir: str | Path) -> Path:
 def configured_pools(data_dir: str | Path) -> tuple[str, ...]:
     """The profile ids whose vault config already says ``lifecycle: pool``."""
     from src.profiles.parser import parse_profile
+    from src.profiles.retired_defaults import retired_default_ids
 
     pools = []
+    retired = retired_default_ids(str(data_dir))
     for path in sorted(_profiles_root(data_dir).glob("*/profile.md")):
+        if path.parent.name in retired:
+            continue
         try:
             config = parse_profile(path.read_text(encoding="utf-8")).config
         except (OSError, ValueError):
@@ -113,8 +117,10 @@ def ensure_default_pools(
 ) -> PoolDefaults:
     """Make every active rung a pool, once per rung."""
     from src.profiles.parser import update_config_keys
+    from src.profiles.retired_defaults import retired_default_ids
 
     root = Path(data_dir)
+    retired = retired_default_ids(str(root))
     swarm = config.get("swarm")
     if not (isinstance(swarm, Mapping) and swarm.get("enabled") is True):
         return PoolDefaults(
@@ -130,6 +136,7 @@ def ensure_default_pools(
             activation.profile.id
             for activation in activations
             if getattr(activation, "active", False)
+            and activation.profile.id not in retired
         }
     )
     max_active = _max_active(config)
