@@ -27,6 +27,7 @@ class LoopNodeDetailDTO:
         item_binding (str):
         failure_policy (LoopNodeDetailDTOFailurePolicy):
         body_entry_step_id (str):
+        max_iterations (int | Unset):  Default: 500.
         continuation_step_id (None | str | Unset):
     """
 
@@ -34,6 +35,7 @@ class LoopNodeDetailDTO:
     item_binding: str
     failure_policy: LoopNodeDetailDTOFailurePolicy
     body_entry_step_id: str
+    max_iterations: int | Unset = 500
     continuation_step_id: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +46,8 @@ class LoopNodeDetailDTO:
         failure_policy = self.failure_policy.value
 
         body_entry_step_id = self.body_entry_step_id
+
+        max_iterations = self.max_iterations
 
         continuation_step_id: None | str | Unset
         if isinstance(self.continuation_step_id, Unset):
@@ -61,6 +65,8 @@ class LoopNodeDetailDTO:
                 "body_entry_step_id": body_entry_step_id,
             }
         )
+        if max_iterations is not UNSET:
+            field_dict["max_iterations"] = max_iterations
         if continuation_step_id is not UNSET:
             field_dict["continuation_step_id"] = continuation_step_id
 
@@ -79,6 +85,8 @@ class LoopNodeDetailDTO:
 
         body_entry_step_id = d.pop("body_entry_step_id")
 
+        max_iterations = d.pop("max_iterations", UNSET)
+
         def _parse_continuation_step_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -93,6 +101,7 @@ class LoopNodeDetailDTO:
             item_binding=item_binding,
             failure_policy=failure_policy,
             body_entry_step_id=body_entry_step_id,
+            max_iterations=max_iterations,
             continuation_step_id=continuation_step_id,
         )
 
