@@ -1,0 +1,18 @@
+{
+  "generic_dependencies": {
+    "src/asks/operations.py::get_operation": "Generic decision-operation lookup in escalation_actions, shared by all ask sources; no integration subject, branch or lifecycle state.",
+    "src/asks/operations.py::operation": "Creates an idempotent human-decision operation with packet hash, dependency keys and supervisor executor; integration-specific execution remains with its callers.",
+    "src/asks/operations.py::succeed": "Generic ask operation completion on the caller connection; source adapters own and independently charge every integration effect and receipt."
+  },
+  "storage_sinks": {
+    "src/asks/operations.py::ReviewOperations.run_stage::8eb7f5847f71846e2a5b665e5cfb37fd46ad0e184cbe0da1769b716b1506a40a": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 876,
+      "owner": "ReviewOperations.run_stage",
+      "owner_fingerprint": "fb6c6eaebbc9494a54cda797ffd3dceb63f4f2cf09f25254f0e704096a4b6226",
+      "reason": "Review decision, gate resolution and task blocked/unblocked event audit. The source-owned ask operation stores the event sequence for idempotent emission; it neither replays Git refs nor duplicates integration lifecycle state."
+    }
+  }
+}
