@@ -876,37 +876,16 @@ async def test_a_dismissed_human_gate_stays_open_when_the_worker_moves_on(env):
     assert await svc.is_waiting(env.row)
 
 
-async def test_human_answer_through_the_escalation_closes_the_dialog(env):
+async def test_versioned_human_answer_closes_the_escalated_dialog(env):
     gate = [{"header": "Delivery", "question": "Push the branch and merge it?",
              "options": [{"label": "Yes"}, {"label": "No"}]}]
     svc, q = await asked(env, gate)
-    escalated = await svc.escalate(q["id"], "Delivery is a human decision")
-    accepted = await env.db.accept_escalation_reply(
-        escalated["escalation_id"],
-        transport="dashboard",
-        external_message_id="test-reply:" + q["id"],
-        verified_actor="human:dashboard:test",
-        text="No: leave delivery to the integration owner",
-    )
-    await env.db.begin_escalation_action(
-        escalated["escalation_id"],
-        reply_id=accepted["reply"]["id"],
-        expected_revision=accepted["escalation"]["revision"],
-        idempotency_key="test-action:" + q["id"],
-        action_kind="question_answer",
-        target_id=q["id"],
-        parameters={},
-        executor="session:test-supervisor",
-    )
+    await svc.escalate(q["id"], "Delivery is a human decision")
     env.provider.on_key = lambda key: env.store.settle(ROOT, "call_1", "error")
 
-    result = await svc.answer(
-        q["id"],
-        "No: leave delivery to the integration owner",
-        actor="human:dashboard:test",
-        human=True,
-        verified_escalation_id=escalated["escalation_id"],
-    )
+    from tests.test_agent_questions import versioned_answer
+
+    result = await versioned_answer(svc, q["id"], "No: leave delivery to the integration owner")
 
     assert result["state"] == "delivered", result
     assert env.provider.keys == [("p-worker", "original", "Escape")]
