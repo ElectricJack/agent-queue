@@ -1,5 +1,75 @@
 # Wait outcome integration contract
 
+## Supervisor delivery and CI observation correction — 2026-10-23
+
+Operational wait and continuation incidents remain internal during initial
+delivery, reconciliation and retries. Only a committed `escalate_to_human` wait
+decision authorizes human delivery; `needs_human` alone does not. Unread project
+supervisor notices use the existing global-supervisor fallback. A previously
+suppressed, unbound root may be retried after that explicit decision, while an
+ambiguous transport attempt retains its reconciliation state.
+
+CI source observation runs independently of integration-train visits and
+continuation maintenance, including while new V2 admissions are disabled.
+Provider quota responses preserve pending waits and defer observation until the
+repository backoff expires. Each remote observation has a five-second budget,
+including reads under the graph fence, so stalled CI calls release supervisor
+controls. This narrows the remote-read budget without changing the source
+listener's lease or transaction fences.
+
+## Terminal owners and refused deadlines — 2026-10-22
+
+Terminal task source events retire the owner's waits through the shared
+archive/deletion retirement path: cancel pending outcomes and outstanding
+deadlines, clear edges, withdraw incidents, and cancel continuations and
+reservations without sending a wake. This includes scheduler waits and retracts
+the terminal owner's downstream priority donations. The listener reobserves the
+current task under graph/component locks, so a delayed terminal event cannot cancel a reopened
+attempt. Deadline firing repeats this retirement check to recover old terminal
+owners even when their source event has already been consumed.
+
+A permanent owner/request refusal quarantines only that deadline by setting
+`cancelled_at`. The service records `wait.deadline_quarantined` with the exact
+refusal and sends one durable project-supervisor notice in the same leased
+transaction. It then removes the heap entry and processes later deadlines.
+Unavailable infrastructure, lost leases and unknown errors remain retryable and
+must not be marked fired or permanently cancelled.
+
+`aq wait cancel <wait-id>` also lets a live project supervisor or local operator
+cancel an orphaned task wait before escalation. A failed owner fence is required;
+the transaction retires only that wait, its deadlines, edges, incidents and
+continuations. It preserves resolved outcomes, any replacement claim and its
+task-level reservations, and never pauses or wakes the task. Worker cancellation
+continues to require the exact live holder.
+
+## Resume recovery correction — 2026-10-21
+
+Continuation maintenance runs independently of the source listener and main
+orchestration cycle. Each queued/reserved/launching continuation has at most one
+local dispatch attempt in flight; a slow or refused attempt must not prevent
+other continuations from requesting admission. Failed commands are logged and
+retried through the existing admission, generation and task-control fences.
+Service shutdown cancels and joins outstanding attempts, retaining durable
+reservation and launch state for restart recovery.
+
+The listener renewal cadence is not a query timeout. Source batches and deadline
+commands may use the full lease budget; cursor locking, expiration checks and
+transaction rollback still fence expired leaders. Queries exceeding that budget
+remain failures rather than authorizing stale writes.
+
+`wait_policy.resume_stall_seconds` defaults to 300 seconds and supports project
+overrides. A resolved, uncleared wait whose task remains RESUME_PENDING past that
+age creates one durable project-supervisor notice per continuation generation.
+The notice survives daemon restarts and does not reset the wait's age, cancel its
+outcome, force admission or acknowledge delivery. Ordinary retries continue;
+paused and acknowledged tasks do not generate notices.
+
+An IN_PROGRESS owner or producer is not itself unavailable. Task sources retain
+the published claim-generation fence; a changed generation or missing source can
+still resolve an active owner's wait as source_unavailable. Dispatcher outcomes
+record the unavailable observation's reason and revision for diagnosis, without
+turning that outcome into producer success.
+
 This dormant dispatcher slice consumes graph owner commit
 `debbec299fc82a41c342315f816634cbe0be9871` and checkpoint owner commit
 `7e1402dabd831d6096378ccf61ba7df233fb2350` by ancestry-preserving merges.
@@ -62,7 +132,66 @@ Lifecycle-only status events do not reset the window. Missing Git evidence canno
 establish a loop. The loop event identifies the wait and registration history;
 checkpoint creates the actual continuation id and generation later.
 
+## Scheduler maintenance lock scope — 2026-10-22
+
+Scheduler sync discovers candidate owner identities without the graph lock, then
+reconciles each owner in a separate transaction. Fresh admission observations,
+wait receipts, deadline preservation, stale-row cleanup, initial age audit and
+priority retraction commit together for that owner. The graph fence is released
+between owners so slow per-item authorization cannot serialize an entire bridge
+or scheduler pass against unrelated wait mutations. New candidates are picked up
+on a later scan; cleanup always re-reads the current owner's rows under the fence.
+An interrupted pass resumes from committed receipts without renewing deadlines.
+The startup bridge retains its project and identity receipts and its local
+single-flight lock; it does not acquire a project-wide database fence.
+
 ## Transaction and graph ownership
+
+### Short graph transactions — 2026-10-22
+
+The graph fence protects database revalidation and mutations. Git, filesystem,
+provider/terminal operations, router artifact loading and observations using
+other database connections run before acquiring it. An admission pass captures
+external delivery identities first; `AdmissionReader` then checks those identities
+and current task, project, profile, occupancy and workspace inputs on the owned
+connection. Stale delivery evidence blocks admission. An unprepared admission
+read under the fence refuses instead of doing external work.
+
+Resume refreshes its Git prerequisites before capturing the admission pass.
+The locked reservation revalidates that pass, including expiry and policy, so
+newly loaded evidence can admit work without accepting expired observations.
+
+Scheduler reconciliation discovers candidates first and commits one owner at a
+time, including legacy age audit. It owns only scheduler-owned subscriptions;
+task-owned resource waits retain their delivery owner. Cycle checks read the
+reachable semantic component with the existing node budget rather than scanning
+every dependency and wait in the fleet.
+
+The caller audit covers these paths:
+
+| Callers | Work outside the graph transaction | Revalidation inside |
+| --- | --- | --- |
+| scheduler, resume, listener, deadlines, supervisor decisions | router/delivery observations | current admission inputs and delivery snapshot identities |
+| registration, atomic job wait, source dispatch | Git progress heads | task/session path and branch; comments and edits read fresh |
+| hibernation advance | fallback checkpoint facts | continuation generation, claim, branch, session instance and summary |
+| cold restart | provider stop proof, Git ancestry and checkout detach | all task/wait/continuation/workspace/session rows compared before retirement |
+| raw wait queries, graph helpers, recovery, acknowledgement, human waits, cancellation, eviction, measurements, legacy bridge/projections | no external effects in fenced bodies | transaction-local SQL and transactional source/lifecycle callbacks |
+| task deletion/archive | existing separate external-effect phase | existing fenced retirement transactions |
+
+Cold restart keeps its per-task control and row locks during external cleanup,
+then releases those row locks before acquiring the graph fence in the normal lock
+order. Failed revalidation retains database ownership for an idempotent retry.
+Escalation and routing helpers use the caller's connection when composing with a
+wait transaction. Transactional adapter callbacks must not open another
+connection or perform external I/O.
+
+Every graph acquisition, including the listener's nonblocking acquisition, arms
+one watchdog per transaction. After five seconds it logs `wait.graph_lock_slow`
+with the acquisition caller and elapsed hold time, even while Python is awaiting
+outside PostgreSQL. Commit and rollback cancel it; transaction-end timing also
+catches event-loop stalls. The existing twenty-second acquisition refusal remains
+retryable and does not authorize a stale write.
+
 
 `WakeDispatcher.commit` runs inside the listener's READ COMMITTED transaction.
 It validates the durable source event, takes the graph fence, discovers old edge
@@ -170,3 +299,23 @@ so suspension history and admission audit keep their task identity, and the
 independent wait outcome audit is retained. Bulk hierarchy changes publish every changed dependency source
 in the mutation transaction using a bounded number of database statements.
 All wait feature flags remain disabled by default.
+
+
+## Retry and repair of resume workspace preparation
+
+Workspace preparation retries contention (`wait.graph_busy`), transport failures,
+and OS busy/timeout errors up to three attempts, with durable 5/10 second backoff.
+The queued continuation retains the same reservation, agent, staged checkout,
+saved head and resolved source outcome. Reserved capacity remains counted during
+backoff. Identity, dirty-checkout and other non-retryable failures hold immediately;
+exhausted retries create the existing `resume_workspace_failed` incident.
+
+A live owning supervisor or local operator can issue `wait_decide` with
+`decision=requeue`, `wait_id`, `continuation_id`, `expected_generation` and a
+nonblank note. The transaction repeats project, generation, stopped-writer,
+branch and resolved-wait fences. Only workspace/launch resume holds are eligible;
+suspension, pause and uncertain-stop holds require their own recovery. Requeue
+preserves the source and checkout, records actor/reason/time in facts and an audit
+event, and resets the retry budget. It does not acknowledge the outcome. The hold
+incident is withdrawn when the fresh process receives prime, atomically with
+outcome delivery; failed retries retain the incident.

@@ -577,7 +577,7 @@ _CONFIG_SCHEMAS: dict[str, EventSchema] = {
 # ---------------------------------------------------------------------------
 
 _PROFILE_SCHEMAS: dict[str, EventSchema] = {
-    # A synced profile's vault copy (the supervisor by default) gained the
+    # A shipped system profile's vault copy (unless it opted out) gained the
     # shipped ``## Capabilities`` grants it lacked.  ``added`` maps each
     # capability namespace to the appended names; ``trigger`` is ``startup``,
     # ``reload`` or ``doctor``.
@@ -1653,6 +1653,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["profile_id", "old_name", "name", "backup_path"],
         "optional": ["seq"],
     },
+    "pool.deleted": {
+        "required": ["profile_id", "depth", "sessions", "warnings"],
+        "optional": ["seq"],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -1774,6 +1778,24 @@ _INTEGRATION_SCHEMAS["integration.readiness_changed"] = {
     "optional": ["head_sha"],
     "types": {"project_id": str},
     "fields": {"project_id": {"type": "string", "description": "project"}},
+}
+# A verified ref write is an observation wakeup, independent of the legacy
+# promotion/receipt lifecycle and its frozen operation routes.
+_PUBLICATION_FIELDS = {
+    "project_id": (str, "string", "project"),
+    "batch_id": (str, "string", "integration batch"),
+    "revision": (int, "integer", "candidate revision"),
+    "repository_id": (str, "string", "published repository"),
+    "target_ref": (str, "string", "published ref"),
+    "head_sha": (str, "string", "verified published head"),
+    "candidate_sha": (str, "string", "tested candidate head"),
+    "publication_verified": (bool, "boolean", "ref write verified"),
+}
+_INTEGRATION_SCHEMAS["integration.publication_verified"] = {
+    "required": list(_PUBLICATION_FIELDS), "optional": [],
+    "types": {name: spec[0] for name, spec in _PUBLICATION_FIELDS.items()},
+    "fields": {name: {"type": spec[1], "description": spec[2]}
+               for name, spec in _PUBLICATION_FIELDS.items()},
 }
 _INTEGRATION_SCHEMAS["integration.sealed"] = {
     "required": ["project_id", "operation_id"],
