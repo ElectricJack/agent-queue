@@ -1,6 +1,7 @@
 import { getProjectOnboarding, onboardProject } from "../../../api/client";
 import type { SubmitProject, WizardSubmission } from "./ProjectOnboardingWizard";
 import type { OnboardingResult, SubmissionError } from "./state";
+import { randomUUID } from "../../../randomUUID";
 
 /** Normalize whatever a `SubmitProject` rejected with into a `SubmissionError`. */
 export function toSubmissionError(err: unknown): SubmissionError {
@@ -10,7 +11,7 @@ export function toSubmissionError(err: unknown): SubmissionError {
 }
 
 export function newRequestId(): string {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 /** Build the one daemon-owned request, then poll its durable phase while it is in flight. */
@@ -46,6 +47,7 @@ export function requestBody(requestId: string, request: WizardSubmission) {
   if (source.mode === "link") return { ...common, relative_path: source.relativePath ?? "" };
   if (source.mode === "init") return {
     ...common, relative_path: source.directoryName, create_readme: source.createReadme, create_github: source.createGithub,
+    ...(source.repoUrl?.trim() ? { repo_url: source.repoUrl.trim() } : {}),
     ...(source.createGithub ? { github_owner: source.githubOwner, github_repo: source.githubRepo || source.directoryName, github_visibility: source.githubVisibility } : {}),
   };
   if (source.mode === "github_clone") {
@@ -100,5 +102,5 @@ function fieldErrors(error: ErrorPayload): Record<string, string> {
 function survivors(error: { details?: unknown }): string[] | undefined {
   if (!error.details || typeof error.details !== "object") return undefined;
   const details = error.details as Record<string, unknown>;
-  return [details.canonical_path, details.github_repository_url, details.github_url].filter((value): value is string => typeof value === "string");
+  return [details.canonical_path, details.github_repository_url, details.github_url, details.recovery_command].filter((value): value is string => typeof value === "string");
 }

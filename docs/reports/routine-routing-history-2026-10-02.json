@@ -1,0 +1,80 @@
+[
+  {
+    "id": "azure-vault-92.6",
+    "route": {
+      "artifact_sha256": "sha256:71ba3d2ea7082498cbbe0d5eb49e6b929d2e7ad57f6f9cd426e6717fa4178a4a",
+      "candidates": [
+        {
+          "harness": "codex",
+          "hold": false,
+          "intelligence_class": "standard-high",
+          "lane": null,
+          "lifecycle": "pool",
+          "profile_id": "standard-high-codex",
+          "provider": "codex",
+          "tier": "fallback"
+        },
+        {
+          "harness": "claude",
+          "hold": false,
+          "intelligence_class": "standard-high",
+          "lane": null,
+          "lifecycle": "pool",
+          "profile_id": "standard-high-claude",
+          "provider": "claude",
+          "tier": "fallback"
+        }
+      ],
+      "classification": {
+        "independent_verifier": false,
+        "intelligence_class": "standard-high",
+        "narrow": false,
+        "reason": "Task explicitly defined as 'feature' with a 'standard-high' class hint, fitting 'routine work' and policy updates. The work involves updating routing policy and prompts, which is not a narrow footprint. 'Routing fixtures' are specified in acceptance criteria, confirming test-verification, but no external verifier is named for the task's outcome.",
+        "task_type": "feature",
+        "test_verified": true
+      },
+      "hints": {
+        "class_hint": "standard-high",
+        "task_type": "feature"
+      },
+      "policy_sha256": "sha256:1cd0b0e3c3c259f0618ce5dfb48f2884adad1fc81bb4085a5d433a423442e71e",
+      "profile_id": "standard-high-codex",
+      "provider": "codex",
+      "routed_at": 1790910846.8020954,
+      "rule": "kinds.feature",
+      "scores": [
+        {
+          "avail_factor": 0.5,
+          "backlog": 1,
+          "busy": 0,
+          "intelligence_class": "standard-high",
+          "load": 1,
+          "pressure": 0.3125,
+          "profile_id": "standard-high-codex",
+          "slots": 20,
+          "tier": "fallback",
+          "usage_factor": 0.64,
+          "usage_percent": 88.0,
+          "weight": 1.0
+        },
+        {
+          "avail_factor": 1.0,
+          "backlog": 0,
+          "busy": 2,
+          "intelligence_class": "standard-high",
+          "load": 2,
+          "pressure": 0.375,
+          "profile_id": "standard-high-claude",
+          "slots": 8,
+          "tier": "fallback",
+          "usage_factor": 1.0,
+          "usage_percent": 20.0,
+          "weight": 1.0
+        }
+      ],
+      "task_type": "feature"
+    },
+    "route_source": "router",
+    "task_type": "feature"
+  }
+]
