@@ -151,12 +151,19 @@ from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.status import IntegrationStatusService
-from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
+from src.integration.train import (
+    CandidateChecks,
+    IntegrationTrain,
+    LaneRecord,
+    TrainLane,
+    TrainTarget,
+)
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import (
     RETAINED_CANDIDATE_PREFIX,
     DaemonLanes,
     DatabaseBatches,
+    DatabaseLaneLedger,
     DatabaseTargets,
     LeasedPublish,
     _never_trusted,
@@ -5186,6 +5193,41 @@ async def test_default_config_constructs_the_train(world):
     # A minimal integration config also constructs the same train.
     orchestrator.config = SimpleNamespace(integration=SimpleNamespace())
     assert isinstance(train_for(orchestrator), IntegrationTrain)
+    assert isinstance(train_for(orchestrator).ledger, DatabaseLaneLedger)
+
+
+async def test_lane_ledger_keeps_visit_history_for_the_next_daemon(world):
+    now = [1000.0]
+    ledger = DatabaseLaneLedger(world.db, clock=lambda: now[0], retention_seconds=100)
+    first = LaneRecord("p", "r", "refs/heads/aq/epic", kind="epic", visits=1, errors=0,
+                       state="idle", observed_at=990.0, started_at=980.0)
+    second = replace(first, visits=2, observed_at=995.0)
+    await ledger.record(first)
+    await ledger.record(second)
+    # A project deleted while its visit ran leaves no orphaned history.
+    await ledger.record(replace(first, project_id="deleted"))
+    assert await ledger.load() == [second]
+    await ledger.forget([second.key])
+    assert await ledger.load() == []
+    await ledger.record(first)
+    now[0] = 1101.0
+    assert await ledger.load() == []
+
+
+async def test_lane_ledger_uses_the_generic_config_store(world):
+    from src.database.tables import metadata, system_config
+
+    ledger = DatabaseLaneLedger(world.db, clock=lambda: 1000.0)
+    record = LaneRecord("p", "r", "refs/heads/aq/epic", kind="epic", visits=3, errors=1,
+                        state="blocked", observed_at=None, started_at=900.0)
+    await ledger.record(record)
+    async with world.db._engine.begin() as conn:
+        rows = (await conn.execute(select(system_config))).all()
+    # No integration table of its own: one versioned system_config key per lane.
+    assert [key for key, _value in rows if key.startswith(ledger.PREFIX)] == [
+        ledger.PREFIX + '["p", "r", "refs/heads/aq/epic"]']
+    assert not [name for name in metadata.tables if "train_lane" in name]
+    assert await ledger.load() == [record]
 
 
 async def test_default_config_train_delivers_to_git(world, monkeypatch):

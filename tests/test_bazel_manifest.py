@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -1340,3 +1341,77 @@ def test_clean_root_dashboard_acceptance():
             assert manifest(reference / "dashboard/dist") == build
     assert manifests[0] and manifests[0] == manifests[1]
     assert builds[0] and builds[0] == builds[1]
+
+
+_provision_spec = importlib.util.spec_from_file_location(
+    "bazel_provision", ROOT / "tools/bazel/provision.py"
+)
+provision_tool = importlib.util.module_from_spec(_provision_spec)
+_provision_spec.loader.exec_module(provision_tool)
+
+
+def _fake_bazel_lock(tmp_path, payload: bytes) -> Path:
+    import hashlib
+
+    lock = tmp_path / "toolchains.lock.json"
+    lock.write_text(json.dumps({"bazel": {
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "url": "https://releases.example/8.3.1/release/bazel-8.3.1-linux-x86_64",
+        "version": "8.3.1",
+    }}))
+    return lock
+
+
+def test_provisioned_bazel_pin_matches_bazelversion():
+    pin = provision_tool.pinned_bazel()
+    assert pin["version"] == (ROOT / ".bazelversion").read_text().strip()
+    assert re.fullmatch(r"[a-f0-9]{64}", pin["sha256"])
+
+
+@pytest.mark.skipif(
+    (sys.platform, platform.machine()) != ("linux", "x86_64"), reason="Linux x86_64 only"
+)
+def test_provision_installs_verified_read_only_bazel_once(tmp_path):
+    payload = b"#!/bin/sh\necho bazel 8.3.1\n"
+    lock = _fake_bazel_lock(tmp_path, payload)
+    fetched = []
+
+    def fetch(url, destination):
+        fetched.append(url)
+        destination.write_bytes(payload)
+
+    data_dir = tmp_path / "data"
+    executable = provision_tool.provision(data_dir, fetch=fetch, lock=lock)
+    root = data_dir / "toolchain/bazel-8.3.1-linux-x86_64"
+    assert executable == root / "bin/bazel"
+    assert executable.read_bytes() == payload
+    for path in (root, root / "bin", executable):
+        assert not path.stat().st_mode & 0o222, path
+    assert os.access(executable, os.X_OK)
+    # A verified install is reused without another download.
+    assert provision_tool.provision(data_dir, fetch=fetch, lock=lock) == executable
+    assert len(fetched) == 1
+
+
+@pytest.mark.skipif(
+    (sys.platform, platform.machine()) != ("linux", "x86_64"), reason="Linux x86_64 only"
+)
+def test_provision_refuses_checksum_mismatch_and_altered_install(tmp_path):
+    lock = _fake_bazel_lock(tmp_path, b"approved bytes")
+    data_dir = tmp_path / "data"
+    with pytest.raises(provision_tool.ProvisionError, match="nothing was installed"):
+        provision_tool.provision(
+            data_dir, fetch=lambda _url, dest: dest.write_bytes(b"substituted"), lock=lock
+        )
+    assert not (data_dir / "toolchain/bazel-8.3.1-linux-x86_64").exists()
+
+    root = provision_tool.provision(
+        data_dir, fetch=lambda _url, dest: dest.write_bytes(b"approved bytes"), lock=lock
+    ).parents[1]
+    binary = root / "bin/bazel"
+    root.chmod(0o755)
+    (root / "bin").chmod(0o755)
+    binary.chmod(0o755)
+    binary.write_bytes(b"tampered")
+    with pytest.raises(provision_tool.ProvisionError, match="does not hold the pinned"):
+        provision_tool.provision(data_dir, fetch=lambda *_: None, lock=lock)
