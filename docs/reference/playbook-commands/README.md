@@ -362,7 +362,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status, owner identity and bounded diagnostics. |
 | [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
 | [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
-| [`message_inbox`](message_inbox.md) | Message Inbox | List a recipient's pending messages, optionally marking them delivered. |
+| [`message_inbox`](message_inbox.md) | Message Inbox | List unread, unarchived mail; inject claims only undelivered messages. |
 | [`message_list`](message_list.md) | Message List | List messages with project/thread/recipient filters. |
 | [`message_reply`](message_reply.md) | Message Reply | Reply to a message: marks it read and writes the linked reply row. |
 | [`message_status`](message_status.md) | Message Status | Return the durable delivery state of one message. |

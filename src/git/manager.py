@@ -106,6 +106,7 @@ from src.git.github_contracts import (
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
 from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
+from src.metrics.perf import operation_timing, timed_operation
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -715,6 +716,7 @@ def bounded_git_reads(func):
     return bounded
 
 
+@timed_operation("wait.git_read_budget_scope")
 async def within_git_read_budget(func, *args):
     """``await func(*args)`` within the active request budget; None once it lapses.
 
@@ -2221,8 +2223,16 @@ class GitManager:
         lock_held: bool = False,
         all_heads: bool = False,
         refetch: bool = False,
+        refs: Sequence[str] | None = None,
     ) -> None:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
+        if refs is not None:
+            refs = tuple(dict.fromkeys(refs))
+            self._origin_refspecs(refs)  # Validate before any transport or credential lookup.
+            if refetch:
+                raise GitError("a recovery refetch requires the complete origin inventory")
+            if not refs:
+                return
         fetch_args = (
             ["fetch", "--no-tags", "--prune", "origin",
              "+refs/heads/*:refs/remotes/origin/*",
@@ -2231,6 +2241,9 @@ class GitManager:
                               "+refs/heads/*:refs/remotes/origin/*",
                               "+refs/aq/provenance/*:refs/aq/provenance/*"]
         )
+        if refs is not None:
+            # Pruning a partial advertisement would retire unrelated branches.
+            fetch_args = ["fetch", "--no-tags", "origin", *self._origin_refspecs(refs)]
         if refetch:
             fetch_args.insert(1, "--refetch")
             fetch_args.append("+refs/tags/*:refs/tags/*")
@@ -2279,6 +2292,7 @@ class GitManager:
             await self._afetch_origin_with_auth_to_url(
                 checkout_path, source_url=source_url, token=token,
                 **({"refetch": True} if refetch else {}),
+                **({"refs": refs} if refs is not None else {}),
             )
 
         if lock_held:
@@ -2287,6 +2301,18 @@ class GitManager:
             async with self.arepository_transaction(checkout_path):
                 await acquire()
 
+    @staticmethod
+    def _origin_refspecs(refs: Sequence[str], *, staged: bool = False) -> list[str]:
+        specs = []
+        for ref in refs:
+            if not ref.startswith(("refs/heads/", "refs/tags/", "refs/aq/provenance/")):
+                raise GitError("origin fetch ref must be a branch, tag or provenance ref")
+            _validate_ref(ref)
+            destination = (ref.replace("refs/heads/", "refs/remotes/origin/", 1)
+                           if not staged and ref.startswith("refs/heads/") else ref)
+            specs.append(f"+{ref}:{destination}")
+        return specs
+
     async def _afetch_origin_with_auth_to_url(
         self,
         checkout_path: str,
@@ -2294,6 +2320,7 @@ class GitManager:
         source_url: str,
         token: str | None,
         refetch: bool = False,
+        refs: Sequence[str] | None = None,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2308,6 +2335,18 @@ class GitManager:
         checkout lacks, so nothing the checkout keeps depends on the temporary
         repository after it is removed.
         """
+        if refs is not None:
+            refs = tuple(dict.fromkeys(refs))
+            if not refs or refetch:
+                raise GitError("partial origin fetch requires refs and cannot refetch")
+            transport_refs = self._origin_refspecs(refs, staged=True)
+            import_refs = self._origin_refspecs(refs)
+        else:
+            transport_refs = ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+                              "+refs/aq/provenance/*:refs/aq/provenance/*"]
+            import_refs = ["+refs/heads/*:refs/remotes/origin/*",
+                           "+refs/aq/provenance/*:refs/aq/provenance/*",
+                           *(["+refs/tags/*:refs/tags/*"] if refetch else [])]
         loop = asyncio.get_running_loop()
         started = loop.time()
         deadline = started + self._GIT_TIMEOUT
@@ -2350,8 +2389,7 @@ class GitManager:
                     ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
                      "-c", "fetch.fsckObjects=true",
                      f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
-                     "+refs/aq/provenance/*:refs/aq/provenance/*"],
+                     *transport_refs],
                     home=home,
                     repository_url=source_url,
                     token=token,
@@ -2369,15 +2407,14 @@ class GitManager:
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  "-c", "fetch.fsckObjects=true",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
+                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                 *(["--prune"] if refs is None else []),
                  *(["--refetch"] if refetch else []),
-                 str(imported), "+refs/heads/*:refs/remotes/origin/*",
-                 "+refs/aq/provenance/*:refs/aq/provenance/*",
-                 *(["+refs/tags/*:refs/tags/*"] if refetch else [])],
+                 str(imported), *import_refs],
                 home=home,
                 deadline=deadline,
             )
-            if not refetch:
+            if not refetch and refs is None:
                 await self._run_isolated_import_git(
                     ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                      "-c", "fetch.fsckObjects=true",
@@ -5106,6 +5143,11 @@ class GitManager:
                 await asyncio.sleep(delay)
         raise AssertionError("authenticated Git retry loop exhausted")
 
+    @timed_operation(
+        lambda self, args, **kw: "git.auth_" + (
+            args[0] if args and args[0] in {"fetch", "push", "clone", "ls-remote"} else "other"
+        )
+    )
     async def _arun_authenticated_git_once(
         self,
         args: list[str],
@@ -5253,15 +5295,18 @@ class GitManager:
                         )
                         broker_channel = None
                     phase = "git_communicate"
-                    output, stderr = await process.communicate()
+                    with operation_timing("git.auth_subprocess"):
+                        output, stderr = await process.communicate()
                     phase = "process_cleanup"
-                    await self._kill_app_git_group(process)
+                    with operation_timing("git.auth_cleanup"):
+                        await self._kill_app_git_group(process)
                     phase = "credential_broker_settle"
-                    served = (
-                        await self._settle_app_credential_broker(broker_task)
-                        if broker_task is not None
-                        else True
-                    )
+                    with operation_timing("wait.auth_credential_settlement"):
+                        served = (
+                            await self._settle_app_credential_broker(broker_task)
+                            if broker_task is not None
+                            else True
+                        )
                     broker_task = None
             except BaseException as exc:
                 failure_time = loop.time()

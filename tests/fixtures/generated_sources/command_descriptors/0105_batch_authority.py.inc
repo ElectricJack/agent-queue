@@ -6,9 +6,10 @@ def _batch_authority_changes():
     )
 
 
-def _before_batch_authority_catalogue():
+def _before_batch_authority_catalogue(catalogue=None):
     evidence = _batch_authority_changes()
-    catalogue = json.loads(render_command_catalogue())
+    if catalogue is None:
+        catalogue = json.loads(render_command_catalogue())
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -20,8 +21,10 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    previous = json.dumps(_before_batch_authority_catalogue(), indent=2) + "\n"
+    catalogue = _before_unread_inbox_catalogue(json.loads(render_command_catalogue()))
+    rendered = json.dumps(catalogue, indent=2) + "\n"
+    previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+    assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
