@@ -408,6 +408,71 @@ def _database_reachable() -> bool:
     return database_reachable(CONFIG_PATH)
 
 
+def _database_matches_compose(compose_file: str) -> bool:
+    """Only auto-start a service proven to publish the configured database.
+
+    Unresolved compose interpolation or unsupported port syntax is not proof:
+    leave those installations to the operator rather than start another server.
+    Load the effective config so environment/profile overlays cannot accidentally
+    authorize starting the development service for an external database.
+    """
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    import yaml
+
+    from src.config import ConfigValidationError, load_config
+
+    try:
+        url = urlsplit(load_config(CONFIG_PATH).database.url)
+        if not url.hostname:
+            return False
+        if set(parse_qs(url.query, keep_blank_values=True)) & {
+            "host", "port", "database", "dbname", "service",
+        }:
+            return False
+        with open(compose_file, encoding="utf-8") as handle:
+            compose = yaml.safe_load(handle)
+        service = compose["services"]["postgres"]
+        environment = service.get("environment", {})
+        if isinstance(environment, list):
+            environment = dict(item.split("=", 1) for item in environment if "=" in item)
+        database = environment.get("POSTGRES_DB")
+        if (not isinstance(database, str) or not database or "$" in database
+                or unquote(url.path.removeprefix("/")) != database):
+            return False
+        host = (url.hostname or "localhost").lower()
+        port = url.port or 5432
+        loopback = {"localhost", "127.0.0.1", "::1"}
+        for publication in service.get("ports", []):
+            if isinstance(publication, dict):
+                if publication.get("protocol", "tcp") != "tcp":
+                    continue
+                bound = str(publication.get("host_ip", "0.0.0.0")).strip("[]").lower()
+                published = str(publication.get("published", ""))
+                target = str(publication.get("target", ""))
+            else:
+                match = re.fullmatch(
+                    r"(?:(\[[^\]]+\]|[^:]+):)?(\d+):(\d+)(?:/tcp)?", str(publication)
+                )
+                if not match:
+                    continue
+                bound, published, target = match.groups()
+                bound = (bound or "0.0.0.0").strip("[]").lower()
+            if not published.isdecimal() or target != "5432" or int(published) != port:
+                continue
+            # Wildcard publications are reachable locally, not at an arbitrary
+            # remote host with the same port. Explicit addresses must match.
+            if bound in {"0.0.0.0", "::"}:
+                if host in loopback:
+                    return True
+            elif host == bound or (host == "localhost" and bound in loopback):
+                return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError,
+            ConfigValidationError, yaml.YAMLError):
+        return False
+    return False
+
+
 def _ensure_database() -> bool:
     """Make sure the configured database answers before the daemon is started.
 
@@ -415,15 +480,16 @@ def _ensure_database() -> bool:
 
     1. Something is already listening — the installed or operator-run server.
        Nothing else to do.
-    2. Nothing is listening and this is a source checkout with a compose file —
-       start the development container, as `aq start` always has.
-    3. Nothing is listening and there is no compose file — say so, and name the
+    2. Nothing is listening and the configured endpoint matches the compose
+       service's host, published port and database — start that container.
+    3. Nothing is listening and compose does not match — say so, and name the
        command that installs or repairs one. AQ is PostgreSQL-only, so a
        missing server is the whole problem, not a missing Docker.
     """
     if _database_reachable():
         return True
-    if _find_compose_file():
+    compose_file = _find_compose_file()
+    if compose_file and _database_matches_compose(compose_file):
         return _ensure_docker_postgres()
     endpoint = _configured_database_endpoint()
     where = f"{endpoint[0]}:{endpoint[1]}" if endpoint else "the configured address"
@@ -529,76 +595,39 @@ def _database_is_at_head() -> bool:
 def _backup_database() -> None:
     """Dump the configured Postgres database to BACKUPS_DIR.
 
-    Prefer a local PostgreSQL client and the configured connection, including
-    Homebrew's keg-only clients. Fall back to the legacy ``aq-postgres`` Docker
-    container when no local client is installed. A failed backup stops startup.
+    Prefer compatible local PostgreSQL clients and the configured connection,
+    including Homebrew's keg-only clients. Fall back to the running container
+    publishing that endpoint. Both paths write custom archives; failure stops startup.
     """
+    import asyncio
     import datetime
 
-    from src.install.command import run_command
-    from src.install.update import backup_database, find_pg_dump
-
-    pg_dump = find_pg_dump()
-    if pg_dump is not None:
-        destination = Path(BACKUPS_DIR) / (
-            f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
-        )
-        try:
-            ok, message = backup_database(
-                Path(CONFIG_PATH), destination, execute=run_command, pg_dump=pg_dump
-            )
-            if not ok:
-                console.print(f"Database backup failed: {message}", markup=False)
-                raise SystemExit(13)
-            with destination.open("rb") as handle:
-                valid = handle.read(5) == b"PGDMP"
-            if not valid:
-                destination.unlink(missing_ok=True)
-                console.print("Database backup failed: pg_dump did not produce a custom archive.")
-                raise SystemExit(15)
-        except OSError as exc:
-            console.print(f"Database backup failed: {exc}", markup=False)
-            raise SystemExit(14) from exc
-        console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
-        return
+    from src.config import load_config
+    from src.database.backup import BackupError, backup_database, postgres_clients
 
     try:
         os.makedirs(BACKUPS_DIR, exist_ok=True)
     except OSError as exc:
         raise SystemExit(12) from exc
 
-    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-    out = os.path.join(BACKUPS_DIR, f"pre-deploy-{ts}.sql")
-    container, user, db = "aq-postgres", "agent_queue", "agent_queue"
-    tmp = f"/tmp/pre-deploy-{ts}.sql"
+    destination = Path(BACKUPS_DIR) / (
+        f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
+    )
 
-    def _docker(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(args, capture_output=True, text=True, check=True)
+    async def _main() -> None:
+        clients = await postgres_clients(load_config(CONFIG_PATH).database.url)
+        await backup_database(clients, destination)
 
     try:
-        _docker("docker", "exec", container, "pg_dump", "-U", user, "-d", db, "-f", tmp)
-        _docker("docker", "cp", f"{container}:{tmp}", out)
-        _docker("docker", "exec", container, "rm", "-f", tmp)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        console.print(
-            "Database backup failed: no local pg_dump was found and the aq-postgres Docker "
-            "backup failed. Install PostgreSQL client tools for the configured server.",
-            markup=False,
-        )
-        raise SystemExit(13) from exc
-
-    # The wrapper's integrity check: a real pg_dump carries that comment.
-    size = os.path.getsize(out) if os.path.exists(out) else 0
-    try:
-        with open(out, "rb") as handle:
-            if size > 4096:
-                handle.seek(-4096, os.SEEK_END)
-            tail = handle.read().decode("utf-8", "replace")
-    except OSError as exc:
+        asyncio.run(_main())
+    except BackupError as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
+        invalid = str(exc).startswith(("restore_format_unsupported", "restore_archive_invalid"))
+        raise SystemExit(15 if invalid else 13) from exc
+    except (OSError, TimeoutError) as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
         raise SystemExit(14) from exc
-    if "unrestrict" not in tail:
-        raise SystemExit(15)
-    console.print(f"[green]Backup written[/] {out} ({size:,} bytes)")
+    console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
 
 
 def _post_daemon_checks() -> None:
@@ -640,7 +669,9 @@ def _post_daemon_checks() -> None:
     try:
         result = subprocess.run(
             [
-                _resolve_agent_queue_bin(),
+                sys.executable,
+                "-m",
+                "src.cli.app",
                 "doctor",
                 "--check",
                 "pools.stale_worktree_checkouts",
@@ -712,8 +743,8 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
             return True
 
         # The daemon cannot start without its database. Reach for Docker only
-        # when nothing is listening *and* this is a checkout that ships a
-        # compose file.
+        # when nothing is listening and the configured endpoint is proven to
+        # match this checkout's compose service.
         if _config_uses_postgres() and not _ensure_database():
             return False
 
@@ -823,10 +854,9 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
 
 
 #: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
-#: sessions and ``n-<profile>--<project>`` for named ones.  The reconciler
-#: adopts on exactly these two prefixes, so they are also the safe set to
-#: reap — anything else on the socket belongs to someone else.
-_AQ_SESSION_PREFIXES = ("s-", "n-")
+#: sessions, ``n-<profile>--<project>`` for named ones and ``p-`` for pool
+#: workers. Reap these AQ sessions; leave other sessions on the socket alone.
+_AQ_SESSION_PREFIXES = ("s-", "n-", "p-")
 
 
 def _tmux_socket() -> str:

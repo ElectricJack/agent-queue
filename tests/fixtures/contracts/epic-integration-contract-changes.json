@@ -1,0 +1,89 @@
+{
+  "cli_catalogue_sha256": "a6970275d21d9a3a6de7ced0100c5f881a0a31999069db75c654553c9dd52471",
+  "contract_fingerprints": {
+    "integration_cutover_containment": "sha256:bf037a6346b7eaffdc59c4d596208bb1eca76a0a313da7099598a0e8b6bbbecc"
+  },
+  "previous_cli_catalogue_sha256": "468e30721893c160e591ef116159339a6e8d4720e8de3b1266baac51701eced6",
+  "review_notes": [
+    "Epic fast-smooth-integration-implementation adds exactly two fallback CLI definitions: integration_cutover_containment and integration_reconcile_git_truth. Removing them recovers the withheld-source catalogue bytes; earlier recordings stay unchanged.",
+    "integration_cutover_containment is a typed adapter (local operator only, preview by default, apply bound to the reviewed plan digest). integration_reconcile_git_truth is daemon-only: system scope, excluded from CLI, MCP and API, and the handler refuses any non-service principal."
+  ],
+  "source_base": "f88abe7fd245da853bd328187f01beda41e02e41",
+  "source_commit": "8ec2dbd8de6d0ac129a17846b65c621ec30cffc6",
+  "transport_definitions": {
+    "integration_cutover_containment": {
+      "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "choices": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Choices",
+            "type": "object"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Digest"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationContainmentCutoverArgs",
+        "type": "object"
+      },
+      "name": "integration_cutover_containment"
+    },
+    "integration_reconcile_git_truth": {
+      "description": "Daemon-only repair of Git-derived integration projections.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "integration_reconcile_git_truth"
+    }
+  }
+}
