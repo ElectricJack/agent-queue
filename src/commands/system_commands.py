@@ -70,7 +70,7 @@ class SystemCommandsMixin:
             scope.get("kind") == "session" and scope.get("elevated")
             and scope.get("project_id") is None and scope.get("task_id") is None
         ):
-            return {"error": "out of scope: intelligence-class settings require global admin"}
+            return {"success": False, "error": "out of scope: intelligence-class settings require global admin"}
         from src.intelligence_classes import load_intelligence_classes
         from src.intelligence_classes.editing import (
             IntelligenceClassConflict, IntelligenceClassEditError, class_row, edit_intelligence_class,
@@ -121,12 +121,12 @@ class SystemCommandsMixin:
                 operation.exception()  # retrieve a failure after a cancelled request
             raise
         except IntelligenceClassConflict as exc:
-            return {"error": str(exc), "error_code": "revision_conflict", "current_revision": exc.current_revision}
+            return {"success": False, "error": str(exc), "error_code": "revision_conflict", "current_revision": exc.current_revision}
         except IntelligenceClassEditError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         except (OSError, UnicodeError):
             logger.warning("Could not persist intelligence-class edit")
-            return {"error": "Intelligence class could not be saved"}
+            return {"success": False, "error": "Intelligence class could not be saved"}
 
     async def _cmd_delete_intelligence_class(self, args: dict) -> dict:
         """Retire an unused class and update every live class consumer."""
@@ -135,7 +135,7 @@ class SystemCommandsMixin:
             scope.get("kind") == "session" and scope.get("elevated")
             and scope.get("project_id") is None and scope.get("task_id") is None
         ):
-            return {"error": "out of scope: intelligence-class settings require global admin"}
+            return {"success": False, "error": "out of scope: intelligence-class settings require global admin"}
         from src.intelligence_classes import load_intelligence_classes
         from src.intelligence_classes.editing import (
             IntelligenceClassConflict, IntelligenceClassEditError, retire_intelligence_class,
@@ -151,11 +151,11 @@ class SystemCommandsMixin:
             async with lock:
                 live = self._live_intelligence_classes()
                 if live is None:
-                    return {"error": "Intelligence-class registry is not active"}
+                    return {"success": False, "error": "Intelligence-class registry is not active"}
                 class_id = args.get("class_id")
                 classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
                 if not isinstance(class_id, str) or class_id not in classes:
-                    return {"error": "Intelligence class must identify one existing vault file"}
+                    return {"success": False, "error": "Intelligence class must identify one existing vault file"}
                 references = await self.db.intelligence_class_references(class_id)
                 source_refs = await asyncio.to_thread(
                     vault_profile_references, self.config.data_dir, class_id,
@@ -167,6 +167,7 @@ class SystemCommandsMixin:
                 if references:
                     lines = [f"{ref['kind']} {ref['id']} ({ref['name']})" for ref in references]
                     return {
+                        "success": False,
                         "error": "Intelligence class is still referenced: " + "; ".join(lines)
                         + ". Repoint agents with aq agent edit --intelligence-class, "
                         "profiles with aq agent edit-profile --default-class, and unassigned "
@@ -203,15 +204,23 @@ class SystemCommandsMixin:
                 operation.exception()
             raise
         except IntelligenceClassConflict as exc:
-            return {"error": str(exc), "error_code": "revision_conflict",
+            return {"success": False, "error": str(exc), "error_code": "revision_conflict",
                     "current_revision": exc.current_revision}
         except IntelligenceClassEditError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         except (OSError, UnicodeError):
             logger.warning("Could not retire intelligence class")
-            return {"error": "Intelligence class could not be retired"}
+            return {"success": False, "error": "Intelligence class could not be retired"}
 
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "get_stuck_tasks", args)
+        return await self._get_stuck_tasks_observation(args)
+
+    async def _get_stuck_tasks_observation(self, args: dict, *, max_tasks=None) -> dict:
         """Read aged active tasks, orphaned workers and unroutable READY tasks.
 
         Paused projects, containers and approved human holds are excluded.
@@ -232,7 +241,7 @@ class SystemCommandsMixin:
             if project_id and project_id != principal.project_id:
                 return {"success": False, "error": "out of scope: project_id"}
             project_id = principal.project_id
-        snapshot = await read_snapshot(self.db, project_id)
+        snapshot = await read_snapshot(self.db, project_id, max_tasks=max_tasks)
         # Only old READY leaves need canonical route/frontier explanations.
         # A failed read fails this tick instead of sending an incomplete list.
         for task in snapshot.tasks.values():
@@ -269,20 +278,24 @@ class SystemCommandsMixin:
 
         path = self.orchestrator.config._config_path
         if not path:
-            return {"error": "No config file path is set on this daemon."}
+            return {"success": False, "error": "No config file path is set on this daemon."}
         if not os.path.exists(path):
-            return {"error": f"Config file does not exist: {path}"}
+            return {"success": False, "error": f"Config file does not exist: {path}"}
 
         raw = read_raw_config(path)
         try:
             validate_github_app_raw_config(raw)
         except ConfigValidationError:
             return {
+                "success": False,
                 "error": (
                     "Configuration contains an invalid integration credential section; "
                     "edit the file directly."
                 )
             }
+        from dataclasses import asdict
+
+        raw.setdefault("deploy", asdict(self.config.deploy))
         section = args.get("section") or None
         if section is not None:
             raw = {section: raw.get(section)}
@@ -292,7 +305,12 @@ class SystemCommandsMixin:
         # ``${VAR}`` strings byte-identical, so the two agree either way.
         env_refs = find_env_var_refs(raw)
         redacted_config, redacted_paths = redact_config(raw)
+        from src.install.deploy_history import read_history
+
+        deployment_history = await asyncio.to_thread(read_history, Path(self.config.data_dir))
         return {
+            "success": True,
+            "deployment_history": deployment_history,
             "path": path,
             "config": redacted_config,
             "section": section,
@@ -313,34 +331,42 @@ class SystemCommandsMixin:
         """
         from src.config_editor import build_config_schema
 
-        return {"schema": build_config_schema()}
+        return {"success": True, "schema": build_config_schema()}
 
     async def _cmd_preview_portable_config(self, args: dict) -> dict:
         """Show the reviewed, non-secret configuration that bundle export would use."""
         from src.portable_config import PortableBundleError, bundle_preview
+        from src.portable_setup import collect_setup
 
         path = self.orchestrator.config._config_path
         if not path or not os.path.exists(path):
-            return {"error": "No config file path is set on this daemon."}
+            return {"success": False, "error": "No config file path is set on this daemon."}
         try:
-            return bundle_preview(path, self.config.data_dir)
-        except PortableBundleError as exc:
-            return {"error": str(exc)}
+            setup = await collect_setup(self.db, self.config.data_dir)
+            result = await asyncio.to_thread(bundle_preview, path, self.config.data_dir, setup=setup)
+            return {"success": True, **result}
+        except (PortableBundleError, ValueError, OSError) as exc:
+            return {"success": False, "error": str(exc)}
 
     async def _cmd_export_portable_config(self, args: dict) -> dict:
         """Export the curated preview as a versioned ``.aqbundle`` archive."""
         from src.portable_config import PortableBundleError, export_bundle
+        from src.portable_setup import collect_setup
 
         destination = args.get("destination")
         path = self.orchestrator.config._config_path
         if not destination:
-            return {"error": "destination is required"}
+            return {"success": False, "error": "destination is required"}
         if not path or not os.path.exists(path):
-            return {"error": "No config file path is set on this daemon."}
+            return {"success": False, "error": "No config file path is set on this daemon."}
         try:
-            return export_bundle(destination, path, self.config.data_dir)
-        except PortableBundleError as exc:
-            return {"error": str(exc)}
+            setup = await collect_setup(self.db, self.config.data_dir)
+            result = await asyncio.to_thread(
+                export_bundle, destination, path, self.config.data_dir, setup=setup
+            )
+            return {"success": True, **result}
+        except (PortableBundleError, ValueError, OSError) as exc:
+            return {"success": False, "error": str(exc)}
 
     async def _cmd_import_portable_config(self, args: dict) -> dict:
         """Preflight and import a portable bundle without overwriting by default."""
@@ -350,9 +376,9 @@ class SystemCommandsMixin:
         source = args.get("source")
         path = self.orchestrator.config._config_path
         if not source:
-            return {"error": "source is required"}
+            return {"success": False, "error": "source is required"}
         if not path or not os.path.exists(path):
-            return {"error": "No config file path is set on this daemon."}
+            return {"success": False, "error": "No config file path is set on this daemon."}
         try:
             result = await import_bundle(
                 source,
@@ -362,16 +388,20 @@ class SystemCommandsMixin:
                 conflict=args.get("conflict", "keep"),
                 dry_run=bool(args.get("dry_run", False)),
             )
-        except PortableBundleError as exc:
-            return {"error": str(exc)}
+        except (PortableBundleError, ValueError, OSError) as exc:
+            return {"success": False, "error": str(exc)}
+        if result.get("applied") and result.get("intelligence_classes"):
+            result["class_reload"] = await self._reload_intelligence_classes()
         imported = set(result.get("config_sections", []))
         result["requires_restart"] = sorted(imported - HOT_RELOADABLE_SECTIONS)
+        if result.get("pending_policy_sources"):
+            result["requires_restart"].append("vault policy registries")
         if result.get("applied") and imported & HOT_RELOADABLE_SECTIONS:
             watcher = self.orchestrator._config_watcher
             if watcher:
                 reloaded = await watcher.reload()
                 result["applied_sections"] = reloaded.get("applied", []) or []
-        return result
+        return {"success": "error" not in result, **result}
 
     async def _cmd_update_config(self, args: dict) -> dict:
         """Replace one top-level section in the YAML config and reload.
@@ -403,15 +433,15 @@ class SystemCommandsMixin:
 
         section = args.get("section")
         if not section:
-            return {"error": "Missing required arg: section"}
+            return {"success": False, "error": "Missing required arg: section"}
         if "data" not in args:
-            return {"error": "Missing required arg: data (use null to delete)"}
+            return {"success": False, "error": "Missing required arg: data (use null to delete)"}
         data = args["data"]
         dry_run = bool(args.get("dry_run", False))
 
         path = self.orchestrator.config._config_path
         if not path or not os.path.exists(path):
-            return {"error": "No config file path is set on this daemon."}
+            return {"success": False, "error": "No config file path is set on this daemon."}
 
         # Build the candidate full doc and validate it via load_config.
         raw = read_raw_config(path)
@@ -421,6 +451,7 @@ class SystemCommandsMixin:
             data, unresolved = restore_section_secrets(data, raw.get(section))
             if unresolved:
                 return {
+                    "success": False,
                     "applied": False,
                     "changed": False,
                     "validation_errors": [
@@ -445,6 +476,7 @@ class SystemCommandsMixin:
                 load_config(tmp_path)
             except Exception as e:
                 return {
+                    "success": False,
                     "applied": False,
                     "changed": False,
                     "validation_errors": [str(e)],
@@ -459,6 +491,7 @@ class SystemCommandsMixin:
 
         if dry_run:
             return {
+                "success": True,
                 "applied": False,
                 "dry_run": True,
                 "changed": True,
@@ -475,6 +508,7 @@ class SystemCommandsMixin:
         except Exception as e:
             shutil.copy2(backup_path, path)
             return {
+                "success": False,
                 "applied": False,
                 "changed": False,
                 "validation_errors": [f"Write failed: {e}"],
@@ -493,6 +527,7 @@ class SystemCommandsMixin:
             applied_sections = reload_result.get("applied", []) or []
 
         return {
+            "success": True,
             "applied": bool(applied_sections),
             "changed": True,
             "requires_restart": requires_restart,
@@ -511,18 +546,19 @@ class SystemCommandsMixin:
         await self._reload_intelligence_classes()
         watcher = self.orchestrator._config_watcher
         if not watcher:
-            return {"error": "Config watcher is not active (no config file path)"}
+            return {"success": False, "error": "Config watcher is not active (no config file path)"}
         result = await watcher.reload()
         if "error" in result:
-            return {"error": f"Config reload failed: {result['error']}"}
+            return {"success": False, "error": f"Config reload failed: {result['error']}"}
         if not result.get("changed_sections"):
-            return {"message": "No configuration changes detected."}
+            return {"success": True, "message": "No configuration changes detected."}
         parts = []
         if result.get("applied"):
             parts.append(f"Applied: {', '.join(result['applied'])}")
         if result.get("restart_required"):
             parts.append(f"Restart required: {', '.join(result['restart_required'])}")
         return {
+            "success": True,
             "message": "Config reloaded.",
             "changed_sections": result["changed_sections"],
             "applied": result.get("applied", []),
@@ -541,7 +577,7 @@ class SystemCommandsMixin:
         from pathlib import Path as _Path
         from datetime import datetime as _dt, timezone as _tz
 
-        result: dict = {}
+        result: dict = {"success": True}
 
         claude_dir = _Path.home() / ".claude"
         sessions_dir = claude_dir / "sessions"
@@ -679,7 +715,7 @@ class SystemCommandsMixin:
                 pass
 
         if not api_key and not auth_header:
-            return {"error": "No API key or OAuth token available"}
+            return {"success": False, "error": "No API key or OAuth token available"}
 
         if api_key:
             auth_header = {"x-api-key": api_key}
@@ -743,7 +779,7 @@ class SystemCommandsMixin:
                     rate_info["http_status"] = resp.status
                     return rate_info
         except Exception as e:
-            return {"error": f"API probe failed: {e}"}
+            return {"success": False, "error": f"API probe failed: {e}"}
 
     # -----------------------------------------------------------------------
     # System / control commands -- orchestrator pause/resume, active project
@@ -757,15 +793,17 @@ class SystemCommandsMixin:
         if action == "pause":
             orch.pause()
             return {
+                "success": True,
                 "status": "paused",
                 "message": "Orchestrator paused — no new tasks will be scheduled",
             }
         elif action == "resume":
             orch.resume()
-            return {"status": "running", "message": "Orchestrator resumed"}
+            return {"success": True, "status": "running", "message": "Orchestrator resumed"}
         else:  # status
             running = len(orch._running_tasks)
             return {
+                "success": True,
                 "status": "paused" if orch._paused else "running",
                 "running_tasks": running,
             }
@@ -829,6 +867,7 @@ class SystemCommandsMixin:
         asyncio.ensure_future(_delayed_exit())
 
         return {
+            "success": True,
             "status": "shutting_down",
             "mode": mode,
             "reason": reason,
@@ -857,6 +896,7 @@ class SystemCommandsMixin:
         orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
         return {
+            "success": True,
             "status": "restarting",
             "message": "Daemon restart initiated",
             "reason": reason,
@@ -881,7 +921,7 @@ class SystemCommandsMixin:
         )
         if pull_rc != 0:
             stderr = pull_stderr.strip() or pull_stdout.strip()
-            return {"error": f"git pull failed: {stderr}"}
+            return {"success": False, "error": f"git pull failed: {stderr}"}
 
         pull_output = pull_stdout.strip()
 
@@ -896,7 +936,7 @@ class SystemCommandsMixin:
         )
         if pip_rc != 0:
             stderr = pip_stderr.strip() or pip_stdout.strip()
-            return {"error": f"pip install failed: {stderr}"}
+            return {"success": False, "error": f"pip install failed: {stderr}"}
 
         # The TypeScript client is generated and gitignored, so a pull cannot
         # update it when the committed OpenAPI contract changes.
@@ -911,7 +951,7 @@ class SystemCommandsMixin:
         )
         if client_rc != 0:
             stderr = client_stderr.strip() or client_stdout.strip()
-            return {"error": f"TypeScript client generation failed: {stderr}"}
+            return {"success": False, "error": f"TypeScript client generation failed: {stderr}"}
 
         running_count = len(orch._running_tasks)
         was_paused = orch._paused
@@ -934,6 +974,7 @@ class SystemCommandsMixin:
                 orch._paused = was_paused
                 orch._restart_requested = False
         return {
+            "success": True,
             "status": "updating",
             "message": "Update pulled and daemon restart initiated",
             "pull_output": pull_output,
@@ -942,27 +983,49 @@ class SystemCommandsMixin:
         }
 
     async def _cmd_update_and_restart(self, args: dict) -> dict:
-        """Opt into release selection only with a configured tag family."""
-        if not self.config.deploy.tag_glob:
+        """Run the safe operator updater when a release or tracked branch is configured."""
+        if args.get("automatic") and not self.config.deploy.track_branch:
+            return {"success": False, "error": "automatic branch deployment is disabled"}
+        if not (self.config.deploy.tag_glob or self.config.deploy.track_branch):
             return await self._update_and_restart_legacy(args)
         import subprocess
         import sys
 
         from src.install.update import UpdateRefused, plan_update
+        from src.install.deploy_history import failed_target, record_deploy, recovery_pending
 
         reason = args.get("reason", "No reason provided")
         wait_for_tasks = args.get("wait_for_tasks", False)
         orch = self.orchestrator
         repo_dir = Path(__file__).resolve().parents[2]
         state_dir = Path(self.config.data_dir)
+        if await asyncio.to_thread(recovery_pending, state_dir):
+            return {
+                "success": False, "error": "migration_recovery_required",
+                "remediation": "Follow deployment history remediation, then run aq update --yes "
+                "--resume-after-recovery as operator after restoring the installation.",
+            }
+        if (state_dir / "update.lock").exists():
+            return {"success": True, "status": "updating", "log": str(state_dir / "update.log")}
         try:
             plan = await asyncio.to_thread(
                 plan_update, repo_dir, state_dir=state_dir,
                 tag_glob=self.config.deploy.tag_glob,
                 promotion_target=self.config.deploy.target,
+                **({"track_branch": self.config.deploy.track_branch}
+                   if self.config.deploy.track_branch else {}),
             )
         except UpdateRefused as refused:
+            await asyncio.to_thread(
+                record_deploy, state_dir, "refused", branch=self.config.deploy.track_branch or "",
+                message=refused.reason, automatic=bool(args.get("automatic")),
+            )
             return {"success": False, "error": refused.reason, "remediation": refused.remediation}
+        if args.get("automatic") and await asyncio.to_thread(failed_target, state_dir, plan.target):
+            return {
+                "success": False, "error": "deployment_failed",
+                "remediation": "This commit previously failed; retry aq update --yes as operator.",
+            }
         if plan.up_to_date:
             return {"success": True, "status": "up_to_date", "commit": plan.current}
 
@@ -986,13 +1049,21 @@ class SystemCommandsMixin:
                 self.config, explicit={"AQ_INSTALL_STATE_DIR": str(state_dir)}
             ).env
             try:
-                with log.open("ab") as output:
+                descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                with os.fdopen(descriptor, "ab") as output:
+                    os.fchmod(output.fileno(), 0o600)
                     process = await asyncio.create_subprocess_exec(
                         sys.executable, "-m", "src.cli.app", "update", "--yes",
+                        *(["--automatic"] if args.get("automatic") else []),
                         cwd=str(repo_dir), env=env, stdin=subprocess.DEVNULL,
                         stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
                     )
             except OSError as error:
+                await asyncio.to_thread(
+                    record_deploy, state_dir, "refused", branch=plan.branch,
+                    previous=plan.current, target=plan.target,
+                    message=f"could not start aq update: {error}", automatic=bool(args.get("automatic")),
+                )
                 return {"success": False, "error": f"could not start aq update: {error}"}
 
             async def restore_scheduling() -> None:
@@ -1075,9 +1146,9 @@ class SystemCommandsMixin:
         command = args.get("command")
         working_dir = args.get("working_dir")
         if not command:
-            return {"error": "command is required"}
+            return {"success": False, "error": "command is required"}
         if not working_dir:
-            return {"error": "working_dir is required"}
+            return {"success": False, "error": "working_dir is required"}
         timeout = min(args.get("timeout", 30), 120)
 
         if not os.path.isabs(working_dir):
@@ -1089,9 +1160,9 @@ class SystemCommandsMixin:
 
         validated = await self._validate_path(working_dir)
         if not validated:
-            return {"error": "Access denied: working directory is outside allowed directories"}
+            return {"success": False, "error": "Access denied: working directory is outside allowed directories"}
         if not os.path.isdir(validated):
-            return {"error": f"Directory not found: {working_dir}"}
+            return {"success": False, "error": f"Directory not found: {working_dir}"}
 
         # Rule R6: never hand the daemon's own environment to an LLM-authored
         # command.  Names of withheld variables are logged; values never are.
@@ -1112,14 +1183,14 @@ class SystemCommandsMixin:
             )
             stdout = stdout[:4000] if stdout else ""
             stderr = stderr[:2000] if stderr else ""
-            return {
+            return {"success": rc == 0,
                 "returncode": rc,
                 "stdout": stdout,
                 "stderr": stderr,
                 "env_scrubbed": len(scrubbed.dropped),
             }
         except asyncio.TimeoutError:
-            return {"error": f"Command timed out after {timeout}s"}
+            return {"success": False, "error": f"Command timed out after {timeout}s"}
 
     # -----------------------------------------------------------------------
     # Reference stub staleness scanning (Roadmap 6.3.4)
@@ -1140,7 +1211,7 @@ class SystemCommandsMixin:
         vault_projects_dir = os.path.join(self.config.data_dir, "vault", "projects")
 
         if not os.path.isdir(vault_projects_dir):
-            return {"error": "Vault projects directory not found."}
+            return {"success": False, "error": "Vault projects directory not found."}
 
         # Determine which projects to scan
         if project_id:
@@ -1154,10 +1225,11 @@ class SystemCommandsMixin:
                     if os.path.isdir(os.path.join(vault_projects_dir, d, "references"))
                 )
             except OSError:
-                return {"error": "Failed to list vault project directories."}
+                return {"success": False, "error": "Failed to list vault project directories."}
 
         if not project_ids:
             return {
+                "success": True,
                 "projects": [],
                 "summary": "No projects with reference stubs found.",
             }
@@ -1221,6 +1293,7 @@ class SystemCommandsMixin:
         )
 
         return {
+            "success": True,
             "projects": all_results,
             "totals": totals,
             "summary": summary,
@@ -1245,10 +1318,11 @@ class SystemCommandsMixin:
         """List all prompt templates for a project, optionally filtered."""
         project = await self.db.get_project(args["project_id"])
         if not project:
-            return {"error": f"Project '{args['project_id']}' not found"}
+            return {"success": False, "error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
             return {
+                "success": False,
                 "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
             }
         pm = self._get_prompt_manager(workspace)
@@ -1257,6 +1331,7 @@ class SystemCommandsMixin:
             tag=args.get("tag"),
         )
         return {
+            "success": True,
             "project_id": args["project_id"],
             "prompts": [t.to_dict() for t in templates],
             "categories": pm.get_categories(),
@@ -1278,16 +1353,16 @@ class SystemCommandsMixin:
 
         p = Path(path)
         if not p.is_absolute():
-            return None, {"error": f"path must be absolute: {path!r}"}
+            return None, {"success": False, "error": f"path must be absolute: {path!r}"}
         resolved = p.resolve()
         roots = allowed_roots(self.config)
         if not any(resolved == r or r in resolved.parents for r in roots):
-            return None, {"error": f"path is outside allowed roots: {path!r}"}
+            return None, {"success": False, "error": f"path is outside allowed roots: {path!r}"}
         if not resolved.is_file():
-            return None, {"error": f"Prompt not found at {path}"}
+            return None, {"success": False, "error": f"Prompt not found at {path}"}
         tmpl = load_template(str(resolved))
         if tmpl is None:
-            return None, {"error": f"Could not parse prompt template at {path}"}
+            return None, {"success": False, "error": f"Could not parse prompt template at {path}"}
         return tmpl, None
 
     async def _cmd_read_prompt(self, args: dict) -> dict:
@@ -1301,23 +1376,24 @@ class SystemCommandsMixin:
             tmpl, err = self._load_prompt_from_path(path)
             if err is not None:
                 return err
-            result = tmpl.to_dict()
+            result = {**tmpl.to_dict(), "success": True}
             result["content"] = tmpl.body
             result["path"] = path
             return result
         project = await self.db.get_project(args["project_id"])
         if not project:
-            return {"error": f"Project '{args['project_id']}' not found"}
+            return {"success": False, "error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
             return {
+                "success": False,
                 "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
             }
         pm = self._get_prompt_manager(workspace)
         tmpl = pm.get_template(args["name"])
         if not tmpl:
-            return {"error": f"Prompt template '{args['name']}' not found"}
-        result = tmpl.to_dict()
+            return {"success": False, "error": f"Prompt template '{args['name']}' not found"}
+        result = {**tmpl.to_dict(), "success": True}
         result["content"] = tmpl.body
         return result
 
@@ -1344,17 +1420,18 @@ class SystemCommandsMixin:
             }
         project = await self.db.get_project(args["project_id"])
         if not project:
-            return {"error": f"Project '{args['project_id']}' not found"}
+            return {"success": False, "error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
             return {
+                "success": False,
                 "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
             }
         pm = self._get_prompt_manager(workspace)
         variables = args.get("variables", {})
         rendered = pm.render(args["name"], variables)
         if rendered is None:
-            return {"error": f"Prompt template '{args['name']}' not found"}
+            return {"success": False, "error": f"Prompt template '{args['name']}' not found"}
         return {
             "name": args["name"],
             "rendered": rendered,
@@ -1383,6 +1460,7 @@ class SystemCommandsMixin:
             llm = getattr(self.orchestrator, "llm", None)
             if llm is None or not llm.is_configured():
                 return {
+                    "success": False,
                     "error": (
                         "LLM is not configured (config.llm) — cannot generate "
                         "summaries."
