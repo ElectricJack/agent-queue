@@ -69,6 +69,24 @@ class KnowledgeShowArgs(RecordScopeArgs):
     revision_id: str | None = None
 
 
+class KnowledgeCiteArgs(RecordScopeArgs):
+    identity: str = Field(min_length=4)
+    revision_id: str
+    kind: Literal["attached", "explicit_read"]
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    claim_epoch: int | None = Field(default=None, ge=0, strict=True)
+
+
+class KnowledgeContextDeliverArgs(CommandArgs):
+    project_id: str | None = None
+    bundle_id: str
+    transport: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    rendered_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    state: Literal["prepared", "delivered", "failed", "unknown"] = "delivered"
+    claim_epoch: int | None = Field(default=None, ge=0, strict=True)
+
+
 class KnowledgeExportArgs(KnowledgeShowArgs):
     """Returns authorized bytes; the daemon accepts no filesystem destination."""
 
@@ -120,6 +138,16 @@ class KnowledgeRestoreArgs(RecordScopeArgs):
     idempotency_key: str = Field(min_length=1, max_length=128)
     if_revision: str | None = None
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
+
+
+class KnowledgeCitationValue(CommandValue):
+    citation_id: str
+
+
+class KnowledgeContextDeliveryValue(CommandValue):
+    bundle_id: str
+    delivery_id: str
+    state: Literal["prepared", "delivered", "failed", "unknown"]
 
 
 class KnowledgeValue(CommandValue):
@@ -186,6 +214,9 @@ def register_knowledge_contracts(registry) -> None:
         ("knowledge_create", KnowledgeCreateArgs, KnowledgeValue, SideEffectClass.CREATE),
         ("knowledge_list", KnowledgeListArgs, KnowledgeValue, SideEffectClass.READ),
         ("knowledge_show", KnowledgeShowArgs, KnowledgeValue, SideEffectClass.READ),
+        ("knowledge_cite", KnowledgeCiteArgs, KnowledgeCitationValue, SideEffectClass.CREATE),
+        ("knowledge_context_deliver", KnowledgeContextDeliverArgs, KnowledgeContextDeliveryValue,
+         SideEffectClass.UPDATE),
         ("knowledge_export", KnowledgeExportArgs, KnowledgeValue, SideEffectClass.READ),
         ("knowledge_update", KnowledgeUpdateArgs, KnowledgeValue, SideEffectClass.UPDATE),
         ("knowledge_history", KnowledgeHistoryArgs, KnowledgeValue, SideEffectClass.READ),
@@ -198,6 +229,8 @@ def register_knowledge_contracts(registry) -> None:
         "knowledge_create": "Create one active, unverified knowledge finding.",
         "knowledge_list": "List authorized knowledge metadata with a page cursor.",
         "knowledge_show": "Read an authorized knowledge snapshot at an exact revision.",
+        "knowledge_cite": "Record an exact revision explicitly read or attached by this execution.",
+        "knowledge_context_deliver": "Acknowledge observed transport delivery of a prepared bundle.",
         "knowledge_export": "Export an authorized knowledge revision as Markdown bytes.",
         "knowledge_update": "Revise editable knowledge fields with a concurrency token.",
         "knowledge_history": "Read the revision history of a knowledge record.",

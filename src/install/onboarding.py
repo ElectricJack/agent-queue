@@ -354,6 +354,44 @@ def _introduces_no_error(path: Path, section: str, body: Any) -> bool:
     return not set(errors) - set(validate_candidate_config(str(path), current))
 
 
+def _needs_private_value_key(path: Path) -> bool:
+    playbooks = _read_config(path).get("playbooks") or {}
+    return (
+        isinstance(playbooks, dict)
+        and playbooks.get("enabled") is True
+        and not playbooks.get("private_value_active_key_id")
+        and not playbooks.get("private_value_key_env")
+    )
+
+
+def _provision_private_value_key(path: Path) -> bool:
+    """Bootstrap unconfigured storage; never rotate or replace a configured key."""
+    import base64
+    import secrets
+
+    from src.config_editor import write_section
+
+    from .postgres import write_env_value
+
+    if not _needs_private_value_key(path):
+        return False
+    # A unique identifier cannot reuse the identity of a lost historical key.
+    # Persist material first: a failed config write may leave an unused secret,
+    # but must never leave config pointing at a key we have not stored.
+    identifier = "install-" + secrets.token_hex(16)
+    variable = "AQ_PLAYBOOK_PRIVATE_VALUE_KEY_" + identifier.removeprefix("install-").upper()
+    env_path = path.parent / ".env"
+    if env_path.exists():
+        env_path.chmod(0o600)
+    write_env_value(env_path, variable, base64.b64encode(secrets.token_bytes(32)).decode())
+    playbooks = dict(_read_config(path)["playbooks"])
+    playbooks.update(
+        private_value_active_key_id=identifier, private_value_key_env={identifier: variable}
+    )
+    write_section(str(path), "playbooks", playbooks)
+    return True
+
+
 def config_step(
     *,
     environ: Mapping[str, str] | None = None,
@@ -389,6 +427,8 @@ def config_step(
             # the provider selection, so it is part of "satisfied" too.
             if _session_provider_plan(path, lookup) is not None:
                 return False
+            if _needs_private_value_key(path):
+                return False
         except Exception:  # noqa: BLE001 - an unreadable config is not "satisfied"
             return False
         return not any(plan.action == "add" for plan in plans)
@@ -411,6 +451,7 @@ def config_step(
         # leave a numbered copy behind on every rerun.
         if not created and (
             sessions_body is not None
+            or _needs_private_value_key(path)
             or any(
                 plan.action in ("add", "replace")
                 for plan in tuning_plan(_read_config(path), machine)
@@ -459,6 +500,10 @@ def config_step(
             written.append("sessions")
             written.sort()
             session_provider = SESSION_PROVIDER
+        private_storage_provisioned = _provision_private_value_key(path)
+        if private_storage_provisioned and "playbooks" not in written:
+            written.append("playbooks")
+            written.sort()
         summary = (
             f"{'created' if created else 'using'} {path} — "
             f"{machine.cores} cores, {machine.memory_gb:.0f} GiB ({machine.size_class}): "
@@ -466,6 +511,8 @@ def config_step(
         )
         if session_provider:
             summary += f"; sessions run under {session_provider}"
+        if private_storage_provisioned:
+            summary += "; provisioned protected playbook storage"
         return StepResult.succeeded(
             STEP_CONFIG,
             summary,
@@ -476,6 +523,7 @@ def config_step(
                 "written": written,
                 "kept": list(outcome.get("kept") or []),
                 "session_provider": session_provider,
+                "private_storage_provisioned": private_storage_provisioned,
                 "machine": machine.as_dict(),
                 "rationale": "docs/guides/default-tuning.md",
             },
@@ -492,8 +540,9 @@ def config_step(
         description=(
             f"Creates {path} when it is absent and adds resource-aware defaults derived from "
             "this box's cores and memory, and selects the tmux session provider so agent "
-            "sessions can be attached, peeked and nudged. Sections you have already written "
-            "are kept."
+            "sessions can be attached, peeked and nudged. Provisions a private-value key "
+            "in the protected .env file when playbooks are enabled with no key configuration. "
+            "Existing key identifiers and mappings are kept."
         ),
         run=run,
         depends_on=depends_on,
@@ -782,6 +831,7 @@ def check_step(
 
     def run(context: StepContext) -> StepResult:
         from src.config import ConfigValidationError, load_config
+        from src.playbooks.private_values import private_value_key_health
 
         raw = _read_config(path)
         locations = data_locations(path.parent, raw)
@@ -827,6 +877,15 @@ def check_step(
                     f"Resolve the reference named above — values live in {path.parent / '.env'} "
                     "(mode 0600), never in config.yaml — then rerun `aq install`."
                 ),
+                detail=detail,
+            )
+        storage = private_value_key_health(config.playbooks)
+        detail["playbook_private_value_key"] = storage
+        if not storage["ok"]:
+            return StepResult.failed(
+                STEP_CHECK,
+                "playbooks cannot store protected routing data: " + storage["error"],
+                storage["remediation"],
                 detail=detail,
             )
         # Now that it has loaded, report what the daemon will actually use

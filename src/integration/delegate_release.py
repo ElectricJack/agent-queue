@@ -33,6 +33,7 @@ from typing import Any
 
 from sqlalchemy import and_, delete, insert, or_, select
 
+from src.task_templates import render_task_template
 from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.tables import (
     integration_candidate_resolutions,
@@ -50,8 +51,8 @@ from src.database.tables import (
 )
 from src.models import TaskStatus
 
-#: What an operator runs to settle every stranded delegate on the install.
-RELEASE_COMMAND = "aq doctor --check integration.stranded_delegates --fix"
+#: The daemon maintenance source that settles stranded terminal delegates.
+RELEASE_COMMAND = "automatic delegate cleanup"
 
 #: Operation states that mean the operation is over.  ``cancelled`` disposes of
 #: its delegates as ``cancelled``; ``completed`` means the operation finished
@@ -90,7 +91,7 @@ def retired_delegate_message(operation_id: str, state: str, *, action: str) -> s
     """
     return (
         f"Integration operation {operation_id} is {state}; its delegate is no longer "
-        f"required and cannot be {action}. Release it with `{RELEASE_COMMAND}`; it "
+        f"required and cannot be {action}. The daemon's {RELEASE_COMMAND} "
         "settles as FAILED. It can be deleted or archived only once no integration "
         "history names it."
     )
@@ -107,13 +108,12 @@ def retired_writer_close_feedback(retirement: dict[str, Any]) -> str:
     """
     reason = str(retirement["reason"])
     return (
-        f"{reason[:1].upper()}{reason[1:]}: this delegate is retired "
-        f"({retirement['disposition']}), so there is nothing left to close. "
-        "Do not retry the close and do not close --outcome fail. Its branch and "
-        "workspace stay preserved for cleanup; stop working and run "
-        "`aq session drain-ack`. The session reconciler then stops this session, "
-        "owner recovery preserves its checkout, and the integration reconciler "
-        "records the retirement."
+        render_task_template(
+            "retired-writer-close-feedback",
+            reason_1_upper=reason[:1].upper(),
+            reason_1=reason[1:],
+            retirement_disposition=retirement["disposition"],
+        )
     )
 
 

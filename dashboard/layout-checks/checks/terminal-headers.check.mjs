@@ -9,6 +9,23 @@ const DETAILS = '[data-terminal-header] [aria-label^="Details for "]';
 const DIALOG = "[data-terminal-details]";
 const PICKER = '[data-terminal-header] select';
 
+/**
+ * One terminal at every width. Below 768 px its attach asks tmux for
+ * scrollback and for the agent's own size back; at or above it asks for
+ * neither, exactly like the host shell page's attach.
+ */
+function attaches(t, sessionId) {
+  const found = t.stub.terminalUpgrades
+    .map((raw) => new URL(raw, "http://stub.invalid"))
+    .filter((url) => url.pathname === `/ws/terminal/${sessionId}`);
+  assert.ok(found.length > 0, `no attach for ${sessionId}`);
+  const wide = t.page.viewport().width >= 768;
+  for (const url of found) {
+    assert.equal(url.searchParams.get("history"), wide ? null : "2000", `wrong history in ${url}`);
+    assert.equal(url.searchParams.get("restore_size"), wide ? null : "1", `wrong restore_size in ${url}`);
+  }
+}
+
 async function oneRow(t) {
   const geometry = await terminalHeaderGeometry(t.page);
   assert.equal(geometry.length, 3);
@@ -38,8 +55,10 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal connection"]')?.textContent.includes("connected"));
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal connection"]')?.textContent.includes("error"));
   } else {
-    await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal status"]')?.textContent === "Live");
-    assert.deepEqual(t.stub.terminalUpgrades, [], "a phone attached a PTY");
+    // A phone gets the same terminal, attached with the phone's transport.
+    await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal connection"]')?.textContent === "connected");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal connection"]')?.textContent.includes("error"));
+    attaches(t, SESSION);
   }
   await oneRow(t);
   await t.shot("three-panes");
@@ -77,13 +96,22 @@ export async function run(t) {
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SESSION).length, 1);
   }
 
-  // Click/touch disclosure on the third pane; its picker and settings remain usable.
+  // Click/touch disclosure on the third pane; its picker stays usable, and the
+  // terminal/settings switch rides the header wherever that row has room for it.
   const poolDetails = '[aria-label="Details for deep-high-claude pool"]';
+  const poolHeader = '[aria-label="deep-high-claude pool agent window"] [data-terminal-header]';
+  const compact = t.page.viewport().width < 640;
   await t.page.$eval(poolDetails, (el) => el.scrollIntoView());
   if (t.isPhone) await t.page.tap(poolDetails); else await t.page.click(poolDetails);
   await t.page.waitForSelector(DIALOG);
-  await expectLayout(t, { primary: [poolDetails, `${DIALOG} [role="tab"]`] });
+  await expectLayout(t, { primary: compact ? [poolDetails] : [poolDetails, `${poolHeader} [role="tab"]`] });
   await t.shot("pool-details");
+  // One switch, in the header on a row that has room and in the disclosure on a
+  // compact row of 44 px targets that has none.
+  assert.equal(await t.page.$$eval(`${DIALOG} [role="tab"]`, (tabs) => tabs.length), compact ? 2 : 0,
+    "the view switch is not where this viewport puts it");
+  assert.equal(await t.page.$$eval(`${poolHeader} [role="tab"]`, (tabs) => tabs.length), compact ? 0 : 2,
+    "the view switch is duplicated or missing from this row");
   assert.equal(await t.page.$$eval(`${DIALOG} select option`, (options) => options.length), 2);
   const panel = await t.page.$eval(DIALOG, (el) => {
     const r = el.getBoundingClientRect();
@@ -105,8 +133,9 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal connection"]')?.textContent.includes("connected"));
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
   } else {
-    await t.page.waitForSelector('[aria-label="Second worker terminal status"]');
-    assert.deepEqual(t.stub.terminalUpgrades, []);
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal connection"]')?.textContent === "connected");
+    assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
+    attaches(t, SECOND_POOL_SESSION);
   }
   await oneRow(t);
   await t.shot("pool-header-selection");
@@ -120,7 +149,8 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal connection"]')?.textContent.includes("connected"));
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
   } else {
-    await t.page.waitForSelector('[aria-label="Pool worker with a long session name terminal status"]');
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal connection"]')?.textContent === "connected");
+    assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
   }
   assert.equal(await t.page.$(DIALOG), null);
   // The one remaining instance still has its existing picker in details.
@@ -129,4 +159,17 @@ export async function run(t) {
   assert.equal(await t.page.$eval(`${DIALOG} select`, (el) => el.value), POOL_SESSION);
   await t.page.keyboard.press("Escape");
   await t.shot("pool-header-removal");
+
+  // Last, because switching views remounts the terminal: on a header that has
+  // room, the switch changes the pane body with no disclosure at all.
+  if (!compact) {
+    await t.page.click(`${poolHeader} [role="tab"][aria-label="Settings"]`);
+    await t.page.waitForSelector('[aria-label="deep-high-claude pool settings"]');
+    assert.equal(await t.page.$(DIALOG), null, "changing views opened the disclosure");
+    await expectLayout(t, { primary: [`${poolHeader} [role="tab"]`] });
+    await t.shot("pool-header-settings");
+    await t.page.click(`${poolHeader} [role="tab"][aria-label="Terminal"]`);
+    await t.page.waitForSelector('[aria-label$="terminal connection"]');
+    assert.equal(await t.page.$(DIALOG), null);
+  }
 }

@@ -2,13 +2,15 @@
 
 No cutover is performed here. Command owners call ``ensure_on`` in their
 transaction; the future parent visit uses ``ParentIntegrationObserver``.
-Receipt eligibility remains owned by ``ParentCompletion.readiness_on``.
+Receipt eligibility remains owned by ``ParentEpisodeRecords.readiness_on``.
 Reopening failed verification remains owned by keen-stone-14's recovery.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -16,7 +18,7 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from src.database import tables as t
 from src.integration.failed_verification_recovery import FAILED_AGGREGATE_META_KEY, RECOVERY_EVENT
@@ -28,8 +30,10 @@ from src.integration.observe import (
     _operation,
     _ref,
 )
-from src.integration.parent_completion import ParentCompletion
-from src.integration.subjects import (
+from src.integration.records import ParentEpisodeRecords
+from src.integration.owner_guards import active_parent_scope, parent_lock_key
+from src.playbooks.integration_policy import CompiledIntegrationPolicy
+from src.integration.runtime_contracts import (
     SHA_PATTERN,
     HoldFacts,
     PolicyArtifactPin,
@@ -129,7 +133,7 @@ def parent_subject_from_rows(
     policy: PolicyArtifactPin,
     now: float,
     max_wait_seconds: int,
-    engine: SubjectEngine = SubjectEngine.LEGACY,
+    engine: SubjectEngine = SubjectEngine.RECONCILER,
 ) -> Subject:
     """Snapshot a legacy episode without resetting any budget or failure evidence."""
     if (
@@ -191,7 +195,7 @@ class ParentSubjectAdapter:
         *,
         policy: PolicyArtifactPin,
         max_wait_seconds: int,
-        engine: SubjectEngine = SubjectEngine.LEGACY,
+        engine: SubjectEngine = SubjectEngine.RECONCILER,
     ) -> tuple[Subject, bool]:
         async def one(table, *conditions, lock=False):
             statement = select(table).where(*conditions)
@@ -328,7 +332,7 @@ class ParentDatabaseObservationReader(DatabaseObservationReader):
             and checkpoint["episode_id"] == subject.parent_episode_id
         ):
             rows["parent_readiness"] = (
-                await ParentCompletion(self.db).readiness_on(
+                await ParentEpisodeRecords(self.db).readiness_on(
                     conn,
                     parent=dict(parent),
                     project=dict(snapshot.project),
@@ -709,3 +713,64 @@ def _commits(completion) -> list[str]:
         return value if isinstance(value, list) else []
     except (ValueError, TypeError, KeyError):
         return []
+
+
+async def ensure_parent_subject_on(db, conn, task_id, loader, *, clock=time.time):
+    """The command owner calls this after updating the checkpoint's episode."""
+    if loader is None:
+        return None
+    if not active_parent_scope(db, task_id):
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": parent_lock_key(task_id)}
+        )
+    await conn.execute(
+        select(t.task_integration_checkpoints.c.task_id)
+        .where(t.task_integration_checkpoints.c.task_id == task_id)
+        .with_for_update()
+    )
+    operation = (
+        (
+            await conn.execute(
+                select(t.integration_repair_operations)
+                .join(
+                    t.task_integration_checkpoints,
+                    t.task_integration_checkpoints.c.episode_id
+                    == t.integration_repair_operations.c.episode_id,
+                )
+                .where(
+                    t.task_integration_checkpoints.c.task_id == task_id,
+                    t.integration_repair_operations.c.parent_task_id == task_id,
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if operation is None:
+        return None
+    artifact = operation["artifact_snapshot"]
+    try:
+        definition = await asyncio.to_thread(loader, artifact["artifact_sha256"])
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning(
+            "Parent %s awaits a pinned artifact: %s", task_id, exc
+        )
+        return None
+    if (
+        definition.integration_policy is None
+        or SubjectKind.PARENT_EPISODE not in definition.integration_policy.tables
+    ):
+        return None
+    policy = CompiledIntegrationPolicy(definition)
+    pin = PolicyArtifactPin(
+        playbook_id=artifact["playbook_id"], artifact_sha256=artifact["artifact_sha256"]
+    )
+    if policy.pin != pin:
+        raise ValueError("parent artifact pin does not match loaded definition")
+    return await ParentSubjectAdapter(db, clock=clock).ensure_on(
+        conn,
+        task_id,
+        policy=pin,
+        max_wait_seconds=policy.policy.max_wait_seconds,
+        engine=SubjectEngine.RECONCILER,
+    )

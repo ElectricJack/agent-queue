@@ -58,7 +58,7 @@ describe("MobileLayoutList", () => {
   it("shows the same progress bars and phase header as the canvas cards", async () => {
     list.mockResolvedValueOnce({
       nodes: [
-        { ...n("a"), agg_descendants: 4, agg_completed: 2, agg_running: 1, agg_blocked: 0 },
+        { ...n("a"), agg_children: 2, agg_descendants: 4, agg_completed: 2, agg_running: 1, agg_blocked: 0 },
         { ...n("b"), subtasks_total: 3, subtasks_settled: 1 },
         { ...n("c"), phase_order: 2, phase_label: "Build" },
       ],
@@ -66,10 +66,9 @@ describe("MobileLayoutList", () => {
     });
     render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
 
-    expect(await screen.findByText("2/4 descendants completed")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "2 of 4 done" })).toBeInTheDocument();
-    expect(screen.getByText("1/3 subtasks")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "1 of 3 done" })).toBeInTheDocument();
+    expect(await screen.findByRole("progressbar", { name: "2 of 4 tasks done" })).toBeInTheDocument();
+    expect(screen.getByTitle("2 of 4 done · 1 running")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "1 of 3 subtasks settled" })).toBeInTheDocument();
     expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
   });
 
@@ -211,6 +210,28 @@ describe("MobileLayoutLists", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Enter Task a" })[1]!);
     expect(screen.getByTestId("where")).toHaveTextContent("/projects/p2/graph");
     expect(screen.getByTestId("where")).toHaveTextContent("focus=a");
+  });
+
+  it("links a task waiting on a review straight to the review page from a phone tap", async () => {
+    const onTaskClick = vi.fn();
+    list.mockResolvedValueOnce({
+      nodes: [{ ...n("a"), status: "DEFINED", is_blocked: true, review_waits: [{
+        review_id: "brisk-lantern-7", review_state: "changes_requested", review_kind: "plan",
+        review_title: "Plan", gate_id: "g-1", gate_type: "review", gate_status: "open", blocking: true,
+      }] }],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter initialEntries={["/command-center/graph"]}>
+      <MobileLayoutList {...props} onTaskClick={onTaskClick} /><LocationProbe /></MemoryRouter>);
+
+    const link = await screen.findByRole("link", { name: /plan review brisk-lantern-7 \(changes requested\)/ });
+    expect(link).toHaveAttribute("href", "/reviews/brisk-lantern-7");
+    // A tap is touch events followed by a click; neither may open the task.
+    fireEvent.touchStart(link);
+    fireEvent.touchEnd(link);
+    fireEvent.click(link);
+    expect(screen.getByTestId("where")).toHaveTextContent("/reviews/brisk-lantern-7");
+    expect(onTaskClick).not.toHaveBeenCalled();
   });
 
   it("omits the headings for a single project", async () => {
