@@ -84,6 +84,39 @@ describe("useLayoutTiles", () => {
     await waitFor(() => expect(result.current.pending).toBe(true));
   });
 
+  it("keeps initial tiles in flight when the extent arrives", async () => {
+    let resolve!: (value: unknown) => void;
+    fetchTiles.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const { result, rerender } = renderHook(({ ready }) => useLayoutTiles(
+      "p1", params, { x0: 0, y0: 0, x1: 4, y1: 4 }, ready,
+    ), { initialProps: { ready: false } });
+    const signal = fetchTiles.mock.calls[0]![3] as AbortSignal;
+    rerender({ ready: true });
+    expect(signal.aborted).toBe(false);
+    expect(fetchTiles).toHaveBeenCalledTimes(1);
+    await act(async () => { resolve(ok([node("a", 1, 1)])); });
+    await waitFor(() => expect(result.current.store.nodes.has("a")).toBe(true));
+    expect(fetchTiles).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])("retries pending tiles when extent readiness arrives first=%s", async (extentFirst) => {
+    let resolve!: (value: unknown) => void;
+    fetchTiles.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    fetchTiles.mockResolvedValue(ok([node("a", 1, 1)]));
+    const { result, rerender } = renderHook(({ ready }) => useLayoutTiles(
+      "p1", params, { x0: 0, y0: 0, x1: 4, y1: 4 }, ready,
+    ), { initialProps: { ready: false } });
+    if (extentFirst) rerender({ ready: true });
+    await act(async () => { resolve({ pending: true }); });
+    if (!extentFirst) {
+      await waitFor(() => expect(result.current.pending).toBe(true));
+      rerender({ ready: true });
+    }
+    await waitFor(() => expect(result.current.store.nodes.has("a")).toBe(true));
+    expect(result.current.pending).toBe(false);
+    expect(fetchTiles).toHaveBeenCalledTimes(2);
+  });
+
   it("never asks for a rect wider than the server's 64-unit cap, and still loads every wanted cell", async () => {
     fetchTiles.mockResolvedValue(ok([]));
     // 2560x1440 at the minimum zoom: the padded viewport is ~14x12 cells, far

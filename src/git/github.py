@@ -16,7 +16,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+from src.git.check_runs import CommitCheckRuns
 
 from src.git.github_contracts import (
     GitHubAccessError,
@@ -76,6 +78,7 @@ class GitHubAccess:
         self._bindings: dict[str, GitHubRepositoryBinding] = {}
         self._binding_verified_at: dict[str, float] = {}
         self._binding_clock: Callable[[], float] = time.monotonic
+        self.check_runs = CommitCheckRuns()
 
     @classmethod
     def from_config(
@@ -686,6 +689,8 @@ class GhRunnerLike(Protocol):
 class GitHubExecutionAccess(Protocol):
     """Credential-aware execution seam consumed by :class:`GitHubClient`."""
 
+    check_runs: CommitCheckRuns
+
     @property
     def credential_identity(self) -> GitHubCredentialIdentity: ...
 
@@ -737,6 +742,7 @@ class GitHubRunnerAccess:
     ) -> None:
         self.runner = runner
         self._refresh_read = refresh_read
+        self.check_runs = CommitCheckRuns()
 
     @property
     def credential_identity(self) -> GitHubCredentialIdentity:
@@ -939,6 +945,18 @@ class GitHubClient:
             raise GitHubAccessError("conflict_or_invalid", "GitHub response was not an object")
         return value
 
+    async def authenticated_user(self) -> dict[str, Any]:
+        """Identify the human existing gh login without widening repository endpoints."""
+        from src.git.github_contracts import GitHubCredentialMode
+
+        if self.credential_identity.mode is not GitHubCredentialMode.EXISTING_LOGIN:
+            raise ValueError("human identity requires existing-login credentials")
+        response = await self._request_endpoint("GET", "user")
+        value = _decode_json(response.body)
+        if not isinstance(value, dict):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub user response was not an object")
+        return value
+
     async def request_text(
         self,
         method: str,
@@ -965,6 +983,29 @@ class GitHubClient:
         key: str,
         max_pages: int = DEFAULT_MAX_PAGES,
     ) -> list[dict[str, Any]]:
+        endpoint = self._validated_endpoint(path)
+        parsed = urlsplit(endpoint)
+        query = parse_qs(parsed.query)
+        root = (f"repos/{self.repository.full_name}/"
+                if parsed.path.startswith("repos/")
+                else f"repositories/{self.repository.repository_id}/")
+        resource = parsed.path.removeprefix(root)
+        commit = re.fullmatch(r"commits/([0-9a-f]{40})/check-runs", resource)
+        cache = self.access.check_runs
+        if (key == "check_runs" and commit and query == {
+                "filter": ["all"], "per_page": ["100"]
+        } and type(max_pages) is int and max_pages == DEFAULT_MAX_PAGES):
+            return await cache.get(self.repository.repository_id, commit[1],
+                                   lambda: self._paged_items(path, key=key, max_pages=max_pages))
+        rows = await self._paged_items(path, key=key, max_pages=max_pages)
+        if (key == "workflow_runs" and resource == "actions/runs"
+                and set(query) == {"head_sha", "per_page"}
+                and len(query["head_sha"]) == 1
+                and re.fullmatch(r"[0-9a-f]{40}", query["head_sha"][0])):
+            cache.observe_workflows(self.repository.repository_id, query["head_sha"][0], rows)
+        return rows
+
+    async def _paged_items(self, path, *, key, max_pages):
         pages = await self._paged_json(path, max_pages=max_pages)
         items: list[dict[str, Any]] = []
         for payload in pages:
@@ -1376,7 +1417,9 @@ class GitHubClient:
             )
         existing = await self._ordinary_pr_for_head(head, base, head_oid)
         if existing is not None:
-            return PullRequestCreation(existing, created=False)
+            if existing["state"] == "closed" and not existing.get("merged_at"):
+                return await self._reopen_ordinary_pr(existing, head, base, head_oid)
+            return PullRequestCreation(existing["html_url"], created=False)
         try:
             result = await self.access.run_write(
                 ["pr", "create", "--title", title, "--body-file", "-", "--base", base,
@@ -1397,11 +1440,40 @@ class GitHubClient:
             # Read with a fresh credential when appropriate; never replay the
             # write inside this invocation.
             existing = await self._ordinary_pr_for_head(head, base, head_oid)
-            if existing is not None:
-                return PullRequestCreation(existing, created=False)
+            if existing is not None and (
+                existing["state"] == "open" or existing.get("merged_at")
+            ):
+                return PullRequestCreation(existing["html_url"], created=False)
             raise
 
-    async def _ordinary_pr_for_head(self, head: str, base: str, head_oid: str) -> str | None:
+    async def _reopen_ordinary_pr(
+        self, pull: dict[str, Any], head: str, base: str, head_oid: str
+    ) -> PullRequestCreation:
+        write_error = None
+        try:
+            await self.request_json(
+                "PATCH",
+                f"/repositories/{self.repository.repository_id}/pulls/{pull['number']}",
+                json_body={"state": "open"},
+            )
+        except GitHubAccessError as exc:
+            if isinstance(exc, GitHubWriteNotStarted) or exc.category == "cli_missing":
+                raise
+            write_error = exc
+        # A failed write may have reopened the PR. Validate the same request's
+        # identity and state with a read, never another write in this invocation.
+        current = await self._ordinary_pr_for_head(head, base, head_oid)
+        if current is not None and current["html_url"] == pull["html_url"] and (
+            current["state"] == "open" or current.get("merged_at")
+        ):
+            return PullRequestCreation(current["html_url"], created=False)
+        if write_error is not None:
+            raise write_error
+        raise GitHubAccessError("conflict_or_invalid", "PR reopen was not confirmed")
+
+    async def _ordinary_pr_for_head(
+        self, head: str, base: str, head_oid: str
+    ) -> dict[str, Any] | None:
         owner = self.repository.full_name.split("/", 1)[0]
         pulls = await self.paged_list(
             f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
@@ -1413,11 +1485,23 @@ class GitHubClient:
             if not isinstance(pr_head, dict) or pr_head.get("ref") != head:
                 continue
             matches.append(pull)
-        if not matches:
+        # An open request is the existing request.  Without one, merged or
+        # closed requests are history: a branch that already shipped earlier
+        # work may deliver more, so only a request for this exact delivery
+        # (same base and head commit) is reused or reopened.
+        current = [pull for pull in matches if pull.get("state") == "open"]
+        if not current:
+            current = [
+                pull for pull in matches
+                if pull["head"].get("sha") == head_oid
+                and isinstance(pull.get("base"), dict)
+                and pull["base"].get("ref") == base
+            ]
+        if not current:
             return None
-        if len(matches) != 1:
+        if len(current) != 1:
             raise GitHubAccessError("conflict_or_invalid", "PR head has multiple existing requests")
-        pull = matches[0]
+        pull = current[0]
         pr_head = pull["head"]
         pr_base = pull.get("base")
         head_repo = pr_head.get("repo")
@@ -1436,12 +1520,11 @@ class GitHubClient:
             or pr_base.get("ref") != base
             or pr_head.get("sha") != head_oid
             or pull.get("state") not in {"open", "closed"}
-            or (pull.get("state") == "closed" and not pull.get("merged_at"))
         ):
             raise GitHubAccessError(
                 "conflict_or_invalid", "existing PR head did not match the requested delivery"
             )
-        return url
+        return pull
 
     async def list_pull_requests(
         self, *, state: str = "open", base: str | None = None,
@@ -1571,9 +1654,14 @@ class GitHubClient:
     async def commit_head(self, ref: str) -> str:
         if not isinstance(ref, str) or not ref or any(c in ref for c in "?#\x00\r\n"):
             raise ValueError("invalid commit reference")
-        payload = await self.request_json(
-            "GET", f"/repositories/{self.repository.repository_id}/commits/{quote(ref, safe='')}"
-        )
+        try:
+            payload = await self.request_json(
+                "GET", f"/repositories/{self.repository.repository_id}/commits/{quote(ref, safe='')}"
+            )
+        except GitHubAccessError as exc:
+            if exc.http_status == 404 and re.fullmatch(r"[0-9a-f]{40}", ref):
+                self.access.check_runs.forget(self.repository.repository_id, ref)
+            raise
         sha = payload.get("sha")
         if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
             raise GitHubAccessError("conflict_or_invalid", "GitHub commit OID was malformed")
@@ -1583,7 +1671,8 @@ class GitHubClient:
         if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
             raise ValueError("invalid commit OID")
         return await self.paged_items(
-            f"/repositories/{self.repository.repository_id}/commits/{sha}/check-runs?per_page=100",
+            f"/repositories/{self.repository.repository_id}/commits/{sha}/check-runs"
+            "?filter=all&per_page=100",
             key="check_runs",
         )
 
@@ -1619,11 +1708,27 @@ class GitHubClient:
                 "Re-requesting a check suite requires a GitHub App credential; GitHub "
                 "documents writes to checks as GitHub-App-only",
             )
-        return await self.request_json(
-            "POST",
-            f"repos/{self.repository.full_name}/check-suites/{check_suite_id}/rerequest",
-            expected_statuses={201},
-        )
+        try:
+            return await self.request_json(
+                "POST",
+                f"repos/{self.repository.full_name}/check-suites/{check_suite_id}/rerequest",
+                expected_statuses={201},
+            )
+        finally:
+            # Also invalidate an ambiguous write and reads racing its response.
+            self.access.check_runs.forget(self.repository.repository_id)
+
+    async def rerun_job(self, job_id: int) -> dict[str, Any]:
+        """Re-run one exact Actions job (requires Actions write permission)."""
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            raise ValueError("invalid Actions job ID")
+        try:
+            return await self.request_json(
+                "POST", f"repos/{self.repository.full_name}/actions/jobs/{job_id}/rerun",
+                expected_statuses={201},
+            )
+        finally:
+            self.access.check_runs.forget(self.repository.repository_id)
 
     async def job_log(self, job_id: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
@@ -1795,7 +1900,7 @@ class GitHubClient:
         return f"<!-- aq-integration-audit:{idempotency_key} -->"
 
     def _audit_pull_request(self, payload: dict[str, Any], idempotency_key: str):
-        from src.integration.candidates import AuditPullRequest
+        from src.integration.promotion_contracts import AuditPullRequest
 
         head = payload.get("head")
         base = payload.get("base")
