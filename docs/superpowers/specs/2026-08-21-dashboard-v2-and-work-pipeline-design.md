@@ -1,5 +1,11 @@
 # Dashboard v2 + Work Pipeline Design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-08-21
 **Status:** Approved (brainstorm with Jack, this doc is the validated design)
 

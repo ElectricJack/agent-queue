@@ -4,11 +4,27 @@ tags: [design, self-improvement, memory, orchestrator, observability]
 
 # Self-Improvement Loop
 
-**Status:** Draft — **Paused** ([[feature-pauses]]; `memory.enabled=false`)
-**Principles:** [[guiding-design-principles]] (#4 the system improves with use, #5 reduce human effort)
-**Related:** [[memory-scoping]], [[memory-plugin]], [[vault]], [[playbooks]], [[profiles]]
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+**Status:** Draft — **Paused** ([feature-pauses](feature-pauses.md); `memory.enabled=false`)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#4 the system improves with use, #5 reduce human effort)
+**Related:** [memory-scoping](memory-scoping.md), [memory-plugin](memory-plugin.md), [vault](vault.md), [playbooks](playbooks.md), [profiles](profiles.md)
 
 ---
+
+> **Current boundary (2026-10-22).** There is no shipped periodic reflection playbook or active consolidation
+> schedule implementing this loop. The old in-process reflection engine was
+> deleted; `coding-reflection` and `task-outcome` policies are retired.
+> See [current policy installation](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+> Current knowledge generation can only propose unverified findings,
+> behind separate flags and operator gates; see
+> [knowledge records](../../guides/knowledge-records.md).
 
 ## 1. Overview
 
@@ -100,7 +116,7 @@ README changes, the orchestrator re-reads it and updates its summary. This is a
 lightweight indexer operation (similar to reference stub generation), not a full
 playbook.
 
-**On task completion:** The task-outcome [[playbooks|playbook]] can update the
+**On task completion:** The task-outcome [playbook](playbooks.md) can update the
 project README if significant project state changed (new feature completed, major
 bug fixed). This triggers the file watcher → orchestrator re-reads → summary updated.
 

@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> Response[GitPushResponse | GitPushResponse422]:
-    """Push a branch to the remote origin.
+    """Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
-     Push a branch to the remote origin.
+     Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
     Args:
         body (GitPushRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> GitPushResponse | GitPushResponse422 | None:
-    """Push a branch to the remote origin.
+    """Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
-     Push a branch to the remote origin.
+     Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
     Args:
         body (GitPushRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> Response[GitPushResponse | GitPushResponse422]:
-    """Push a branch to the remote origin.
+    """Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
-     Push a branch to the remote origin.
+     Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
     Args:
         body (GitPushRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> GitPushResponse | GitPushResponse422 | None:
-    """Push a branch to the remote origin.
+    """Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
-     Push a branch to the remote origin.
+     Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.
 
     Args:
         body (GitPushRequest):
