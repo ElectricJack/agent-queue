@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/test_selection/catalogue.py::DEFAULT_MARKER_DESELECT['integration']": "The pytest integration marker is unrelated to the integration service."
+  }
+}
