@@ -7,13 +7,17 @@
 > material](../../history/README.md).
 
 **Date:** 2026-09-07
-**Status:** ready to build
+**Status:** implemented historical implementation plan
 **Design:** `docs/superpowers/specs/2026-09-07-provider-usage-design.md`
 **Shape:** one epic, seven child tasks, all `standard-medium-claude`.
 
 The design settles *what* and *why*; this settles *where* and *in what order*.
 Every task below is written to be executed without reading the others: it
 names its files, its tests, and what "done" means.
+
+Current behaviour: [providers system spec](../../specs/systems/providers.md) and
+[usage accounting](../../reference/usage-accounting.md). This record preserves the
+original design; its proposed implementation details are not setup instructions.
 
 ## Global constraints (apply to every task)
 

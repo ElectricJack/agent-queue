@@ -33,10 +33,9 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path, reuse_database):
     dsn = lease_dsn("dashboard-state")
-    db = Database(dsn)
-    await db.initialize()
+    db: Database = await reuse_database("dashboard-state")
     await db.create_project(Project(id="p1", name="One"))
     await db.create_project(Project(id="p2", name="Two"))
     config = AppConfig(
@@ -49,7 +48,6 @@ async def env(tmp_path):
     orchestrator.git = MagicMock()
     orchestrator.bus = EventBus(env="dev")
     yield CommandHandler(orchestrator, config), db, orchestrator.bus, config
-    await db.close()
 
 
 def test_registry_models_and_defaults_are_strict_and_complete() -> None:

@@ -1,4 +1,4 @@
-"""Revision a00000000078: source-CI infrastructure bookkeeping, additive.
+"""Revision a00000000079: source-CI infrastructure bookkeeping, additive.
 
 The squashed baseline is built from live metadata, so a fresh database already
 has these columns; the first test drops them to exercise the real additive path
@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.migration, pytest.mark.integration]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTGRES_DSN = ensure_worker_postgres_dsn()
-REVISION = "a00000000078"
+REVISION = "a00000000079"
 PRECEDING = previous_revision(REVISION)
 TABLE = "integration_source_ci"
 COLUMNS = ("infra_observations", "infra_rerun_at", "infra_reruns")
