@@ -4,9 +4,19 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 
 # `aq` Surface — CLI-First Interface for Agents and Humans
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
-**Related:** [[session-runtime]], [[supervisor-agent]], [[work-graph]], [[feature-pauses]], [[trust-and-ops]], [[workspaces-v2]], [[../analysis/framework-overhaul-todo]] (§5 Workstream C, §2 A.4, §7 Workstream E, §10 G.2)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
+**Related:** [session-runtime](session-runtime.md), [supervisor-agent](supervisor-agent.md), [work-graph](work-graph.md), [feature-pauses](feature-pauses.md), [trust-and-ops](trust-and-ops.md), [workspaces-v2](workspaces-v2.md), [../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) (§5 Workstream C, §2 A.4, §7 Workstream E, §10 G.2)
 
 ---
 
@@ -15,9 +25,9 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 Agents today reach agent-queue through an auto-generated MCP registry of ~150 tools
 (`src/mcp_registration.py` exposes every `CommandHandler` command). Every task session pays
 for those tool schemas in its context window before doing any work. The overhaul analysis
-([[../analysis/framework-overhaul-todo]] §10 G.2, drawing on the Beads comparison) measured
+([../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) §10 G.2, drawing on the Beads comparison) measured
 full MCP tool schemas at **10–50k tokens per session versus 1–2k tokens for an equivalent
-CLI + hooks surface**. With the move to interactive CLI sessions ([[session-runtime]], D1/D6),
+CLI + hooks surface**. With the move to interactive CLI sessions ([session-runtime](session-runtime.md), D1/D6),
 the daemon no longer sits inside the agent's process — the natural, harness-agnostic way for
 any agent (Claude, Codex, Gemini, opencode, …) to act on the system is to shell out to a
 binary that already exists on `PATH`.
@@ -44,7 +54,7 @@ top of it:
 | MCP (trusted scope) | human-side MCP clients (Claude Code on the operator's machine, IDEs) | streamable-http `/mcp` | Full registry minus exclusions — unchanged behavior. |
 | MCP (task scope) | task sessions that prefer native tools over shelling out | streamable-http `/mcp-task` | ~9-tool allowlist; profiles may widen. |
 
-Agents inside sessions receive two environment variables from [[session-runtime]]:
+Agents inside sessions receive two environment variables from [session-runtime](session-runtime.md):
 `AQ_API_URL` (daemon base URL) and `AQ_API_TOKEN` (per-session bearer token, §7). The `aq`
 binary reads both automatically; no per-command flags are needed inside a session. Humans on
 the daemon host use `aq` unauthenticated exactly as today.
@@ -71,13 +81,76 @@ same data as Rich tables/panels.
 | `aq task set` | `<task_id> [--branch] [--pr-url] [--work-dir] [--note] [--label +l/-l] [--meta k=v]` | A/H | updated task summary |
 | `aq task close` | `<task_id> --outcome pass\|fail [--failure-class transient\|hard] [--work-outcome shipped\|no-op\|blocked\|abandoned] [--commit <sha>] [--notes <text>]` | A | `{task_id, status}` |
 | `aq task heartbeat` | `[<task_id>]` (defaults to token scope) | A | `{ok: true, lease_expires_at}` |
-| `aq task ask` | `"<question>" [--task <id>]` | A | `{question_id, gate_id}` — human gate via [[work-graph]] |
 | `aq message send` | `<recipient> <body> [--task <id>]` | A/H | `{message_id}` |
 | `aq message inbox` | `[--unread]` | A/H | list of messages |
 | `aq message reply` | `<message_id> <body>` | A/H | `{message_id}` |
-| `aq memory save` | `<content> [--scope]` | A | paused: `{paused: true}` per [[feature-pauses]] (§9.3) |
+| `aq memory save` | `<content> [--scope]` | A | paused: `{paused: true}` per [feature-pauses](feature-pauses.md) (§9.3) |
 | `aq memory search` | `<query> [--scope]` | A | paused: `{paused: true, results: []}` |
 | `aq session drain-ack` | — | A | `{acknowledged: true}` — session may now be reaped |
+
+For a task with an integration checkpoint, `aq task set --branch` accepts only the
+checkpoint's branch. This permits restoring a task row that drifted from its
+canonical branch while refusing a rename that would make the task unclaimable.
+The branch check happens before any other `task set` field is written.
+
+For READY/BLOCKED hierarchy or train producers missing a canonical branch owner,
+`aq integration reserve-owner --task-id <id>` is a supervisor control. It
+rechecks the task's branch against its checkpoint and materialized origin,
+requires no live session or held workspace, and acquires only an unowned or
+released branch. `aq task restart` applies this reservation check before moving
+a BLOCKED checkpointed producer to READY.
+
+For an active repair delegate, `reserve-owner` instead redispatches its current
+repair stage using the normal fenced handoff, without resetting its budget.
+`aq task restart <id>` refuses an active, decided supervisor recovery hold before
+continuation cleanup or branch reservation. The error and `aq task explain` name
+the hold, its owner and reason. `--override-hold --reason <explanation>` authorizes
+release only for a local operator or live global supervisor, matching `task recover`
+release authority. The READY transaction rechecks the exact incident and prior hold
+timestamp; a concurrent replacement hold refuses the restart. Accepted overrides
+preserve the prior decision in incident history, record the authenticated releaser
+and explanation, and append a task comment. Refused restarts retain the hold.
+Undecided incidents can still be superseded by an ordinary accepted restart.
+
+`aq task restart` uses that same handoff for a stopped delegate rather than a
+bare status flip: a repair delegate owns no branch origin, so the pool claim
+frontier admits it only on the exact reserved `repair` fence of its operation's
+branch. A restart that only moved the row to READY therefore stranded a task the
+frontier excluded (`frontier_origin_not_materialized`) and counted as zero
+demand, so no pool worker could ever claim it. When the handoff cannot prove the
+branch back — a fence still held by the stopped writer — restart is refused and
+leaves the task as it found it, naming `reserve-owner` (and `release-owner` for
+the held fence) as the recovery.
+
+A retained Git cache incident that holds a project's new-batch admission is lifted by
+`aq integration clear-retained-recovery --project-id <p> [--incident-id <id>]`, a
+supervisor/operator control. It reruns the full `fsck` under the cache's repository
+transaction and clears only an incident whose cache is clean, including an `exhausted`
+one; a dirty cache stays held (`not_clean`). See
+[integration-repository-recovery.md](integration-repository-recovery.md).
+
+For READY/BLOCKED tasks with `slot_reset_failure`, `aq task resume` clears the
+preparation backoff and retries. A historical claim from a terminal session does
+not prevent recovery once the session provider confirms that exact writer has
+stopped. Resume rechecks the session identity and claim under row locks before
+clearing stale assignment and pool-claim records. A live or restarting writer,
+an unavailable stop proof, a retained workspace lock or an attached integration
+owner still refuses recovery. Reused agents and slots remain untouched; resume
+does not release integration ownership or resolve gates and dependencies.
+
+> **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
+> ask-human` surface was removed. Live worker questions are recorded by the
+> claim-fenced `AgentQuestionService` from completed native transcript turns
+> and answered by exact `question_id` through `aq question`. For an explicit
+> one-way blocker notification, use `aq message send --to user:dashboard`.
+
+Worker file reads admit `read_file` through the shared command surface. In addition
+to registered repositories and workspaces belonging to the session's project,
+workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+`aq file read`, using either an absolute path or a `projects/...` vault-relative
+path. Resolve traversal and symlinks against these document roots before reading;
+foreign projects, other vault areas and write access remain outside this grant.
+Project document reads do not depend on knowledge-record activation.
 
 ### 3.2 Human surface
 
@@ -90,16 +163,16 @@ same data as Rich tables/panels.
 | `aq session logs` | `<session_id> [-f]` | H | transcript entries (follow via SSE) |
 | `aq session kill` | `<session_id> [-y]` | H | `{killed: true}` |
 | `aq task list` | `[--project] [--status] [--label] [--brief]` | A/H | list of tasks |
-| `aq task explain` | `<task_id>` | H | blocker analysis per [[work-graph]] |
+| `aq task explain` | `<task_id>` | H | blocker analysis per [work-graph](work-graph.md) |
 | `aq task graph` | `[--project] [--format ascii\|dot\|json]` | H | dependency graph |
 | `aq project ready` | `[<project_id>]` | H | ready tasks + not-ready reasons |
 | `aq gate list` | `[--project] [--pending]` | H | list of gates |
 | `aq gate resolve` | `<gate_id> [--approve\|--reject] [--note]` | H | `{gate_id, resolution}` |
-| `aq workspace list` | `[--project]` | H | workspaces + worktree slots ([[workspaces-v2]]) |
+| `aq workspace list` | `[--project]` | H | workspaces + worktree slots ([workspaces-v2](workspaces-v2.md)) |
 | `aq workspace doctor` | `[--fix]` | H | orphan/stale findings |
 | `aq workspace reap` | `[--project] [-y]` | H | reaped slots/branches |
 | `aq doctor` | `[--fix]` | H | system health findings (G.1) |
-| `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([[supervisor-agent]]) |
+| `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([supervisor-agent](supervisor-agent.md)) |
 | `aq schema` | — | A/H | enum catalog (§4.3) |
 
 ### 3.3 Preserved existing commands
@@ -112,6 +185,73 @@ from `register_auto_commands` all continue to work (§9).
 ---
 
 ## 4. Output Contract
+
+### 4.0 Global option grammar
+
+`--json`, `--brief`, `--save-output PATH` and `--api-url` are **global**: they may appear at any position and
+mean the same thing everywhere — before the group, between a group and its subcommand, or
+trailing after the leaf command and its arguments. All of these are equivalent:
+
+```bash
+aq --json task list
+aq task --json list
+aq task list --json
+aq task show task-1 --brief --json
+```
+
+Repeating a flag is allowed and idempotent; a flag given anywhere turns the mode on for the
+whole invocation. Implemented by `src/cli/global_options.py`, which copies the options onto
+every command and group in the tree after registration; each copy writes into the root
+context's `obj`, which is what `emit()` reads.
+
+Two exclusions, both about not stealing a flag from someone else:
+
+- **Passthrough commands** — anything whose `context_settings` set `ignore_unknown_options`
+  (`aq test`, `aq stream start`) forward their trailing argv to a child program, so
+  `aq test tests/x.py --json` hands `--json` to pytest. Use the prefix form
+  (`aq --json test …`) there.
+- **Commands that declare their own option of the same name** — `aq doctor --json`,
+  `aq logs --json`, `aq system config get --json` keep their local meaning.
+
+Everything after a `--` separator is Click's end-of-options boundary and is never consumed.
+
+`--save-output PATH` is opt-in for commands routed through `emit()`. Save the complete,
+unprojected versioned envelope as UTF-8 JSON in a new private file (0600), never overwrite
+evidence, and print a receipt with its absolute path, byte count, SHA-256 and data shape.
+The receipt uses the normal JSON envelope under `--json`; `--brief` and legacy mode
+do not reduce the saved evidence. File errors fail visibly and retain the received
+command result with `automatic_retry=false`; a presentation error must not invite
+replaying a successful mutation. Failure, warning, gate,
+claim/next-claim control results and instruction-bearing payloads remain visible in full
+after saving; receipts alone must never obscure a required action. Hook envelopes and
+commands that bypass `emit()` keep their existing presentation. This is a local output
+choice, not a daemon mutation, general tool filter, transcript rewrite or plugin switch.
+
+Worker prime keeps profile Role/Rules, project instructions, task/claim identity,
+context provenance, messages, continuation constraints and human/delivery gates intact.
+AQ-owned workflow prose is compact and links to applicable skills and authoritative
+project references on demand. Pool prime has one pool completion command instead of
+also prescribing task-session drain acknowledgement. No custom profile text is trimmed.
+
+### 4.0a Startup and command discovery
+
+Importing the CLI and building its complete command tree must not import the
+daemon command handler, database layer, SQLAlchemy or asyncpg. This applies to
+ordinary command execution as well as help: daemon-backed commands reach it
+through the client after argument parsing. The public `src.commands.CommandHandler`
+export remains available and loads its implementation only when requested.
+
+Explicit tool definitions retain precedence for auto-generated commands.
+The packaged `src/tools/command_catalogue.json` contains those definitions,
+categories, fallback definitions from live handler discovery and typed contracts,
+and internal plugin schemas. The common generation
+driver rebuilds this catalogue before the CLI inventory; a drift test compares
+the packaged definitions with live discovery. Runtime command registration must
+preserve the same command names, schemas and option order.
+
+CI checks startup in fresh processes, serially with performance checks enabled:
+the median of three `aq --help` runs must be less than one second. A separate
+import isolation check runs with the regular CLI tests.
 
 ### 4.1 Versioned JSON envelope
 
@@ -131,16 +271,80 @@ Every command run with `--json` emits exactly one JSON object on stdout:
 - `pagination` is present **only when `data` is a list**: `returned` = items in this
   response, `total` = matching rows server-side, `truncated` = `returned < total`.
 - Errors: `{"schema_version": 1, "error": {"code": "...", "message": "..."}, "data": null}`
-  on stdout, non-zero exit. Error codes: `command_error`, `not_found`, `out_of_scope`,
-  `daemon_unreachable`, `paused`.
+  on stdout, non-zero exit. Error codes: `usage_error`, `command_error`, `not_found`,
+  `out_of_scope`, `daemon_unreachable`, `paused`. Human diagnostics and compatibility
+  warnings go to stderr; stdout remains exactly one JSON document.
+- Empty collections are `data: []` with zeroed pagination. Scalar, object, and collection
+  payloads retain their JSON type. Generated-client models are projected with `to_dict()` /
+  `model_dump()`; missing `Unset` fields are omitted rather than rendered as repr strings.
+  JSON is UTF-8/Unicode text (`ensure_ascii=false`).
 
 The envelope is applied by the CLI presentation layer on top of the unchanged
 `CommandHandler` `{"success": bool, ...}` dicts and the `/api/execute`
 `{"ok": bool, "result"|"error"}` wire format — neither changes.
 
 Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriously fail),
-`1` command error, `2` usage error (Click), `3` daemon unreachable, `4` auth/scope denied.
+`1` command error, `2` usage error (including Click parsing), `3` daemon unreachable,
+`4` auth/scope denied.
 `aq inbox --inject` always exits `0` regardless (§6.2).
+
+An interrupted or malformed `/api/execute` reply is a `command_error` at exit `1`,
+with `details.outcome="unknown"` and `details.automatic_retry=false`: the CLI must
+not replay a command that may already have committed. Generic command replies
+include a safe `details.failure_kind` (HTTP exception class or response-validation
+category); read timeouts also include `details.read_timeout_seconds`. Diagnostics
+never include raw exception messages or response bodies. `pool status` and `task
+explain` have a 120-second read budget because they may measure the entire fleet,
+including separate bounded prerequisite reads for each project. `integration
+release-owner` has a 300-second read budget for provider confirmation and remote
+Git verification, including dry runs. Other commands retain their existing timeout
+budgets.
+
+The two structured-output exceptions are protocols rather than ordinary command results:
+`aq logs --json` (and `aq --json logs`) emits JSON Lines until the bounded read or follow
+stream ends, and `aq prime --hook-json` emits the harness-owned hook envelope. Interactive
+commands (`aq chat` without `--once`, `aq task select`, and `aq system config edit`) reject
+JSON mode with a `usage_error` envelope instead of prompting. Process passthrough commands
+such as `aq test` retain the child process's stdout/stderr and exit status.
+
+Core-owned `aq plugin` wrappers are ordinary command results even though they use direct
+database and filesystem operations: list/detail/config/prompt reads and every mutation route
+through the same envelope. A missing plugin uses `not_found`; direct database, loader, git,
+and filesystem failures use `command_error`/exit 1. Confirmation-requiring mutations demand
+`--yes` in JSON mode and otherwise return `usage_error`/exit 2 without prompting. Plugin names,
+URLs, paths, prompt names, and diff lines are treated as literal Rich text in human mode.
+
+Local operator workflows (`aq start|stop|restart`, `aq db *`, and `aq vault *`) are currently
+human-only because they own multi-step process/migration progress and interactive safeguards;
+with global `--json` they fail before any side effect with one `usage_error` envelope. CLI
+groups supplied by third-party `aq.plugins` entry points are an extension boundary rather than
+core-owned wrappers, so their structured-output behavior remains defined by that plugin.
+
+Daemon startup polls `/health` for a bounded 120 seconds using a monotonic clock;
+HTTP 200 and degraded HTTP 503 count as started. An exited child fails immediately.
+Timeout diagnostics read at most the last 64 KiB of the log and print at most the
+requested line count. After diagnostics, startup rechecks health and child liveness
+before terminating its own launched instance. Child-handle polling and signaling
+must not target a reused PID, and cleanup removes `daemon.pid` only while it still
+names that child. A daemon that becomes healthy during diagnostics proceeds through
+the usual post-start readiness checks.
+
+HTTP requests and command dispatches emit timing diagnostics: DEBUG for fast
+completion and WARNING at one second or more. HTTP logs use registered route
+templates and the request ID, include authentication/dispatch time, and measure
+only the handshake for SSE and WebSocket streams. Timing logs remain available
+when performance metric collection is disabled. Command logs separate dispatch
+from the awaited `command.invoked` event delivery, so a completed handler followed
+by a slow subscriber is visible. Slow database query and pool-checkout logs carry
+the current request/command context and duration; pool logs also report occupancy.
+They never include SQL text, bind values, request bodies or credentials. Failed
+queries are observed as well as successful queries.
+
+Task detail and dependency reads batch related task rows in groups of up to 900
+IDs rather than acquiring a connection per edge. Edge types, reasons, provenance,
+and live task statuses retain their existing meanings. A single READY task
+read scopes prerequisite observation to that task, avoiding a project-wide Git
+evidence pass while retaining the same cached-evidence eligibility rules.
 
 ### 4.2 `--brief` lite projections
 
@@ -154,9 +358,15 @@ Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriousl
 | message | `id, from, subject, created_at, read` |
 | workspace | `id, kind_id, path, locked_by` |
 | task_created | `created, task_id, title, status, project_id` |
+| agent | `id, name, state, profile_id, current_task_id` |
+| project | `id, name, status, workspace, max_concurrent_agents` |
+| pool | `profile_id, enabled, min_active, max_active, desired, running_idle, running_busy, starting, draining, ready` |
 
 `--brief` composes with `--json` (trimmed `data` items, envelope unchanged) and with table
 output (fewer columns). Projections are defined centrally, not per command.
+The workspace projection deliberately aliases the internal `workspace_path` and
+`locked_by_agent_id`/`locked_by_task_id` names to the stable public `path` and `locked_by`
+fields.
 
 `task_created` is the receipt `aq task create` returns for a **single** task, not a task
 row — hence its own projection. `aq task create --graph|--from-spec` returns the graph
@@ -178,7 +388,15 @@ Cancelling the interactive wizard is also one document (`{"cancelled": true,
 "created": null}`) at exit `0`: nothing was persisted, and the consumer can see that
 without guessing at an empty stream.
 
-### 4.3 `aq schema`
+### 4.3 Raw-JSON compatibility window
+
+`AQ_JSON_LEGACY=1` restores the pre-envelope payload for one release and writes one
+deprecation warning to stderr. For generated list commands this is the original backend
+wrapper (for example `{"projects": [...]}`), even though the versioned contract exposes the
+logical list at `data` and adds pagination. The variable never changes human output and is
+ignored by the streaming exceptions above.
+
+### 4.4 `aq schema`
 
 Prints the system's enums so agents never guess magic strings and MCP schemas don't have to
 carry them: task statuses, task types, dependency types (`blocks`, `parent-child`,
@@ -188,12 +406,20 @@ lifecycle values (`task`, `named`), outcome enums (`outcome`, `failure_class`,
 `work_outcome`), and session states. Backed by a `get_schema` command (so REST and MCP get
 it too); the CLI and command handler render the same pure code-owned catalog, so `aq schema`
 needs neither the daemon nor a database. The enum values themselves are owned by
-[[work-graph]] and [[session-runtime]] — `aq schema` is a projection with its own
+[work-graph](work-graph.md) and [session-runtime](session-runtime.md) — `aq schema` is a projection with its own
 `schema_version`.
 
 ---
 
 ## 5. `aq prime` — Context Delivery
+
+Parent merge-conflict repair delegates receive a live Task Context projection of
+their current stage's promotion intent (source task, base/head, expected target,
+diagnostics) and attached repair fence. Resolve it from the authenticated session
+and current pool claim, not historical task text or caller-selected sessions.
+Omit the projection for detached, stale, or mismatched assignments. Refresh prime
+after an attachment or intent change; resolution commands still enforce their
+immutable conflict identity and current fence independently.
 
 ### 5.1 One renderer, two consumers
 
@@ -202,7 +428,7 @@ consumers:
 
 1. **`aq prime`** — the CLI command, run by the agent (bootstrap instruction) or by the
    `SessionStart` hook; fetches the rendered document from the daemon.
-2. **The prompt-file writer** — [[session-runtime]] calls the same renderer at session start
+2. **The prompt-file writer** — [session-runtime](session-runtime.md) calls the same renderer at session start
    to write `<work_dir>/.aq/prompt.md` before the harness launches.
 
 `src/prime/` is chosen over `src/context/` because: (a) "prime" is the domain term across
@@ -226,7 +452,7 @@ LLM calls and no writes.
 | 4 | Task context | `task_context` rows incl. `spec_ref` sections + attachments | spec sections are inlined, not linked |
 | 5 | Workspaces block | task work-state + attachments | `work_dir`, `branch`, other attached kinds |
 | 6 | Pending messages + handoff note | `messages` table, latest `task_context(type=handoff)` | unread first; handoff verbatim |
-| 7 | *(slot)* L1 facts | — | **skipped while memory is paused** ([[feature-pauses]]) |
+| 7 | *(slot)* L1 facts | — | **skipped while memory is paused** ([feature-pauses](feature-pauses.md)) |
 | 8 | *(slot)* L2 topic context | — | skipped while memory is paused |
 | 9 | Tool guidance | static template | CLI-first: "use `aq …`"; one line noting the minimal MCP set exists |
 | 10 | Completion protocol | static template | "When done: `aq task close <id> --outcome … && aq session drain-ack`" |
@@ -234,12 +460,28 @@ LLM calls and no writes.
 Slots 7–8 exist in the section model from day one so the memory comeback is a renderer
 change, not a protocol change.
 
+Task Context includes every comment on the current task, newest first, with author,
+timestamp and the complete quoted body. Read all project-scoped comment pages; neither
+the comment count nor body length is capped in prime. Worker context previews apply to
+other context, with comment history appended in full outside that budget. Comments remain
+labelled as historical reports, not instructions or approval. Prime and `aq task comment`
+help ask agents to keep comments concise: state what changed, decisions and blockers;
+link evidence instead of pasting logs or repeating status.
+
+Pilot workers with knowledge context enabled also fit the aggregate required
+document to the configured byte budget: ordinary context, description and
+historical handoff excerpts may shrink to explicit lossless continuation reads.
+Complete comments remain outside those excerpts, along with live repair fences,
+profile Role/Rules, pending messages, current facts, result/wait pointers and the
+completion protocol. Reassemble overrides and the pause notice before accounting;
+unpageable required content still triggers `context.required_over_budget`.
+
 Sections 1–2 render exactly the *prime-visible* profile headings —
 `## Role` bare, then `## Rules` under a `### Rules` sub-heading — and nothing
 else; `## Config`, `## Tools`, `## MCP Servers` and `## Reflection` stay
 machine-only. Prime is the only channel a session-launched agent has for its
 Rules, since the DB `system_prompt_suffix` is read only by the legacy adapter
-path. See [[profiles]] §2 "Which headings reach the agent".
+path. See [profiles](profiles.md) §2 "Which headings reach the agent".
 
 ### 5.3 Per-project override: `.aq/PRIME.md`
 
@@ -265,13 +507,13 @@ edits a markdown file, not Python.
   requested, the body is suppressed (empty `additionalContext`) — the bootstrap argv prompt
   already pointed the agent at `.aq/prompt.md`, and double delivery would waste the exact
   tokens this design saves. Post-compaction `SessionStart` events do deliver the body:
-  [[session-runtime]] clears the variable's effect by design there (compaction is precisely
+  [session-runtime](session-runtime.md) clears the variable's effect by design there (compaction is precisely
   when re-priming pays for itself).
 
 ### 5.5 Hook file templates
 
 This spec owns the **contents** of the per-harness hook files; installation timing and the
-`--settings` merge mechanics belong to [[session-runtime]]. Canonical Claude template
+`--settings` merge mechanics belong to [session-runtime](session-runtime.md). Canonical Claude template
 (merged, never overwritten, into the session's settings):
 
 ```json
@@ -293,21 +535,30 @@ their native config formats, referenced from `vault/harnesses/<name>.md`.
 
 ### 6.1 `aq handoff [--auto] [subject] [detail]`
 
-Writes a `task_context(type=handoff)` row on the current task (subject + detail + timestamp +
-session id). The next `aq prime` for that task renders it in section 6 — this is how work
-state survives compaction and session recycling while memory is paused (Workstream E).
+Writes a `task_context(type=handoff)` row on the current task. Legacy subject/detail
+remain accepted; version 1 adds goal, completed, next step, waiting-for, files,
+decisions, do-not-repeat, and uncertainties (8 KiB combined UTF-8 agent text;
+20 items per list). Server timestamp and row id define the latest meaningful
+note; optional task/claim retry keys prevent duplicate rows. Empty auto hooks
+preserve the existing note. Prime section 6 quotes a bounded projection separately
+from current daemon facts. See [handoff and wake budgets](../../guides/wake-context-compaction.md).
+
+Authenticated handoffs accept the project identity injected by the API scope
+check. A pool session with no fixed task in its token resolves an omitted task
+from its current daemon-held claim. Project/session scope and task ownership
+checks still apply, and pool writes require the current claim epoch.
 
 - `--auto` (wired to `PreCompact`): **note only, never a restart** — Gas City's `gc-flp1`
   lesson: restarting on every compaction loops forever.
 - Non-auto: note **plus** a restart request (`session.restart_requested` event). Restart
   mechanics — whether to recycle now, with what `wake_mode` — are owned by
-  [[session-runtime]]; this command only records intent.
+  [session-runtime](session-runtime.md); this command only records intent.
 
 ### 6.2 `aq inbox --inject`
 
 The `UserPromptSubmit` hook body. Prints pending messages for this session's task/recipient,
 formatted as a plain-text injection block; marks them delivered; honors the
-`archive_after_inject` message policy (owned by [[supervisor-agent]]). Hard budget of
+`archive_after_inject` message policy (owned by [supervisor-agent](supervisor-agent.md)). Hard budget of
 **15 seconds** and **always exit 0** — a broken daemon must never block the human's prompt
 from reaching the agent. On any failure it prints nothing and exits 0.
 
@@ -317,16 +568,38 @@ from reaching the agent. On any failure it prints nothing and exits 0.
 
 ### 7.1 Mechanics (owned here)
 
-- **Mint at session start:** [[session-runtime]] asks the token store for a token bound to
+- **Mint at session start:** [session-runtime](session-runtime.md) asks the token store for a token bound to
   `(session_id, task_id, project_id)`; the plaintext (`aqs_<random>`) is returned once and
   injected as `AQ_API_TOKEN` (env injection owned by session-runtime; scrubbing rules by
-  [[trust-and-ops]]). Only a SHA-256 hash is stored.
+  [trust-and-ops](trust-and-ops.md)). Only a SHA-256 hash is stored.
 - **Validate per request:** middleware reads `Authorization: Bearer …`, resolves the hash to
   a scope, and attaches it to the request. Unknown/expired/revoked → 401.
 - **Revoke at session end:** drain-ack or the exit classifier triggers revocation. A TTL
   backstop (default 72 h) plus a cascade sweep that revokes tokens of dead sessions covers
   crashes. Tokens are persisted in the DB because sessions survive daemon restarts (A.5
   adoption) — an in-memory store would orphan live sessions on restart.
+- **Renew live supervisor credentials:** the periodic token sweep extends an
+  unexpired, unrevoked elevated token when it is within one hour of expiry
+  (half the configured TTL if shorter). Renewal requires a named `supervisor`
+  session that is starting/running, desired running, not ended, and matches the
+  token's session id, launch instance and project (including global `None`).
+  Extend to the configured TTL from now, without changing the bearer or scope;
+  invalidate its cached expiry. Workers and other named sessions keep the fixed
+  TTL. Expired/revoked credentials are never revived, even after daemon downtime.
+- **Operator recovery:** `aq session token <session-id> --json` preserves a live
+  named supervisor's elevation and project/global scope, as well as its launch
+  instance. Existing project fences still apply; a project supervisor cannot
+  mint a global credential. Replace the affected session's `AQ_API_TOKEN` with
+  `.data.token`; the command does not mutate a running process's environment.
+  Minting another credential never revokes an existing launch credential. Each
+  eligible bearer is renewed independently until that launch ends, so a live
+  process can continue using the token it received at startup.
+  `sessions.authentication` and `stall.sweep` report recent rejected credentials
+  associated with a running launch, and named supervisors with no valid credential
+  for their current instance. Auth diagnostics never include bearer tokens or hashes.
+  A stall sweep that encounters failed authentication exits with one `SWEEP-AUTH`
+  error and the recovery command. Patrol stops further checks for that tick and
+  reports that single error, never interpreting failed reads as an empty queue.
 
 ### 7.2 Scope model
 
@@ -337,8 +610,97 @@ task-addressed arguments must match the scope: `task_close` on someone else's ta
 scope's project. Requests **without** a token keep today's behavior: full local trust on the
 loopback interface (the daemon already binds `127.0.0.1` by default). Tokens therefore only
 ever *narrow* — they never grant anything a local caller lacks. Hardening the unauthenticated
-path for network exposure is [[trust-and-ops]] scope, with a `require_session_token` flag
+path for network exposure is [trust-and-ops](trust-and-ops.md) scope, with a `require_session_token` flag
 reserved here as the enforcement hook.
+
+### 7.3 Elevated scopes, and the commands that carry no `project_id`
+
+Project supervisors with the `pool_status` capability may read pools serving their
+own project. An omitted `project_id` inherits their token's project; a foreign
+project is refused. The response filters project breakdowns, pool instances and
+sessions outside pools to that project, omitting pools with no standing there.
+Shared pool bounds and aggregate counters remain fleet-wide, as in the operator's
+filtered view. This read does not authorize pool mutations, ordinary workers or
+project-scoped playbooks. Global supervisors and local operators retain the full view.
+
+Two elevated scopes exist: `supervisor-global` (`project_id = None`, the global admin) and a
+per-project supervisor (`project_id = <its own>`). Both skip the agent-surface allowlist;
+they differ only in what `project_id` they enforce. For the per-project one the gate's first
+move is to *supply* the project: when the caller omits `project_id`, `check_command_scope`
+injects the token's own, and a caller-supplied value that differs is `out of scope: project_id
+mismatch`.
+
+That injection cannot be unconditional. Every `CommandArgs` model is `extra="forbid"`, so for
+a command whose contract declares no `project_id` — most of the integration recovery controls
+(`reserve-owner`, `release-owner`, `reopen-collection`, `settle-delivered-batch`, the
+operation-keyed aborts) are keyed by a task, operation, batch or reservation rather than by a
+project — the injected key is a validation error the caller cannot fix:
+
+```
+aq --json integration reserve-owner --task-id verify-04199964
+-> invalid reservation request: 1 validation error for IntegrationReserveOwnerArgs
+   project_id  Extra inputs are not permitted [type=extra_forbidden]
+```
+
+So the gate writes the key only where the contract declares it (`_forbids_project_id`, derived
+from the registry, never a hand list; an unregistered command forbids nothing and keeps the
+injection, because it has no model to reject it), and **for a contract that forbids the key the
+project's isolation is the target's own**. `src/api/target_scope.py` resolves every target reference the
+call carries — an argument named `*_id`, or `depends_on` — to the project that owns that row
+and requires each to equal the token's. A task is read live-or-archived, an operation through
+the row its `target_kind` names, a branch owner row through its repository, check evidence
+through its operation. Resolution retains whether the named row exists: a present row
+with no project is distinct from a missing row. A promotion intent whose `project_id` is
+NULL resolves through its persisted repository; if that repository cannot supply a project,
+the intent remains a present row with no resolved owner.
+
+An integration `subject_id` resolves the subject row's own `project_id`. For
+`integration_release_held_gate`, both the subject and gate must belong to the token's
+project; passing this ownership check still leaves the handler's local human operator
+requirement in force.
+
+A command with no contract gets neither branch: the gate injects `project_id`, and no target
+is resolved. If it acts on the project row itself that is sound. If it acts on *another*
+project's row — `session_kill`, `session_peek`, `session_drain_ack` and `provider_reroute_undo`
+all name a session or a batch by id, prefix, name or task and read no `project_id` — then the
+isolation is that handler's own, and a supervisor grant is what makes it reachable from a token
+trusted for one project only. The session family shares one fence,
+`SessionCommandsMixin._session_project_scope_error`, which compares the resolved session's
+project with the caller's; the loopback CLI and the global supervisor carry no project pin and
+stay unrestricted. `tests/test_command_scope_matrix.py` derives the set of supervisor-granted
+contractless commands that name a project-owned target and dispatches each session-addressing
+member against another project's session.
+
+The provider reroute commands validate and canonicalise task IDs through
+`src/providers/reroute_args.py` before scope checks and again in their handlers.
+Whitespace and comma separators resolve to the same task IDs at both boundaries;
+undeclared aliases are refused. A project supervisor may name only its own project's
+tasks, may not run an unnamed reroute sweep, and may undo only its project's batch moves.
+
+The provider preference preview names its project in the nested
+`receive_new_work.project_id` field; that project row is resolved by the same guard.
+Only `provider_allocation_preview` recognizes that nested target path; other commands
+receive no project ownership from it.
+The allocation handler still restricts a project supervisor to preference-only changes
+and refuses global lifecycle/bounds changes and busy interruption.
+
+The policy fails closed, because "I could not work out who owns this" is not "allowed":
+
+| Case | Answer |
+|---|---|
+| every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
+| a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
+| a named target exists but has no resolved project (including a missing indirect owner) | `out of scope: <cmd> targets a row owned by no project` |
+| the call names no target at all (`list_projects`, provider previews without a project preference), or every named ID matches no row | `out of scope: <cmd> names no project-owned target` |
+| a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
+| the scope layer has no database | refused rather than admitted unchecked |
+| a target row is gone beside a resolved project-owned target | the missing row adds no project claim; the handler answers `not_found` |
+
+One mechanism, no contract gained a field, `extra="forbid"` untouched. A non-elevated agent
+token is unchanged: it still gets the whole ID triple injected, and layer 1c of
+`tests/test_command_scope_matrix.py` keeps every agent-surface command that validates its own
+args declaring all three. `tests/test_target_scope.py` pins the surface this admits and the
+set of commands deliberately refused.
 
 ---
 
@@ -355,12 +717,12 @@ changes; it is the operator's surface.
 
 A second MCP mount at `/mcp-task` exposes only the default task allowlist:
 
-`task_show, task_set, task_close, task_heartbeat, ask_human, message_send, message_inbox,
+`task_show, task_set, task_close, task_heartbeat, message_send, message_inbox,
 memory_save, memory_search`
 
 Rationale: these are the calls an agent makes *mid-turn* where a native tool call beats
 shelling out; everything else goes through the CLI, which costs ~1–2k tokens of learned
-usage instead of 10–50k tokens of schemas ([[../analysis/framework-overhaul-todo]] G.2).
+usage instead of 10–50k tokens of schemas ([../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) G.2).
 The exclusion model (`get_effective_exclusions`) is **not** reused here — task scope is an
 include-list (`DEFAULT_TASK_ALLOWLIST` ∪ widenings), because the failure mode of a
 forgotten exclusion is exposure, while the failure mode of a forgotten inclusion is an agent
@@ -399,7 +761,7 @@ today.
    presentation layer. The generated `packages/aq-client` continues to serve the dashboard.
 5. **MCP trusted scope** is bit-for-bit today's behavior; only task sessions move.
 6. **Paused memory commands** return `{success: false, error: "memory paused"}` from the
-   handler ([[feature-pauses]]); the CLI maps this specific error to exit 0 with
+   handler ([feature-pauses](feature-pauses.md)); the CLI maps this specific error to exit 0 with
    `{paused: true}` data so agent scripts and hooks don't fail loops on a deliberate pause.
 
 Known documentation drift to fix alongside: `src/cli/CLAUDE.md` still claims the CLI talks
@@ -437,14 +799,14 @@ not asserted. `LLMLogger` already maintains `logs/llm/prompt_analytics.jsonl`
 
 | Concern | Owner | This spec's boundary |
 |---|---|---|
-| `messages` table, reply protocol, `archive_after_inject` | [[supervisor-agent]] | `aq message *`, inbox formatting/delivery marking |
-| Gates, dep types, `explain`, state machine | [[work-graph]] | `aq gate *`, `aq task explain/graph/ask` projections |
-| Session lifecycle, env injection, hook installation, restarts, drain | [[session-runtime]] | token mint/revoke API, hook file *contents*, `aq session *` projections, prime renderer called by its prompt-file writer |
-| Pause semantics for memory/playbooks | [[feature-pauses]] | CLI presentation of paused results; L1/L2 prime slots |
-| Env scrubbing, trust boundaries, network exposure | [[trust-and-ops]] | token *mechanics*; `require_session_token` enforcement hook |
-| Worktrees, reaper, merge slot | [[workspaces-v2]] | `aq workspace *` projections |
+| `messages` table, reply protocol, `archive_after_inject` | [supervisor-agent](supervisor-agent.md) | `aq message *`, inbox formatting/delivery marking |
+| Gates, dep types, `explain`, state machine | [work-graph](work-graph.md) | `aq gate *`, `aq task explain/graph/ask` projections |
+| Session lifecycle, env injection, hook installation, restarts, drain | [session-runtime](session-runtime.md) | token mint/revoke API, hook file *contents*, `aq session *` projections, prime renderer called by its prompt-file writer |
+| Pause semantics for memory/playbooks | [feature-pauses](feature-pauses.md) | CLI presentation of paused results; L1/L2 prime slots |
+| Env scrubbing, trust boundaries, network exposure | [trust-and-ops](trust-and-ops.md) | token *mechanics*; `require_session_token` enforcement hook |
+| Worktrees, reaper, merge slot | [workspaces-v2](workspaces-v2.md) | `aq workspace *` projections |
 
 Everything else in this document — CLI inventory, envelope, `--brief`, `aq schema`,
 `src/prime/`, token store and scope middleware, MCP task scope, injection retargeting,
 backward compatibility, measurement — is owned here. Implementation details:
-[[../implementation/aq-surface]].
+[../implementation/aq-surface](../implementation/aq-surface.md).

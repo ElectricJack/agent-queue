@@ -13,14 +13,13 @@ from src.database.tables import (
     integration_branch_owners,
     projects,
     sessions,
-    task_integration_checkpoints,
     task_session_attempts,
     tasks,
     workspaces,
 )
 from src.git.manager import RemoteRefState
+from src.integration.row_query import select_row
 from src.models import TaskStatus
-from src.review_keys import is_review_completion
 from src.sessions.provider import SessionHandle
 
 logger = logging.getLogger(__name__)
@@ -63,7 +62,7 @@ async def reconcile_ready_integration_owners(orch) -> None:
             continue
         try:
             released = await reconcile_closed_integration_owners(
-                orch, project.id, ready_only=True
+                orch, project.id, ready_only=not project.hierarchical_integration_draining
             )
             if released:
                 logger.info("Recovered ended integration owners for retries: %s", released)
@@ -86,9 +85,11 @@ async def reconcile_closed_integration_owners(
     if (
         project is None
         or project.hierarchical_integration_mode not in {"hierarchy", "train"}
-        or project.hierarchical_integration_draining
     ):
         return []
+    recovered = []
+    if not ready_only:
+        recovered = await recover_completed_pool_claims(orch, project_id)
     eligible_statuses = ["READY"] if ready_only else ["READY", "COMPLETED", "BLOCKED", "FAILED", "PAUSED"]
     owners = integration_branch_owners
     async with db._engine.connect() as conn:
@@ -111,7 +112,7 @@ async def reconcile_closed_integration_owners(
             .mappings()
             .all()
         )
-    released = []
+    released = list(recovered)
     for owner in rows:
         session = await db.get_session(owner["session_id"]) if owner["session_id"] else None
         workspace = await db.get_workspace(owner["workspace_id"]) if owner["workspace_id"] else None
@@ -129,6 +130,33 @@ async def reconcile_closed_integration_owners(
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             continue
+        # An expired pool claim can still have its original task/workspace
+        # attachment. Let the same public confirmer recover that exact
+        # stopped writer; it has the stronger CAS that refuses a reused
+        # worker, workspace, or successor claim. The older reconciliation
+        # below remains for already-released pool claims (task_id is None).
+        if session.lifecycle == "pool" and session.task_id == owner["owner_id"]:
+            confirmer = getattr(orch, "aconfirm_integration_owner_handoff", None)
+            if confirmer is not None:
+                try:
+                    from src.integration.models import BranchKey, Fence
+                    from src.integration.ownership import BranchOwnership
+
+                    ownership = BranchOwnership(db, confirm_handoff=confirmer)
+                    confirmed = await ownership.confirm_transfer(Fence(
+                        target=BranchKey(repository_id=owner["repository_id"], branch=owner["ref"]),
+                        owner_id=owner["owner_id"], token=int(owner["fence_token"]),
+                    ))
+                    if confirmed["handoff_state"] == "released":
+                        released.append(owner["owner_id"])
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Could not confirm stopped pool integration owner %s",
+                        owner["owner_id"],
+                        exc_info=True,
+                    )
+                    continue
         try:
             provider = orch.session_providers.create(session.provider, orch.config)
             if not await provider.confirm_stopped(
@@ -151,44 +179,10 @@ async def reconcile_closed_integration_owners(
             )
             async with db.immediate() as conn:
                 await db.lock_hierarchy_project(conn, project_id)
-                current = (
-                    (
-                        await conn.execute(
-                            select(owners).where(owners.c.id == owner["id"]).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                ws = (
-                    (
-                        await conn.execute(
-                            select(workspaces)
-                            .where(workspaces.c.id == workspace.id)
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                stopped = (
-                    (
-                        await conn.execute(
-                            select(sessions).where(sessions.c.id == session.id).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                task = (
-                    (
-                        await conn.execute(
-                            select(tasks).where(tasks.c.id == owner["owner_id"]).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                current = await select_row(conn, owners, owners.c.id == owner["id"], lock=True)
+                ws = await select_row(conn, workspaces, workspaces.c.id == workspace.id, lock=True)
+                stopped = await select_row(conn, sessions, sessions.c.id == session.id, lock=True)
+                task = await select_row(conn, tasks, tasks.c.id == owner["owner_id"], lock=True)
                 ended_attempt = (
                     await conn.execute(
                         select(task_session_attempts.c.id)
@@ -303,124 +297,46 @@ async def reconcile_closed_integration_owners(
     return released
 
 
-async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str]:
-    """An explicit flush repairs exact root PR links lost by older close paths.
+async def recover_completed_pool_claims(orch, project_id: str) -> list[str]:
+    """Public recovery for a terminal pool close interrupted before cleanup.
 
-    Git reads precede the transaction; compare-and-swap protects against a
-    task being reopened or its completion head changing during observation.
-    Reviews, gates, branch ownership, and completion status are untouched.
+    This deliberately discovers only attached or handoff-pending owners. A released owner,
+    a successor claim, or an ordinary completed task is not evidence that an
+    operator may touch a pool session.  The orchestrator method repeats all
+    identity, liveness, Git, and release fences before making any change.
     """
+    db = orch.db
     project = await db.get_project(project_id)
     if (
         project is None
-        or project.hierarchical_integration_mode != "train"
-        or project.hierarchical_integration_draining
+        or project.hierarchical_integration_mode not in {"hierarchy", "train"}
         or not project.integration_repository_id
     ):
         return []
-    cp = task_integration_checkpoints
-    missing = or_(tasks.c.pr_url.is_(None), tasks.c.pr_url == "")
+    recover = getattr(orch, "arecover_completed_integration_pool_claim", None)
+    if recover is None:
+        return []
     async with db._engine.connect() as conn:
-        rows = (
-            (
-                await conn.execute(
-                    select(
-                        tasks.c.id,
-                        tasks.c.branch_name,
-                        tasks.c.dedup_key,
-                        tasks.c.profile_id,
-                        cp.c.checkpoint_sha,
-                        cp.c.generation,
-                        cp.c.version,
-                    )
-                    .join(cp, cp.c.task_id == tasks.c.id)
-                    .where(
-                        tasks.c.project_id == project_id,
-                        tasks.c.repo_id == project.integration_repository_id,
-                        cp.c.repository_id == project.integration_repository_id,
-                        tasks.c.parent_task_id.is_(None),
-                        tasks.c.status == TaskStatus.COMPLETED.value,
-                        missing,
-                    )
-                    .order_by(tasks.c.id)
+        candidates = (
+            await conn.execute(
+                select(tasks.c.id.label("task_id"), sessions.c.id.label("session_id"))
+                .join(integration_branch_owners, integration_branch_owners.c.owner_id == tasks.c.id)
+                .join(sessions, sessions.c.id == integration_branch_owners.c.session_id)
+                .where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    tasks.c.repo_id == project.integration_repository_id,
+                    integration_branch_owners.c.repository_id == project.integration_repository_id,
+                    integration_branch_owners.c.owner_role.in_(["worker", "repair"]),
+                    integration_branch_owners.c.handoff_state.in_(["attached", "handoff_pending"]),
+                    sessions.c.lifecycle == "pool",
                 )
             )
-            .mappings()
-            .all()
-        )
-    rows = [
-        r
-        for r in rows
-        if r["branch_name"] and not is_review_completion(r["dedup_key"], r["profile_id"])
-    ]
-    if not rows:
-        return []
-    resolved = await promotion._resolve_repository(project.integration_repository_id)
-    await promotion._ensure_retained_repository(resolved)
+        ).mappings().all()
     recovered = []
-    async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
-        await promotion._fetch_all_heads(resolved.retained_git_dir)
-        for row in rows:
-            try:
-                checkout = str(resolved.retained_git_dir)
-                remote = await promotion.git.als_remote_ref(checkout, row["branch_name"])
-                if (
-                    remote.state is not RemoteRefState.PRESENT
-                    or remote.oid != row["checkpoint_sha"]
-                ):
-                    continue
-                url = await promotion.git.afind_open_pr(
-                    checkout, row["branch_name"], head_ref=remote.oid, include_workspace_head=False
-                )
-                if not url:
-                    continue
-                identity = await promotion.git.aget_pr_identity(checkout, url)
-                if (
-                    identity.head_oid != remote.oid
-                    or identity.head_ref != row["branch_name"]
-                    or identity.base_ref != resolved.repo.default_branch
-                ):
-                    continue
-                async with db.immediate() as conn:
-                    await db.lock_hierarchy_project(conn, project_id)
-                    current_project = (
-                        (await conn.execute(select(projects).where(projects.c.id == project_id)))
-                        .mappings()
-                        .one()
-                    )
-                    if (
-                        current_project["hierarchical_integration_mode"] != "train"
-                        or current_project["hierarchical_integration_draining"]
-                        or current_project["integration_repository_id"]
-                        != project.integration_repository_id
-                    ):
-                        break
-                    current_head = (
-                        select(cp.c.task_id)
-                        .where(
-                            cp.c.task_id == row["id"],
-                            cp.c.checkpoint_sha == remote.oid,
-                            cp.c.generation == row["generation"],
-                            cp.c.version == row["version"],
-                        )
-                        .exists()
-                    )
-                    changed = await conn.execute(
-                        update(tasks)
-                        .where(
-                            tasks.c.id == row["id"],
-                            tasks.c.project_id == project_id,
-                            tasks.c.repo_id == project.integration_repository_id,
-                            tasks.c.branch_name == row["branch_name"],
-                            tasks.c.parent_task_id.is_(None),
-                            tasks.c.status == TaskStatus.COMPLETED.value,
-                            missing,
-                            current_head,
-                        )
-                        .values(pr_url=url)
-                    )
-                    if changed.rowcount:
-                        recovered.append(row["id"])
-            except Exception:
-                logger.warning("Could not recover integration PR for %s", row["id"], exc_info=True)
+    for candidate in candidates:
+        task = await db.get_task(candidate["task_id"])
+        session = await db.get_session(candidate["session_id"])
+        if await recover(task, session):
+            recovered.append(task.id)
     return recovered

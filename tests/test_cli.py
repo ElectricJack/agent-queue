@@ -40,6 +40,45 @@ def runner():
     return CliRunner()
 
 
+def test_task_help_does_not_advertise_retired_ask_human(runner):
+    from src.cli.app import cli
+
+    help_result = runner.invoke(cli, ["task", "--help"])
+    assert help_result.exit_code == 0
+    assert "ask-human" not in help_result.output
+
+    call_result = runner.invoke(cli, ["task", "ask-human", "--question", "Continue?"])
+    assert call_result.exit_code == 2
+    assert "No such command 'ask-human'" in call_result.output
+
+
+def test_ask_cutover_status_forwards_project_and_json(runner):
+    import json
+
+    from src.cli.app import cli
+
+    receipt = {
+        "success": True,
+        "result": {
+            "project_id": "p",
+            "configured_destination": "discord:1:2",
+            "destinations": [],
+        },
+    }
+    # Stub the health probe too: without it the test needs a live daemon.
+    with (
+        patch.object(CLIClient, "connect", new_callable=AsyncMock),
+        patch.object(CLIClient, "close", new_callable=AsyncMock),
+        patch.object(
+            CLIClient, "execute", new_callable=AsyncMock, return_value=receipt
+        ) as execute,
+    ):
+        result = runner.invoke(cli, ["ask", "cutover-status", "--project-id", "p", "--json"])
+    assert result.exit_code == 0, result.output
+    execute.assert_awaited_once_with("ask_cutover_status", {"project_id": "p"})
+    assert json.loads(result.output)["data"] == receipt
+
+
 # Mock response helpers
 
 
@@ -212,6 +251,155 @@ class TestFormatterCompatibility:
         )
         panel = format_task_detail(t, subtask_stats=(3, 5))
         assert panel is not None
+
+    def _render(self, renderable):
+        """Render a Panel/Group to a plain string so we can assert on labels."""
+        from rich.console import Console
+
+        console = Console(record=True, width=200, force_terminal=False)
+        console.print(renderable)
+        return console.export_text()
+
+    def test_format_task_detail_prints_the_route(self):
+        """Mandatory routing §10: the source, the target and the router's why."""
+        routed = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Routed",
+            "route_source": "router", "profile_id": "standard-high-codex",
+            "intelligence_class": "standard-high",
+            "route": {"lane": "code-design", "rule": "kind:design",
+                      "reason": "lowest pressure"},
+        })
+        text = self._render(format_task_detail(routed))
+        assert "Route: router -> standard-high-codex (standard-high)" in text
+        assert "Route rule: kind:design / lane code-design" in text
+        assert "Route reason: lowest pressure" in text
+
+        pinned = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Pinned",
+            "route_source": "override", "profile_id": "standard-high-claude",
+            "route": {"override": {"by": "human:local-operator", "reason": "outage"}},
+        })
+        text = self._render(format_task_detail(pinned))
+        assert "Override: by human:local-operator: outage" in text
+
+        unrouted = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Waiting",
+            "route_source": "unrouted",
+        })
+        assert "Route: unrouted" in self._render(format_task_detail(unrouted))
+
+    def test_format_task_detail_groups_edges_by_type(self):
+        # A parent-child edge and a real blocks edge must land in two
+        # separately labelled buckets ("Part of" ≠ "Blocked by").
+        t = task_proxy(
+            {
+                "id": "task-child",
+                "project_id": "proj",
+                "status": "QUEUED",
+                "title": "A child task",
+            }
+        )
+        panel = format_task_detail(
+            t,
+            deps_on=[
+                {"id": "parent-epic", "title": "Epic", "status": "IN_PROGRESS", "dep_type": "parent-child"},
+                {"id": "prereq-1", "title": "Prereq", "status": "IN_PROGRESS", "dep_type": "blocks"},
+            ],
+            dependents=[
+                {"id": "downstream-1", "title": "Downstream", "status": "QUEUED"},
+            ],
+        )
+        out = self._render(panel)
+        # Both buckets are present and distinguishable.
+        assert "Part of" in out
+        assert "Blocked by" in out
+        assert "Blocks" in out
+        # Each ID lands under the correct bucket: parent-child under "Part of",
+        # blocks under "Blocked by", dependent under "Blocks:".
+        part_of = out.index("Part of")
+        blocked_by = out.index("Blocked by")
+        # Label precedes ids in each section (Rich renders the Text in order).
+        assert out.index("parent-epic") > part_of
+        assert out.index("prereq-1") > blocked_by
+        assert out.index("downstream-1") > out.index("Blocks:")
+
+    def test_ready_task_with_parent_only_shows_part_of(self):
+        # A READY task whose only in-progress relation is its parent must
+        # never surface blocker language ("Blocked by"); the parent edge is
+        # "Part of", which is a relationship label, not a scheduling gate.
+        t = task_proxy(
+            {
+                "id": "task-ready",
+                "project_id": "proj",
+                "status": "READY",
+                "title": "Ready child",
+            }
+        )
+        panel = format_task_detail(
+            t,
+            deps_on=[
+                {"id": "parent-epic", "title": "Epic", "status": "IN_PROGRESS", "dep_type": "parent-child"},
+            ],
+            dependents=[],
+        )
+        out = self._render(panel)
+        assert "Part of" in out
+        assert "parent-epic" in out
+        assert "Blocked by" not in out
+        # Downstream "Blocks:" section is absent because the task blocks nothing.
+        # (The word "Blocks" may legitimately appear elsewhere — only assert
+        # that "Blocked by:" as a label does not.)
+
+    def test_format_task_detail_plain_string_backward_compat(self):
+        # Old-style plain string deps still render (as "Depends on"), so the
+        # formatter remains callable from legacy payloads or tests.
+        t = task_proxy(
+            {"id": "t", "project_id": "p", "status": "QUEUED", "title": "T"}
+        )
+        panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
+        out = self._render(panel)
+        assert "Depends on" in out
+        assert "Blocks" in out
+
+    def test_format_task_deps_groups_by_type(self):
+        # `aq task deps` (format_task_deps) must also split incoming edges by
+        # type and render provenance (discovered-from) dimmed and separate
+        # from blockers.
+        from src.cli.formatters import format_task_deps
+
+        data = {
+            "task_id": "task-1",
+            "title": "Demo",
+            "status": "QUEUED",
+            "depends_on": [
+                {"id": "parent-epic", "title": "Epic", "status": "IN_PROGRESS", "dep_type": "parent-child"},
+                {"id": "prereq", "title": "Prereq", "status": "IN_PROGRESS", "dep_type": "blocks"},
+            ],
+            "blocks": [
+                {"id": "downstream", "title": "D", "status": "QUEUED"},
+            ],
+            "provenance": [
+                {"id": "sibling", "title": "S", "status": "READY", "dep_type": "discovered-from"},
+            ],
+        }
+        out = self._render(format_task_deps(data))
+        assert "Part of" in out
+        assert "Blocked by" in out
+        assert "Discovered from" in out
+        # Provenance renders after blockers, so "sibling" must come after the
+        # "Discovered from" label.
+        assert out.index("sibling") > out.index("Discovered from")
+        # The parent-child id lives in the "Part of" bucket (label precedes
+        # id, then the "Blocks:" section begins). The blocks id lives in the
+        # "Blocked by" bucket.
+        assert out.index("Part of") < out.index("parent-epic") < out.index("Blocks:")
+        assert out.index("Blocked by") < out.index("prereq")
+
+    def test_format_task_deps_empty_when_no_edges(self):
+        from src.cli.formatters import format_task_deps
+
+        out = self._render(format_task_deps({"task_id": "t", "status": "READY"}))
+        assert "No dependencies." in out
 
     def test_format_agent_table(self):
         agents = [
@@ -628,6 +816,14 @@ class TestAutoCommands:
         assert "--project-id" in result.output
         assert "--query" in result.output
 
+    def test_playbook_commands_catalog_is_auto_registered(self, runner):
+        """The contract catalog is available as ``aq playbook commands``."""
+        from src.cli.app import cli
+
+        result = runner.invoke(cli, ["playbook", "commands", "--help"])
+        assert result.exit_code == 0
+        assert "playbook command contracts" in result.output
+
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""
         from src.cli.auto_commands import _strip_category_prefix
@@ -666,6 +862,23 @@ class TestCLICommands:
 
         mock_client.execute = AsyncMock(side_effect=mock_execute)
         return mock_client
+
+    @pytest.mark.parametrize("flags, resume", [([], False), (["--resume"], True)])
+    def test_supervisor_restart_dispatches_fresh_or_resume(self, runner, flags, resume):
+        from src.cli.app import cli
+
+        mock = self._mock_client({"supervisor_restart": {
+            "success": True, "session_id": "replacement", "name": "supervisor-global",
+            "state": "running", "mode": "resume" if resume else "fresh",
+        }})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["supervisor", "restart", *flags, "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock.execute.await_args.args[0] == "supervisor_restart"
+        args = mock.execute.await_args.args[1]
+        assert args.get("resume", False) is resume
+        assert args.get("name", "supervisor-global") == "supervisor-global"
+        assert "replacement" in result.output
 
     def test_task_list_with_formatter(self, runner):
         """`task list` (hand-crafted since aq-surface Phase S0, previously
@@ -730,20 +943,17 @@ class TestCLICommands:
             assert result.exit_code == 0
             assert "Test task" in result.output
 
-    def test_task_create_with_profile_flag(self, runner):
-        """--profile is passed through as profile_id in create_task args."""
+    @pytest.mark.parametrize(
+        "flag", [["--profile", "claude-opus"], ["-P", "claude-opus"], ["--pin"],
+                 ["--provider-intent", "pinned"], ["--agent-type", "claude-code"]],
+    )
+    def test_task_create_has_no_routing_flags(self, runner, flag):
+        """A filing names hints, never a route: the routing flags are gone
+        (mandatory task routing), so the CLI refuses them before any call."""
         from src.cli.app import cli
 
-        captured_args = {}
-
-        async def mock_execute(command, args=None):
-            if command == "create_task":
-                captured_args.update(args or {})
-                return {"created": "task-42", "title": args.get("title", "")}
-            return {}
-
         mock = self._mock_client({})
-        mock.execute = AsyncMock(side_effect=mock_execute)
+        mock.execute = AsyncMock(return_value={"created": "task-42"})
 
         with patch("src.cli.tasks._get_client", return_value=mock):
             result = runner.invoke(
@@ -757,15 +967,13 @@ class TestCLICommands:
                     "Pick a model",
                     "--description",
                     "test task",
-                    "--profile",
-                    "claude-opus",
+                    *flag,
                 ],
             )
 
-        assert result.exit_code == 0, result.output
-        assert captured_args["profile_id"] == "claude-opus"
-        assert captured_args["project_id"] == "proj"
-        assert captured_args["title"] == "Pick a model"
+        assert result.exit_code == 2, result.output
+        assert "No such option" in result.output
+        mock.execute.assert_not_called()
 
     def test_task_create_partial_flags_seed_wizard_and_preserve_overrides(self, runner):
         """Partial input prompts only for missing fields without losing flags."""
@@ -904,43 +1112,8 @@ class TestCLICommands:
         assert "Task creation cancelled." in result.output
         mock.execute.assert_not_awaited()
 
-    def test_task_create_with_agent_type_flag(self, runner):
-        """--agent-type is passed through as agent_type in create_task args."""
-        from src.cli.app import cli
-
-        captured_args = {}
-
-        async def mock_execute(command, args=None):
-            if command == "create_task":
-                captured_args.update(args or {})
-                return {"created": "task-43", "title": args.get("title", "")}
-            return {}
-
-        mock = self._mock_client({})
-        mock.execute = AsyncMock(side_effect=mock_execute)
-
-        with patch("src.cli.tasks._get_client", return_value=mock):
-            result = runner.invoke(
-                cli,
-                [
-                    "task",
-                    "create",
-                    "--project",
-                    "proj",
-                    "--title",
-                    "T",
-                    "--description",
-                    "D",
-                    "--agent-type",
-                    "claude-code",
-                ],
-            )
-
-        assert result.exit_code == 0, result.output
-        assert captured_args["agent_type"] == "claude-code"
-
-    def test_task_create_without_profile_flag_omits_field(self, runner):
-        """When --profile is not given, profile_id is absent from create_task args."""
+    def test_task_create_sends_no_routing_field(self, runner):
+        """A plain create sends no routing field: the router picks the route."""
         from src.cli.app import cli
 
         captured_args = {}
@@ -970,8 +1143,9 @@ class TestCLICommands:
             )
 
         assert result.exit_code == 0, result.output
-        assert "profile_id" not in captured_args
-        assert "agent_type" not in captured_args
+        from src.routing.filing import REFUSED_ROUTING_ARGS
+
+        assert not set(REFUSED_ROUTING_ARGS) & set(captured_args)
 
     def test_task_create_with_parent_flag(self, runner):
         """--parent is passed through as parent_id in create_task args."""
@@ -1143,19 +1317,31 @@ class TestDaemonCommands:
         with patch("src.cli.daemon._find_daemon_pid", return_value=12345):
             assert is_daemon_running() is True
 
-    def test_stop_not_running(self, runner):
+    def test_stop_not_running(self, runner, monkeypatch, tmp_path):
         from src.cli.app import cli
 
         # aq stop also reaps sessions when no daemon is running. Keep this
         # unit test away from the real tmux server (including its own worker).
+        # Nor may it reach the dashboard server named by the real
+        # ~/.agent-queue PID file: that one may be the operator's -- nor write
+        # the stop marker the operator's auto-restart service reads.
+        monkeypatch.setattr("src.cli.daemon.CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr("src.cli.daemon.LOCK_DIR", str(tmp_path / "daemon.lock"))
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         with (
             patch("src.cli.daemon._find_daemon_pid", return_value=None),
             patch("src.cli.daemon.stop_agent_sessions", return_value=0) as stop_sessions,
+            patch("src.cli.dashboard.stop_dashboard_server") as stop_dashboard,
         ):
             result = runner.invoke(cli, ["stop"])
             assert result.exit_code == 0
             assert "not running" in result.output
             stop_sessions.assert_called_once_with()
+            stop_dashboard.assert_called_once_with()
+        # "Stop" means "and keep it stopped", also when nothing was running.
+        assert (tmp_path / "daemon.stopped").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1165,6 +1351,14 @@ class TestDaemonCommands:
 
 class TestDaemonNotRunningPrompt:
     """Test that _handle_errors offers to start the daemon."""
+
+    @pytest.fixture(autouse=True)
+    def _operator_shell(self, monkeypatch):
+        # The offer is the operator-shell branch: with AQ_SESSION_ID set or
+        # AQ_DB_SCOPE=worker the CLI prints the pool-worker retry guidance
+        # instead, so these fail when an agent runs them from inside a session.
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
 
     def test_offers_to_start_on_connection_error(self, runner):
         """When daemon is down and user says 'n', should exit cleanly."""
@@ -1219,3 +1413,33 @@ class TestDaemonNotRunningPrompt:
         ):
             result = runner.invoke(cli, ["task", "list"], input="y\n")
             assert result.exit_code == 0
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_task_restart_forwards_explicit_hold_override(runner, override):
+    from src.cli.app import cli
+
+    args = ['task', 'restart', 'held-task', '--yes', '--json']
+    expected = {'task_id': 'held-task'}
+    if override:
+        args.extend(['--override-hold', '--reason', 'Review accepted'])
+        expected.update(override_hold=True, reason='Review accepted')
+    with (
+        patch.object(CLIClient, 'connect', new_callable=AsyncMock),
+        patch.object(CLIClient, 'close', new_callable=AsyncMock),
+        patch.object(CLIClient, 'execute', new_callable=AsyncMock,
+                     return_value={'success': True, 'restarted': 'held-task'}) as execute,
+    ):
+        result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    execute.assert_awaited_once_with('restart_task', expected)
+
+
+def test_task_restart_override_without_reason_fails_before_dispatch(runner):
+    from src.cli.app import cli
+
+    with patch.object(CLIClient, 'execute', new_callable=AsyncMock) as execute:
+        result = runner.invoke(cli, ['task', 'restart', 'held-task', '--yes', '--override-hold'])
+    assert result.exit_code == 2
+    assert '--override-hold requires --reason' in result.output
+    execute.assert_not_awaited()

@@ -103,6 +103,22 @@ describe("SpecDocReaderPane — url mode", () => {
     expect(await screen.findByText("Hosted Doc")).toBeInTheDocument();
     expect(await screen.findByText("hello")).toBeInTheDocument();
   });
+
+  it("renders the title once for CRLF content with YAML frontmatter", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("---\r\nstatus: design\r\n---\r\n# Original plan\r\n\r\n## Goal\r\n\r\nbody\r\n", {
+          status: 200,
+        }),
+      ),
+    );
+    renderWithQuery(<SpecDocReaderPane {...baseProps({ url: "/api/specs/x.md" })} />);
+    expect(await screen.findByText("body")).toBeInTheDocument();
+    expect(screen.getAllByText("Original plan")).toHaveLength(1);
+    expect(screen.getByText("design")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Goal" })).toBeInTheDocument();
+  });
 });
 
 describe("SpecDocReaderPane — toolbar", () => {

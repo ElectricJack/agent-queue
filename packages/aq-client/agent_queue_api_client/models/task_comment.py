@@ -7,6 +7,8 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.task_comment_author_kind import TaskCommentAuthorKind
+from ..models.task_comment_kind import TaskCommentKind
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="TaskComment")
 
@@ -21,6 +23,7 @@ class TaskComment:
         author_kind (TaskCommentAuthorKind):
         author_id (str):
         created_at (float):
+        kind (TaskCommentKind | Unset):  Default: TaskCommentKind.NOTE.
     """
 
     id: str
@@ -29,6 +32,7 @@ class TaskComment:
     author_kind: TaskCommentAuthorKind
     author_id: str
     created_at: float
+    kind: TaskCommentKind | Unset = TaskCommentKind.NOTE
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +48,10 @@ class TaskComment:
 
         created_at = self.created_at
 
+        kind: str | Unset = UNSET
+        if not isinstance(self.kind, Unset):
+            kind = self.kind.value
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -56,6 +64,8 @@ class TaskComment:
                 "created_at": created_at,
             }
         )
+        if kind is not UNSET:
+            field_dict["kind"] = kind
 
         return field_dict
 
@@ -74,6 +84,13 @@ class TaskComment:
 
         created_at = d.pop("created_at")
 
+        _kind = d.pop("kind", UNSET)
+        kind: TaskCommentKind | Unset
+        if isinstance(_kind, Unset):
+            kind = UNSET
+        else:
+            kind = TaskCommentKind(_kind)
+
         task_comment = cls(
             id=id,
             task_id=task_id,
@@ -81,6 +98,7 @@ class TaskComment:
             author_kind=author_kind,
             author_id=author_id,
             created_at=created_at,
+            kind=kind,
         )
 
         task_comment.additional_properties = d
