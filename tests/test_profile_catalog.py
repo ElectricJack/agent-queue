@@ -139,6 +139,22 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     assert profile_path.read_text(encoding="utf-8") == "# operator edit\n"
 
 
+def test_installer_refresh_preserves_renamed_role_profile(tmp_path):
+    _seed_vault(tmp_path)
+    path = tmp_path / "vault" / "agent-types" / "spec-ingest" / "profile.md"
+    renamed = path.read_text(encoding="utf-8").replace(
+        "name: Review Spec Ingest", "name: My Spec Review"
+    )
+    path.write_text(renamed, encoding="utf-8")
+
+    refresh_catalog_profiles(tmp_path, _probes("codex"))
+    second = refresh_catalog_profiles(tmp_path, _probes("codex"))
+
+    assert second["created"] == []
+    assert path.read_text(encoding="utf-8") == renamed
+    assert parse_profile(renamed).frontmatter.name == "My Spec Review"
+
+
 def test_refresh_after_provider_removal_deactivates_without_deleting_profiles(tmp_path):
     _seed_vault(tmp_path)
     refresh_catalog_profiles(tmp_path, _probes("codex"))

@@ -93,11 +93,22 @@ async def authorize_review(review, actor, *, conn):
         )
 
 
-async def authorize_application(review, decision, *, conn):
+async def authorize_application(review, decision, *, conn, service=None):
     """Recheck delegated authority while the accepted decision is still pending."""
     if review["pending_decision_id"] != decision["id"]:
         return
     actor = decision["actor"]
+    if actor["provenance"].get("kind") == "verified_input":
+        from src.asks.authority import authorize_input_actor
+        from src.asks.models import DecisionActor, SourceIdentity
+
+        if service is None:
+            raise AskError("ask.not_decider", "Input authorization service is unavailable")
+        await authorize_input_actor(
+            service.db, service.input_config, SourceIdentity(**decision["packet"]["source"]),
+            DecisionActor(**actor), conn=conn, application=True,
+        )
+        return
     if actor["provenance"]["kind"] == "local":
         return  # immutable correspondence binds the authenticated human acceptance
     provenance = actor["provenance"]
@@ -247,7 +258,13 @@ class ReviewAdapter:
             .mappings()
             .one()
         )
-        await authorize_review(review, actor, conn=conn)
+        if actor.provenance.get("kind") == "verified_input":
+            from src.asks.authority import authorize_input_actor
+
+            await authorize_input_actor(self.db, self.service.input_config, snapshot.identity,
+                                        actor, conn=conn)
+        else:
+            await authorize_review(review, actor, conn=conn)
         if accepted_decision is not None:
             return accepted_decision["packet"]["domain"]
         if review["pending_decision_id"]:
@@ -297,11 +314,13 @@ class ReviewAdapter:
                 "reason",
                 "required_before_release",
                 "changes_document",
+                "external_prerequisite",
+                "coverage",
             }:
                 raise AskError("ask.context_missing", "Unknown disposition field")
             if any(
                 type(disposition[k]) is not bool
-                for k in ("required_before_release", "changes_document")
+                for k in ("required_before_release", "changes_document", "external_prerequisite")
                 if k in disposition
             ):
                 raise AskError("ask.context_missing", "Disposition conditions must be booleans")
@@ -312,6 +331,22 @@ class ReviewAdapter:
                 )
             if disposition.get("disposition") not in DISPOSITIONS:
                 raise AskError("ask.context_missing", "Unknown feedback disposition")
+            coverage = disposition.get("coverage")
+            if coverage is not None:
+                if (not isinstance(coverage, dict) or set(coverage) - {"leaf_keys", "waiter_ids"}
+                        or any(not isinstance(ids, list) or not ids
+                               or any(not isinstance(i, str) or not i for i in ids)
+                               or len(set(ids)) != len(ids) for ids in coverage.values())):
+                    raise AskError("ask.context_missing", "Coverage must name explicit leaf/waiter identities")
+            if (disposition.get("external_prerequisite") or coverage is not None) and (
+                disposition.get("disposition") != "follow_up"
+                or not disposition.get("required_before_release")
+                or not disposition.get("external_prerequisite")
+                or disposition.get("changes_document")
+                or not disposition.get("reason")
+                or revision.get("spec_kind") != "implementation"
+            ):
+                raise AskError("ask.context_missing", "External coverage requires explicit accepted implementation prerequisite")
             selected[key] = disposition
         fold = intent.option_key in {"request_changes", "fold_in", "reject"}
         for item in items:
@@ -340,7 +375,7 @@ class ReviewAdapter:
                     raise AskError(
                         "ask.not_decider", "Withdrawing human feedback requires human provenance"
                     )
-            elif prerequisite:
+            elif prerequisite and not choice.get("external_prerequisite"):
                 disposition = "fold_in"
             fold |= disposition == "fold_in"
             item.update(

@@ -1,13 +1,28 @@
 """Application crash recovery: verify source receipts before releasing review gates."""
 
 import asyncio
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from sqlalchemy import select, update
 
-from src.asks.operations import ReviewOperations, get_operation
-from src.database.tables import review_feedback_obligations, task_criteria, task_gates, tasks
+from src.api.models import get_all_response_models
+from src.asks.operations import (
+    FIDELITY_REVIEW_DISPATCH, ReviewOperations, get_operation, reserve_fidelity_review_dispatch,
+)
+from src.commands import spec_ingest_commands
+from src.commands.principal import ExecutionPrincipal, current_principal, principal_context
+from src.database.queries import ingest_batch_queries as batches
+from src.database.queries.proposal_queries import insert_proposal
+from src.database.tables import (
+    escalation_actions, ingest_batches, integration_outbox,
+    review_feedback_obligations, task_criteria, task_gates, tasks,
+)
+from src.integration.outbox import IntegrationOutbox, RETRY_EXHAUSTED_PREFIX
+from src.models import Task, TaskStatus
+from src.orchestrator import Orchestrator
 from tests.test_review_commands import _scoped
 from tests.test_review_commands import env as env
 from tests.test_review_feedback import accept, comment, prepared, reserve, submitted
@@ -18,11 +33,245 @@ async def decision_row(db, decision_id):
         return await db.get_ask_decision(decision_id, conn=conn)
 
 
+async def held_batch(env, monkeypatch):
+    handler, db = env
+    rid = await submitted(handler)
+    args, preview = await prepared(handler, rid)
+    accepted = await accept(handler, args, preview)
+    assert accepted["success"], accepted
+    decision = await decision_row(db, accepted["decision_id"])
+    proposal = await insert_proposal(db, project_id="p", source="spec", payload={}, status="held")
+    clock = [time.time() + 120]
+    monkeypatch.setattr(spec_ingest_commands, "time", SimpleNamespace(time=lambda: clock[0]))
+    async with db.immediate() as conn:
+        result = await batches.create_batch(
+            conn, batch_id=proposal, project_id="p", source_review_id=rid, source_revision=1,
+            source_content_sha256=decision["content_sha256"], decision_id=decision["id"],
+            lineage=batches._no_lineage("test"), idempotency_key=proposal, now=clock[0] - 61,
+        )
+        await reserve_fidelity_review_dispatch(db, result["batch"], conn=conn)
+    await db.create_task(Task(id="held-leaf", project_id="p", title="Held leaf", description="",
+                              status=TaskStatus.READY))
+    async with db.immediate() as conn:
+        await batches.add_member(conn, proposal, task_id="held-leaf", member_key="leaf",
+                                 role="leaf", section_anchor="Scope", primary_outcome="Leaf",
+                                 created_revision=1)
+    return handler, db, proposal, decision, clock
+
+
+async def held_id(db):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(tasks.c.held_batch_id).where(
+            tasks.c.id == "held-leaf",
+        ))).scalar_one()
+
+
+async def batch_events(db):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type.startswith("batch."),
+        ))).mappings().all()
+
+
+async def accept_batch_events(db, now):
+    async def accepted(*args):
+        return True
+
+    return await IntegrationOutbox(db, accepted, clock=lambda: now).dispatch_due(now)
+
+
+async def test_batch_reconcile_missing_reviewer_retry_and_restart(env, monkeypatch):
+    handler, db, bid, decision, clock = await held_batch(env, monkeypatch)
+    async with db.immediate() as conn:
+        batch = await batches.get_batch(conn, bid)
+        one = await reserve_fidelity_review_dispatch(db, batch, conn=conn)
+        two = await reserve_fidelity_review_dispatch(db, batch, conn=conn)
+        assert one["id"] == two["id"]
+    with principal_context(ExecutionPrincipal.service("recovery-test")):
+        result = await handler.execute("batch_reconcile", {})
+    assert result["success"] and len(result["recovered"]) == 1, result
+    first = (await batch_events(db))[0]
+    async with db._engine.connect() as conn:
+        op = await get_operation(conn, decision["id"], FIDELITY_REVIEW_DISPATCH)
+    assert op["parameters"]["batch_id"] == bid
+    assert op["retry_at"] == clock[0] + 60 and op["status"] == "pending"
+    assert not (await handler.execute("batch_reconcile", {}))["recovered"]
+    # Concurrent/restarted passes retain a single pending outbox identity.
+    clock[0] += 60
+    await asyncio.gather(*(handler.execute("batch_reconcile", {}) for _ in range(2)))
+    assert len(await batch_events(db)) == 1
+    assert await accept_batch_events(db, clock[0]) == 1
+    clock[0] += 60
+    result = await handler.execute("batch_reconcile", {})
+    assert len(result["recovered"]) == 1 and len(await batch_events(db)) == 2
+    assert result["recovered"][0]["event_id"] != first["id"]
+    # Bus acceptance without a reviewer receipt must not admit a held task.
+    assert (await held_id(db)) == bid
+
+
+@pytest.mark.parametrize("state", ["held", "reviewing", "needs_scope", "retired"])
+async def test_batch_reconcile_preserves_live_reviewer_and_scope_state(env, monkeypatch, state):
+    handler, db, bid, _, clock = await held_batch(env, monkeypatch)
+    await db.create_task(Task(id="reviewer", project_id="p", title="Review", description="",
+                              status=TaskStatus.READY))
+    async with db.immediate() as conn:
+        await batches.assign_reviewer(conn, bid, reviewer_task_id="reviewer")
+        await conn.execute(update(ingest_batches).where(ingest_batches.c.batch_id == bid)
+                           .values(state=state, updated_at=clock[0] - 61))
+    assert not (await handler.execute("batch_reconcile", {}))["recovered"]
+    assert not await batch_events(db)
+    await db.update_task("reviewer", status=TaskStatus.FAILED)
+    result = await handler.execute("batch_reconcile", {})
+    assert bool(result["recovered"]) == (state in {"held", "reviewing"})
+    assert (await held_id(db)) == bid
+
+
+@pytest.mark.parametrize("damage", [None, "revision", "digest", "reviewer", "nonpassing"])
+async def test_batch_reconcile_requires_current_assigned_passing_receipt(env, monkeypatch, damage):
+    handler, db, bid, _, clock = await held_batch(env, monkeypatch)
+    await db.create_task(Task(id="reviewer", project_id="p", title="Review", description="",
+                              status=TaskStatus.READY))
+    async with db.immediate() as conn:
+        await batches.assign_reviewer(conn, bid, reviewer_task_id="reviewer")
+        batch = await batches.get_batch(conn, bid)
+        recorded = await batches.record_receipt(
+            conn, bid, structure_revision=1, structure_digest=batch["structure_digest"],
+            reviewer_task_id="other" if damage == "reviewer" else "reviewer",
+            reviewer_session_id="review-session", passing=damage != "nonpassing",
+            section_verdicts={"Scope": "pass"}, reverse_coverage_verdict="pass",
+            walkthrough_verdict="pass", structural_findings=[],
+        )
+        assert recorded["success"], recorded
+        await conn.execute(update(ingest_batches).where(ingest_batches.c.batch_id == bid).values(
+            updated_at=clock[0] - 61,
+            structure_revision=2 if damage == "revision" else 1,
+            structure_digest="changed" if damage == "digest" else batch["structure_digest"],
+        ))
+    result = await handler.execute("batch_reconcile", {})
+    if damage:
+        assert not result["recovered"]
+        assert not await batch_events(db)
+    else:
+        assert result["recovered"][0]["event_type"] == "batch.receipt_recorded"
+        await accept_batch_events(db, clock[0])
+        clock[0] += 60
+        replay = await handler.execute("batch_reconcile", {})
+        assert replay["recovered"][0]["event_type"] == "batch.receipt_recorded"
+        assert len(await batch_events(db)) == 2
+    assert (await held_id(db)) == bid
+
+
+async def test_batch_reconcile_repairs_lost_release_event_and_stops_after_acceptance(env, monkeypatch):
+    handler, db, bid, _, clock = await held_batch(env, monkeypatch)
+    async with db.immediate() as conn:
+        await batches.release(conn, bid, expected_revision=1,
+                              expected_digest=await batches.live_digest(conn, bid),
+                              actor="service:release", release_receipt={"released": True},
+                              now=clock[0] - 61)
+        # Later live edits must not change the release notification identity.
+        await conn.execute(update(ingest_batches).where(ingest_batches.c.batch_id == bid)
+                           .values(structure_revision=2, structure_digest="later edit"))
+    result = await handler.execute("batch_reconcile", {})
+    assert result["recovered"][0]["event_type"] == "batch.released", result
+    event = (await batch_events(db))[0]
+    assert event["payload"]["structure_revision"] == 1
+    assert event["payload"]["structure_digest"] != "later edit"
+    assert await accept_batch_events(db, clock[0]) == 1
+    clock[0] += 60
+    assert not (await handler.execute("batch_reconcile", {}))["recovered"]
+    assert (await held_id(db)) is None
+
+
+async def test_batch_reconcile_isolates_bad_source_and_rearms_exhausted_delivery(env, monkeypatch):
+    handler, db, bid, _, clock = await held_batch(env, monkeypatch)
+    async with db.immediate() as conn:
+        await conn.execute(update(ingest_batches).where(ingest_batches.c.batch_id == bid)
+                           .values(decision_id="missing-decision"))
+    failed = await handler.execute("batch_reconcile", {})
+    assert failed["errors"][0]["batch_id"] == bid
+    assert not (await handler.execute("batch_reconcile", {}))["errors"]
+    # Restore the source, then simulate a delivery which exhausted its age budget.
+    async with db.immediate() as conn:
+        op = (await conn.execute(select(escalation_actions).where(
+            escalation_actions.c.operation_kind == FIDELITY_REVIEW_DISPATCH,
+        ))).mappings().one()
+        await conn.execute(update(ingest_batches).where(ingest_batches.c.batch_id == bid)
+                           .values(decision_id=op["decision_id"]))
+    clock[0] += 60
+    await handler.execute("batch_reconcile", {})
+    event = (await batch_events(db))[0]
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_outbox).where(integration_outbox.c.id == event["id"])
+                           .values(last_error=RETRY_EXHAUSTED_PREFIX + "deadline", attempts=5))
+    clock[0] += 60
+    await handler.execute("batch_reconcile", {})
+    events = await batch_events(db)
+    assert len(events) == 1 and events[0]["last_error"] is None and events[0]["attempts"] == 5
+    assert events[0]["available_at"] == clock[0]
+
+
+async def test_batch_reconcile_bounded_bad_page_does_not_starve_later_batch(env, monkeypatch):
+    handler, db, bid, _, clock = await held_batch(env, monkeypatch)
+    async with db.immediate() as conn:
+        for index in range(21):
+            proposal = await insert_proposal(db, project_id="p", source="spec", payload={},
+                                             conn=conn, status="held")
+            await batches.create_batch(
+                conn, batch_id=proposal, project_id="p", source_review_id=f"missing-{index}",
+                source_revision=1, source_content_sha256="missing", decision_id="missing",
+                lineage=batches._no_lineage("missing"), idempotency_key=proposal,
+                now=clock[0] - 120,
+            )
+    first = await handler.execute("batch_reconcile", {})
+    assert len(first["errors"]) == 20 and not first["recovered"], first
+    second = await handler.execute("batch_reconcile", {})
+    assert len(second["errors"]) == 1 and second["recovered"][0]["batch_id"] == bid, second
+    assert not (await handler.execute("batch_reconcile", {}))["errors"]
+
+
+async def test_batch_reconcile_preserves_exhausted_dispatch_and_refuses_session_authority(env, monkeypatch):
+    handler, db, bid, decision, _ = await held_batch(env, monkeypatch)
+    async with db.immediate() as conn:
+        await conn.execute(update(escalation_actions).where(
+            escalation_actions.c.decision_id == decision["id"],
+            escalation_actions.c.operation_kind == FIDELITY_REVIEW_DISPATCH,
+        ).values(status="failed", outcome="failed", completed_at=time.time()))
+    assert not (await handler.execute("batch_reconcile", {}))["recovered"]
+    assert not await batch_events(db)
+    assert not (await handler.execute("batch_reconcile", {"batch_id": bid}))["success"]
+    refusal = await _scoped(handler, "batch_reconcile", {}, session_id="supervisor")
+    assert not refusal.get("success"), refusal
+
+
+async def test_ask_maintenance_invokes_batch_reconcile_after_intake_failure():
+    from unittest.mock import AsyncMock
+
+    seen = []
+
+    async def execute(name, args):
+        seen.append((name, args))
+        if name == "ask_reconcile":
+            raise RuntimeError("intake failed")
+        assert current_principal().service_name == "batch-reconcile"
+
+    harness = SimpleNamespace(_command_handler=SimpleNamespace(execute=execute),
+                              _last_conversation_maintenance=time.time(),
+                              db=SimpleNamespace(list_conversations=AsyncMock(return_value=[])))
+    await Orchestrator._maintain_conversations(harness, now=time.time())
+    assert seen == [("ask_reconcile", {"apply": True, "limit": 100}), ("batch_reconcile", {})]
+
+
 async def test_filing_failure_retains_review_hold_and_retries_once(env, monkeypatch):
     handler, db = env
     rid = await submitted(handler)
     await comment(handler, rid, "Keep this human follow-up")
-    args, preview = await prepared(handler, rid, note="Preserve my note too")
+    args, _ = await prepared(handler, rid, note="Preserve my note too")
+    prepared_response = await handler.execute("ask_prepare_decision", args)
+    preview = prepared_response["preview"]
+    models = get_all_response_models()
+    serialized = models["ask_prepare_decision"].model_validate(prepared_response).model_dump()
+    assert serialized["preview"]["packet"] == preview["packet"]
+    assert serialized["expected"] == prepared_response["expected"]
     original = handler._file_review_feedback
 
     async def unavailable(*args):
@@ -31,11 +280,17 @@ async def test_filing_failure_retains_review_hold_and_retries_once(env, monkeypa
     monkeypatch.setattr(handler, "_file_review_feedback", unavailable)
     result = await accept(handler, args, preview)
     assert result["application_state"] == "failed", result
+    serialized = models["ask_decide"].model_validate(result).model_dump()
+    assert serialized["decision_id"] == result["decision_id"]
+    assert serialized["application_state"] == "failed" and serialized["success"] is False
     review = await db.get_review(rid)
     assert review["pending_decision_id"] == result["decision_id"]
     assert review["state"] == "in_review"
     assert (await db.get_gate(review["gate_id"]))["status"] == "open"
     monkeypatch.setattr(handler, "_file_review_feedback", original)
+    repaired = await handler.execute("ask_retry_operation", {"decision_id": result["decision_id"]})
+    serialized = models["ask_retry_operation"].model_validate(repaired).model_dump()
+    assert serialized["decision_id"] == result["decision_id"] and serialized["success"] is True
     retry = await accept(handler, args, preview)
     assert retry["success"], retry
     again = await accept(handler, args, preview)
@@ -74,6 +329,7 @@ async def test_filing_failure_retains_review_hold_and_retries_once(env, monkeypa
             },
         )
         assert completed["success"], completed
+        assert models["review_feedback_complete"].model_validate(completed).model_dump() == completed
     assert await handler._review_feedback_close_error(items[0]["task_id"]) is None
 
 
@@ -350,3 +606,66 @@ async def test_legacy_preview_retry_reconciles_same_accepted_decision(env, monke
     assert retry.get("success") and retry["decision_id"] == first["decision_id"], retry
     again = await handler.execute("review_decide", accepted)
     assert again.get("success") and again["decision_id"] == first["decision_id"], again
+
+
+@pytest.mark.parametrize("damage", [None, "cycle", "missing", "cross-project", "container"])
+async def test_external_coverage_precedes_review_gate_release(env, monkeypatch, damage):
+    from src.models import Task, TaskStatus
+    from src.database.queries.proposal_queries import existing_graph_edges
+
+    handler, db = env
+    result = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "Implementation prerequisites",
+        "content": "---\nspec_kind: implementation\n---\n# Implementation\nPinned requirements.",
+    })
+    assert result["success"], result
+    rid = result["review_id"]
+    review = await db.get_review(rid)
+    for tid in ("waiting-a", "waiting-b"):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="", status=TaskStatus.DEFINED))
+    async with db.immediate() as conn:
+        await db.attach_gate_waiters(review["gate_id"], ["waiting-a", "waiting-b"], conn=conn)
+    cid = await comment(handler, rid, "Required external implementation prerequisite")
+    args, preview = await prepared(handler, rid, dispositions=[{
+        "feedback_key": cid, "disposition": "follow_up", "required_before_release": True,
+        "external_prerequisite": True, "reason": "Separate implementation; no document edits",
+    }])
+    original = ReviewOperations.finalize
+
+    async def inspect_before_release(self, decision):
+        async with db._engine.connect() as conn:
+            filing = await get_operation(conn, decision["id"], "file_task")
+        target = filing["receipt"]["task_id"]
+        assert (await db.get_gate(review["gate_id"]))["status"] == "open"
+        assert all([(await db.get_task(tid)).is_blocked for tid in ("waiting-a", "waiting-b")])
+        if damage == "cycle":
+            await db.add_dependency(target, "waiting-a")
+        elif damage == "missing":
+            await db.update_task(target, status=TaskStatus.COMPLETED)
+            assert await db.archive_task(target)
+        elif damage == "cross-project":
+            await db.update_task(target, project_id="other")
+        elif damage == "container":
+            await db.create_task(Task(id="waiter-child", project_id="p", title="Child", description="",
+                                      parent_task_id="waiting-a"))
+            async with db.immediate() as conn:
+                await db.mark_container("waiting-a", conn=conn)
+        return await original(self, decision)
+
+    monkeypatch.setattr(ReviewOperations, "finalize", inspect_before_release)
+    applied = await accept(handler, args, preview)
+    if damage:
+        assert not applied["success"] and applied["application_state"] == "failed", applied
+        assert (await db.get_gate(review["gate_id"]))["status"] == "open"
+        assert all([(await db.get_task(tid)).is_blocked for tid in ("waiting-a", "waiting-b")])
+        assert (await db.get_review(rid))["state"] == "in_review"
+    else:
+        assert applied["success"], applied
+        assert (await db.get_gate(review["gate_id"]))["status"] == "resolved"
+        async with db._engine.connect() as conn:
+            [obligation] = await db.list_review_feedback_obligations(applied["decision_id"], conn=conn)
+        edges = await existing_graph_edges(db, "p")
+        assert {(f, t) for f, t, k in edges if k == "blocks"} == {
+            ("waiting-a", obligation["task_id"]), ("waiting-b", obligation["task_id"]),
+        }
+        assert all([(await db.get_task(tid)).is_blocked for tid in ("waiting-a", "waiting-b")])
