@@ -1,0 +1,35 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/models.py::ClausePredicate": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CommandArgs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CommandContract": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CommandPresentation": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CommandResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CommandValue": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CreateClause": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::CreateOrReuseClause": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::EffectSubject": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::ExecutionContract": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::IdempotencySpec": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::LinkClause": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::OutcomeClass": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::OutcomeSpec": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::ReadClause": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::ResolveClause": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::SideEffectClass": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/models.py::UpdateClause": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/contracts/models.py::EffectSubject.INTEGRATION_OPERATION": {
+      "baseline_span": [
+        76,
+        76
+      ],
+      "landing_span": [
+        76,
+        76
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
