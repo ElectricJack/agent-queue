@@ -28,20 +28,32 @@ class TaskStatus(Enum):
     through these states based on events like dependency resolution, agent
     completion, rate limiting, and human approval.
 
-    Note: transitions are not enforced by the state machine in production —
-    the orchestrator writes directly via db.update_task(). The state machine
-    module is used only for validation logging. See specs/models-and-state-machine.md.
+    Database lifecycle writes validate VALID_TASK_TRANSITIONS. Invalid moves
+    involving suspended work are always refused; the configured enforcement flag
+    controls legacy transitions. Administrative controls use guarded overrides.
     """
 
     DEFINED = "DEFINED"
     READY = "READY"
     ASSIGNED = "ASSIGNED"
     IN_PROGRESS = "IN_PROGRESS"
+    WAITING = "WAITING"
+    HIBERNATED = "HIBERNATED"
+    RESUME_PENDING = "RESUME_PENDING"
     WAITING_INPUT = "WAITING_INPUT"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+
+
+# Suspended work remains open but never enters the READY claim frontier.
+SUSPENDED_TASK_STATUSES = frozenset({
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+})
+OPEN_TASK_STATUSES = frozenset(TaskStatus) - {
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED,
+}
 
 
 class TaskEvent(Enum):
@@ -67,6 +79,15 @@ class TaskEvent(Enum):
     HUMAN_REPLIED = "HUMAN_REPLIED"
     INPUT_TIMEOUT = "INPUT_TIMEOUT"
     RESUME_TIMER = "RESUME_TIMER"
+    WAIT_REGISTERED = "WAIT_REGISTERED"
+    WAIT_ACKNOWLEDGED = "WAIT_ACKNOWLEDGED"
+    HIBERNATION_COMMITTED = "HIBERNATION_COMMITTED"
+    WAIT_RESOLVED = "WAIT_RESOLVED"
+    RESUME_HELD = "RESUME_HELD"
+    MANUAL_PAUSE = "MANUAL_PAUSE"
+    UNPAUSE_RESUME = "UNPAUSE_RESUME"
+    UNPAUSE_HIBERNATE = "UNPAUSE_HIBERNATE"
+    WAIT_REROUTED = "WAIT_REROUTED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
     MERGE_FAILED = "MERGE_FAILED"
@@ -102,13 +123,23 @@ class TaskType(Enum):
     TEST = "test"
     DOCS = "docs"
     CHORE = "chore"
+    OPERATOR = "operator"
     RESEARCH = "research"
     PLAN = "plan"
     SYNC = "sync"
+    # Completed daemon sources and pinned intents never enter worker routing.
+    PROMOTION = "promotion"
+    BACKMERGE = "backmerge"
     # Design kinds the router sends to the design lanes (mandatory-routing
     # spec §6.3): ``design`` is code or system design, ``art`` is art-heavy.
     DESIGN = "design"
     ART = "art"
+
+
+#: Task types the daemon authors and drives itself (the train owns them).
+#: No agent ever holds one, so recovery must not reset one to READY and the
+#: router must never route one to a worker pool.
+DAEMON_AUTHORED_TASK_TYPES = frozenset({TaskType.PROMOTION.value, TaskType.BACKMERGE.value})
 
 
 # Convenience set for validation without constructing enum members.
@@ -229,7 +260,7 @@ WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
 class DepType(Enum):
     """Typed dependency edge kinds on ``task_dependencies.dep_type``.
 
-    See docs/specs/design/work-graph.md §3.  The first four are *blocking*
+    See docs/specs/design/work-graph.md §3.  The first five are *blocking*
     edges — they feed the ``tasks.is_blocked`` projection, each with its own
     satisfaction rule.  The rest are provenance/association only and never
     affect readiness.
@@ -248,12 +279,16 @@ class DepType(Enum):
     ``CONDITIONAL_BLOCKS``
         satisfied only on *terminal* failure of the dependency: status
         BLOCKED, or FAILED with ``retry_count >= max_retries``.
+    ``DELIVERY_OF``
+        satisfied by a verified landed delivery receipt for the code leaf,
+        independently of task completion (held-ingestion design §3.1).
     """
 
     BLOCKS = "blocks"
     PARENT_CHILD = "parent-child"
     WAITS_FOR = "waits-for"
     CONDITIONAL_BLOCKS = "conditional-blocks"
+    DELIVERY_OF = "delivery-of"
     DISCOVERED_FROM = "discovered-from"
     RELATED = "related"
     DUPLICATES = "duplicates"
@@ -269,6 +304,7 @@ BLOCKING_DEP_TYPES = frozenset(
         DepType.PARENT_CHILD.value,
         DepType.WAITS_FOR.value,
         DepType.CONDITIONAL_BLOCKS.value,
+        DepType.DELIVERY_OF.value,
     }
 )
 """Edge kinds that gate readiness — everything else is informational."""
@@ -407,11 +443,11 @@ class Project:
     discord_channel_id: str | None = None  # Per-project Discord channel
     repo_url: str = ""
     repo_default_branch: str = "main"
-    default_profile_id: str | None = None  # fallback profile for tasks in this project
     # The router binding (mandatory-routing spec §8): the routing playbook that
-    # routes this project's tasks.  Creation passes ``routing.default_router``;
+    # routes this project's tasks.  A project has no default profile; every
+    # project is bound (NOT NULL).  Creation passes ``routing.default_router``;
     # this default is that key's default.
-    assignment_playbook_id: str | None = DEFAULT_ROUTER_PLAYBOOK_ID
+    assignment_playbook_id: str = DEFAULT_ROUTER_PLAYBOOK_ID
     # Project-level integration policy: "direct" | "pull_request" | None
     # (None = inherit the system default, config ``integration.default_mode``).
     integration_mode: str | None = None
@@ -427,6 +463,12 @@ class Project:
     # (None = "user").  Document-review spec §6.
     review_delegate_to: str | None = None
     preferred_provider: str | None = None
+    # Git commit identity override, set as a pair (None = inherit the
+    # installation default ``git_identity``; see ``src/git/identity.py``).
+    git_identity_name: str | None = None
+    git_identity_email: str | None = None
+    supervisor_enabled: bool = False
+    storage_binding: dict | None = None
 
 
 @dataclass
@@ -530,6 +572,12 @@ class Task:
     # layer stores a profile written as ``unrouted`` as ``role`` or ``legacy``.
     route_source: str = UNROUTED
     class_hint: str | None = None
+    # The filer's routing preference (spec §4): a harness id or profile id the
+    # router weighs before scoring, in ``soft`` (take it when it has headroom)
+    # or ``strict`` (only it; wait rather than fall back) mode.  ``None`` names
+    # no preference and routes exactly as it did before either existed.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     route: dict[str, Any] | None = None
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached
@@ -665,6 +713,10 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    generation: int = 0  # incremented on acquisition; fences preparation against reassignment
+    # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
+    disabled_reason: str | None = None
+    disabled_at: float | None = None
     # Worktree slots (worktree-execution spec §3.2).  ``slot_index`` is NULL
     # for clones, links and base rows; 0..N-1 for slot worktrees.
     # ``base_workspace_id`` is a soft self-reference to the base clone's row.
@@ -726,6 +778,8 @@ class WorkspaceKind:
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)
+    # Optional per-kind bound; the project concurrency limit still applies.
+    max_slots: int | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -910,8 +964,9 @@ class AgentProfile:
     at task execution time (not during scheduling) to keep the scheduler
     deterministic and profile-unaware.
 
-    Resolution cascade: task.profile_id → project.default_profile_id → None
-    (system default).  See specs/agent-profiles.md.
+    A task's profile is its route, written by the project's router
+    (mandatory-routing spec 2026-09-28); there is no project default.  See
+    specs/agent-profiles.md.
     """
 
     id: str  # slug: "reviewer", "web-developer"
@@ -1046,6 +1101,9 @@ class Message:
     body_kind: str | None = None
     pane_open: str | None = None  # JSON-encoded {view, args}
     created_seq: int | None = None  # server sequence for typed message waits
+    last_notified_at: float | None = None
+    notification_attempts: int = 0
+    provenance: dict | None = None
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
@@ -1368,8 +1426,11 @@ class PipelineContext:
     #: stays IN_PROGRESS under its claim and the close is refused with
     #: feedback.
     verification_retry_in_session: bool = False
-    #: The fixable issues behind ``verification_retry_in_session``.
+    #: Issues observed by Git verification, including blocked delivery.
     verification_issues: list[str] = field(default_factory=list)
+    #: A failed probe, authorization or push prevented a work verdict. Such
+    #: infrastructure failures must not count toward router escalation.
+    verification_infrastructure_failure: bool = False
     #: True when the refused close is blocked on daemon-side delivery state
     #: the closing workspace cannot change (no integration workspace, a
     #: workspace locked by another task, a repository mismatch).  The task is
@@ -1393,6 +1454,10 @@ class PipelineContext:
     #: close path copies this proof-backed verdict to ``task.completed`` as
     #: ``no_code``; intent metadata never sets it.
     no_work_proven: bool = False
+    #: Identity of the ``aq task close`` this pipeline runs for (see
+    #: ``close_identity``).  A phase that ends the close with its own status
+    #: write -- the verification reopen -- records it in that transaction.
+    accepted_close: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -1448,6 +1513,17 @@ class SessionRecord:
     claim_phase_at: float | None = None
     last_claim_epoch: int | None = None
     last_claim_result: str | None = None  # claimed | prepare_failed | released
+    #: Consecutive identical preparation refusals; activation clears the streak.
+    claim_failure_count: int = 0
+    claim_failure_reason: str | None = None
+    claim_failure_at: float | None = None
+    #: Bounded last preparation observation; survives release, grants no authority.
+    failed_preparation: dict | None = None
+    #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
+    claim_refusal: dict | None = None
+
+    #: Turn health and recovery backoff for named supervisors; instance-fenced.
+    supervisor_health: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None
@@ -1459,3 +1535,10 @@ class SessionRecord:
     #: insert, because it is a property of the argv this process was
     #: started with, not of whatever the harness file says today.
     hooks_provisioned: bool = False
+
+    #: Digest of the Git identity in this launch's environment
+    #: (:func:`src.git.identity.identity_digest`); ``"legacy"`` for a session
+    #: launched by an earlier release (migration ``a00000000053``), ``None``
+    #: when none was recorded.  A pool claim retires the session when the
+    #: project's identity resolves to something else now.
+    git_identity_digest: str | None = None
