@@ -166,6 +166,56 @@ async def test_upgrade_head_applies_the_baseline_on_postgres():
         await conn.close()
 
 
+async def test_recovery_attempt_index_upgrade_preserves_history_and_replays():
+    """An existing install gains both ordering keys without rewriting attempts."""
+    import importlib
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    revision = importlib.import_module("migrations.versions.a00000000101_recovery_attempt_order")
+    dsn = await create_scratch_database("recoveryindex101")
+    before = _alembic_pg(dsn, "upgrade", revision.down_revision)
+    assert before.returncode == 0, before.stderr
+    engine = create_async_engine(_async_dsn(dsn))
+    try:
+        async with engine.begin() as conn:
+            # The live-metadata baseline already includes the index. Simulate
+            # an older installation and retain a real history row through DDL.
+            await conn.execute(sa.text("DROP INDEX idx_task_session_attempts_recovery"))
+            await conn.execute(sa.text(
+                "INSERT INTO task_session_attempts "
+                "(id,session_id,task_id,project_id,profile_id,name,lifecycle,harness,provider,"
+                "state,work_dir,started_at,session_started_at) VALUES "
+                "('keep','session','task','project','worker','worker','task','codex','fake',"
+                "'stopped','/unused',100,100)"
+            ))
+
+            def verify(bind):
+                with Operations.context(MigrationContext.configure(bind)):
+                    for _ in range(2):
+                        revision.upgrade()
+                        revision.upgrade()
+                        index = next(i for i in sa.inspect(bind).get_indexes(revision.TABLE)
+                                     if i["name"] == revision.INDEX)
+                        assert index["column_names"] == ["task_id", "project_id", "started_at", "id"]
+                        assert bind.execute(sa.text(
+                            "SELECT id, started_at FROM task_session_attempts"
+                        )).one() == ("keep", 100)
+                        revision.downgrade()
+                        revision.downgrade()
+                        assert revision.INDEX not in {
+                            i["name"] for i in sa.inspect(bind).get_indexes(revision.TABLE)
+                        }
+                    revision.upgrade()
+
+            await conn.run_sync(verify)
+    finally:
+        await engine.dispose()
+
+
 async def test_continuous_repair_upgrade_from_two_stage_schema():
     dsn = await create_scratch_database("continuous48")
     before = _alembic_pg(dsn, "upgrade", "a00000000047")
