@@ -171,16 +171,19 @@ def format_task_table(
             type_icon = TASK_TYPE_ICONS.get(task.task_type, "")
 
         pri_text = Text(str(task.priority), style=priority_style(task.priority))
+        readiness = _as_mapping(getattr(task, "claim_readiness", None))
 
         row = [task.id]
         if show_project:
             row.append(task.project_id)
         row.extend(
             [
-                _status_text(task.status),
+                _status_text(readiness.get("label", task.status)),
                 pri_text,
                 type_icon,
-                _truncate(task.title, 50),
+                Text(_truncate(task.title, 50) + (
+                    "\n" + readiness["reason"] if readiness.get("reason") else ""
+                )),
                 task.assigned_agent_id or "—",
             ]
         )
@@ -191,6 +194,73 @@ def format_task_table(
         table.add_row(*["" for _ in range(cols)])
 
     return table
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    """A free-form object field as a dict: a plain dict or a generated model."""
+    if isinstance(value, dict):
+        return value
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            data = to_dict()
+        except Exception:  # noqa: BLE001 - an unreadable field renders as absent
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _route_fields(task: Any) -> list[tuple[str, str]]:
+    """Who routed the task and why (mandatory routing §10).
+
+    ``Route`` is the source and the target; the router's lane, rule and
+    reason, or an override's author and reason, follow when recorded.  The
+    filer's preference is shown even before a route exists, because until the
+    router runs it is the only statement of what was asked for.
+    """
+    source = getattr(task, "route_source", None)
+    prefer = _preference_fields(task)
+    if not isinstance(source, str) or not source:
+        return prefer
+    profile = getattr(task, "profile_id", None)
+    klass = getattr(task, "intelligence_class", None)
+    target = ""
+    if isinstance(profile, str) and profile:
+        target = f" -> {profile}" + (f" ({klass})" if isinstance(klass, str) and klass else "")
+    fields = prefer + [("Route", f"{source}{target}")]
+    route = _as_mapping(getattr(task, "route", None))
+    override = _as_mapping(route.get("override"))
+    if source == "override" and override:
+        by, why = override.get("by") or "?", override.get("reason") or ""
+        fields.append(("Override", f"by {by}: {why}"))
+        return fields
+    lane, rule = route.get("lane"), route.get("rule")
+    if lane or rule:
+        parts = (rule, f"lane {lane}" if lane else None)
+        fields.append(("Route rule", " / ".join(str(part) for part in parts if part)))
+    if route.get("reason"):
+        fields.append(("Route reason", str(route["reason"])))
+    return fields
+
+
+def _preference_fields(task: Any) -> list[tuple[str, str]]:
+    """The preference the router weighs, and how it turned out (§4).
+
+    The stored pair is what was asked for; ``route.preference`` is the router's
+    verdict -- whether it decided the route, and why not when it did not.
+    """
+    target = getattr(task, "prefer_target", None)
+    route = _as_mapping(getattr(task, "route", None))
+    decided = _as_mapping(route.get("preference"))
+    if not isinstance(target, str) or not target:
+        return []
+    mode = getattr(task, "prefer_mode", None) or decided.get("mode") or "soft"
+    row = f"{target} ({mode})"
+    if decided and not decided.get("honoured", True):
+        row += f" not honoured: {decided.get('fallback_reason') or 'unknown'}"
+    elif decided:
+        row += " honoured"
+    return [("Routing preference", row)]
 
 
 def format_task_detail(
@@ -209,6 +279,9 @@ def format_task_detail(
 
     # Header line
     lines.append(Text(f"{status_icon} {status}", style=status_style))
+    readiness = _as_mapping(getattr(task, "claim_readiness", None))
+    if readiness and not readiness.get("claimable"):
+        lines.append(Text(f"{readiness['label']}: {readiness.get('reason', '')}", style="yellow"))
     lines.append("")
 
     # Core fields
@@ -234,6 +307,7 @@ def format_task_detail(
     rerouted = getattr(task, "rerouted_from", None)
     if isinstance(rerouted, str) and rerouted:
         fields.append(("Re-routed from", rerouted))
+    fields.extend(_route_fields(task))
     hold = getattr(task, "provider_hold", None)
     hold_get = hold.get if isinstance(hold, dict) else (lambda k: getattr(hold, k, None))
     hold_kind = hold_get("kind") if hold is not None else None
@@ -337,6 +411,26 @@ def format_task_detail(
 # ---------------------------------------------------------------------------
 
 
+def format_flock(result: dict):
+    """The execution roster is exhaustive; worker definitions follow it."""
+    from rich.console import Group
+    from src.cli.adapters import agent_proxy
+
+    table = Table(title="Flock sessions", expand=True)
+    for column in ("Session", "Role", "Scope", "Provider / model / class", "Task", "State",
+                   "Uptime", "Activity"):
+        table.add_column(column)
+    for row in result.get("sessions", []):
+        table.add_row(
+            row["session_id"], row["role"], row["scope"],
+            " / ".join(row.get(key) or "unknown" for key in
+                       ("provider", "model", "intelligence_class")),
+            row.get("task_id") or "—", row["state"],
+            f"{int(row['uptime_seconds'])}s", _relative_time(row.get("last_activity")),
+        )
+    return Group(table, format_agent_table([agent_proxy(row) for row in result.get("agents", [])]))
+
+
 def format_agent_table(agents: list[Any]) -> Table:
     """Format a list of agents as a Rich table."""
     table = Table(
@@ -428,7 +522,8 @@ def format_status_overview(
 
     # Task summary
     total = sum(task_counts.values())
-    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING"}
+    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING",
+                       "WAITING", "HIBERNATED", "RESUME_PENDING"}
     active = sum(v for k, v in task_counts.items() if k in active_statuses)
     completed = task_counts.get("COMPLETED", 0)
     failed = task_counts.get("FAILED", 0)
@@ -488,6 +583,65 @@ def _review_text(value: Any, key: str, default: str = "—") -> str:
     return default if result is None or result == "" else str(result)
 
 
+def format_ask_list(data: Any) -> Group:
+    label = {"waiting": "Waiting on AQ", "history": "History"}.get(data.get("view"), "Needs you")
+    table = Table(title=f"{label}: {data['count']} · {data['source_health']}")
+    for label in ("Request", "Question", "Project", "Severity", "Version", "Status"):
+        table.add_column(label)
+    for ask in data["items"]:
+        table.add_row(*[Text(str(value)) for value in (
+            ask["id"], ask["context"].get("title", ""), ask.get("project_id", ""), ask.get("severity", ""),
+            ask["decision_generation"],
+            "Held while paused" if ask.get("held_while_paused") else ask.get("decision_state", ""),
+        )])
+    return Group(table, Text(f"Snapshot: {data['snapshot_at']}"),
+                 Text(f"Next cursor: {data['next_cursor']}" if data.get("next_cursor") else ""))
+
+
+def format_ask_detail(data: Any) -> Group:
+    ask = data["ask"]
+    context = ask["context"]
+    lines = [Text(context.get("title", ask["id"]), style="bold"),
+             Text(context.get("why", "")), Text(context.get("waiting_effect", "")),
+             Text(f"Version: {data['expected']}"),
+             Text(f"Application: {ask.get('application_state', 'unknown')}")]
+    for action in data["actions"]:
+        if action.get("option_key"):
+            lines.append(Text(f"{action['label']}: {action['effect']}"))
+        if action.get("disabled_reason"):
+            lines.append(Text(action["disabled_reason"], style="yellow"))
+    if data.get("decision"):
+        lines.append(Text(f"Decision receipt: {data['decision']['id']}"))
+    import json
+    for name in ("document", "inputs", "history", "obligations", "operations"):
+        if data.get(name):
+            lines.extend([Text(name.title(), style="bold"),
+                          Text(json.dumps(data[name], ensure_ascii=False, indent=2))])
+    for name in ("requested_by", "blocked_work", "links"):
+        if context.get(name):
+            lines.append(Text(f"{name}: {json.dumps(context[name], ensure_ascii=False)}"))
+    lines.append(Text(f"Prepare: aq ask prepare --ask-id {ask['id']} --expected '<version JSON>' "
+                      "--option-key <choice>"))
+    return Group(*lines)
+
+
+def format_ask_preview(data: Any) -> Group:
+    import json
+
+    preview = data["preview"]
+    return Group(Text("Prepared decision — review all effects and feedback", style="bold"),
+                 Text(f"Preview: {preview['id']} · expires {preview.get('expires_at', 'unknown')}"),
+                 Text(json.dumps(preview["packet"], ensure_ascii=False, indent=2)),
+                 Text(f"Packet SHA-256: {preview['packet_sha256']}"))
+
+
+def format_ask_receipt(data: Any) -> Group:
+    import json
+
+    return Group(Text("Request receipt", style="bold"),
+                 Text(json.dumps(data, ensure_ascii=False, indent=2)))
+
+
 def format_review_detail(data: Any) -> Group:
     """Render a review's selected revision and, when requested, its comments."""
     review = _review_value(data, "review", {})
@@ -510,12 +664,30 @@ def format_review_detail(data: Any) -> Group:
     )
     response_route = _review_value(data, "response_route", {})
     header.add_row("Response", _review_text(response_route, "summary"), "", "")
+    gate = _review_value(data, "gate")
+    if gate:
+        header.add_row("Gate", _review_text(gate, "id"), "Gate state", _review_text(gate, "status"))
+    waiters = _review_value(data, "dependent_task_ids", []) or []
+    if waiters:
+        header.add_row("Dependents", ", ".join(waiters), "", "")
+    if _review_value(review, "withdrawn_by"):
+        header.add_row("Withdrawn by", _review_text(review, "withdrawn_by"),
+                       "Surface", _review_text(review, "withdrawn_via", "unknown"))
+        withdrawn_at = _review_value(review, "withdrawn_at")
+        stamp = (datetime.fromtimestamp(withdrawn_at).astimezone().isoformat(timespec="seconds")
+                 if withdrawn_at is not None else "—")
+        header.add_row("Withdrawn at", stamp, "Reason", Text(_review_text(review, "withdrawal_reason")))
 
     content = _review_text(revision, "content", "")
     renderables: list[Any] = [
         Panel(header, title="[bold bright_white]Document review[/]", border_style="bright_blue"),
         Markdown(content),
     ]
+    if _review_value(review, "state") == "withdrawn":
+        renderables.insert(1, Text(
+            "Dependent work still requires approval. Reopen with: aq review reopen "
+            f"--review-id {_review_text(review, 'id')} --revision {current_revision}"
+        ))
     dispatches = _review_value(data, "dispatches", []) or []
     if dispatches:
         activity = Table(title="Adversarial review dispatches", border_style="bright_black")
@@ -1257,8 +1429,13 @@ def format_prompt_list(data: dict) -> Table:
     return table
 
 
-def format_workspace_list(data: dict) -> Table:
-    """Format list_workspaces response as a table."""
+def format_workspace_list(data: dict) -> Table | Group:
+    """Format list_workspaces response as a table.
+
+    The Owner column shows the owner classification the daemon could prove
+    and the Checkout column the bounded probe result; a footer names a
+    partial readback, which is never evidence that a workspace is free.
+    """
     workspaces = data.get("workspaces", [])
     table = Table(
         title="Workspaces",
@@ -1271,18 +1448,49 @@ def format_workspace_list(data: dict) -> Table:
     table.add_column("Path", style="dim", ratio=1)
     table.add_column("Type", style="dim")
     table.add_column("Lock", style="dim")
+    table.add_column("Owner", style="dim")
+    table.add_column("Checkout", style="dim")
     for ws in workspaces:
         lock = ""
         if ws.get("locked_by_task_id"):
             lock = f"🔒 {ws['locked_by_task_id']}"
+        elif ws.get("locked_by_agent_id"):
+            lock = f"🔒 agent {ws['locked_by_agent_id']}"
+        owner = ws.get("owner") or {}
+        owner_text = owner.get("classification", "")
+        session = owner.get("session") or {}
+        if session.get("id"):
+            owner_text = f"{owner_text} ({session['id']})"
+        if owner.get("fence") == "mismatch":
+            owner_text += " fence≠"
+        checkout = ws.get("git_status") or ""
+        if checkout == "ok":
+            checkout = (ws.get("branch") or "") + (" *" if ws.get("dirty") else "")
         table.add_row(
             ws.get("id", ""),
             ws.get("name", "—"),
             ws.get("workspace_path", ""),
             ws.get("source_type", ""),
             lock,
+            owner_text,
+            checkout,
         )
-    return table
+    diagnostics = data.get("diagnostics")
+    if not diagnostics or diagnostics.get("complete", True):
+        return table
+    parts = [f"owner facts: {diagnostics.get('owner_facts', 'unknown')}"]
+    counts = diagnostics.get("git_status_counts") or {}
+    unfinished = {k: v for k, v in counts.items() if k in ("timeout", "not_started", "error")}
+    if unfinished:
+        parts.append(", ".join(f"{v} {k}" for k, v in sorted(unfinished.items())))
+    footer = Text()
+    footer.append(
+        f"  Partial readback ({'; '.join(parts)}) within "
+        f"{diagnostics.get('deadline_seconds', '?')}s. ",
+        style="yellow",
+    )
+    footer.append(diagnostics.get("authority", ""), style="dim")
+    return Group(table, footer)
 
 
 def format_active_tasks_all(data: dict) -> Group:
@@ -1495,7 +1703,9 @@ def format_pool_table(pools: list[dict]):
 
     for row in pools:
         table.add_row(
-            row.get("profile_id", ""),
+            Text(row.get("name") or row.get("profile_id", ""))
+            if not row.get("name") or row["name"] == row.get("profile_id")
+            else Text(f"{row['name']}\n{row.get('profile_id', '')}"),
             row.get("service_tier") or "—",
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),
@@ -1598,6 +1808,388 @@ def _until_text(ts: float | None) -> str:
     if delta < 86400:
         return f"in {delta / 3600:.1f}h"
     return f"in {delta / 86400:.1f}d"
+
+
+def _allocation_table(title: str, columns: tuple[str, ...], rows: list) -> Table:
+    """Plain-text cells keep task titles and operator ids out of Rich markup."""
+    table = Table(title=title, title_style="bold", border_style="bright_black")
+    for column in columns:
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        table.add_row(*(Text("—" if value is None else str(value)) for value in row))
+    return table
+
+
+def _allocation_ceiling(value: dict) -> str:
+    maximum = (
+        "unbounded"
+        if value.get("unbounded") or value.get("max_active") is None
+        else value["max_active"]
+    )
+    return (
+        f"min {value.get('min_active', 0)}, max {maximum} "
+        f"across {value.get('pool_profiles', 0)} enabled pool profiles"
+    )
+
+
+def _allocation_state(value: dict) -> str:
+    if value.get("lifecycle") != "pool":
+        return f"{value.get('lifecycle', '?')}; enabled={value.get('enabled', True)}; no pool"
+    maximum = value.get("max_active")
+    return (
+        f"pool; enabled={value.get('enabled', True)}; min={value.get('min_active')}; "
+        f"max={'unbounded' if maximum is None else maximum}; "
+        f"min/project={value.get('min_per_project')}"
+    )
+
+
+def _allocation_sessions(rows: list[dict]) -> Group:
+    parts = [Text("Live sessions", style="bold")]
+    for row in rows:
+        parts.append(
+            Text(
+                f"Session {row['session_id']} — {row.get('project_id') or '—'} / "
+                f"{row.get('profile_id') or '—'}"
+            )
+        )
+        parts.append(
+            Text(
+                f"  {row['activity']} / {row['state']}; "
+                f"idle seconds: {row.get('idle_seconds', '—')}; "
+                f"action: {row.get('action', 'none')}"
+            )
+        )
+        if row.get("task_id"):
+            parts.append(Text(f"  Task {row['task_id']}: {row.get('task_title') or '—'}"))
+    return Group(*parts)
+
+
+def _allocation_warnings(data: dict) -> list[Text]:
+    return [
+        Text(
+            f"{'BLOCKING' if warning.get('blocking') else 'Warning'} "
+            f"{warning.get('code', '')}: {warning.get('message', '')} "
+            f"({', '.join(warning.get('subjects') or [])})"
+            f"{' [acknowledged]' if warning.get('acknowledged') else ''}",
+            style="yellow",
+        )
+        for warning in data.get("warnings", [])
+    ]
+
+
+def _allocation_affected(data: dict) -> list:
+    parts = []
+    if data.get("pinned"):
+        parts.append(
+            _allocation_table(
+                "Pinned tasks",
+                ("Task", "Project", "Profile", "Status", "Waits"),
+                [
+                    (
+                        row["task_id"],
+                        row.get("project_id"),
+                        row["profile_id"],
+                        row["status"],
+                        row.get("waits", False),
+                    )
+                    for row in data["pinned"]
+                ],
+            )
+        )
+    if data.get("manual_agents"):
+        parts.append(
+            _allocation_table(
+                "Manual agents — push eligibility",
+                ("Agent", "Profile", "Harness", "Before", "After"),
+                [
+                    (
+                        row["agent_id"],
+                        row["profile_id"],
+                        row.get("effective_harness"),
+                        row["push_before"],
+                        row["push_after"],
+                    )
+                    for row in data["manual_agents"]
+                ],
+            )
+        )
+    preference = data.get("preference")
+    if preference:
+        parts.append(
+            Text(
+                f"New work for {preference['project_id']}: "
+                f"{preference.get('before') or 'default routing'} -> "
+                f"{preference.get('after') or 'default routing'}"
+            )
+        )
+    parts.extend(_allocation_warnings(data))
+    return parts
+
+
+def format_provider_allocation_status(data: dict) -> Group:
+    """The complete fleet view, retaining per-project and excluded-profile context."""
+    global_max = data.get("global_max_active")
+    parts = [Text(f"Global pool ceiling: {'unbounded' if global_max is None else global_max}")]
+    if data.get("redacted"):
+        parts.append(
+            Text(
+                "Other projects' detail is redacted; counts and bounds remain fleet-wide.",
+                style="yellow",
+            )
+        )
+    if not data.get("providers"):
+        parts.append(Text("No ordinary worker providers configured.", style="dim"))
+    counters = ("ready", "idle", "busy", "starting", "draining", "unresponsive")
+    for group in data.get("providers", []):
+        parts.append(
+            Text(
+                f"{group['vendor']} ({group['provider']}) — {group.get('state', 'available')}",
+                style="bold",
+            )
+        )
+        parts.append(Text(f"Aggregate configured ceiling: {_allocation_ceiling(group['ceiling'])}"))
+        parts.append(
+            Text(
+                "Fleet supply: "
+                + ", ".join(f"{key}={group['supply'].get(key, 0)}" for key in counters)
+            )
+        )
+        profiles = group.get("profiles", [])
+        parts.append(
+            _allocation_table(
+                "Worker profiles — bounds per profile",
+                ("Profile", "Harness", "Class", "Configuration", "Pins / preferred"),
+                [
+                    (
+                        row["profile_id"] + (f"\n{row['name']}" if row.get("name") else ""),
+                        row["harness"],
+                        row.get("intelligence_class"),
+                        _allocation_state(row),
+                        f"{row['pinned']['count']} / {row['preferred']['count']}",
+                    )
+                    for row in profiles
+                ],
+            )
+        )
+        supply_rows, session_rows, pin_rows = [], [], []
+        for row in profiles:
+            supply_rows.append(
+                (row["profile_id"], "fleet", *(row["supply"].get(key) for key in counters))
+            )
+            for project in row.get("projects", []):
+                supply_rows.append(
+                    (
+                        row["profile_id"],
+                        project.get("project_id"),
+                        *(project.get(key) for key in counters),
+                    )
+                )
+            for session in row.get("sessions", []):
+                session_rows.append({**session, "profile_id": row["profile_id"]})
+            for intent in ("pinned", "preferred"):
+                pin_rows.extend(
+                    (task_id, row["profile_id"], intent)
+                    for task_id in row[intent].get("task_ids", [])
+                )
+            hidden = row.get("hidden") or {}
+            if any(hidden.values()):
+                parts.append(
+                    Text(
+                        f"{row['profile_id']} hidden detail: "
+                        + ", ".join(f"{key}={value}" for key, value in hidden.items())
+                    )
+                )
+        parts.append(
+            _allocation_table("Demand and supply", ("Profile", "Project", *counters), supply_rows)
+        )
+        if session_rows:
+            parts.append(_allocation_sessions(session_rows))
+        if pin_rows:
+            parts.append(
+                _allocation_table("Explicit task intent", ("Task", "Profile", "Intent"), pin_rows)
+            )
+        if group.get("manual_agents"):
+            parts.append(Text("Manual agents and overrides", style="bold"))
+            for agent in group["manual_agents"]:
+                parts.append(
+                    Text(
+                        f"Agent {agent['agent_id']} ({agent.get('name', '')}) "
+                        f"— {agent['profile_id']}"
+                    )
+                )
+                parts.append(
+                    Text(
+                        f"  {agent['state']}; enabled={agent['enabled']}; "
+                        f"effective: {agent.get('effective_harness')} / "
+                        f"{agent.get('effective_class')}"
+                    )
+                )
+                parts.append(
+                    Text(
+                        f"  Overrides: harness={agent.get('harness')}, "
+                        f"class={agent.get('intelligence_class')}, "
+                        f"model={agent.get('model')}"
+                    )
+                )
+                if agent.get("current_task_id"):
+                    parts.append(
+                        Text(
+                            f"  Task {agent['current_task_id']}: "
+                            f"{agent.get('current_task_title') or '—'}"
+                        )
+                    )
+        event = group.get("last_allocation")
+        if event:
+            parts.append(
+                Text(
+                    f"Last allocation: {event.get('request_id')} {event.get('status')} by {event.get('actor')}"
+                )
+            )
+    if data.get("projects"):
+        parts.append(
+            _allocation_table(
+                "Project routing preferences",
+                ("Project", "Preferred provider", "Agent cap"),
+                [
+                    (
+                        row["project_id"],
+                        row.get("preferred_provider") or "default routing",
+                        row.get("max_concurrent_agents"),
+                    )
+                    for row in data["projects"]
+                ],
+            )
+        )
+    if data.get("diagnostics"):
+        parts.append(
+            _allocation_table(
+                "Excluded from bulk selection",
+                ("Kind", "Id", "Reason"),
+                [(row["kind"], row["id"], row["reason"]) for row in data["diagnostics"]],
+            )
+        )
+    return Group(*parts)
+
+
+def format_provider_allocation_preview(data: dict) -> Group:
+    """Print the reviewed set and the exact impact bound to its token."""
+    parts = [
+        Text(f"{data.get('vendor', '')} ({data['provider']}) allocation preview", style="bold")
+    ]
+    parts.append(
+        Text(
+            f"Required scope: {data['required_scope']}; drain: {data['request'].get('drain', 'graceful')}"
+        )
+    )
+    parts.append(
+        _allocation_table(
+            "Profiles — before and after",
+            ("Profile", "Selected", "Before", "After", "Changed fields"),
+            [
+                (
+                    row["profile_id"],
+                    row["selected"],
+                    _allocation_state(row["before"]),
+                    _allocation_state(row["after"]),
+                    ", ".join(row.get("changed_fields", [])),
+                )
+                for row in data.get("profiles", [])
+            ],
+        )
+    )
+    ceiling = data["ceiling"]
+    parts.append(
+        Text(
+            f"Aggregate configured ceiling: Before {_allocation_ceiling(ceiling['before'])}; "
+            f"After {_allocation_ceiling(ceiling['after'])}"
+        )
+    )
+    if data.get("project_limits"):
+        parts.append(
+            _allocation_table(
+                "Project-effective limits",
+                ("Project", "Profile", "Before", "After"),
+                [
+                    (
+                        row["project_id"],
+                        row["profile_id"],
+                        "no pool"
+                        if row["lifecycle_before"] != "pool"
+                        else row.get("effective_max_before")
+                        if row.get("effective_max_before") is not None
+                        else "unbounded",
+                        "no pool"
+                        if row["lifecycle_after"] != "pool"
+                        else row.get("effective_max_after")
+                        if row.get("effective_max_after") is not None
+                        else "unbounded",
+                    )
+                    for row in data["project_limits"]
+                ],
+            )
+        )
+    if data.get("sessions"):
+        parts.append(_allocation_sessions(data["sessions"]))
+    busy = data.get("busy") or {}
+    if busy.get("session_ids"):
+        parts.append(
+            Text(
+                f"Busy authorization set — sessions: {', '.join(busy['session_ids'])}; "
+                f"tasks: {', '.join(busy.get('task_ids', []))}"
+            )
+        )
+    parts.extend(_allocation_affected(data))
+    if data.get("blocked"):
+        parts.append(
+            Text("BLOCKED: acknowledge the blocking warnings before apply.", style="bold yellow")
+        )
+    parts.append(Text(f"Preview token: {data['preview_token']}"))
+    return Group(*parts)
+
+
+def format_provider_allocation_apply(data: dict) -> Group:
+    """Applied and compensated rows with the durable request id."""
+    parts = [
+        Text(f"Allocation {data.get('request_id', '—')}: {data.get('status', '?')}", style="bold")
+    ]
+    if data.get("profiles"):
+        parts.append(
+            _allocation_table(
+                "Profile results",
+                ("Profile", "Status", "Before", "After", "Error / compensation"),
+                [
+                    (
+                        row["profile_id"],
+                        row["status"],
+                        _allocation_state(row["before"]),
+                        _allocation_state(row["after"]),
+                        row.get("error") or row.get("compensation_error"),
+                    )
+                    for row in data["profiles"]
+                ],
+            )
+        )
+    ceiling = data.get("ceiling")
+    if ceiling:
+        parts.append(
+            Text(
+                f"Aggregate configured ceiling: Before {_allocation_ceiling(ceiling['before'])}; "
+                f"After {_allocation_ceiling(ceiling['after'])}"
+            )
+        )
+    if data.get("session_actions"):
+        parts.append(
+            _allocation_table(
+                "Session actions",
+                ("Session", "Project", "Action", "Error"),
+                [
+                    (row["session_id"], row.get("project_id"), row["action"], row.get("error"))
+                    for row in data["session_actions"]
+                ],
+            )
+        )
+    parts.extend(_allocation_affected(data))
+    return Group(*parts)
 
 
 def format_provider_table(providers: list[dict]):
