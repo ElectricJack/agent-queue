@@ -23,6 +23,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = request.headers.get("X-Request-ID", uuid4().hex[:8])
+        request.state.request_id = request_id
         with structlog.contextvars.bound_contextvars(
             request_id=request_id,
             route=request.url.path,
