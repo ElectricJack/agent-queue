@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { ExclamationTriangleIcon, PencilIcon } from "@heroicons/react/24/outline";
-import { useEditTask, useIntelligenceClasses, useProfiles } from "../api/hooks";
+import { useEditTask, useIntelligenceClasses } from "../api/hooks";
 import { groupIntelligenceClasses } from "./intelligence-classes/mapping";
-import { dedupeProfileOptions } from "../pages/project/Config";
+import { ProviderIntentChip } from "./TaskProviderRouting";
 
 /**
  * The editable field set shared by the full task page and the task pane.
@@ -10,15 +10,28 @@ import { dedupeProfileOptions } from "../pages/project/Config";
  * One "Edit" toggles every field at once; Save sends only the fields whose
  * value differs from the snapshot taken when editing started, so a task
  * refreshed under the editor never overwrites untouched fields with stale
- * values.  Routing fields (profile, intelligence class) are locked while the
- * task is running or claimed because the daemon refuses them then.
+ * values.
+ *
+ * A task's route — its profile, provider and provider intent — is written by
+ * the project's router, never edited here: the daemon refuses a profile, pin
+ * or intent on ``edit_task`` with ``routing.choice_forbidden`` (mandatory task
+ * routing).  The route is shown read-only.  What stays editable are the two
+ * hints the router reads: the intelligence class (stored as the task's
+ * ``class_hint``) and the task type.  Changing either on a queued task sends
+ * it back to its router, and the class hint is locked while the task is
+ * running or claimed because the daemon refuses it then.
  */
+
+const SUSPENDED = ["WAITING", "HIBERNATED", "RESUME_PENDING"];
 
 export const STATUS_OPTIONS = [
   "PENDING",
   "READY",
   "IN_PROGRESS",
   "WAITING_INPUT",
+  "WAITING",
+  "HIBERNATED",
+  "RESUME_PENDING",
   "COMPLETED",
   "FAILED",
   "BLOCKED",
@@ -27,6 +40,7 @@ export const STATUS_OPTIONS = [
 
 export const TASK_TYPE_OPTIONS = [
   "feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", "sync",
+  "design", "art",
 ];
 
 export const INTEGRATION_MODE_OPTIONS = ["pull_request", "direct"];
@@ -38,7 +52,12 @@ export interface EditableTask {
   priority?: number | null;
   task_type?: string | null;
   profile_id?: string | null;
+  provider_intent?: string | null;
   intelligence_class?: string | null;
+  /** The filer's class hint; the router's chosen class is ``intelligence_class``. */
+  class_hint?: string | null;
+  /** Who wrote the route: ``unrouted`` until the router does. */
+  route_source?: string | null;
   max_retries?: number | null;
   retry_count?: number | null;
   integration_mode?: string | null;
@@ -46,14 +65,28 @@ export interface EditableTask {
   integration_mode_source?: string | null;
   skip_verification?: boolean | null;
   assigned_agent?: string | null;
+  /** An epic's delivery projection; only its ``hold`` is read here. */
+  delivery_status?: { hold?: string | null } | null;
 }
 
-interface FormState {
+/** A stored PAUSED nobody chose says whose hold it is (the field stays the raw lifecycle). */
+const HOLD_QUALIFIER: Record<string, string> = {
+  integration: "integration hold",
+  backoff: "backoff",
+};
+
+function statusDisplay(task: EditableTask): string {
+  const status = task.status ?? "—";
+  const qualifier = task.status === "PAUSED" ? HOLD_QUALIFIER[task.delivery_status?.hold ?? ""] : undefined;
+  return qualifier ? `${status} (${qualifier})` : status;
+}
+
+export interface FormState {
   title: string;
   status: string;
   priority: string;
   task_type: string;
-  profile_id: string;
+  /** The class hint (sent as ``intelligence_class``). */
   intelligence_class: string;
   max_retries: string;
   integration_mode: string;
@@ -66,8 +99,7 @@ function taskToForm(t: EditableTask | null | undefined): FormState {
     status: t?.status ?? "",
     priority: t?.priority != null ? String(t.priority) : "",
     task_type: t?.task_type ?? "",
-    profile_id: t?.profile_id ?? "",
-    intelligence_class: t?.intelligence_class ?? "",
+    intelligence_class: t?.class_hint ?? t?.intelligence_class ?? "",
     max_retries: t?.max_retries != null ? String(t.max_retries) : "",
     integration_mode: t?.integration_mode ?? "",
     skip_verification: !!t?.skip_verification,
@@ -91,7 +123,11 @@ export function integrationModeDisplay(task: {
   return source === "task" ? effective : `${effective} (from ${source} policy)`;
 }
 
-/** Build the edit_task body from a form diff; exported so tests can pin the contract. */
+/**
+ * Build the edit_task body from a form diff; exported so tests can pin the
+ * contract.  It never carries ``profile_id``, ``pin`` or ``provider_intent``:
+ * the route is the router's.
+ */
 export function diffTaskForm(
   task: EditableTask,
   form: FormState,
@@ -99,12 +135,13 @@ export function diffTaskForm(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = { task_id: task.id };
   if (form.title !== baseline.title) body.title = form.title;
-  if (form.status && form.status !== baseline.status && task.status !== "PAUSED")
+  if (form.status && form.status !== baseline.status && task.status !== "PAUSED"
+      && !SUSPENDED.includes(task.status ?? "") && !SUSPENDED.includes(form.status)) {
     body.status = form.status;
+  }
   const priorityNum = parseOptionalInt(form.priority);
   if (priorityNum !== parseOptionalInt(baseline.priority)) body.priority = priorityNum;
   if (form.task_type !== baseline.task_type) body.task_type = form.task_type || null;
-  if (form.profile_id !== baseline.profile_id) body.profile_id = form.profile_id || null;
   if (form.intelligence_class !== baseline.intelligence_class)
     body.intelligence_class = form.intelligence_class || null;
   const retriesNum = parseOptionalInt(form.max_retries);
@@ -127,7 +164,6 @@ export default function TaskFieldsEditor({
   /** Extra read-only rows rendered inside the grid (branch, timestamps, parent…). */
   children?: React.ReactNode;
 }) {
-  const { data: profiles } = useProfiles();
   const classes = useIntelligenceClasses();
   const editTask = useEditTask();
   const [editing, setEditing] = useState(false);
@@ -135,12 +171,17 @@ export default function TaskFieldsEditor({
   const baseline = useRef<FormState>(taskToForm(task));
   const [fatal, setFatal] = useState<string | null>(null);
 
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
   const classRows = classes.data?.classes ?? [];
   const classGroups = groupIntelligenceClasses(classRows);
-  const currentClass = task.intelligence_class ?? "";
+  // The editable value is the hint; the display also names the class the
+  // router chose when it differs from the hint.
+  const currentClass = task.class_hint ?? task.intelligence_class ?? "";
+  const routedClass = task.intelligence_class ?? "";
+  const classDisplay = routedClass && currentClass && routedClass !== currentClass
+    ? `${routedClass} (hint ${currentClass})`
+    : currentClass || "—";
   const classKnown = !currentClass || classRows.some((row) => row.id === currentClass);
-  const routingLocked = task.status === "IN_PROGRESS" || !!task.assigned_agent;
+  const routingLocked = task.status === "IN_PROGRESS" || SUSPENDED.includes(task.status ?? "") || !!task.assigned_agent;
   const routingHint = routingLocked
     ? "Locked while the task is running or claimed — stop it first."
     : undefined;
@@ -208,12 +249,12 @@ export default function TaskFieldsEditor({
         <ReadField label="Agent" value={task.assigned_agent ?? "—"} />
         <EditableSelect
           label="Status"
-          editing={editing && task.status !== "PAUSED"}
+          editing={editing && task.status !== "PAUSED" && !SUSPENDED.includes(task.status ?? "")}
           value={editing ? form.status : task.status ?? "—"}
-          displayValue={task.status ?? "—"}
-          options={STATUS_OPTIONS}
+          displayValue={statusDisplay(task)}
+          options={STATUS_OPTIONS.filter((s) => !SUSPENDED.includes(s) || s === task.status)}
           onChange={(v) => setForm({ ...form, status: v })}
-          hint="Admin override — bypasses the state machine."
+          hint="Task lifecycle status."
         />
         <EditableInput
           label="Priority"
@@ -228,7 +269,7 @@ export default function TaskFieldsEditor({
           editing={editing}
           disabled={routingLocked}
           value={form.intelligence_class}
-          displayValue={currentClass || "—"}
+          displayValue={classDisplay}
           options={[
             "",
             ...(classKnown ? [] : [currentClass]),
@@ -236,21 +277,20 @@ export default function TaskFieldsEditor({
           ]}
           optionLabel={(v) => (v === "" ? "— none —" : v)}
           onChange={(v) => setForm({ ...form, intelligence_class: v })}
-          hint={routingHint ?? (classes.isError ? "Could not load intelligence classes." : undefined)}
-        />
-        <EditableSelect
-          label="Profile"
-          editing={editing}
-          disabled={routingLocked}
-          value={form.profile_id}
-          displayValue={task.profile_id ?? "default"}
-          options={["", ...profileOptions.map((p) => p.id)]}
-          optionLabel={(v) =>
-            v === "" ? "— inherit / none —" : profileOptions.find((p) => p.id === v)?.name ?? v
+          hint={
+            routingHint
+            ?? (classes.isError
+              ? "Could not load intelligence classes."
+              : "A hint to the project's router; changing it on a queued task routes the task again.")
           }
-          onChange={(v) => setForm({ ...form, profile_id: v })}
-          hint={routingHint}
         />
+        <ReadField label="Profile" value={task.profile_id ?? "— awaiting the router —"} />
+        <div>
+          <span className="text-gray-500">Provider intent</span>
+          <p className="mt-0.5">
+            <ProviderIntentChip intent={task.provider_intent} />
+          </p>
+        </div>
         <EditableSelect
           label="Task type"
           editing={editing}

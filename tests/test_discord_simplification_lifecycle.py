@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import update
@@ -183,7 +183,7 @@ async def add_blocked_attempt(env, suffix: str = "one") -> tuple[str, dict]:
             title=f"Blocked work {suffix}",
             description="Preserve this work and its evidence.",
             status=TaskStatus.BLOCKED,
-            profile_id="worker",
+            profile_id="worker", route_source="legacy",
             intelligence_class="deep-high",
             branch_name=f"aq/{task_id}",
             created_at=BASE,
@@ -241,8 +241,11 @@ async def create_recovery_escalation(env, task_id: str, recovery: dict, scope: d
         "severity": "high",
         "_scope": scope,
     }
-    created = await env.handler.execute("escalation_create", args)
-    replay = await env.handler.execute("escalation_create", args)
+    # Creation now sets the outbox deadline as well as the incident timestamp.
+    # Keep both on the same synthetic timeline as the delivery service.
+    with patch("src.database.queries.escalation_queries.time.time", return_value=BASE):
+        created = await env.handler.execute("escalation_create", args)
+        replay = await env.handler.execute("escalation_create", args)
     assert created["success"] is True and created["created"] is True
     assert replay["created"] is False
     assert replay["escalation"]["id"] == created["escalation"]["id"]
@@ -285,6 +288,16 @@ async def post_escalation(env, escalation_id: str, sink: SinkTransport, clock: C
     return service, root
 
 
+
+async def prepare_reply(handler, args):
+    linked = await handler.execute("escalation_apply_reply", args)
+    assert linked["error_code"] == "ask.context_missing", linked
+    args = {**args, "expected": linked["expected"]}
+    prepared = await handler.execute("escalation_apply_reply", {**args, "prepare": True})
+    assert prepared["success"], prepared
+    return {**args, "preview_id": prepared["preview"]["id"]}
+
+
 async def test_blocked_attempt_reply_recovers_after_supervisor_and_daemon_restart(env):
     """The complete blocked -> human -> supervisor -> recovered loop is durable."""
     old_supervisor, old_token = await add_supervisor(env, "old")
@@ -322,7 +335,7 @@ async def test_blocked_attempt_reply_recovers_after_supervisor_and_daemon_restar
     # once, including across duplicate gateway delivery.
     await env.db.update_session(old_supervisor, state="stopped", desired_state="stopped")
     intake = DiscordEscalationIntake(env.handler, env.config, reconcile=restarted.reconcile)
-    message = gateway_message(thread_id)
+    message = gateway_message(thread_id, content="retry")
     assert await intake.handle(message, bot_user_id=777)
     assert await intake.handle(message, bot_user_id=777)
     inbound = [
@@ -338,8 +351,8 @@ async def test_blocked_attempt_reply_recovers_after_supervisor_and_daemon_restar
     # and applies the verified reply through the guarded recovery service.
     new_supervisor, new_token = await add_supervisor(env, "replacement")
     current = await env.db.get_escalation(escalation["id"])
-    result = await env.handler.execute(
-        "escalation_apply_reply",
+    args = await prepare_reply(
+        env.handler,
         {
             "escalation_id": escalation["id"],
             "reply_id": inbound[0]["id"],
@@ -351,6 +364,7 @@ async def test_blocked_attempt_reply_recovers_after_supervisor_and_daemon_restar
             "_scope": supervisor_scope(new_supervisor, new_token),
         },
     )
+    result = await env.handler.execute("escalation_apply_reply", args)
     assert result["success"] is True
     assert result["escalation"]["state"] == "resolved"
     assert (await env.db.get_task(task_id)).status is TaskStatus.READY
@@ -366,7 +380,7 @@ async def test_blocked_attempt_reply_recovers_after_supervisor_and_daemon_restar
     assert "Resolved" in sink.messages[str(root["root_message_id"])].content
 
 
-async def test_failed_recovery_stays_open_and_reports_in_the_original_thread(env):
+async def test_stale_recovery_stays_open_in_the_original_thread(env):
     supervisor_id, token = await add_supervisor(env, "failure")
     task_id, recovery = await add_blocked_attempt(env, "failure")
     scope = supervisor_scope(supervisor_id, token)
@@ -377,7 +391,7 @@ async def test_failed_recovery_stays_open_and_reports_in_the_original_thread(env
     thread_id = str(root["thread_id"])
 
     intake = DiscordEscalationIntake(env.handler, env.config, reconcile=service.reconcile)
-    assert await intake.handle(gateway_message(thread_id), bot_user_id=777)
+    assert await intake.handle(gateway_message(thread_id, content="retry"), bot_user_id=777)
     reply = next(
         row
         for row in await env.db.list_escalation_messages(escalation["id"])
@@ -386,10 +400,9 @@ async def test_failed_recovery_stays_open_and_reports_in_the_original_thread(env
 
     # The task changed after the human saw the incident.  Recovery must fail
     # closed rather than treating an old answer as permission for new state.
-    await env.db.pause_task(task_id)
     current = await env.db.get_escalation(escalation["id"])
-    result = await env.handler.execute(
-        "escalation_apply_reply",
+    args = await prepare_reply(
+        env.handler,
         {
             "escalation_id": escalation["id"],
             "reply_id": reply["id"],
@@ -401,8 +414,11 @@ async def test_failed_recovery_stays_open_and_reports_in_the_original_thread(env
             "_scope": scope,
         },
     )
-    assert result["error_code"] == "action_failed"
-    assert result["escalation"]["state"] == "reply_received"
+    await env.db.pause_task(task_id)
+    result = await env.handler.execute("escalation_apply_reply", args)
+    assert result["error_code"] == "ask.stale_source", result
+    assert (await env.db.get_escalation(escalation["id"]))["state"] == "reply_received"
+    assert await env.db.list_escalation_actions(escalation["id"]) == []
     assert (await env.db.get_task(task_id)).status is TaskStatus.PAUSED
 
     clock.advance(120)
@@ -410,7 +426,7 @@ async def test_failed_recovery_stays_open_and_reports_in_the_original_thread(env
     assert sink.calls.count("post_root") == 1
     assert thread_id not in sink.archived
     thread_messages = [row.content for row in sink.messages.values() if row.thread_id == thread_id]
-    assert any("recovery action failed" in body.lower() for body in thread_messages)
+    assert thread_messages  # The reply acknowledgment remains in the original thread.
     assert not any("resolved" in body.lower() for body in thread_messages)
 
 
@@ -516,7 +532,7 @@ async def test_transport_outage_and_rate_guard_leave_scheduling_and_event_bus_li
             project_id="p",
             title="Scheduler still runs",
             description="",
-            profile_id="worker",
+            profile_id="worker", route_source="legacy",
         )
     )
 
@@ -930,6 +946,7 @@ async def test_discord_disabled_keeps_scheduler_and_dashboard_escalation_command
                 "project_id": "p",
                 "source_kind": "core",
                 "source_identity": "disabled-discord",
+                "task_title": "Continue project work through the dashboard",
                 "incident_key": "disabled-discord",
                 "summary": "External messaging is unavailable",
                 "investigation": "The dashboard and core are still reachable",
