@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/doctor/observations.py::MAX_PRODUCER_BYTES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_ROWS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::finding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::partition": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

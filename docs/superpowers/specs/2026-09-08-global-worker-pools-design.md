@@ -8,7 +8,9 @@
 
 **Date:** 2026-09-08
 **Status:** implemented (2026-09-08) — sizing, placement, bounds, doctor, CLI and
-API surfaces have shipped; the dashboard re-keying in §6.4 has not
+API surfaces have shipped. The dashboard now also uses one pool per profile;
+see the [current operator guide](../../guides/worker-pools.md#from-the-dashboard).
+The implementation notes below retain the original design context.
 **Supersedes:** the per-project runtime keying in
 `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §11
 **Primary code:** `src/scheduler.py` (`size_pools`), `src/orchestrator/pools.py`,
