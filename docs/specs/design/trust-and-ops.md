@@ -331,6 +331,46 @@ A `--check <id>` filter naming an id that is neither registered nor reserved is 
 pinned to a misspelled check id must fail loudly; silently passing is the worst
 possible answer for a health command.
 
+### 5.7 Read-only observations
+
+`doctor_catalog` exposes registered checks' scope, read-only audit, identity and
+payload versions, finding schemas, coverage contracts, timeouts and versioned
+groups. Unported checks remain visible as unsupported. `doctor_run` selects
+exactly one `check_id` or `group`, with optional `project_id`, numeric `now` and
+bounded `timeout_s`. Unknown fields and `fix` are rejected. Both commands use
+the command descriptor surface; the existing `doctor` repair path is unchanged.
+
+`task_observations_v1` contains only `claims.holder_consistency` and `stall.sweep`.
+Both are system-only: project principals are rejected before any probe, including
+when they have a command grant. Nested `explain_task` calls retain the caller's
+principal and capabilities. Repository observations use cached evidence without
+fetching or repairing; missing evidence invalidates the affected coverage.
+
+An unhealthy result can be a successful observation. `execution_status` describes
+execution separately from health severity and `exit_code` (0/1/2). Each coverage
+partition identifies check, kind/version and project, with completeness, counts
+and reasons. Partial responses retain valid findings; failed partitions cannot
+authorize clearing. Legacy checks default to unknown execution and incomplete
+coverage. The sweep reports the four task kinds `unclaimed_work`,
+`undelivered_blocker`, `restore_branch` and `worker_relaunch_loop` independently.
+Bounded log tails and unavailable repository/provider context never prove absence.
+
+Producer adapters supply explicit task/project provenance. Finding keys hash the
+canonical tuple of identity version, check, kind/version, project and subject;
+wording, age and observation time are excluded. Multiple pieces of evidence for
+one subject/kind share one identity. Missing project identity for a task makes its
+kind incomplete. Holder observations retain up to 10,000 identities / 8 MiB from
+the shared producer, while legacy `data.tasks` stays capped at 50. Producer limits
+are explicit, and the sweep also bounds its combined observation model.
+
+`src.doctor.observations.collect_observations` is the full bounded model interface
+for C2 snapshot materialization. Inline transport refuses responses above 262,144
+bytes with `doctor.response_too_large`. Snapshot arguments are validated but return
+`doctor.snapshot_unavailable` until C2 installs durable paging; a continuation is
+never silently rerun as a live scan. Raw check data remains in `checks`; normalized
+findings, coverage, frozen observation time/scan ID and compact identity manifest
+are separate fields.
+
 ---
 
 ## 6. Invariant & Docs-Sync Tests

@@ -2,6 +2,26 @@
   "attestation_app_id": 5075923,
   "attestation_name": "Agent Queue Integration Attestation",
   "canonical_repository_id": "agent-queue2",
+  "check_sets": {
+    "promotion-source-audit": [
+      "unattested-ci / Tests (cli-conformance)",
+      "unattested-ci / Tests (default-1/8)",
+      "unattested-ci / Tests (default-2/8)",
+      "unattested-ci / Tests (default-3/8)",
+      "unattested-ci / Tests (default-4/8)",
+      "unattested-ci / Tests (default-5/8)",
+      "unattested-ci / Tests (default-6/8)",
+      "unattested-ci / Tests (default-7/8)",
+      "unattested-ci / Tests (default-8/8)",
+      "unattested-ci / Tests (migration-and-slow)",
+      "unattested-ci / Tests (postgres-integration)",
+      "unattested-ci / E2E CLI (claims)",
+      "unattested-ci / E2E CLI (cli)",
+      "unattested-ci / E2E CLI (graphs)",
+      "unattested-ci / E2E CLI (failover)",
+      "unattested-ci / Dashboard (typecheck/build)"
+    ]
+  },
   "ci_producer_app_id": 15368,
   "full_name": "ElectricJack/agent-queue",
   "promotion_attestation_names": [

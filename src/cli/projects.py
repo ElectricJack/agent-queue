@@ -34,7 +34,50 @@ def project() -> None:
     pass
 
 
+@project.command("create")
+@click.option("--name", required=True)
+@click.option(
+    "--from-policy", help="Policy profile: default, exported path, or none; prompts in a terminal."
+)
+@click.option("--repo-url")
+@click.option("--default-branch")
+@click.option("--create-repo")
+@click.option("--private/--public", default=True)
+@click.option("--root-id")
+@click.option("--relative-path")
+@click.option("--request-id")
+@click.option("--credit-weight", type=float, default=1.0)
+@click.option("--max-concurrent-agents", type=int, default=2)
+@click.pass_context
+@_handle_errors
+def project_create(ctx, name, from_policy, **options):
+    from src.cli import app
+    from src.cli.policy import creation_policy, select_and_apply
+
+    from_policy = creation_policy(ctx, from_policy)
+
+    async def create():
+        async with app._get_client((ctx.obj or {}).get("api_url")) as client:
+            return await client.execute(
+                "create_project",
+                {
+                    "name": name,
+                    **{key: value for key, value in options.items() if value is not None},
+                },
+            )
+
+    result = app._run(create())
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(f"Created project {data['created']}", markup=False),
+    )
+    if from_policy and result.get("success") is not False:
+        select_and_apply(ctx, from_policy, result["created"])
+
+
 @project.command("onboard")
+@click.option("--from-policy", help="Policy profile: default, exported path, or none.")
 @click.option("--request-id", help="Durable idempotency key (generated when omitted).")
 @click.option(
     "--source-mode",
@@ -66,6 +109,7 @@ def project() -> None:
 @_handle_errors
 def project_onboard(
     ctx: click.Context,
+    from_policy: str | None,
     request_id: str | None,
     source_mode: str,
     root_id: str,
@@ -85,6 +129,9 @@ def project_onboard(
     private_repo: bool,
 ) -> None:
     """Link, initialize, or clone a repository and register its AQ project."""
+    from src.cli.policy import creation_policy, select_and_apply
+
+    from_policy = creation_policy(ctx, from_policy)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {
         "request_id": request_id or str(uuid4()),
@@ -139,6 +186,8 @@ def project_onboard(
             f"[dim]{_getval(data, 'canonical_path')}[/]"
         ),
     )
+    if from_policy and result.get("success") is not False:
+        select_and_apply(ctx, from_policy, result["project_id"])
 
 
 @project.command("bind-repository")
@@ -185,7 +234,7 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     async def _details():
         async with _get_client(api_url) as client:
-            proj_result = await client.execute("list_projects")
+            proj_result = await client.execute("get_project", {"project_id": project_id})
             task_result = await client.execute(
                 "list_tasks",
                 {
@@ -197,13 +246,8 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     proj_result, task_result = _run(_details())
 
-    p = None
-    for proj in _getval(proj_result, "projects", []):
-        if _getval(proj, "id") == project_id:
-            p = proj
-            break
-
-    if not p:
+    p = proj_result
+    if _getval(p, "id") != project_id:
         from .exceptions import CommandError
 
         raise CommandError("project_details", f"Project not found: {project_id}")
@@ -318,6 +362,7 @@ def project_set(
         "review-delegate-to": "review_delegate_to",
         "git-identity": "git_identity",
         "promotion-flow": "promotion_flow",
+        "supervisor-enabled": "supervisor_enabled",
     }
 
     field = KEY_MAP.get(key)
@@ -327,6 +372,10 @@ def project_set(
     coerced: str | int | float | dict | None = value
     if field == "max_concurrent_agents":
         coerced = int(value)
+    elif field == "supervisor_enabled":
+        if value.lower() not in {"true", "false", "on", "off"}:
+            raise click.UsageError("supervisor-enabled must be true/false or on/off")
+        coerced = value.lower() in {"true", "on"}
     elif field == "credit_weight":
         coerced = float(value)
     elif field == "budget_limit":
