@@ -1,0 +1,45 @@
+{
+  "base_revision": "710be1949fefe7f8dca26a0eadc40d1b7511f8d6",
+  "delta": {
+    "groups": {
+      "companions": 0,
+      "engine": 79,
+      "guards": 0,
+      "policy": 0,
+      "policy_sources": 0,
+      "shared": 204,
+      "ui": 0
+    },
+    "table_count": 0,
+    "total": 283
+  },
+  "dev": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84746,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 63899,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161486
+  },
+  "merged": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64103,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161769
+  },
+  "method": "Ancestry-preserving PR2183 re-refresh onto dev 710be1949, including PR2182 visit-carry +183 owned/+183 engine. Complete dev archive and merged tree scored with the merged unchanged classifications confirm the previously approved wait-listener delta +283 owned/+79 engine/+204 shared/0 tables. Preserve every historical grant, original measurement and ownership classification, with zero remaining headroom and no new authority, table or storage category.",
+  "source_revision": "2ec04f2bd211c457a34b80faae60c609ca240013",
+  "task_id": "bold-beacon-75"
+}

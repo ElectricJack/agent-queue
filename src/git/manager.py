@@ -257,6 +257,40 @@ class GitError(Exception):
     pass
 
 
+class RetainedMissingObjects(GitError):
+    """Full fsck found only absent objects, with no independent corruption."""
+
+    def __init__(self, message: str, objects: tuple[tuple[str, str], ...]):
+        super().__init__(message)
+        self.objects = objects
+
+
+def _missing_retained_objects(lines: list[bytes]) -> tuple[tuple[str, str], ...]:
+    """Accept missing objects and only links explained by those exact absences."""
+    missing = set()
+    targets = set()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        absent = re.fullmatch(rb"missing (commit|tree|blob|tag) ([0-9a-f]{40}|[0-9a-f]{64})", line)
+        if absent:
+            missing.add((absent[2].decode("ascii"), absent[1].decode("ascii")))
+        elif re.fullmatch(
+            rb"broken link from +(?:commit|tree|tag) (?:[0-9a-f]{40}|[0-9a-f]{64})", line,
+        ) and index + 1 < len(lines):
+            index += 1
+            target = re.fullmatch(
+                rb" +to +(commit|tree|blob|tag) ([0-9a-f]{40}|[0-9a-f]{64})", lines[index],
+            )
+            if target is None:
+                return ()
+            targets.add((target[2].decode("ascii"), target[1].decode("ascii")))
+        else:
+            return ()
+        index += 1
+    return tuple(sorted(missing)) if targets <= missing and len(missing) <= 512 else ()
+
+
 class ChildPreparationConflict(GitError):
     """A cleanly aborted child merge, with immutable repair inputs."""
 
@@ -682,6 +716,25 @@ RETAINED_FSCK_TIMEOUT_SECONDS = 900.0
 #: Full-body verification is a separate phase from negotiated object transfer.
 _RETAINED_VERIFY_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
 _RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
+#: A timed-out transfer or full check is discarded whole (its scratch repository is
+#: removed), so retrying under the same fixed budget on a busy host only repeats
+#: the loss. Each consecutive timeout of one store doubles that store's next
+#: budget up to these ceilings; one success returns it to the base.
+_ESCALATED_FETCH_CEILING_SECONDS = 1200.0
+_ESCALATED_FSCK_CEILING_SECONDS = 7200.0
+
+
+def _escalated_budget(streaks: dict, key: str, base: float, ceiling: float) -> float:
+    """*base* doubled once per consecutive timeout recorded for *key*, capped."""
+    return min(base * 2 ** min(streaks.get(key, 0), 16), max(base, ceiling))
+
+
+def _record_budget_outcome(streaks: dict, key: str, exc: BaseException | None) -> None:
+    """Count a consecutive timeout for *key*; any success or other outcome resets."""
+    if exc is not None and "reason=git_timeout" in str(exc):
+        streaks[key] = streaks.get(key, 0) + 1
+    else:
+        streaks.pop(key, None)
 
 
 def _common_git_dir(git_dir: str) -> Path:
@@ -746,6 +799,23 @@ _RETAINED_REFRESH_AGE_SECONDS = _RETAINED_VERIFY_TTL_SECONDS / 2
 #: Common stores whose exclusion the current context already holds.
 _RETAINED_EXCLUSIONS_HELD: ContextVar[frozenset[str]] = ContextVar(
     "retained_store_exclusions_held", default=frozenset())
+
+
+def _repack_output_only(before: tuple, after: tuple) -> bool:
+    """Whether *after* adds nothing to *before* beyond one new pack family.
+
+    Derived metadata (repack refreshes ``info/packs``) is not object content.
+    """
+    known = {entry[0] for entry in before}
+    families = set()
+    for path, _size, _inode in set(after) - set(before):
+        if _RETAINED_METADATA_RE.fullmatch(path):
+            continue
+        match = _RETAINED_PACK_RE.fullmatch(path)
+        if path in known or match is None:
+            return False
+        families.add(match.group(1))
+    return len(families) <= 1
 
 
 def _retained_increment(previous: tuple, current: tuple) -> tuple[tuple, tuple] | None:
@@ -1203,14 +1273,14 @@ class GitManager:
     async def _amaintenance_exclusion(
         self, args: list[str], cwd: str | None, timeout: float,
     ) -> AsyncIterator[float]:
-        """Exclude full verification while foreground maintenance rewrites packs.
+        """Serialize diagnostic fsck and maintenance with full verification.
 
         Separate from the repository transaction: its callers may already hold
         that lock. Git's global options (notably maintenance's `-c`) are skipped
         when identifying the command. Independent Git processes still require
         the verifier's bounded retry.
         """
-        if _git_subcommand(args) not in {"gc", "repack", "maintenance"}:
+        if _git_subcommand(args) not in {"fsck", "gc", "repack", "maintenance"}:
             yield timeout
             return
         loop = asyncio.get_running_loop()
@@ -2432,6 +2502,23 @@ class GitManager:
         return specs
 
     async def _afetch_origin_with_auth_to_url(
+        self, checkout_path: str, **options: Any,
+    ) -> _OriginFetchTransfer:
+        """Run the staged fetch under a budget that grows while it keeps timing out."""
+        streaks = self.__dict__.setdefault("_origin_fetch_timeouts", {})
+        key = os.path.realpath(checkout_path)
+        budget = _escalated_budget(
+            streaks, key, self._GIT_TIMEOUT, _ESCALATED_FETCH_CEILING_SECONDS)
+        try:
+            transfer = await self._afetch_origin_with_auth_to_url_once(
+                checkout_path, budget=budget, **options)
+        except GitError as exc:
+            _record_budget_outcome(streaks, key, exc)
+            raise
+        _record_budget_outcome(streaks, key, None)
+        return transfer
+
+    async def _afetch_origin_with_auth_to_url_once(
         self,
         checkout_path: str,
         *,
@@ -2440,6 +2527,7 @@ class GitManager:
         refetch: bool = False,
         refs: Sequence[str] | None = None,
         lock_held: bool = False,
+        budget: float | None = None,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2468,7 +2556,8 @@ class GitManager:
                            *(["+refs/tags/*:refs/tags/*"] if refetch else [])]
         loop = asyncio.get_running_loop()
         started = loop.time()
-        deadline = started + self._GIT_TIMEOUT
+        budget = self._GIT_TIMEOUT if budget is None else budget
+        deadline = started + budget
         destination_git_dir, borrowable_objects = await self._aorigin_fetch_destination(
             checkout_path
         )
@@ -2488,9 +2577,20 @@ class GitManager:
             )
             seeded_tips = 0
             if borrowable_objects is not None:
-                deadline = await self._aretained_fetch_deadline(
-                    destination_git_dir, home=home, deadline=deadline,
-                )
+                verification_started = loop.time()
+                try:
+                    deadline = await self._aretained_fetch_deadline(
+                        destination_git_dir, home=home, deadline=deadline,
+                    )
+                except RetainedMissingObjects:
+                    recovery_deadline = loop.time() + _RETAINED_VERIFY_TIMEOUT_SECONDS
+                    async with asyncio.timeout_at(recovery_deadline):
+                        await self._arecover_missing_retained_objects(
+                            destination_git_dir, source_url=source_url, token=token, home=home,
+                            deadline=recovery_deadline, checkout_path=checkout_path,
+                            lock_held=lock_held,
+                        )
+                    deadline += loop.time() - verification_started
                 seeded_tips = await self._alend_fetch_objects(
                     imported, destination_git_dir, borrowable_objects,
                     patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
@@ -2520,7 +2620,7 @@ class GitManager:
                         repository_url=source_url,
                         token=token,
                         deadline=deadline,
-                        budget_seconds=self._GIT_TIMEOUT,
+                        budget_seconds=budget,
                     )
                 except GitError as exc:
                     raise GitError(
@@ -2701,6 +2801,75 @@ class GitManager:
         )
         return len(tips)
 
+    async def _arecover_missing_retained_objects(
+        self, git_dir: str, *, source_url: str, token: str | None, home: Path, deadline: float,
+        checkout_path: str, lock_held: bool,
+    ) -> None:
+        """Add absent objects from the authorized origin, without changing refs.
+
+        The caller has validated repository identity. Only the additive import
+        takes repository exclusion; full checks and staging leave ordinary
+        repository waiters free. Never lend, replace or remove damaged objects.
+        """
+        check = [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                 "--no-reflogs", "--no-progress"]
+        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+            fingerprint, started = await self.aretained_store_baseline(git_dir)
+            try:
+                await self._run_isolated_import_git(
+                    check, home=home, deadline=deadline, verify_integrity=True,
+                )
+                await self.arecord_retained_store_verified(git_dir, fingerprint, started)
+                return  # An independent writer already completed the store.
+            except RetainedMissingObjects as exc:
+                missing = exc.objects
+        staged = home / "missing-objects.git"
+        await self._run_isolated_import_git(
+            ["init", "--bare", "--template=", str(staged)], home=home, deadline=deadline,
+        )
+        await self._arun_authenticated_git(
+            ["-c", "maintenance.auto=false", "-c", "fetch.fsckObjects=true",
+             f"--git-dir={staged}", "fetch", "--no-tags", source_url,
+             "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+             "+refs/aq/provenance/*:refs/aq/provenance/*"],
+            home=home, repository_url=source_url, token=token, deadline=deadline,
+            budget_seconds=max(0.0, deadline - asyncio.get_running_loop().time()),
+        )
+        found = await self._run_isolated_import_git(
+            [f"--git-dir={staged}", "cat-file", "--batch-check"],
+            home=home, deadline=deadline,
+            input="".join(f"{oid}\n" for oid, _kind in missing).encode("ascii"),
+        )
+        if [(parts[0], parts[1]) for line in found.decode("ascii").splitlines()
+                if len(parts := line.split()) == 3] != list(missing):
+            raise GitError("retained Git object integrity is unavailable: "
+                           "missing objects are unavailable from origin: "
+                           + " ".join(oid for oid, _kind in missing))
+        await self._run_isolated_import_git(
+            [f"--git-dir={staged}", *check[1:]], home=home, deadline=deadline,
+            verify_integrity=True,
+        )
+        transaction = nullcontext() if lock_held else self.arepository_transaction(checkout_path)
+        async with transaction:
+            async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+                current, _ = await self.aretained_store_baseline(git_dir)
+                if current != fingerprint:
+                    raise GitError("retained Git object integrity is unavailable: "
+                                   "object store changed during missing-object acquisition")
+                await self._run_isolated_import_git(
+                    ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                     "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
+                     f"--git-dir={git_dir}", "fetch",
+                     "--refetch", "--no-tags", "--no-write-fetch-head", str(staged),
+                     *(oid for oid, _kind in missing)], home=home, deadline=deadline,
+                )
+        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+            fingerprint, started = await self.aretained_store_baseline(git_dir)
+            await self._run_isolated_import_git(
+                check, home=home, deadline=deadline, verify_integrity=True,
+            )
+            await self.arecord_retained_store_verified(git_dir, fingerprint, started)
+
     @asynccontextmanager
     async def _aretained_store_exclusion(
         self, git_dir: str, *, deadline: float,
@@ -2849,7 +3018,9 @@ class GitManager:
         carried repack finished meanwhile) is not checked again.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + RETAINED_FSCK_TIMEOUT_SECONDS
+        streaks = self.__dict__.setdefault("_retained_fsck_timeouts", {})
+        deadline = loop.time() + _escalated_budget(
+            streaks, key, RETAINED_FSCK_TIMEOUT_SECONDS, _ESCALATED_FSCK_CEILING_SECONDS)
         async with _isolated_git_directory(prefix="aq-retained-verify-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -2865,12 +3036,14 @@ class GitManager:
                 try:
                     await self._afsck_retained_store(key, home=home, deadline=deadline)
                 except GitError as exc:
+                    _record_budget_outcome(streaks, key, exc)
                     if str(exc).startswith("retained Git object integrity"):
                         verified = self.__dict__.setdefault("_retained_verified", {})
                         if verified.get(key, (None, started))[1] <= started:
                             verified.pop(key, None)
                     raise
                 after = await asyncio.to_thread(_object_store_fingerprint, key)
+        _record_budget_outcome(streaks, key, None)
         if fingerprint is None or after is None:
             return None
         unchanged = set(after)
@@ -3121,15 +3294,16 @@ class GitManager:
         the result carries that clean result over with its original age, so the
         background refresh still comes due on schedule. Unverified additions,
         a failed repack or a failed check leave the store to the full check.
-        The store exclusion is held throughout, so no full check overlaps.
+        The store exclusion is held throughout, so no full check overlaps. The
+        repack may run beside other writers, so anything added beyond its own
+        pack also leaves the store to the full check.
         """
         loop = asyncio.get_running_loop()
         async with self._aretained_store_exclusion(git_dir, deadline=loop.time() + timeout):
             key, before = await asyncio.to_thread(_retained_store_state, git_dir)
             cached = self._retained_baseline(key)
             result = await self.arun_git_result(
-                args, cwd=cwd, lock_held=True, env={"LC_ALL": "C"},
-                timeout=timeout, low_priority=True,
+                args, cwd=cwd, env={"LC_ALL": "C"}, timeout=timeout, low_priority=True,
             )
             if (result.returncode or result.stderr.strip() or cached is None
                     or before is None or before != cached[0]):
@@ -3150,7 +3324,8 @@ class GitManager:
                 return result
             after = await asyncio.to_thread(_object_store_fingerprint, key)
             verified = self.__dict__.setdefault("_retained_verified", {})
-            if after is not None and verified.get(key) == cached:
+            if (after is not None and _repack_output_only(before, after)
+                    and verified.get(key) == cached):
                 verified[key] = (after, cached[1])
         return result
 
@@ -5968,13 +6143,15 @@ class GitManager:
                     if detail not in evidence:
                         evidence.append(detail)
                 detail = "; ".join(evidence[:16]) or f"fsck exit {process.returncode}"
-                error = GitError(f"retained Git object integrity is unavailable: {detail}")
+                message = f"retained Git object integrity is unavailable: {detail}"
+                missing = _missing_retained_objects(unexpected)
+                error = RetainedMissingObjects(message, missing) if missing else GitError(message)
                 # fsck scans objects before refs and indexes, so a concurrent
                 # commit can be reported missing. Keep every such id for re-checks.
-                missing = [re.fullmatch(rb"missing [a-z]+ ([0-9a-f]{40,64})", line)
-                           for line in unexpected]
-                if missing and all(missing):
-                    error.missing_oids = tuple(m[1].decode("ascii") for m in missing)
+                absent = [re.fullmatch(rb"missing [a-z]+ ([0-9a-f]{40,64})", line)
+                          for line in unexpected]
+                if absent and all(absent):
+                    error.missing_oids = tuple(m[1].decode("ascii") for m in absent)
                 raise error
         elif process.returncode == 0 and re.search(
             rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
