@@ -5,6 +5,7 @@ escalation deadlines to this handler through wait_deadline_fire. No task/session
 is woken here and no activation configuration is written.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -17,6 +18,7 @@ from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
     admission_reservations, tasks, wait_deadlines, wait_escalations, wait_records,
 )
+from src.integration.stacked_branches import shared_stack_inputs
 from src.waits.admission import AdmissionReader, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
 from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
@@ -49,6 +51,7 @@ class SchedulerWaitService:
         if principal is None or principal.kind != PrincipalKind.SERVICE:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
 
+    @shared_stack_inputs()
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]
@@ -311,6 +314,43 @@ class SchedulerWaitService:
                 **({'escalation_event': event_payload} if event_payload else {})}
 
 
+# One project's sync holds the global graph fence and row locks while it
+# observes admission on further pooled connections. Unbounded, a slow project
+# held them for 500s+ and convoyed the pool (2026-10-22). The cancelled
+# transaction rolls back whole; the next cycle re-scans from authoritative rows.
+SCHEDULER_SYNC_TIMEOUT = 30.0
+
+
+async def bounded_sync(handler, args, *, timeout=None):
+    timeout = SCHEDULER_SYNC_TIMEOUT if timeout is None else timeout
+    try:
+        async with asyncio.timeout(timeout):
+            result = await handler.execute("scheduler_wait_sync", args)
+    except TimeoutError:
+        logger.warning("scheduler_wait_sync for project %s exceeded %.0fs; rolled back, "
+                       "retrying next cycle", args["project_id"], timeout)
+        return {"success": True, "timed_out": True}
+    if result.get("error_code") == "wait.graph_busy":
+        # A busy fence defers this project, like a timeout; it is no failure.
+        logger.warning("scheduler_wait_sync for project %s deferred: wait graph busy",
+                       args["project_id"])
+        return {"success": True, "timed_out": True}
+    return result
+
+
+_rotation = 0
+
+
+def _rotated(projects):
+    """Start each tick one project later, so a bounded stage that keeps
+    running out of time on the first projects cannot starve the rest."""
+    global _rotation
+    if not projects:
+        return projects
+    _rotation = (_rotation + 1) % len(projects)
+    return projects[_rotation:] + projects[:_rotation]
+
+
 async def scheduler_tick(handler):
     o = getattr(handler, "orchestrator", None)
     if o is None:
@@ -325,8 +365,8 @@ async def scheduler_tick(handler):
     handlers.setdefault("wait_deadline_fire", service.deadline)
     with principal_context(ExecutionPrincipal.service("scheduler-waits")):
         cycle_id = str(uuid.uuid4())
-        for project in await o.db.list_projects():
-            result = await handler.execute("scheduler_wait_sync", {
+        for project in _rotated(await o.db.list_projects()):
+            result = await bounded_sync(handler, {
                 "project_id": project.id, "blockers": [], "cycle_id": cycle_id,
             })
             if not result.get("success"):
