@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/config_editor.py::HOT_RELOADABLE_SECTIONS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/config_editor.py::classify_sections": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/config_editor.py::find_env_var_refs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/config_editor.py::read_raw_config": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/config_editor.py::write_section": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -4,10 +4,18 @@ tags: [implementation, feature-pauses, memory, playbooks, config, feature-flags]
 
 # Feature Pauses — Implementation
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Related:** [[../design/feature-pauses]] (design of record — read first),
-`docs/analysis/framework-overhaul-todo.md` (§7 E, §8 P), [[../design/self-improvement]],
-[[../design/playbooks]], `docs/specs/config.md`, `docs/specs/command-handler.md`
+**Related:** [../design/feature-pauses](../design/feature-pauses.md) (design of record — read first),
+`docs/analysis/framework-overhaul-todo.md` (§7 E, §8 P), [../design/self-improvement](../design/self-improvement.md),
+[../design/playbooks](../design/playbooks.md), `docs/specs/config.md`, `docs/specs/command-handler.md`
 
 All file/function references below were verified by reading the code on 2026-08-19.
 Line numbers are approximate anchors, not contracts.

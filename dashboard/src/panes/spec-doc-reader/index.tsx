@@ -23,7 +23,7 @@ function useContainerWidth(ref: React.RefObject<HTMLElement | null>) {
   return width;
 }
 
-function TocList({
+export function TocList({
   toc,
   activeId,
   onSelect,

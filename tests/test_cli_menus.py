@@ -69,6 +69,35 @@ def test_task_creation_wizard_omits_integration_mode_when_inherit(monkeypatch):
     assert "integration_mode" not in result
 
 
+@pytest.mark.parametrize("invalid", ["0", "-1", "301", "not-a-number"])
+def test_task_creation_wizard_reprompts_invalid_priority(monkeypatch, invalid):
+    """Wizard priority follows the same 1-300 contract as CLI flags."""
+    responses = iter(["project-1", "A task", "Description", invalid, "100"])
+    monkeypatch.setattr(menus, "prompt_input", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(menus, "prompt_choice", lambda *args, **kwargs: "inherit")
+
+    result = menus.task_creation_wizard(["project-1"])
+
+    assert result is not None
+    assert result["priority"] == 100
+
+
+def test_task_creation_wizard_uses_supplied_values_and_cancels_without_defaults(monkeypatch):
+    """Pre-filled flags skip their steps and Ctrl+C never becomes an implicit choice."""
+    monkeypatch.setattr(menus, "prompt_choice", lambda *args, **kwargs: None)
+
+    result = menus.task_creation_wizard(
+        ["project-1"],
+        project="project-1",
+        title="A task",
+        description="Description",
+        priority=50,
+        task_type="bugfix",
+    )
+
+    assert result is None
+
+
 def test_select_and_confirm_return_value_on_choice_and_none_or_default_on_cancel(monkeypatch):
     """A menu implementation that always returns a default loses explicit choices."""
     dialog = Mock()

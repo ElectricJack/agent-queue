@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.agent_metrics import AgentMetrics
     from ..models.daemon_metrics import DaemonMetrics
     from ..models.machine_metrics import MachineMetrics
+    from ..models.perf_metrics import PerfMetrics
     from ..models.sampler_metrics import SamplerMetrics
     from ..models.slot_metrics import SlotMetrics
     from ..models.stall_metrics import StallMetrics
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from ..models.task_metrics import TaskMetrics
     from ..models.throughput_metrics import ThroughputMetrics
     from ..models.token_metrics import TokenMetrics
+    from ..models.wait_metrics import WaitMetrics
 
 
 T = TypeVar("T", bound="MetricsSample")
@@ -34,6 +36,12 @@ class MetricsSample:
         Attributes:
             ts (float):
             agents (AgentMetrics | Unset): Live sessions, split the three ways the tab graphs them.
+
+                ``total`` is a float like every other counter here even though a single
+                1s sample always carries a whole number: the 1m and 1h tiers average
+                each numeric leaf (:func:`src.metrics.sampler.aggregate_samples`), so a
+                rolled-up row's ``total`` is fractional and an ``int`` here would turn
+                every coarse-tier read into a 500.
             tasks (TaskMetrics | Unset):
             subagents (SubagentMetrics | Unset): Fleet sub-agent totals plus the per-session drill-down.
 
@@ -69,6 +77,8 @@ class MetricsSample:
             throughput (ThroughputMetrics | Unset):
             merges_per_hour (float | Unset):  Default: 0.0.
             sampler (SamplerMetrics | Unset): The sampler's own per-tick cost, so its overhead is observable.
+            waits (None | Unset | WaitMetrics):
+            perf (PerfMetrics | Unset): MetricsSampler's daemon and dashboard-server performance blocks.
     """
 
     ts: float
@@ -83,9 +93,13 @@ class MetricsSample:
     throughput: ThroughputMetrics | Unset = UNSET
     merges_per_hour: float | Unset = 0.0
     sampler: SamplerMetrics | Unset = UNSET
+    waits: None | Unset | WaitMetrics = UNSET
+    perf: PerfMetrics | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.wait_metrics import WaitMetrics
+
         ts = self.ts
 
         agents: dict[str, Any] | Unset = UNSET
@@ -130,6 +144,18 @@ class MetricsSample:
         if not isinstance(self.sampler, Unset):
             sampler = self.sampler.to_dict()
 
+        waits: dict[str, Any] | None | Unset
+        if isinstance(self.waits, Unset):
+            waits = UNSET
+        elif isinstance(self.waits, WaitMetrics):
+            waits = self.waits.to_dict()
+        else:
+            waits = self.waits
+
+        perf: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.perf, Unset):
+            perf = self.perf.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -159,6 +185,10 @@ class MetricsSample:
             field_dict["merges_per_hour"] = merges_per_hour
         if sampler is not UNSET:
             field_dict["sampler"] = sampler
+        if waits is not UNSET:
+            field_dict["waits"] = waits
+        if perf is not UNSET:
+            field_dict["perf"] = perf
 
         return field_dict
 
@@ -167,6 +197,7 @@ class MetricsSample:
         from ..models.agent_metrics import AgentMetrics
         from ..models.daemon_metrics import DaemonMetrics
         from ..models.machine_metrics import MachineMetrics
+        from ..models.perf_metrics import PerfMetrics
         from ..models.sampler_metrics import SamplerMetrics
         from ..models.slot_metrics import SlotMetrics
         from ..models.stall_metrics import StallMetrics
@@ -174,6 +205,7 @@ class MetricsSample:
         from ..models.task_metrics import TaskMetrics
         from ..models.throughput_metrics import ThroughputMetrics
         from ..models.token_metrics import TokenMetrics
+        from ..models.wait_metrics import WaitMetrics
 
         d = dict(src_dict)
         ts = d.pop("ts")
@@ -250,6 +282,30 @@ class MetricsSample:
         else:
             sampler = SamplerMetrics.from_dict(_sampler)
 
+        def _parse_waits(data: object) -> None | Unset | WaitMetrics:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                waits_type_0 = WaitMetrics.from_dict(data)
+
+                return waits_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | WaitMetrics, data)
+
+        waits = _parse_waits(d.pop("waits", UNSET))
+
+        _perf = d.pop("perf", UNSET)
+        perf: PerfMetrics | Unset
+        if isinstance(_perf, Unset):
+            perf = UNSET
+        else:
+            perf = PerfMetrics.from_dict(_perf)
+
         metrics_sample = cls(
             ts=ts,
             agents=agents,
@@ -263,6 +319,8 @@ class MetricsSample:
             throughput=throughput,
             merges_per_hour=merges_per_hour,
             sampler=sampler,
+            waits=waits,
+            perf=perf,
         )
 
         metrics_sample.additional_properties = d

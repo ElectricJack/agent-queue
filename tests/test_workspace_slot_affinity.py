@@ -287,3 +287,41 @@ async def test_a_running_sibling_keeps_its_slot_and_the_subtask_falls_back(env):
         preferred_workspaces={"project-repo": slot0.id},
     )
     assert att.first_of_kind("project-repo").workspace.id == env.slots[1].id
+
+
+@pytest.mark.parametrize('state', ['stopped', 'running', 'wrong_epoch', 'locked'])
+async def test_preparation_retires_only_exact_stopped_unlocked_claim(env, state):
+    from sqlalchemy import update
+
+    from src.claim_file import read_claim_file, write_claim_file
+    from src.database.tables import workspaces
+    from src.git.manager import GitError
+    from src.models import SessionRecord
+
+    task = await _task(env, 'stopped-claim')
+    manager = env.orch._worktree_slots()
+    old = env.slots[1]
+    await manager.reset_slot_for_task(old, task, kind=env.kind)
+    await env.db.create_session(SessionRecord(
+        id='old', task_id=task.id, project_id='p', agent_id='agent', profile_id='worker',
+        harness='codex', provider='fake', name='old', lifecycle='pool', epoch='old',
+        state='running' if state == 'running' else 'stopped',
+        desired_state='running' if state == 'running' else 'stopped',
+        work_dir=old.workspace_path, last_claim_epoch=0, instance_token='old', started_at=1.0,
+    ))
+    write_claim_file(old.workspace_path, {
+        'task_id': task.id, 'session_id': 'old', 'claim_epoch': 1 if state == 'wrong_epoch' else 0,
+    })
+    if state == 'locked':
+        async with env.db.immediate() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == old.id).values(
+                locked_by_agent_id='agent', locked_by_task_id=task.id,
+            ))
+    if state == 'stopped':
+        await manager.reset_slot_for_task(env.slots[0], task, kind=env.kind)
+        assert read_claim_file(old.workspace_path) is None
+        assert _git(['rev-parse', '--abbrev-ref', 'HEAD'], old.workspace_path) == 'HEAD'
+    else:
+        with pytest.raises(GitError):
+            await manager.reset_slot_for_task(env.slots[0], task, kind=env.kind)
+        assert read_claim_file(old.workspace_path) is not None
