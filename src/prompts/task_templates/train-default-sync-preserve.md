@@ -1,0 +1,1 @@
+Keep the starting candidate and all these sources in the repaired history; do not reset the candidate to the default branch or drop a member.

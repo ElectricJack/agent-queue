@@ -15,6 +15,8 @@ import time
 from pydantic import ValidationError
 from sqlalchemy import insert, select, update
 
+from src.waits.sources import insert_message_with_source_event
+from src.task_templates import render_task_template
 from src.commands.contracts.object_loop import (
     ObjectCheckpointReadArgs, ObjectLoopReconcileArgs, ObjectLoopStartArgs,
     ObjectLoopInputsArgs, ObjectScoreRecordArgs, Reservation, Variant,
@@ -31,54 +33,6 @@ _TERMINAL = {"COMPLETED", "BLOCKED"}
 #: admitted with.  The cap is start input now; a row without the field keeps
 #: the ceiling that was in force when it was admitted, never a silent raise.
 _DEFAULT_MAX_ROUNDS = 8
-
-#: What every round's candidate worker is told about the rounds before it.  The
-#: matter-engine-cpp pilot's round-2 worker closed blocked twice with zero
-#: captures because it was handed a hypothesis, a base hash and a rig, and
-#: nothing about what round 1 actually changed: it could not see the incumbent
-#: bundle, the earlier branches or the frozen comparison inputs, so it rebuilt
-#: from the reference instead of from the incumbent.  These instructions and the
-#: ``round_handoff`` block that carries them are the fix, and they are part of
-#: the worker's packet rather than of a convention.
-ROUND_HANDOFF_INSTRUCTIONS = (
-    "Start from the incumbent bundle, not from memory: materialize "
-    "round_handoff.incumbent.artifact.uri, verify its sha256 against "
-    "round_handoff.incumbent.sha256, and build on those bytes. "
-    "round_handoff.prior_rounds lists every earlier round of this attempt with "
-    "the branch and commit that produced it and the candidate bundle artifact "
-    "it retained; reading those retained artifacts and those earlier round "
-    "branches is in scope for this task. Comparison inputs are frozen for the "
-    "whole attempt: capture under render_profile_sha256 with the same reference, "
-    "rig, scorer and mandatory views, and submit every capture job of this "
-    "attempt with --attempt-id {attempt_id} so the pinned editor build cannot "
-    "move under an in-flight attempt. Write only generators, materials and "
-    "presets in your own workspace; publish the evaluation bundle to the "
-    "artifact store, never to the product branch."
-)
-
-_INTERNAL_HANDOFF = (
-    "This is an internal object experiment, with no implicit human-review deliverable. "
-    "Record evidence in the held task's notes and retained artifacts. "
-    "Any necessary score, probe, capture or continuation review goes only to the "
-    "project supervisor. Send blockers and technical detail to that supervisor. "
-    "Jack needs a single plain-English sentence only if he must act."
-)
-
-_RESULT_HANDOFF = (
-    "Verify retained evaluation artifacts and the stop reason, then submit exactly one "
-    "other review as the final result for Jack using your held task as author. "
-    "Use a plain-English title naming the object, with no attempt or round IDs. "
-    "Show before and after images side by side for every required view; attach the "
-    "verified images to the result review with ordinary view names and Before/After captions. "
-    "Use candidate_id Before and After so each view displays as a comparison pair. "
-    "Explain whether the object improved and by how much in plain words, and what "
-    "would make the next run better. If a capture or measured comparison is missing, "
-    "say so plainly; never invent images or improvement percentages. "
-    "Keep internal IDs, receipts, incumbent, plateau, hashes and logs out of the "
-    "title and prose. Put technical blockers in task notes for the supervisor. "
-    "Reuse the same review on retry; revise it if the result needs correction."
-)
-
 
 def _error(message: str) -> dict:
     return {"success": False, "error": message}
@@ -109,7 +63,7 @@ def _round_handoff(state: dict) -> dict:
         },
         "prior_rounds": list(state.get("round_history") or []),
         "frozen_inputs": _frozen_inputs(state),
-        "instructions": ROUND_HANDOFF_INSTRUCTIONS.format(attempt_id=state["attempt_id"]),
+        "instructions": render_task_template("object-round-handoff", attempt_id=state["attempt_id"]),
     }
 
 
@@ -397,7 +351,7 @@ class ObjectLoopCommandsMixin:
         message_id = "msg-object-start-" + hashlib.sha256(identity.encode()).hexdigest()
         async with self.db.immediate() as conn:
             await self.db._upsert_meta(epic.id, "object_start_refusal", refusal, conn=conn)
-            await conn.execute(pg_insert(messages).values(
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=message_id, project_id=request.project_id,
                 from_kind="system", from_id="object-loop",
                 to_kind="session", to_id=f"supervisor-{request.project_id}",
@@ -505,9 +459,9 @@ class ObjectLoopCommandsMixin:
                 "parent_id": request.epic_task_id,
                 "title": f"Finalize object {request.object_id}",
                 "description": (
-                    _RESULT_HANDOFF + "\nInternal inputs: "
+                    render_task_template("object-result-handoff") + "\nInternal inputs: "
                     f"reference_kind={request.reference_kind}."
-                    + (" Self-reference results are indicative, for plumbing only."
+                    + (render_task_template("object-self-reference")
                        if request.reference_kind == "self" else "")
                 ),
                 "task_type": "chore",
@@ -538,9 +492,30 @@ class ObjectLoopCommandsMixin:
 
     async def _cmd_object_checkpoint_read(self, args: dict) -> dict:
         from src.object_loop.evidence import final_evidence
+        from src.commands.principal import PrincipalKind, current_principal
 
         try:
             request = ObjectCheckpointReadArgs.model_validate(args)
+            principal = current_principal()
+            if principal and principal.kind is PrincipalKind.PLAYBOOK:
+                from src.playbooks.invocation import current_invocation
+
+                invocation = current_invocation()
+                # This read acts for a project run, never for a worker whose
+                # claim/epoch/instance-token fences cannot survive a kind switch.
+                # Session-origin runs must continue to use the direct session read.
+                if (invocation is None or not principal.project_id
+                        or principal.session_id is not None or principal.task_id is not None
+                        or not principal.parent_run_id or not principal.parent_step_id
+                        or invocation.run_id != principal.parent_run_id
+                        or invocation.step_id != principal.parent_step_id
+                        or "object_checkpoint_read" not in invocation.aq_commands
+                        or not principal.policy.allows_aq_command("object_checkpoint_read")
+                        or request.task_id is not None or request.session_id is not None):
+                    raise ValueError("out of scope: checkpoint read requires a project playbook "
+                                     "invocation without session/task identity")
+                if (self._job_scope() or {}).get("project_id") not in (None, principal.project_id):
+                    raise ValueError("out of scope: inherited project_id mismatch")
             rows = await self._readable_object_loops(request)
         except (ValidationError, ValueError) as exc:
             return _error(str(exc))
@@ -648,7 +623,7 @@ class ObjectLoopCommandsMixin:
                     evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, state)
                     await conn.execute(update(tasks).where(
                         tasks.c.id == row.finalization_task_id,
-                    ).values(description=_RESULT_HANDOFF + "\nInternal evidence (for the worker):\n"
+                    ).values(description=render_task_template("object-result-handoff") + "\nInternal evidence (for the worker):\n"
                              + json.dumps(evidence, sort_keys=True)))
                     gate_to_release = row.terminal_gate_id
                 else:
@@ -682,7 +657,7 @@ class ObjectLoopCommandsMixin:
                             "reservation": variant["reservation"],
                             "publication": "artifact_only",
                             "round_handoff": _round_handoff(state),
-                            "review_guidance": _INTERNAL_HANDOFF,
+                            "review_guidance": render_task_template("object-internal-handoff"),
                             **({"result_interpretation": "indicative; plumbing only"}
                                if state.get("reference_kind") == "self" else {}),
                         }, sort_keys=True), "candidate",
@@ -710,22 +685,10 @@ class ObjectLoopCommandsMixin:
                                 "frozen_inputs": _frozen_inputs(state),
                                 "round_handoff": _round_handoff(state),
                                 "handoff": (
-                                    "Independently validate immutable candidate/capture bundles "
-                                    "from the configured artifact adapter. Score every wave "
-                                    "member against the same frozen_inputs and the same "
-                                    "render_profile_sha256, so candidate and reference are "
-                                    "comparable; a receipt whose render profile differs is "
-                                    "refused, not compared. Before closing, use "
-                                    "aq task set HELD_TASK --note with object-score:1 followed "
-                                    "by a newline and a complete JSON ObjectScoreRecordArgs "
-                                    "packet. Use this expected_version and your held task as "
-                                    "score_task_id. Do not call loop mutators or publish assets."
-                                    " Choose continue or stop within the approved brief's limits. "
-                                    "Use checkpoint only for a supervisor decision; never request "
-                                    "a human decision for a score or a capture check."
+                                    render_task_template("object-score-handoff")
                                 ),
                                 "mandatory_views": state["mandatory_views"],
-                                "review_guidance": _INTERNAL_HANDOFF,
+                                "review_guidance": render_task_template("object-internal-handoff"),
                                 "publication": "artifact_only"}, sort_keys=True), "score",
                     approval_gate_id=(state.get("last_approved_checkpoint") or
                                       state["brief_checkpoint"])["gate_id"],
