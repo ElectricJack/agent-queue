@@ -24,7 +24,8 @@ from src.digest.eligibility import (
     NO_ACTIVITY,
     highlight_key,
 )
-from src.digest.facts import KIND_COMPLETED, KIND_PROGRESS, KIND_STARTED
+from src.digest.facts import KIND_COMPLETED, KIND_PROGRESS, KIND_PROVIDER, KIND_STARTED
+from src.discord.render_budget import GLYPH_DIGEST
 
 NOW = 1_000_000.0
 HOUR = 3600.0
@@ -202,7 +203,7 @@ def test_message_stays_under_the_limit_and_folds_the_rest_into_a_count():
     assert "20 completed" in result.text
 
 
-def test_highlights_are_capped_at_three_and_prefer_completions():
+def test_highlights_are_capped_and_prefer_completions():
     facts = (
         fact(key="s1", kind=KIND_STARTED, task_id="t1", detail="started one"),
         fact(key="s2", kind=KIND_STARTED, task_id="t2", detail="started two"),
@@ -211,7 +212,9 @@ def test_highlights_are_capped_at_three_and_prefer_completions():
     )
     result = build_digest(inputs(facts=facts))
     assert "shipped four" in result.text
-    assert "+1 more" in result.text
+    # §3.2 leaves three body lines: the window and its counts are the first.
+    assert "+2 more" in result.text
+    assert result.text.split("\n")[0].startswith(f"{GLYPH_DIGEST} Agent Queue")
 
 
 def test_no_mentions_survive_even_from_user_authored_text():
@@ -290,3 +293,42 @@ def test_completed_work_with_nothing_running_still_sends_with_a_zero_active_coun
     assert result.send is True
     assert result.active_count == 0
     assert "0 active" in result.text
+
+
+# --- fleet facts: daemon health that belongs to no project or task -----------
+
+
+def provider(key="provider:codex:2", detail="unavailable (unauthenticated)", at=NOW - 30):
+    return fact(
+        key=key, kind=KIND_PROVIDER, category="system", project_id="", task_id="",
+        title="provider codex", detail=detail, at=at,
+    )
+
+
+def test_a_fleet_fact_leads_the_highlights_and_names_no_project_or_task():
+    busy = tuple(fact(key=f"c{i}", task_id=f"t{i}", detail=f"done {i}") for i in range(4))
+    result = build_digest(inputs(facts=(*busy, provider())), project_ids=frozenset({"p"}))
+    lines = result.text.split("\n")
+    assert lines[0].startswith(f"{GLYPH_DIGEST} Agent Queue")
+    assert "1 provider change · 4 completed" in lines[0]
+    assert lines[1] == "• provider codex: unavailable (unauthenticated)"
+    assert "()" not in result.text
+
+
+def test_a_fleet_facts_wording_is_scoped_to_its_own_key():
+    first, second = provider(), provider(key="provider:codex:6")
+    assert highlight_key(first) != highlight_key(second)
+    result = build_digest(inputs(facts=(first, second)))
+    assert len(result.eligibility.facts) == 2
+
+
+def test_delivery_wait_is_named_in_activity_digest_but_does_not_invent_activity():
+    waits = ({"task_id": "consumer.4", "project_id": "p", "reason": "Land source.6 on dev"},)
+    assert not build_digest(inputs(waiting_on_delivery=waits)).send
+    result = build_digest(inputs(facts=(fact(),), waiting_on_delivery=waits))
+    assert result.send
+    assert "1 waiting on delivery" in result.text
+    assert "consumer.4" in result.text and "source.6 on dev" in result.text
+    hidden = build_digest(inputs(facts=(fact(),), waiting_on_delivery=waits),
+                          project_ids=frozenset({"other"}))
+    assert "source.6" not in hidden.text

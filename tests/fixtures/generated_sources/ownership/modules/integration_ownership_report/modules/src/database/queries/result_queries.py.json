@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/database/queries/result_queries.py::ResultQueryMixin.save_task_completion": {
+      "reason": "Queues an explicit branch retirement for a failed or abandoned close in the completion transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    }
+  }
+}
