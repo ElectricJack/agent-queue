@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import and_, case, exists, func, or_, select, tuple_
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
+    archived_tasks,
     gates,
     integration_batch_members,
     integration_batches,
     integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
-    integration_review_evidence,
     projects,
     repos,
     task_branch_origins,
@@ -24,6 +24,8 @@ from src.database.tables import (
     task_labels,
     tasks,
 )
+from src.database.queries.blocked_state import obsolete_marker
+from src.database.queries.ingest_hold import not_ingest_held
 from src.models import TaskStatus
 
 
@@ -37,6 +39,30 @@ _ACTIVE_BATCH_LIFECYCLES = (
     "promoting",
     "cleanup_pending",
 )
+
+
+def legacy_batch_row():
+    """Predicate naming the ``integration_batches`` rows the old engine owns.
+
+    A non-null ``target_ref`` is the Git-first train's additive input/intent
+    shape (see ``tables.py``); the legacy rows are the ones
+    ``uq_integration_batches_active_project`` makes mutually exclusive per
+    project. The train alone advances its own rows; historical maintenance
+    must not treat them as legacy subjects or hold their members out of the
+    current frontier.
+    """
+    return integration_batches.c.target_ref.is_(None)
+
+
+def _root_delivery_receipt_conditions(repository_id: str, default_branch):
+    """The receipt rules shared by eligibility and dependency satisfaction."""
+    return (
+        task_delivery_receipts.c.target_task_id.is_(None),
+        task_delivery_receipts.c.repository_id == repository_id,
+        func.regexp_replace(task_delivery_receipts.c.target_branch, "^refs/heads/", "")
+        == func.regexp_replace(default_branch, "^refs/heads/", ""),
+        task_delivery_receipts.c.disposition == "code",
+    )
 
 
 class IntegrationTrainQueriesMixin:
@@ -66,7 +92,13 @@ class IntegrationTrainQueriesMixin:
         )
         operation = integration_repair_operations.alias("integration_train_operation")
 
-        has_children = exists(select(child.c.id).where(child.c.parent_task_id == tasks.c.id))
+        archived_child = archived_tasks.alias("integration_train_archived_child")
+        has_children = or_(
+            exists(select(child.c.id).where(child.c.parent_task_id == tasks.c.id)),
+            exists(select(archived_child.c.id).where(
+                archived_child.c.parent_task_id == tasks.c.id,
+            )),
+        )
         leaf_identity = and_(
             ~has_children,
             checkpoint.c.checkpoint_sha.is_not(None),
@@ -126,15 +158,15 @@ class IntegrationTrainQueriesMixin:
             .where(
                 integration_batch_members.c.task_id == tasks.c.id,
                 integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES),
+                legacy_batch_row(),
             )
         )
         delivered_to_root = exists(
             select(task_delivery_receipts.c.id).where(
                 task_delivery_receipts.c.source_task_id == tasks.c.id,
-                task_delivery_receipts.c.target_task_id.is_(None),
-                task_delivery_receipts.c.repository_id == repository_id,
-                task_delivery_receipts.c.target_branch == repository.c.default_branch,
-                task_delivery_receipts.c.disposition == "code",
+                *_root_delivery_receipt_conditions(
+                    repository_id, repository.c.default_branch
+                ),
             )
         )
 
@@ -191,10 +223,13 @@ class IntegrationTrainQueriesMixin:
                 tasks.c.project_id == project_id,
                 tasks.c.parent_task_id.is_(None),
                 tasks.c.status == TaskStatus.COMPLETED.value,
+                ~obsolete_marker(tasks),
                 tasks.c.repo_id == repository_id,
                 tasks.c.pr_url.is_not(None),
                 func.trim(tasks.c.pr_url) != "",
                 ~held,
+                # A held ingestion container is never a train root.
+                not_ingest_held(),
                 ~unresolved_gate,
                 ~active_membership,
                 ~delivered_to_root,
@@ -212,50 +247,3 @@ class IntegrationTrainQueriesMixin:
             await conn.execute(statement.order_by(tasks.c.id, source_head).limit(limit))
         ).mappings()
         return [dict(row) for row in rows]
-
-    async def latest_exact_reviews_on(
-        self,
-        conn: AsyncConnection,
-        candidates: list[dict[str, Any]],
-    ) -> dict[tuple[str, str, str, str, int], dict[str, Any]]:
-        keys = {
-            (
-                row["task_id"],
-                row["repository_id"],
-                row["source_base"],
-                row["source_head"],
-                int(row["generation"]),
-            )
-            for row in candidates
-        }
-        if not keys:
-            return {}
-        key_columns = (
-            integration_review_evidence.c.source_task_id,
-            integration_review_evidence.c.repository_id,
-            integration_review_evidence.c.source_base,
-            integration_review_evidence.c.reviewed_head_sha,
-            integration_review_evidence.c.generation,
-        )
-        rows = (
-            await conn.execute(
-                select(integration_review_evidence)
-                .where(tuple_(*key_columns).in_(sorted(keys)))
-                .order_by(
-                    integration_review_evidence.c.created_at.desc(),
-                    integration_review_evidence.c.id.desc(),
-                )
-            )
-        ).mappings()
-        latest: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
-        for row in rows:
-            value = dict(row)
-            key = (
-                value["source_task_id"],
-                value["repository_id"],
-                value["source_base"],
-                value["reviewed_head_sha"],
-                int(value["generation"]),
-            )
-            latest.setdefault(key, value)
-        return latest

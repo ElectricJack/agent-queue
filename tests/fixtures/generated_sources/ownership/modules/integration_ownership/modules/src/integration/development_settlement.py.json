@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/development_settlement.py::write_settlements_on::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 199,
+      "owner": "write_settlements_on",
+      "owner_fingerprint": "56df16a0846a8cfe63bf5e317200c2aaec8ac8c72a1323fb1d155e552eef80d0",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

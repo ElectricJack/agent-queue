@@ -4,16 +4,42 @@ tags: [design, memory, plugin, milvus, memsearch]
 
 # Memory Plugin v2
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+> **Historical architecture; loading fenced (audit 2026-10-23).** Extraction
+> to external `aq-memory` shipped; the in-tree memory manager is removed.
+> The Draft status below records the original proposal, not its rollout.
+> Startup now skips both `aq-memory` and `memory` via
+> `src/knowledge/legacy.py` pending the K07 versioned read-only adapter
+> handshake. Installing the package does not activate semantic memory.
+> External plugin permissions are metadata, not a sandbox; only `config`
+> and `vault_watcher` are allowed services. The canonical knowledge store is
+> PostgreSQL; optional semantic retrieval crosses `MemorySemanticPort`.
+> See [plugins and MCP](../../guides/plugins-and-mcp.md) and
+> [feature pauses](feature-pauses.md) for current operation.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#8 plugins own their dependencies, #10 fewer moving parts)
-**Related:** [[vault]], [[memory-scoping]], [[self-improvement]], [[specs/plugin-system]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#8 plugins own their dependencies, #10 fewer moving parts)
+**Related:** [vault](vault.md), [memory-scoping](memory-scoping.md), [self-improvement](self-improvement.md), [specs/plugin-system](../plugin-system.md)
 
 ---
+
+> **Current boundary (2026-10-22).** Core knowledge now lives in PostgreSQL records and works without a memory
+> plugin. Core refuses legacy plugins named `aq-memory` or `memory`; installing
+> one does not enable the APIs described below. The optional adapter ports do not
+> supply a backend or a load handshake. See
+> [knowledge records](../../guides/knowledge-records.md).
 
 ## 1. Overview
 
 The memory system is implemented as a **self-contained external plugin** shipped as a
-separate repo at `/mnt/d/Dev/aq/aq-memory` (or installed via `aq plugin install`). It
+separate repo at `<external aq-memory checkout>` (or installed via `aq plugin install`). It
 replaces the original `memory.py` MemoryManager (2958 lines) and memory plugin facade
 (1046 lines) with a unified plugin owned outside the core tree.
 
@@ -131,7 +157,7 @@ fields = [
 
 **`document`** — Memory files with embeddings for semantic search. The `content`
 field holds a summary (optimized for retrieval); `original` holds the full text.
-`topic` enables pre-filtering before vector search (see [[memory-scoping]] Section 3).
+`topic` enables pre-filtering before vector search (see [memory-scoping](memory-scoping.md) Section 3).
 
 **`kv`** — Key-value pairs for exact lookup. No embedding needed. Queried via
 scalar filters on `kv_namespace` and `kv_key`.
@@ -218,7 +244,7 @@ retained.
 
 ### Fact Files (KV Source of Truth)
 
-Each scope can have a `facts.md` in the [[vault]] — a human-readable file of structured
+Each scope can have a `facts.md` in the [vault](vault.md) — a human-readable file of structured
 key-value data that gets synced to Milvus KV entries:
 
 ```markdown
