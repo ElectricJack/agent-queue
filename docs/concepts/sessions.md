@@ -139,8 +139,8 @@ Nine of those are the identity markers every session carries
 isolation, pool launches and resource caps.
 
 The terminals themselves belong to the tmux server, so they are visible without
-the daemon at all. On a box configured with `sessions.provider: tmux` and the
-default socket name:
+the daemon at all. On a box configured with `sessions.provider: tmux` — which
+is what `aq install` writes — and the default socket name:
 
 ```bash
 tmux -L aq list-sessions
@@ -260,9 +260,12 @@ runs a fixed sequence, each step isolated so one failure does not skip the rest:
 4. **Exits** — a dead process with an open task becomes a typed verdict.
 5. **Abandoned claim loop** — recycle a worker that stopped claiming.
 6. **Orphans** — reconcile row-versus-task disagreement, in both directions.
-7. **Stall ladder** — nudge, then restart, then quarantine.
-8. **Named convergence** — start what is wanted, sleep what is idle.
-9. **Backstop** — `agents.stuck_timeout_seconds` as the last net.
+7. **Idle stop intent** — stop a session that has nothing left to do after
+   `sessions.idle_stop_grace_seconds` (60 s), so a harness that never exits
+   on its own still gives its pool slot and worktree back.
+8. **Stall ladder** — nudge, then restart, then quarantine.
+9. **Named convergence** — start what is wanted, sleep what is idle.
+10. **Backstop** — `agents.stuck_timeout_seconds` as the last net.
 
 The single rule that governs all of it: **unknown is not dead.** If a provider
 cannot enumerate its sessions it raises
@@ -280,6 +283,25 @@ probe is the expensive mistake this design exists to avoid.
 > does not implement it at all, so on that provider the honest answer is always
 > "cannot confirm".
 
+### A finished session that will not leave
+
+The worker protocol asks an agent to leave when its task is closed or its claim
+budget is spent, and the harness is supposed to exit; step 7 then classifies the
+death like any other. Some harnesses do not: an OpenCode worker's turn ends and
+its pane stays, so the session keeps its pool slot, its agent and its worktree
+until somebody runs `aq session kill`. On 2026-10-03 two verifiers sat in
+exactly that state for 18 and 26 minutes.
+
+The step's **shape** is the safety proof and never consults a clock: a session
+inside a claim, holding an open task, or blocked on an agent question is left
+alone, and so is one the daemon is still writing under a task's control lock.
+Its **clock** cannot be `sessions.last_activity`, because tmux's
+`window_activity` advances on *any* output and an always-painting TUI keeps it
+fresh — which is also why step 5 never saw those workers, since they counted as
+idle *supply*. So the grace runs from the first tick the finished shape was
+observed, keyed by instance token; `aq doctor --check
+sessions.stop_intent_pending` reports anything that outlives several of them.
+
 ### Exit verdicts
 
 When a process is gone and its task is still open,
@@ -289,7 +311,7 @@ four values, checked in this order:
 | Verdict | Trigger | What happens |
 |---|---|---|
 | `drained` | the task is already closed | normal teardown |
-| `rate_limit` | rate-limit wording in the final screen | task paused with a cooldown; the session is not restarted straight back into the limit |
+| `rate_limit` | rate-limit wording in the final screen | provider evidence: the work is checkpointed and pushed, and the task is paused briefly or re-routed by provider failover (D13) — a 15-minute cooldown only outside enforce mode; the session is not restarted straight back into the limit |
 | `rapid_crash` | died inside `sessions.restart_window_seconds` of starting (600 s default) | restart with backoff — a launch or config problem, not work |
 | `productive_death` | ran a while, then exited with the task open | never silently re-queued; flagged for attention |
 
@@ -316,6 +338,19 @@ kill ([`_step_stall_ladder`](../../src/sessions/reconciler.py)):
 Providers with no input channel skip the nudge rungs entirely rather than
 spending three cycles talking to nobody. A session parked on a human question
 is exempt from the ladder for as long as the question is open.
+
+**A CLI parked on its usage-limit screen leaves the ladder at once.** Claude
+Code and Codex do not exit when they hit a usage limit mid-task; they print the
+limit line and sit at their prompt, where no nudge can help. Before each rung
+the ladder peeks the pane, and when its last lines hold one of the CLIs' own
+blocking limit messages (`You've hit your session limit · resets …`,
+`You’ve hit your usage limit. … try again at …`) it stops the process and
+applies the exit classifier's `rate_limit` verdict — provider evidence, then
+provider failover's checkpoint and re-route — without spending a restart
+([`src/sessions/usage_limit_screen.py`](../../src/sessions/usage_limit_screen.py)).
+The match is deliberately strict: the CLI's own `⎿`/`■` gutter at the left
+margin, then the exact wording, so output that merely quotes it does not
+count. `provider_failover.mode: enforce` only.
 
 **Agents can stop the ladder from climbing.** Anything that will be quiet for
 more than a few minutes — a long build, a full test run — should call
@@ -344,9 +379,9 @@ Adoption is off if `sessions.adopt_on_start` is `false`; it ships `true`.
 > **Warning.** Adoption is only as good as the provider's ability to enumerate.
 > `SubprocessProvider.list_running` only knows sessions *this daemon process*
 > started, so after a restart it sees nothing — no session is mis-reaped, but
-> none is re-adopted either. This is one of the reasons this install sets
-> `sessions.provider: tmux` in `~/.agent-queue/config.yaml` rather than leaving
-> the shipped `subprocess` default.
+> none is re-adopted either. This is one of the reasons `aq install` writes
+> `sessions.provider: tmux` into `~/.agent-queue/config.yaml` rather than
+> leaving the code's portable `subprocess` default in place.
 
 ## Idle sessions and drains
 
@@ -365,7 +400,10 @@ Not every session is working on a task, and the three kinds idle differently.
   and that has its own bounded check
   ([`_step_abandoned_pool_claim_loop`](../../src/sessions/reconciler.py)),
   which recycles the session behind a database compare-and-set so a late claim
-  can never lose a race with its own teardown.
+  can never lose a race with its own teardown. The same check catches a worker
+  that never reached its loop because its CLI is parked on the usage-limit
+  screen; before recycling it reads the pane, and a limit screen is recorded as
+  a rate-limit exit against the provider (`end_reason = usage_limit_screen`).
 
 Draining a pool session is cooperative. `aq task close --claim-next` returns
 `drain_requested` or `session_exhausted` when the daemon wants the worker to

@@ -4,14 +4,22 @@ tags: [spec, plugins, extensibility]
 
 # Plugin System Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 **Source files:** `src/plugins/` , modifications to `src/command_handler.py`, `src/tool_registry.py`, `src/orchestrator.py`, `src/cli/app.py`, `src/discord/bot.py`
-**Related specs:** [[specs/command-handler]], [[specs/tiered-tools]], [[design/playbooks]]
+**Related specs:** [specs/command-handler](command-handler.md), [specs/tiered-tools](tiered-tools.md), [design/playbooks](design/playbooks.md)
 
 ---
 
 ## 1. Overview
 
-See [[design/memory-plugin]] for how the memory plugin v2 extends the plugin architecture.
+See [design/memory-plugin](design/memory-plugin.md) for how the memory plugin v2 extends the plugin architecture.
 
 The plugin system enables extending AgentQueue with installable, self-contained Python packages that can register commands, tools, cron-scheduled functions, CLI commands, and Discord slash commands. Plugins are installed from git repositories, managed via Discord slash commands and the `aq` CLI, and can be developed/updated by AgentQueue agents themselves.
 
