@@ -131,7 +131,7 @@ committed and regenerated, never edited.
 | `test_committed_openapi_json_matches_the_live_app_surface` fails | A model or route changed without regenerating. | Run both regeneration scripts and commit the artifacts. |
 | A new command's result is `unknown` in TypeScript | No response model registered for it. | Add a model and put it in that module's `RESPONSE_MODELS`; `tests/test_response_model_registry.py` is the guard. |
 | `500` with a pydantic `ValidationError` in the daemon log | A response model is stricter than the data it projects — an `int` field receiving a rolled-up average, for example. | Widen the field to match reality, regenerate, and add a case with the real shape. |
-| A field you added is missing from the client | The client was not regenerated, or the installed client is an older copy than the checkout. | Regenerate, then `pip install -e packages/aq-client`. |
+| A field you added is missing from the client | The client was not regenerated, or the installed client is an older copy than the checkout. | Regenerate. An editable install then already sees the new files; if the script reports the installed client comes from another tree, run with `PYTHONPATH=packages/aq-client` rather than re-pointing a shared environment. |
 
 ## Related pages
 
