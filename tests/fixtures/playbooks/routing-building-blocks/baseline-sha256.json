@@ -1,0 +1,10 @@
+{
+  "installed": {
+    "source.md": "sha256:9a9e6287393bad18726e7661393ce24c822d35639cf17b4ef75249a4545b0970",
+    "artifact.json": "sha256:49ab81f7a2f52b863cf11d001b719ea2b507c2b013dd618220ca1632cd362a9b"
+  },
+  "shipped": {
+    "source.md": "sha256:1b317af5fbb2f87ea4f42edac811c94cc5d09b01a8cb5dd1c1ff191c59cd598f",
+    "artifact.json": "sha256:4ec68bae1d26ff1535ae4249fa8ae35989834dc0d7535a637cae05cc503ebae4"
+  }
+}

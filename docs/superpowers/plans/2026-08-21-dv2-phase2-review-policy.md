@@ -1,5 +1,12 @@
 # Dashboard v2 Phase 2 — Review Policy Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the policy-derived review layer: per-task + per-branch review stages spawned by the default pipeline playbook, reviewer/final-reviewer agent-type profiles, close-with-summary enforcement, PR merge authority, and a clean rework loop via `reopen_with_feedback` — all reactions live in vault markdown, the framework only wires deterministic actions on `task.completed`.
@@ -60,8 +67,8 @@
 **Interfaces:**
 - Consumes: `GitManager` (existing), `CommandHandler` (existing), `Project.workspace_path` (existing model field).
 - Produces:
-  - `GitManager.amerge_pr(checkout_path: str, pr_url: str, method: str = "squash") -> dict` returning `{"success": bool, "sha": str | None, "error": str | None}`.
-  - `CommandHandler._cmd_pr_merge(args: dict) -> dict` — args: `{"project_id": str, "pr_url": str, "method": "squash" | "merge" | "rebase" (default "squash")}`. Returns `{"success": bool, "pr_url": str, "sha": str | None, "error": str | None}`.
+  - `GitManager.amerge_pr(checkout_path: str, pr_url: str, method: str = "merge") -> dict` returning `{"success": bool, "sha": str | None, "error": str | None}`.
+  - `CommandHandler._cmd_pr_merge(args: dict) -> dict` — args: `{"project_id": str, "pr_url": str, "method": "merge" | "squash" | "rebase" (default "merge")}`. Returns `{"success": bool, "pr_url": str, "sha": str | None, "error": str | None}`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -77,7 +84,7 @@ async def test_pr_merge_command_shells_gh_and_returns_success(monkeypatch):
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
         assert cmd[:3] == ["gh", "pr", "merge"]
-        assert "--squash" in cmd
+        assert "--merge" in cmd
         assert "https://github.com/org/repo/pull/42" in cmd
         r = MagicMock()
         r.returncode = 0
@@ -123,7 +130,7 @@ Add after the `acheck_pr_merged` method (around line 1990). Follow the existing 
         self,
         checkout_path: str,
         pr_url: str,
-        method: str = "squash",
+        method: str = "merge",
     ) -> dict:
         """Merge a PR via ``gh pr merge``.
 
@@ -134,9 +141,8 @@ Add after the `acheck_pr_merged` method (around line 1990). Follow the existing 
         pr_url:
             Full PR URL, e.g. ``https://github.com/org/repo/pull/42``.
         method:
-            One of ``"squash"``, ``"merge"``, ``"rebase"``.  Defaults to
-            ``"squash"`` — matches the project convention documented in
-            the shipped final-reviewer profile.
+            One of ``"merge"``, ``"squash"``, ``"rebase"``.  Defaults to
+            ``"merge"`` — produces a merge commit preserving original branch history.
 
         Returns
         -------
@@ -146,7 +152,7 @@ Add after the `acheck_pr_merged` method (around line 1990). Follow the existing 
             callers who need the merged sha should query the branch head
             after this returns.
         """
-        if method not in ("squash", "merge", "rebase"):
+        if method not in ("merge", "squash", "rebase"):
             return {"success": False, "sha": None, "error": f"invalid method: {method}"}
         flag = f"--{method}"
         try:

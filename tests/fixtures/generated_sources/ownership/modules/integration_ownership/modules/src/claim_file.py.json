@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/claim_file.py::CLAIM_FILE": "Generic claim-file basename, with no integration state or policy.",
+    "src/claim_file.py::read_claim_file": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/claim_file.py::remove_claim_file": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/claim_file.py::remove_claim_file_if_matches": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/claim_file.py::write_claim_file": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

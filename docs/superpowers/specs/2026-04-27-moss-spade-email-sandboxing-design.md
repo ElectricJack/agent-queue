@@ -6,6 +6,12 @@ topic: moss-and-spade email playbook sandboxing
 
 # Email Playbook Sandboxing — Drafts-Only Outbound for Moss & Spade Business Logic
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Goal
 
 Make it physically impossible for the moss-and-spade-business-logic agent (Meredith Oxalis) to send an email to anyone, ever — without a human reviewing the recipient list first. The agent may **draft** replies and edits, but a human (Jack or Jessica) is the only entity that hits Send.
