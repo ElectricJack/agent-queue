@@ -672,6 +672,40 @@ async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
     )]
 
 
+async def _activation_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Recompute health before another trigger discovers blocked automation."""
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+
+    if not ctx.config.playbooks.enabled:
+        return []
+    if not callable(getattr(ctx.handler, "_v2_lookups", None)):
+        raise ObservationUnavailable("playbook health registries unavailable")
+    contracts, profiles, _events = await ctx.handler._v2_lookups()
+    records = await load_activation_health(ctx.db, contracts=contracts, profiles=profiles)
+    findings = []
+    for record in records:
+        if record.health is ActivationHealth.READY:
+            continue
+        age = max(0, now - record.activated_at) if record.activated_at is not None else None
+        age_text = f"activated {age / 3600:.1f}h ago" if age is not None else "activation age unknown"
+        reasons = "; ".join(
+            f"{reason.code}: {reason.subject or reason.message}" for reason in record.reasons
+        ) or "no health reasons"
+        findings.append(_finding(
+            "playbook_activation_unhealthy",
+            record.scope_identifier if record.scope == "project" else None,
+            f"{record.playbook_id} ({record.scope}:{record.scope_identifier or '-'}) is "
+            f"{record.health.value}, enabled={record.enabled}, {age_text}; {reasons}; "
+            "inspect activation-health, then recompile and reactivate through the reviewed path",
+            activation_id=record.activation_id, playbook_id=record.playbook_id,
+            scope=record.scope, scope_identifier=record.scope_identifier,
+            health=record.health.value, enabled=record.enabled,
+            artifact_sha256=record.active_artifact_sha256, activated_at=record.activated_at,
+            activation_age_seconds=age, reasons=[reason.as_dict() for reason in record.reasons],
+        ))
+    return findings
+
+
 def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> CheckResult:
     summary = (
         f"{len(findings)} stall finding(s) across {active} active project(s)" if findings
@@ -693,6 +727,7 @@ def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> Chec
 # The producer owns every identity mapping. None denotes a scope aggregate,
 # never a guessed task/project reference hidden somewhere in legacy JSON.
 _SUBJECTS = {
+    "playbook_activation_unhealthy": ("playbook_activation", "activation_id"),
     "unclaimed_work": ("task", "task_id"),
     "undelivered_blocker": ("task", "task_id"),
     "WAITING-ON-DELIVERY": ("task", "task_id"),
@@ -783,7 +818,8 @@ async def _probe(ctx, active, kinds, run):
         retained.append(row)
     projects = set(active) | {row["project_id"] for row in retained}
     global_kinds = {kind for kind in kinds if _SUBJECTS[kind] is None
-                    or kind in {"validation_db", "session_authentication"}}
+                    or kind in {"validation_db", "session_authentication",
+                                "playbook_activation_unhealthy"}}
     if global_kinds:
         projects.add(None)
     if not projects:
@@ -853,6 +889,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         failed_projects.update(active)
         tasks = tasks[:MAX_ROWS]
     runs = [
+        _probe(ctx, active, ("playbook_activation_unhealthy",),
+               lambda c: _activation_findings(c, now)),
         _probe(ctx, active, ("flock_untracked", "session_authentication"),
                lambda c: _flock_findings(c, now)),
         _probe(ctx, active, ("conversation_unowned",), lambda c: _conversation_findings(c, now)),

@@ -1483,7 +1483,10 @@ class TaskQueryMixin:
                 task_metadata.c.value == json.dumps(holder["id"]),
             ))
 
-    async def resume_task(self, task_id: str, *, stopped_sessions: Sequence[dict] = ()) -> Task:
+    async def resume_task(
+        self, task_id: str, *, stopped_sessions: Sequence[dict] = (),
+        defer_recovery_supersession: bool = False,
+    ) -> Task:
         """Remove only the explicit hold; keep approval and dependency state."""
         async with self.immediate() as conn:
             row = await self._lock_task_row(conn, task_id)
@@ -1494,7 +1497,9 @@ class TaskQueryMixin:
                 task_metadata.c.key == "slot_reset_failure",
             ))).scalar_one_or_none()
             if row["status"] in {"READY", "BLOCKED"} and failure:
-                result = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
+                result = await self._retry_slot_reset_locked(
+                    conn, row, stopped_sessions, defer_recovery_supersession=defer_recovery_supersession,
+                )
             else:
                 if row["status"] != TaskStatus.PAUSED.value:
                     # "Task is not paused (status: FAILED)" is true and useless
@@ -1513,7 +1518,9 @@ class TaskQueryMixin:
                         )
                     raise ValueError(f"Task is not paused (status: {row['status']})")
                 encoded = await self._read_manual_pause(conn, task_id)
-                result = await self._resume_locked(conn, task_id, encoded)
+                result = await self._resume_locked(
+                    conn, task_id, encoded, defer_recovery_supersession=defer_recovery_supersession,
+                )
                 # A hold placed over a failed slot reset restores the parked
                 # status, and the restore clears its attention: a BLOCKED row
                 # with no blocker the promotion cascade or explain can see
@@ -1521,7 +1528,9 @@ class TaskQueryMixin:
                 # resuming the unpaused task, so apply it in this transaction.
                 row = await self._lock_task_row(conn, task_id)
                 if failure and row["status"] in {"READY", "BLOCKED"}:
-                    retried = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
+                    retried = await self._retry_slot_reset_locked(
+                        conn, row, stopped_sessions, defer_recovery_supersession=defer_recovery_supersession,
+                    )
                     seen = {ready_id for ready_id, _ in result.ready}
                     result.flipped |= retried.flipped
                     result.ready += [entry for entry in retried.ready if entry[0] not in seen]
@@ -1530,7 +1539,7 @@ class TaskQueryMixin:
         return await self.get_task(task_id)
 
     async def _retry_slot_reset_locked(
-        self, conn, row, stopped_sessions: Sequence[dict]
+        self, conn, row, stopped_sessions: Sequence[dict], *, defer_recovery_supersession=False,
     ) -> TransitionResult:
         """Requeue a failed slot reset; the caller holds the row lock."""
         task_id = row["id"]
@@ -1545,6 +1554,7 @@ class TaskQueryMixin:
         return await self._apply_transition(
             conn, task_id, TaskStatus.READY, force=True,
             context="slot_reset_retry", returning=True, assigned_agent_id=None,
+            _defer_recovery_supersession=defer_recovery_supersession,
         )
 
     async def recover_orphaned_pause(self, task_id: str) -> Task | None:
@@ -1648,6 +1658,7 @@ class TaskQueryMixin:
 
     async def _resume_locked(
         self, conn, task_id: str, encoded: str | None, *, defer_projection=False,
+        defer_recovery_supersession=False,
     ) -> TransitionResult:
         """Restore a PAUSED task from its hold snapshot; the caller holds the row lock."""
         saved = json.loads(encoded) if encoded is not None else {}
@@ -1700,6 +1711,7 @@ class TaskQueryMixin:
             conn, task_id, prior, context="manual_resume", force=True,
             _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
             _defer_projection=defer_projection,
+            _defer_recovery_supersession=defer_recovery_supersession,
         )
         # Resuming is an operator decision that the paused incident has been
         # addressed.  Do this in the same transaction as the status write so
@@ -1838,6 +1850,7 @@ class TaskQueryMixin:
         integration_delivery=None,
         allow_missing_provenance_reopen: bool = False,
         _defer_recovery_supersession: bool = False,
+        _recovery_hold_override: dict | None = None,
         pr_merge_gate: str | None = None,
         **kwargs,
     ) -> TransitionResult:
@@ -1898,6 +1911,8 @@ class TaskQueryMixin:
         explicit_restart = new_status == TaskStatus.READY and context in {
             "restart_task", "reopen_with_feedback",
         }
+        await self._guard_restart_recovery_hold_on(conn, task_id, _recovery_hold_override,
+                                                   new_status == TaskStatus.READY and context)
 
         if assume_pre_state is not None:
             current_status, pre_blocked = assume_pre_state
@@ -2380,7 +2395,7 @@ class TaskQueryMixin:
             explicit_restart or context in {"manual_resume", "slot_reset_retry"}
         ) and not _defer_recovery_supersession:
             released_hold = await self._supersede_restarted_task_recovery_on(
-                conn, task_id, context=context,
+                conn, task_id, context=context, hold_override=_recovery_hold_override,
             )
             if (
                 released_hold and not _defer_projection

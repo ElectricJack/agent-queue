@@ -1,38 +1,45 @@
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.http_validation_error import HTTPValidationError
+from ...models.task_split_request import TaskSplitRequest
+from ...models.task_split_response import TaskSplitResponse
+from ...models.task_split_response_422 import TaskSplitResponse422
 from ...types import Response
 
 
 def _get_kwargs(
-    task_id: str,
+    *,
+    body: TaskSplitRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/plans/{task_id}".format(
-            task_id=quote(str(task_id), safe=""),
-        ),
+        "method": "post",
+        "url": "/api/task/split",
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | HTTPValidationError | None:
+) -> TaskSplitResponse | TaskSplitResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = TaskSplitResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
-        response_422 = HTTPValidationError.from_dict(response.json())
+        response_422 = TaskSplitResponse422.from_dict(response.json())
 
         return response_422
 
@@ -44,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | HTTPValidationError]:
+) -> Response[TaskSplitResponse | TaskSplitResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -54,27 +61,27 @@ def _build_response(
 
 
 def sync_detailed(
-    task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | HTTPValidationError]:
-    """Plan Viewer
+    body: TaskSplitRequest,
+) -> Response[TaskSplitResponse | TaskSplitResponse422]:
+    """Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
-     Serve plan content as an HTML page.
+     Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
     Args:
-        task_id (str):
+        body (TaskSplitRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | HTTPValidationError]
+        Response[TaskSplitResponse | TaskSplitResponse422]
     """
 
     kwargs = _get_kwargs(
-        task_id=task_id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -85,53 +92,53 @@ def sync_detailed(
 
 
 def sync(
-    task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | HTTPValidationError | None:
-    """Plan Viewer
+    body: TaskSplitRequest,
+) -> TaskSplitResponse | TaskSplitResponse422 | None:
+    """Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
-     Serve plan content as an HTML page.
+     Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
     Args:
-        task_id (str):
+        body (TaskSplitRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | HTTPValidationError
+        TaskSplitResponse | TaskSplitResponse422
     """
 
     return sync_detailed(
-        task_id=task_id,
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
-    task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | HTTPValidationError]:
-    """Plan Viewer
+    body: TaskSplitRequest,
+) -> Response[TaskSplitResponse | TaskSplitResponse422]:
+    """Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
-     Serve plan content as an HTML page.
+     Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
     Args:
-        task_id (str):
+        body (TaskSplitRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | HTTPValidationError]
+        Response[TaskSplitResponse | TaskSplitResponse422]
     """
 
     kwargs = _get_kwargs(
-        task_id=task_id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -140,28 +147,28 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | HTTPValidationError | None:
-    """Plan Viewer
+    body: TaskSplitRequest,
+) -> TaskSplitResponse | TaskSplitResponse422 | None:
+    """Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
-     Serve plan content as an HTML page.
+     Keep code on its existing delivery path and relocate explicit remaining acceptance.
 
     Args:
-        task_id (str):
+        body (TaskSplitRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | HTTPValidationError
+        TaskSplitResponse | TaskSplitResponse422
     """
 
     return (
         await asyncio_detailed(
-            task_id=task_id,
             client=client,
+            body=body,
         )
     ).parsed

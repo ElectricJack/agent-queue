@@ -14,6 +14,7 @@ import json
 import time
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -143,6 +144,21 @@ async def _plan(handler, task_id: str, classification=None) -> dict:
     return await handler.execute("task_route_plan", args)
 
 
+def _pool_source(orch):
+    """Pool edits round-trip the installed vault source, as on a real install."""
+    path = Path(orch.config.data_dir) / "vault/agent-types/standard-high-codex/profile.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('''---
+id: standard-high-codex
+name: Codex
+---
+## Config
+```json
+{"harness": "codex", "lifecycle": "pool", "default_class": "standard-high", "max_active": 2}
+```
+''', encoding="utf-8")
+
+
 # -- task_route_plan -------------------------------------------------------------
 
 
@@ -157,6 +173,67 @@ async def test_plan_reads_the_live_catalog_and_writes_nothing(handler, orch):
     assert plan["policy_sha256"].startswith("sha256:")
     task = await orch.db.get_task("t")
     assert (task.profile_id, task.route_source) == (None, UNROUTED)
+
+
+@pytest.mark.parametrize("disable", ["pool", "zero", "provider", "quarantine"])
+async def test_plan_and_apply_exclude_unavailable_pool_when_enabled_pool_is_full(
+    handler, orch, disable,
+):
+    from src.providers.availability import ProviderAvailability
+
+    _pool_source(orch)
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    plan = await _plan(handler, "t")
+    for i in range(3):
+        await _create(orch.db, f"full-{i}", profile_id="standard-high-claude",
+                      intelligence_class="standard-high", route_source=ROUTER)
+    if disable == "pool":
+        result = await handler.execute("pool_set_enabled", {
+            "profile_id": "standard-high-codex", "enabled": False,
+        })
+        assert result["success"], result
+    elif disable == "zero":
+        # CLI scaling refuses zero today; imported/operator profile rows may
+        # still carry it, and routing must treat it as no launch capacity.
+        await orch.db.update_profile("standard-high-codex", max_active=0)
+    elif disable == "provider":
+        orch.provider_availability._rows["codex"] = ProviderAvailability(
+            provider="codex", override_state="disabled", updated_at=time.time(),
+        )
+    else:
+        orch._quarantine_pool("p", "standard-high-codex", "launch backoff")
+    current = await _plan(handler, "t")
+    assert current["profile_id"] == "standard-high-claude", current
+    profile = _context_profile(current["live_context"])
+    assert profile["effective_headroom"] == 0
+    assert profile["max_active"] == (0 if disable == "zero" else 2)
+    if disable == "pool":
+        assert profile["enabled"] is False
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
+    assert applied["outcome"] == "routed", applied
+    assert applied["profile_id"] == "standard-high-claude"
+
+
+async def test_disabled_strict_preference_waits_and_reenabled_pool_is_selectable(handler, orch):
+    _pool_source(orch)
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH,
+                  prefer_target="codex", prefer_mode="strict")
+    plan = await _plan(handler, "t")
+    assert plan["profile_id"] == "standard-high-codex"
+    assert (await handler.execute("pool_set_enabled", {
+        "profile_id": "standard-high-codex", "enabled": False,
+    }))["success"]
+    waiting = await _plan(handler, "t")
+    assert waiting["outcome"] in {"held", "no_candidates"}, waiting
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
+    assert applied["outcome"] == "stale", applied
+    assert (await orch.db.get_task("t")).profile_id is None
+    assert (await handler.execute("pool_set_enabled", {
+        "profile_id": "standard-high-codex", "enabled": True,
+    }))["success"]
+    assert (await _plan(handler, "t"))["profile_id"] == "standard-high-codex"
 
 
 async def test_system_filing_without_ordinary_input_keeps_its_routing_origin(handler, orch):
@@ -849,12 +926,13 @@ async def test_apply_revalidates_live_provider_task_constraints_and_router_bindi
 
 async def test_context_summarizes_active_task_kinds_without_task_text(handler, orch):
     await _create(orch.db, "t", task_type=TaskType.RESEARCH)
-    await _create(orch.db, "active", profile_id="standard-high-codex",
+    private_id = "private-active-task-id"
+    await _create(orch.db, private_id, profile_id="standard-high-codex",
                   status=TaskStatus.IN_PROGRESS, task_type=TaskType.BUGFIX)
-    await _session(orch.db, "busy", task_id="active")
+    await _session(orch.db, "busy", task_id=private_id)
     result = await _plan(handler, "t")
     assert result["live_context"]["active_work"] == {"bugfix": 1}
-    assert "active" not in json.dumps(result["live_context"]["profiles"])
+    assert private_id not in json.dumps(result["live_context"]["profiles"])
 
 
 # -- the routing lock and the load queries -------------------------------------------------
