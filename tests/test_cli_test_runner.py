@@ -1157,44 +1157,65 @@ class TestPerfSuiteStaysOutOfTheDefaultRun:
     that forgets the marker again should fail here instead.
     """
 
+    @staticmethod
+    def _module_has_perf_marker(source):
+        """Inspect literal module markers without importing perf's DB fixtures."""
+        import ast
+
+        def is_perf(node):
+            if isinstance(node, ast.Call):
+                node = node.func
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "perf"
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "mark"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "pytest"
+            )
+
+        marker = None
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets = [node.target]
+            else:
+                continue
+            if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
+                # Reassignment replaces earlier markers, including the exact
+                # skipif-only regression that this check originally caught.
+                marker = node.value if not isinstance(node, ast.AugAssign) else None
+        if isinstance(marker, (ast.List, ast.Tuple)):
+            return any(is_perf(item) for item in marker.elts)
+        return is_perf(marker)
+
+    @pytest.mark.parametrize(("source", "expected"), [
+        ("pytestmark = pytest.mark.perf", True),
+        ("pytestmark = pytest.mark.perf()", True),
+        ("pytestmark: list = [pytest.mark.perf, pytest.mark.skipif(True)]", True),
+        ("pytestmark = (pytest.mark.skipif(True), pytest.mark.perf)", True),
+        ("pytestmark = pytest.mark.skipif(True, reason='pytest.mark.perf')", False),
+        ("pytestmark = pytest.mark.perf\npytestmark = pytest.mark.skipif(True)", False),
+        ("def test_one():\n    marker = pytest.mark.perf", False),
+        ("# pytestmark = pytest.mark.perf", False),
+    ])
+    def test_static_perf_marker_check(self, source, expected):
+        assert self._module_has_perf_marker(source) is expected
+
     def test_no_unmarked_tests_under_tests_perf(self):
-        import os
-        import subprocess
-        import sys
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent
-        env = os.environ.copy()
-        # Perf's conftest resolves its run-owned database at import time, so
-        # preserve this parent test run's disposable server configuration.
-        assert env.get("POSTGRES_TEST_DSN")
-        env.pop("AQ_REQUIRE_POSTGRES_TESTS", None)
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-p",
-                "no:xdist",
-                "--co",
-                "-q",
-                "-m",
-                "not perf",
-                "tests/perf",
-            ],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-        # pytest exits 5 when the run collected nothing, which is the whole
-        # assertion: `-m "not perf"` is what CI's default job selects.
-        assert proc.returncode == 5, (
-            "tests under tests/perf/ are selected by the default suite's "
-            f"-m 'not perf'; add pytest.mark.perf to their pytestmark\n"
-            f"{proc.stdout}{proc.stderr}"
+        modules = sorted((root / "tests" / "perf").rglob("test_*.py"))
+        assert modules
+        unmarked = [
+            str(path.relative_to(root))
+            for path in modules
+            if not self._module_has_perf_marker(path.read_text())
+        ]
+        assert not unmarked, (
+            "add a literal pytest.mark.perf to each module's pytestmark: " + ", ".join(unmarked)
         )
 
 
@@ -1532,6 +1553,19 @@ class TestOneFullSuiteRunAtATime:
         assert "Full-suite lock: held by task first-run, cwd /w/slot-9" in _flat(held.output)
         assert "busy (full suite)" in _flat(held.output)
 
+    def test_status_attributes_managed_slots_to_job_and_project(self, runner, box):
+        from src.resources.box_lock import BoxLock
+
+        with BoxLock(box.slots_dir, 2).acquire(timeout=0, meta={
+            "task_id": "full-task", "project_id": "agent-queue", "job_id": "managed-123",
+            "scope": "full",
+        }):
+            held = runner.invoke(cli, ["test", "--aq-status"])
+        assert held.exit_code == 0, held.output
+        output = _flat(held.output)
+        assert "Managed job managed-123: project agent-queue, task full-task, shared, slots 0" in output
+        assert "busy (full suite)" in output
+
 
 class TestFullSuiteLockReleasedOnSignals:
     """The full-suite lock is an ``flock`` like the slots: death releases it.
@@ -1557,6 +1591,7 @@ cli(["test", "tests/"], prog_name="aq")
     def wrapper(self, tmp_path):
         import os
         import signal
+        import site
         import subprocess
         import sys
         import threading
@@ -1576,6 +1611,11 @@ cli(["test", "tests/"], prog_name="aq")
             AQ_TEST_SLOTS="2",
             AQ_TASK_ID="signalled-run",
             POSTGRES_TEST_DSN="postgresql://test:test@localhost/postgres",
+        )
+        # Changing HOME also changes Python's user site. Keep this interpreter's
+        # installed dependencies while isolating the config and semaphore files.
+        env["PYTHONPATH"] = os.pathsep.join(
+            [site.getusersitepackages(), env.get("PYTHONPATH", "")]
         )
         proc = subprocess.Popen(
             [sys.executable, "-c", self._SCRIPT.format(root=str(root))],
@@ -1639,3 +1679,284 @@ cli(["test", "tests/"], prog_name="aq")
             time.sleep(0.05)
         assert full.snapshot()["free"] == 1
         assert slots.snapshot()["free"] == 2
+
+
+# -- other projects: their interpreter, their preconditions -------------------
+
+
+def _interpreter(path, *, xdist: bool):
+    """A stand-in interpreter: it answers the xdist probe and runs nothing else."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nexit {0 if xdist else 1}\n")
+    path.chmod(0o755)
+    return path
+
+
+def _project(root, name: str, *, venv: bool = True, xdist: bool = False, git: bool = True):
+    """A repository whose ``pyproject.toml`` names distribution *name*."""
+    root.mkdir(parents=True)
+    if git:
+        (root / ".git").mkdir()
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    )
+    (root / "tests").mkdir()
+    (root / "tests" / "test_x.py").write_text("def test_x():\n    pass\n")
+    if venv:
+        _interpreter(root / ".venv" / "bin" / "python", xdist=xdist)
+        (root / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    return root
+
+
+def _linked_worktree(main, slot):
+    """What ``git worktree add`` leaves behind: a ``.git`` file and an admin dir."""
+    admin = main / ".git" / "worktrees" / slot.name
+    admin.mkdir(parents=True)
+    (admin / "commondir").write_text("../..\n")
+    _project(slot, "quilt-trader", venv=False, git=False)
+    (slot / ".git").write_text(f"gitdir: {admin}\n")
+    return slot
+
+
+class TestProjectInterpreterResolution:
+    """quilt-trader's tests were run under agent-queue's interpreter and refused
+    for agent-queue's ``POSTGRES_TEST_DSN``; the project under test decides both."""
+
+    def test_agent_queue_runs_under_aq_and_requires_postgres(self, tmp_path):
+        import sys
+
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "agent-queue", "agent-queue")  # a .venv does not matter
+        setup = project_tests.resolve(root / "tests")
+        assert setup.python == sys.executable
+        assert setup.source == project_tests.AGENT_QUEUE
+        assert setup.requires_postgres
+
+    def test_this_checkout_is_agent_queue(self):
+        import sys
+        from pathlib import Path
+
+        from src.resources import project_tests
+
+        setup = project_tests.resolve(Path(__file__).resolve().parent)
+        assert setup.requires_postgres
+        assert setup.python == sys.executable
+        assert not setup.foreign
+
+    def test_another_project_runs_under_its_own_venv(self, tmp_path):
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        setup = project_tests.resolve(root / "tests")
+        assert setup.python == str(root / ".venv" / "bin" / "python")
+        assert setup.source == project_tests.VENV
+        assert setup.root == root
+        assert not setup.requires_postgres
+        assert setup.foreign
+
+    @pytest.mark.parametrize("inside", [True, False])
+    def test_a_worker_slot_uses_the_main_checkouts_venv(self, tmp_path, inside):
+        from src.resources import project_tests
+
+        main = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        parent = main / ".aq" / "worktrees" if inside else tmp_path / "workspaces"
+        slot = _linked_worktree(main, parent / "slot-0")
+        assert project_tests.main_checkout(slot.resolve()) == main
+        setup = project_tests.resolve(slot / "tests")
+        assert setup.python == str(main / ".venv" / "bin" / "python")
+        assert setup.root == slot.resolve()
+
+    def test_a_submodule_is_not_a_linked_worktree(self, tmp_path):
+        from src.resources import project_tests
+
+        (tmp_path / "modules" / "sub").mkdir(parents=True)
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / ".git").write_text(f"gitdir: {tmp_path / 'modules' / 'sub'}\n")
+        assert project_tests.main_checkout(tmp_path / "sub") is None
+
+    def test_the_operator_pin_wins_for_its_project_only(self, tmp_path):
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        pinned = _interpreter(tmp_path / "elsewhere" / "bin" / "python", xdist=True)
+        pins = {"quilt-trader": str(pinned)}
+        setup = project_tests.resolve(root, project_id="quilt-trader", interpreters=pins)
+        assert (setup.python, setup.source) == (str(pinned), project_tests.CONFIG)
+        other = project_tests.resolve(root, project_id="other", interpreters=pins)
+        assert other.source == project_tests.VENV
+
+    def test_a_pin_expands_home_and_resolves_relative_paths_from_a_slot(
+        self, tmp_path, monkeypatch
+    ):
+        from src.resources import project_tests
+
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        main = _project(tmp_path / "home" / "dev" / "quilt-trader", "quilt-trader")
+        slot = _linked_worktree(main, tmp_path / "workspaces" / "slot-1")
+        venv_python = str(main.resolve() / ".venv" / "bin" / "python")
+        for pin in ("~/dev/quilt-trader/.venv/bin/python", ".venv/bin/python"):
+            setup = project_tests.resolve(
+                slot, project_id="quilt-trader", interpreters={"quilt-trader": pin}
+            )
+            assert setup.python == venv_python, pin
+
+    def test_a_missing_pin_is_an_error_not_a_fallback(self, tmp_path):
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        with pytest.raises(project_tests.ProjectTestsError, match="does not exist"):
+            project_tests.resolve(
+                root,
+                project_id="quilt-trader",
+                interpreters={"quilt-trader": str(tmp_path / "gone" / "python")},
+            )
+
+    def test_without_a_venv_the_aq_interpreter_is_the_fallback(self, tmp_path):
+        import sys
+
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "scratch", "scratch", venv=False)
+        setup = project_tests.resolve(root)
+        assert (setup.python, setup.source) == (sys.executable, project_tests.FALLBACK)
+        assert not setup.requires_postgres
+
+    def test_the_xdist_probe_asks_the_interpreter(self, tmp_path):
+        import importlib.util
+        import sys
+
+        from src.resources import project_tests
+
+        assert project_tests.has_xdist(str(_interpreter(tmp_path / "a" / "python", xdist=True)))
+        assert not project_tests.has_xdist(
+            str(_interpreter(tmp_path / "b" / "python", xdist=False))
+        )
+        assert not project_tests.has_xdist(str(tmp_path / "missing" / "python"))
+        assert project_tests.has_xdist(sys.executable) == (
+            importlib.util.find_spec("xdist") is not None
+        )
+
+    def test_a_foreign_venv_is_activated_for_the_child(self, tmp_path):
+        import os
+        from pathlib import Path
+
+        from src.resources import project_tests
+
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        env = project_tests.resolve(root).child_env({"PATH": "/usr/bin", "PYTHONHOME": "/x"})
+        assert env["VIRTUAL_ENV"] == str(root / ".venv")
+        assert env["PATH"].split(os.pathsep) == [str(root / ".venv" / "bin"), "/usr/bin"]
+        assert "PYTHONHOME" not in env
+        own = project_tests.resolve(Path(__file__).resolve().parent)
+        assert own.child_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+class TestOtherProjectsCommand:
+    @pytest.fixture
+    def quilt(self, runner, monkeypatch, tmp_path, isolated_test_slots):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.delenv("POSTGRES_TEST_DSN", raising=False)
+        monkeypatch.delenv("AQ_PROJECT_ID", raising=False)
+        monkeypatch.setenv("AQ_TEST_WORKERS", "3")
+        seen: list[tuple[list[str], dict[str, str]]] = []
+
+        def _capture(argv, *, env):
+            seen.append((argv, env))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
+        return tmp_path, seen
+
+    def test_runs_under_the_projects_venv_without_the_aq_dsn(self, runner, quilt, monkeypatch):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+        monkeypatch.chdir(root)
+
+        result = runner.invoke(cli, ["test", "tests/test_x.py"])
+
+        assert result.exit_code == 0, result.output
+        ((argv, env),) = seen
+        assert argv[:3] == [str(root / ".venv" / "bin" / "python"), "-m", "pytest"]
+        # No pytest-xdist in that venv: a serial run under the slot, not an
+        # ``-n`` pytest rejects as unrecognized arguments.
+        assert "-n" not in _args(argv) and "--dist" not in _args(argv)
+        assert env["VIRTUAL_ENV"] == str(root / ".venv")
+        assert "POSTGRES_TEST_DSN" not in result.output
+        assert "serial" in result.output
+        assert "has no pytest-xdist" in result.output
+
+    def test_an_interpreter_with_xdist_keeps_the_worker_cap(self, runner, quilt, monkeypatch):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader", xdist=True)
+        monkeypatch.chdir(root)
+
+        assert runner.invoke(cli, ["test", "tests/test_x.py"]).exit_code == 0
+        ((argv, _env),) = seen
+        args = _args(argv)
+        assert args[args.index("-n") + 1] == "3"
+        assert args[args.index("--dist") + 1] == "loadfile"
+
+    def test_the_named_paths_decide_not_the_cwd(self, runner, quilt):
+        # From agent-queue's checkout, another project's tests still run
+        # under that project's interpreter and without the DSN.
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader").resolve()
+
+        result = runner.invoke(cli, ["test", str(root / "tests" / "test_x.py")])
+
+        assert result.exit_code == 0, result.output
+        assert seen[0][0][0] == str(root / ".venv" / "bin" / "python")
+
+    def test_the_configured_interpreter_is_used_for_the_sessions_project(
+        self, runner, quilt, monkeypatch
+    ):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        pinned = _interpreter(tmp_path / "pinned" / "bin" / "python", xdist=False)
+        (tmp_path / "config.yaml").write_text(
+            f"data_dir: {tmp_path / 'data'}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
+            "discord:\n  bot_token: test-token\n  guild_id: '1'\n"
+            f"resources:\n  test_interpreters:\n    quilt-trader: {pinned}\n"
+        )
+        monkeypatch.setenv("AQ_PROJECT_ID", "quilt-trader")
+        monkeypatch.chdir(root)
+
+        result = runner.invoke(cli, ["test", "tests/test_x.py"])
+
+        assert result.exit_code == 0, result.output
+        assert seen[0][0][0] == str(pinned)
+        assert "(config)" in result.output
+
+    def test_a_missing_configured_interpreter_runs_nothing(self, runner, quilt, monkeypatch):
+        tmp_path, seen = quilt
+        root = _project(tmp_path / "quilt-trader", "quilt-trader")
+        (tmp_path / "config.yaml").write_text(
+            f"data_dir: {tmp_path / 'data'}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
+            "discord:\n  bot_token: test-token\n  guild_id: '1'\n"
+            f"resources:\n  test_interpreters:\n    quilt-trader: {tmp_path / 'gone'}\n"
+        )
+        monkeypatch.chdir(root)
+
+        result = runner.invoke(cli, ["test", "--aq-project", "quilt-trader", "tests/test_x.py"])
+
+        assert result.exit_code == 4
+        assert "does not exist" in result.output
+        assert "Nothing was run" in result.output
+        assert "aq test: slot" not in result.output
+        assert seen == []
+
+    def test_agent_queue_keeps_its_interpreter_and_its_dsn_preflight(self, runner, quilt):
+        import sys
+
+        _tmp_path, seen = quilt
+        dry = runner.invoke(cli, ["test", "--aq-dry-run", "tests/test_config.py"])
+        assert dry.exit_code == 0, dry.output
+        assert dry.output.splitlines()[-1].startswith(f"{sys.executable} -m pytest")
+
+        refused = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert refused.exit_code == 4
+        assert "POSTGRES_TEST_DSN is not set" in refused.output
+        assert seen == []

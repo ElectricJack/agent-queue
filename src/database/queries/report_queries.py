@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import digest_windows, messages, supervisor_report_requests
 from src.database.queries.morning_report_queries import MorningReportQueriesMixin
 
@@ -18,12 +19,13 @@ _OPEN_STATES = ("reserved", "requested")
 
 class ReportQueriesMixin(MorningReportQueriesMixin):
     async def collect_morning_report_sources(
-        self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None
+        self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None,
+        channel_id: str | None = None
     ) -> dict[str, Any]:
         from src.reports.queries import read_morning_snapshot
 
         return await read_morning_snapshot(
-            self._engine, since=since, until=until, project_ids=project_ids
+            self._engine, since=since, until=until, project_ids=project_ids, channel_id=channel_id
         )
 
     async def reserve_hourly_report_in_transaction(
@@ -148,7 +150,27 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                 return None
             message_id = f"msg-{request_id}"
             if row["state"] == "reserved":
-                await conn.execute(
+                if row["kind"] == "digest":
+                    # §4.2's author turn. The message names the two commands and
+                    # the window start, which is exactly how ``digest facts`` and
+                    # ``digest post`` address it, and states the deadline so the
+                    # author knows the fallback is coming.
+                    subject = "Digest window ready"
+                    body = (
+                        f"Digest window {row['owner_ref']} is ready. Read the frozen facts "
+                        f"with `aq digest facts --since {row['brief'].get('window', {}).get('since')}` "
+                        f"and post three sentences with "
+                        f"`aq digest post --window {row['brief'].get('window', {}).get('since')} "
+                        f'--body "..."`. The daemon posts the deterministic digest at '
+                        f"{row['deadline']:.0f} if you do not."
+                    )
+                else:
+                    subject = "Hourly report request"
+                    body = (
+                        f"Hourly report {request_id} is ready. Read the brief with "
+                        f"`aq report brief {request_id}` and submit before the deadline."
+                    )
+                await insert_message_with_source_event(conn,
                     pg_insert(messages)
                     .values(
                         id=message_id,
@@ -157,11 +179,8 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                         from_id="reports",
                         to_kind="session",
                         to_id=row["author_session_id"],
-                        subject="Hourly report request",
-                        body=(
-                            f"Hourly report {request_id} is ready. Read the brief with "
-                            f"`aq report brief {request_id}` and submit before the deadline."
-                        ),
+                        subject=subject,
+                        body=body,
                         priority=100,
                         created_at=now,
                         archive_after_inject=1,

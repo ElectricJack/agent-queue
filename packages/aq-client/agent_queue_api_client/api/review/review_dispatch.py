@@ -65,11 +65,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewDispatchRequest,
 ) -> Response[ReviewDispatchResponse | ReviewDispatchResponse422]:
-    """Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+    """Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
-     Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+     Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
     Args:
         body (ReviewDispatchRequest):
@@ -98,11 +100,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReviewDispatchRequest,
 ) -> ReviewDispatchResponse | ReviewDispatchResponse422 | None:
-    """Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+    """Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
-     Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+     Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
     Args:
         body (ReviewDispatchRequest):
@@ -126,11 +130,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewDispatchRequest,
 ) -> Response[ReviewDispatchResponse | ReviewDispatchResponse422]:
-    """Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+    """Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
-     Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+     Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
     Args:
         body (ReviewDispatchRequest):
@@ -157,11 +163,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReviewDispatchRequest,
 ) -> ReviewDispatchResponse | ReviewDispatchResponse422 | None:
-    """Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+    """Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
-     Send an open review revision to selected profiles for adversarial review without moving its decision
-    gate.
+     Send an open review revision to adversarial reviewers without moving its decision gate. Files count
+    reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile,
+    excluding the provider the author revision ran on. A dispatch never names a profile.
 
     Args:
         body (ReviewDispatchRequest):
