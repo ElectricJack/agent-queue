@@ -175,7 +175,9 @@ async def post_session_message(
     project_id = await resolve_session_project(name, ch)
     args: dict = {
         "project_id": project_id,
-        "system_only": project_id is None,
+        # The recipient's project does not select the sender's authority.
+        # Project supervisors send scoped reports to the global mailbox;
+        # the handler still derives system scope for local/global callers.
         "to_kind": "session",
         "to_id": name,
         "body": payload.body,
