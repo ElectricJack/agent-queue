@@ -1,5 +1,10 @@
 # Exact completion provenance in Git
 
+The additive [strict containment shadow contract](strict-git-containment.md)
+defines the revision 2 fast-smooth-integration reader and the current consumer
+inventory. Its explicit contract version rejects equivalent-content delivery;
+the legacy default described below remains active until fenced cutover.
+
 Implements shared-contract items 4–6 of the approved
 `projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md`.
 The development publisher and the train's Git delivery checks share this primitive.
