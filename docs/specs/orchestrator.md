@@ -11,6 +11,9 @@ tags: [spec, orchestrator, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 This document describes the design and behaviour of the orchestrator subsystem in sufficient
 detail to reimplement it from scratch.  It covers the event bus, task-name generation,
@@ -490,10 +493,10 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see [specs/prompt-builder](prompt-builder.md)).
-The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
-to compose system metadata, execution rules, upstream dependency summaries, agent role
-instructions, and the task description into a single prompt string.
+Workers receive their task context from `aq prime` (`src/prime/`), not from an
+orchestrator-assembled prompt. The orchestrator's PromptBuilder assembly path
+(`_build_task_context_with_prompt_builder()` and `_get_execution_rules()`) had no caller
+after 2026-09-01 and was removed with the retired integration adapters (azure-ridge-72).
 
 **Step 9 — Start adapter.**
 Build `TaskContext(description=full_description, checkout_path=workspace, branch_name=...)`.
