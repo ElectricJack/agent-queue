@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
