@@ -11,6 +11,17 @@ tags: [spec, models, state-machine, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
+
+> **Task lifecycle update (2026-10-22).** The historical tables below predate
+> `WAITING`, `HIBERNATED` and `RESUME_PENDING`: there are now twelve stored task
+> states. Durable-wait transitions are enforced independently of the legacy
+> warn-only setting. Manual PAUSED tasks need no resume timer, pool claims move
+> READY directly to IN_PROGRESS, and completion is distinct from delivery.
+> Read the [current lifecycle table](../concepts/tasks.md#statuses-and-phases)
+> and [system map](systems/task-graph.md) alongside `src/state_machine.py`.
 
 ## 1. Overview
 
@@ -272,6 +283,13 @@ identities; changed or unproved source identities (including legacy snapshots
 without these fences) fail closed, outside the bounded Git retries. An
 attached integration owner retains its workspace until its existing guarded
 handoff protocol releases it. A checkpoint alone does not prove cleanup complete.
+Automatic cleanup treats `PauseFenceError` as a terminal retained-for-recovery
+outcome for the exact persisted pause snapshot. It atomically records one task
+comment and a `manual_pause_cleanup_retained` receipt, leaves the hold and all
+resources intact, and skips further automatic attempts for that snapshot even
+after daemon restart. A changed pause/owner snapshot permits a fresh attempt;
+explicit Pause or guarded Resume can still perform recovery. Fence refusals log
+once without a traceback; ordinary transient stop failures remain retryable.
 The recorded task branch is part of the pause fence. When it is present, an
 attached checkout must match it before capture or partial salvage; a mismatch
 retains the source without publishing preservation evidence. A captured session
@@ -301,6 +319,17 @@ also retries pending cleanup. It preserves the manual hold, incident/human holds
 route and budgets and never launches execution. Error guidance must name repeat
 Pause, not Resume. `PAUSED` alone proves neither writer termination nor checkpoint
 success; inspect `manual_pause.cleanup_pending` and checkpoint/no-checkpoint context.
+
+Resume may recover a stale pause binding after its captured harnesses are confirmed
+stopped and their current database identities are rechecked under locks. When no
+workspace or active integration owner remains attached, discard the stale binding
+and resume with the recorded branch, source history, gates and budgets preserved.
+Never stop or release a replacement worker. For an unchanged retained workspace,
+an operator or project supervisor can request `aq task resume --task-id <id>
+--recover-stale-pause`; this records the recovery and retries ordinary checkpoint
+cleanup using the stopped original harness identities. Changed source generations,
+job pins, active integration ownership and unproved preparation termination still
+refuse recovery. A stopped database marker alone is not process termination proof.
 
 ---
 
