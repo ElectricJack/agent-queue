@@ -20,6 +20,19 @@ interface BaseEvent {
   project_id?: string | null;
 }
 
+export interface PoolRenamedEvent extends BaseEvent {
+  event_type: "pool.renamed";
+  profile_id: string;
+  old_name: string;
+  name: string;
+  backup_path: string;
+}
+
+export interface ProjectPauseChangedEvent extends BaseEvent {
+  event_type: "project.paused" | "project.resumed";
+  project_id: string;
+}
+
 // --- Task lifecycle ---
 
 export interface TaskStartedEvent extends BaseEvent {
@@ -336,6 +349,7 @@ export interface TaskGraphChangedEvent extends BaseEvent {
   event_type: "task.created" | "task.reparented" | "task.updated" | "task.deleted" | "task.archived" | "task.ready" | "task.claimed";
   task_id: string;
   title?: string;
+  status?: string;
   old_parent?: string | null;
   new_parent?: string | null;
 }
@@ -397,6 +411,7 @@ export interface ReviewSubmittedEvent extends BaseEvent {
   revision?: number;
   author_task_id?: string;
   changes_note?: string;
+  decider?: string;
 }
 
 export interface ReviewRevisedEvent extends BaseEvent {
@@ -407,6 +422,7 @@ export interface ReviewRevisedEvent extends BaseEvent {
   revision?: number;
   author_task_id?: string;
   changes_note?: string;
+  decider?: string;
 }
 
 export interface ReviewDecidedEvent extends BaseEvent {
@@ -439,6 +455,8 @@ export interface ReviewCommentedEvent extends BaseEvent {
  */
 export interface MetricsTickEvent extends BaseEvent, MetricsSample {
   event_type: "metrics.tick";
+  /** Null before wait schema migration; shares the generated history shape. */
+  waits?: MetricsSample["waits"];
 }
 
 // --- Durable dashboard state ---
@@ -508,4 +526,6 @@ export type NotifyEvent =
   | ReviewWithdrawnEvent
   | ReviewCommentedEvent
   | MetricsTickEvent
-  | DashboardStateChangedEvent;
+  | DashboardStateChangedEvent
+  | ProjectPauseChangedEvent
+  | PoolRenamedEvent;

@@ -21,6 +21,34 @@ are inherited. This is separation on one OS account, not a sandbox.
 Publisher snapshots are standalone clones, so a foreign project whose snapshot
 has no virtual environment needs a `resources.test_interpreters` pin.
 
+The `test` preset accepts explicit serial execution as `-n 0`, `-n0`,
+`--numprocesses 0` or `--numprocesses=0`. These normalize to `-n 0` when
+xdist is available; when it is missing or explicitly disabled, the worker-count
+option is omitted. Nonzero and malformed worker-count overrides remain refused
+with `jobs.preset_denied`. Serial execution retains the usual slot admission,
+full-suite weight, workspace pin and durable producer/wait semantics.
+
+Full-suite pytest jobs use shared admission, with weight
+`max(1, test_slots - resources.jobs.full_suite_reserved_slots)`; the reserve
+defaults to two and must be a positive integer. On small boxes the full suite
+still gets one slot, so a one-slot box cannot run focused work concurrently.
+The immutable contract records `test_scope: full`; focused pytest records
+`test_scope: focused`. Both managed and foreground full suites take the same
+one-capacity full-suite lock before any shared slots. Only one managed full suite
+is admitted at a time; further full suites queue without blocking focused jobs.
+A full suite waiting for sufficient weighted capacity retains its queue position.
+True exclusive presets (E2E and device rendering) retain their exclusion semantics.
+Previously accepted jobs keep their original contracts and locks until completion.
+`aq test --aq-status` attributes held slots to task, project and managed job id,
+and identifies full-suite holders and the full-suite lock separately.
+
+The server-owned E2E wrapper runs `scripts/e2e-env.sh --reset` followed by
+`scripts/e2e-smoke.sh` from the submitted workspace (`contract.cwd`), for both
+live trees and commit snapshots. Its own installed file location does not select
+the checkout under test. The scripts and their child processes run in the same
+checkout whose input identity the runner fingerprints and reports; a failed
+setup prevents smoke execution and either stage's exit code is preserved.
+
 Submission snapshots its validated contract, environment caps and deadlines.
 Reusing the same owner/idempotency key and request returns the original row;
 changing the request is refused. Quotas and output reservations serialize in
@@ -43,6 +71,13 @@ own run deadline. It reaps marked descendants before writing `completion.json`.
 Adoption checks boot id, process start ticks and nonce. Daemon loss does not own
 execution lifetime, and disabling new admission still reconciles existing jobs.
 
+After observing that no marked process remains, reconciliation rereads a missing
+completion receipt before recording a lost result. The runner may have fsynced
+that receipt and exited between the first artifact read and the process scan.
+The fresh receipt must match the job id and launch nonce and pass the same process
+identity checks. This ordering preserves a real terminal result without replaying
+execution or relaxing cleanup proof.
+
 `output.head` keeps the first 1 MiB and `output.tail` is a bounded 63 MiB byte
 ring. The fsync-renamed manifest records logical offsets and physical-block
 hashes. Interrupted overwrites become explicit gaps; they cannot return fresh
@@ -62,14 +97,26 @@ revokes result/log access; owner termination cancels execution before cleanup.
 Phase 3 registers `job_submit|get|list|cancel|result|logs` contracts and grants in
 worker templates. `aq job submit --wait` and `aq test --aq-detach --aq-wait`
 commit the job, pin, output reservation and wait together. Replays retain one
-job/pin/wait, including after terminal completion. Job waits snapshot already
-terminal producers and arbitrate using `ended_at`, so a late scan preserves
-completion at or before the deadline. Default deadlines follow the remaining
+job/pin/wait, including after terminal completion. With the effective project
+`wait_policy.v2_enabled`, submission registers a verified `job` condition through
+the wait lifecycle on the same transaction, including the measured sleep decision
+and any suspension intent. The response includes the verified `wait` record and
+top-level `wait_id`, `decision`, `next_step` and any `continuation_id`/`generation`.
+An unavailable verified runtime refuses submission. The source watermark is read
+before locks; the graph fence precedes task, quota and workspace locks. A still-live
+`WAITING` claim may replay an existing submission but cannot create another job.
+Replay uses the current outcome: unacknowledged completion requires acknowledgement,
+and an acknowledged completion continues without putting the task back in `WAITING`.
+
+An explicitly disabled effective project flag selects the legacy atomic path.
+Legacy job waits snapshot already terminal producers and arbitrate using
+`ended_at`, so a late scan preserves completion at or before the deadline.
+Their default deadlines follow the remaining
 queue/run budgets plus 300 seconds, capped at 24 hours. Explicit timeout policy
 is retained in the typed match for stable replay checks. Expiry and wait
 cancellation never implicitly cancel execution or release pins.
 
-Submission locks session/task before the global quota and workspace locks;
+Legacy submission locks session/task before the global quota and workspace locks;
 ordinary submissions use the same task-before-quota order. A refused wait rolls
 back all new producer state. A worker can observe only jobs belonging to its
 task; supervisors can subscribe within their project. Terminal digests retain
@@ -77,10 +124,31 @@ actual failure/cancellation/lost outcomes and point to `aq job result ID`.
 Installed worker templates need the usual grants reseed; see the
 [wait guide](../../guides/agent-waits.md). No schema revision is needed in phase 3.
 
+### Consuming completion notifications
+
+`aq wait show ID --consume --json` reads a terminal result and consumes only
+its deterministic `wait:ID:result` notification in the same transaction. Plain
+reads remain side-effect free. Consumption requires a live authenticated owner;
+pool callers supply their current claim epoch. A new holder may consume the same
+task's historical result, without renewing its old wait or inactivity exemption.
+Active waits are never consumed. Replays preserve the original result, version,
+resolution and delivery stamps. If outbox insertion previously failed, consumption
+repairs that intent before marking delivery; failure leaves it available for retry.
+No producer, unrelated feedback, or task status changes as a result of consumption.
+
+Registration and result reads return state-specific next steps: active owners end
+their turn, expired owners inspect the producer once and decide what to do with
+the still-running work, and terminal owners inspect the actual outcome. An expired
+wait is never evidence of producer success or permission to submit a replacement.
+Prime renders a bounded recent wait history independently of message delivery,
+including after session/claim turnover and when messaging is disabled. Existing
+resume/compaction hooks recover these pointers; per-prompt polling hooks remain absent.
+
 Terminal result delivery consumes at most 100 pending `job_outbox` intents per
 service tick, including with new job admission disabled. A task's matching active
-or satisfied job wait owns its wake, even if its result message is still pending;
-the job dispatcher suppresses its separate notification. Other task completions
+or satisfied legacy job wait, or pending or satisfied verified job wait, owns its
+wake, even if its result message is still pending; the job dispatcher suppresses
+its separate notification. Other task completions
 enqueue `job:<id>:terminal` as a `job_result` message and acknowledge the outbox
 in the same transaction. Disabled messaging or an insertion failure retains
 pending intent and the immutable result. Integration-owned jobs have no worker
@@ -180,3 +248,43 @@ after the chunk, and `data_base64`, the original bytes: rendered text length is
 not a byte offset for invalid UTF-8. The console pane caps displayed text at
 1 MiB, marks the view truncated, and reconnects on a slow-reader marker without
 rendering it as output.
+
+### Finite Matter rendering (object-script proposal AQ-4)
+
+`matter_render` invokes only an operator-configured Python interpreter and the
+ME-1 capture wrapper. Submitters provide a frozen bundle relative to
+their pinned workspace; executable, output directory and device are server-owned.
+Admission requires `resources.jobs.enabled`, `matter_python`,
+`matter_capture_script` and `matter_editor`. A server-owned shim loads the trusted
+adapter and evaluates the author's pinned source tree. ME-1's `capture BUNDLE
+NEW_RUN_DIR --editor EDITOR --timeout SECONDS` contract supplies its embedded rig.
+`matter_gpu_id` identifies the reserved physical device;
+every cooperating author targeting that device uses the same id.
+
+`--attempt-id` names the object attempt a capture belongs to. The configured
+editor build is copied once per attempt into
+`<data_dir>/editor-pins/binaries/<sha256>/<name>` and every capture of that
+attempt launches the copy, so rebuilding the shared build cannot move the preset
+under an attempt whose render profile is already pinned. A new attempt id
+re-pins; a recorded pin whose binary is missing or no longer hashes true is
+refused (`jobs.editor_pin_lost`); the attempt id is refused on any other preset,
+and a submission without one still launches a content-addressed copy without
+cross-job continuity. Pins older than the retention window that no surviving
+attempt names are swept with the rest of job retention.
+
+The existing job/wait transaction, scope, idempotency and durable terminal outbox
+apply unchanged. Render jobs use an independent exclusive device lock, never a
+pytest slot. A surviving POSIX child retains its inherited device lock. Windows
+execution from WSL also holds a native named mutex and a kill-on-close Windows
+Job Object: descendants are assigned before execution, cannot escape the job,
+and die when their native owner dies. The native owner independently observes
+cancellation and the deadline; reconciliation verifies native tree cleanup before
+releasing a workspace pin. Missing/unreadable native identity blocks cleanup.
+
+Capture runs into a fresh `<data_dir>/runs/<job_id>/capture/` directory. The
+set of receipt and image files is retained with hashes in the immutable job
+result for `result_days`, independently of log retention and workspace cleanup.
+Successful evidence must fit `matter_artifact_bytes`. Missing, invalid or
+oversized capture evidence fails the job; exit zero alone is insufficient.
+Cancellation and timeout remain authoritative even if a receipt claims success.
+This job layer records capture validity, not a quality score or human approval.
