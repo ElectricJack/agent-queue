@@ -112,12 +112,11 @@ The daemon re-resolves the link at most every five minutes (thirty seconds after
 
 The origin is only half of it. The path comes from
 [src/dashboard_paths.py](../../src/dashboard_paths.py), which holds the whole
-scheme: a task links `/focus/tasks/:id`, an incident links
-`/focus/escalations/:id`, a review `/focus/reviews/:id`, the digest the
-needs-you inbox `/focus/inbox`. Focus routes are phone-first and redirect to a
-desktop page where one exists. A link is how the reader *acts* on a post, so no
-post links a `/settings/` page: that asks a phone to configure the machine that
-sent it.
+scheme: a task links `/tasks/:id`, an incident `/escalations/:id`, a review
+`/reviews/:id`, and the digest the needs-you inbox `/inbox`. These pages use the
+same responsive dashboard shell on every device. Previously posted `/focus/*`
+links redirect to their canonical pages, preserving query strings and fragments.
+No post links a `/settings/` page: its link leads to the object the reader acts on.
 
 Two rules hold across every producer, and
 `tests/test_dashboard_links.py` pins them:
@@ -157,26 +156,25 @@ AQ never runs `tailscale serve`, never widens a bind and never changes network p
 
 ### From a phone
 
-Open `/focus`, or **Focus view** in the rail. It is the same app laid out for a small screen, at every width ([FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx)):
+Open the dashboard at its normal URL. Below 768 px the menu opens the rail as a
+drawer, and contextual panes and activity fill the screen. **Tasks & Knowledge**
+shows cards with filters and pagination. Task, ask, review and report links open
+full pages; **Needs you** includes waiting requests and history. **Conversations**
+lets you select a supervisor conversation and reply.
 
-- **Live sessions**: each card opens the same terminal component as **Host shell**
-  ([InteractiveTerminal.tsx](../../dashboard/src/components/InteractiveTerminal.tsx)).
-  It has the same colors, fixed 12 px font, Type focus control and details menu
-  on phones and desktops. There is no watch/type mode or extra phone toolbar.
-  Columns and rows follow the terminal area, rotation and the on-screen keyboard;
-  the agent's tmux window follows them. A compact attach restores the earlier
-  window size when the phone leaves ([terminals reference](../reference/terminals-and-claims.md#from-a-phone)).
-  Drag down to reach earlier output; a flick continues with momentum. Drag up
-  to return to current output. Dropped connections retry automatically.
-- **Typing from a phone**: tap the terminal or Type. xterm's own textarea takes
-  keyboard input and paste, just as on the host shell. Enter and Ctrl+C are in
-  the terminal's details menu. The visible grid shrinks above the keyboard.
-  A refused attach reports its error and disables input. An ended session links
-  to its transcript.
-- **Providers**: the quota cards with their age; a stale reading says so ([ProviderUsage.tsx](../../dashboard/src/pages/metrics/ProviderUsage.tsx)).
-- **Tasks**: the Tasks tab's list and filters as cards, 50 per page. A task opens as a full page; Back returns to the same page and scroll ([FocusTaskList.tsx](../../dashboard/src/pages/focus/FocusTaskList.tsx)).
+Live sessions in **Agent flock**, project **Sessions**, and session detail use
+[InteractiveTerminal.tsx](../../dashboard/src/components/InteractiveTerminal.tsx),
+the same terminal as **Host shell**. Tap the terminal or Type to enter text;
+Enter and Ctrl+C are in its details menu. Rotation and the on-screen keyboard
+resize the grid. Compact attaches restore the previous tmux window size on exit.
+Drag down for earlier output and up to return; dropped connections reconnect.
+A restarted session asks before attaching to its new process. An ended session
+explains its outcome and links to the agent's current session when available.
 
-Posted task and morning-report links open these pages ([src/dashboard_paths.py](../../src/dashboard_paths.py)); **Full** at the top opens the full dashboard page ([FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx)). Below 768 px the rest of the dashboard is one column: the menu opens the rail as a drawer ([TopBar.tsx](../../dashboard/src/shell/TopBar.tsx)), panes and the activity list fill the screen, and the agents and session pages show the same shared terminal ([AgentTerminal.tsx](../../dashboard/src/pages/agents/AgentTerminal.tsx), [SessionDetail.tsx](../../dashboard/src/pages/SessionDetail.tsx)). Every viewport uses the host shell's terminal component, including focus view. Reaching the dashboard from a phone is the same question as from any other machine ([above](#reaching-it-from-another-machine)). Nothing the phone opens is saved to your roaming preferences.
+**Metrics** shows provider quotas and reading age. Posted links use the same
+pages at every width. Reaching the dashboard from a phone requires the remote
+setup [above](#reaching-it-from-another-machine). Compact layouts do not persist
+pane changes or restore the desktop's open panes on initial load.
 
 #### Checking a release on a real phone
 
@@ -184,7 +182,7 @@ On iPhone Safari and Android Chrome, after an update that touched the dashboard.
 
 Before the checklist: the browser is served a **built** SPA from `src/dashboard_assets/dist/`, never the dashboard source, so a dashboard source update also needs the build/staging step in `aq update` (or `aq install --restart-from dashboard.build`). `aq doctor --check dashboard.server.bundle` checks the bundle's manifest and base path; its OK result alone does not prove it matches the updated sources. Check the served assets after rebuilding.
 
-1. `/focus` loads with no sideways scroll; sessions, providers and tasks show.
+1. The dashboard loads with no sideways scroll; the menu opens navigation, and tasks, asks, reviews and conversations fit the screen.
 2. Open a live session, then open **Host shell** on the same phone. They are the same terminal, so the two screens are the same colours, the same font and the same column count; the terminal controls match as well; page headers can leave different amounts of space for the grid. The text fills the width without sideways scrolling, and on the host the window size now matches the phone.
 3. Drag down: earlier output scrolls into view, a flick keeps going, and the page itself does not move. Keep going back past the first screen into older history. Drag up to return.
 4. Rotate and rotate back: the columns and rows follow each rotation, the font stays the host shell's size, and the page stays.
@@ -192,7 +190,7 @@ Before the checklist: the browser is served a **built** SPA from `src/dashboard_
 6. Airplane mode for ten seconds, then back online: the terminal reconnects by itself (or tap **Reconnect now**) and the history is there again, once.
 7. Leave the session page. On the host the window is back to the size you noted.
 8. Tasks page 2, scroll, open a task, Back: same page, same scroll; a long title wraps and nothing runs off the screen.
-9. If posts carry links (`aq dashboard link`), a task link opens the focus task page.
+9. If posts carry links (`aq dashboard link`), a task link opens the full task page.
 
 ## A realistic tour
 
@@ -233,7 +231,6 @@ flowchart LR
 | **Command Center** — `/projects/:projectId/graph`, `/projects/:projectId/tasks-knowledge`, `/command-center/tasks-knowledge` | Visual task relationships or a combined task/knowledge list. The command-center route redirects to the remembered/first project; `kind=task` selects tasks. Old project `/tasks`, `/knowledge` and `/records` links redirect here. Graph layout is server-produced; task selection opens detail. | [Graph.tsx](../../dashboard/src/pages/command-center/Graph.tsx), [Tasks.tsx](../../dashboard/src/pages/command-center/Tasks.tsx) |
 | **Projects** in the left rail | Choose, organize, or add a project. Project-specific deep links retain their project scope. | [LeftRail.tsx](../../dashboard/src/shell/LeftRail.tsx), [ProjectTree.tsx](../../dashboard/src/shell/ProjectTree.tsx) |
 | **Agent flock** — `/agents` | Inspect running sessions, supervisor terminals and messages, and worker pools; tile up to four selected views. Use `?view=providers` for provider availability. | [AgentWorkspace.tsx](../../dashboard/src/pages/agents/AgentWorkspace.tsx) |
-| **Focus view** — `/focus` | A phone-first page: live sessions in the phone terminal, provider quota and the task list; task, session and report pages under `/focus/`. See [from a phone](#from-a-phone). | [FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx), [FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx) |
 | **Task files** — `/tasks/:taskId/files` | Preview a task's worktree files and changes. | [TaskFiles.tsx](../../dashboard/src/pages/TaskFiles.tsx), [TaskFilesPanel.tsx](../../dashboard/src/components/TaskFilesPanel.tsx) |
 | **Playbooks** — `/settings/playbooks` | Inspect and curate the active V2 playbook definitions; open a playbook detail or graph view when linked from the list. | [Playbooks.tsx](../../dashboard/src/pages/system/Playbooks.tsx), [PlaybookDetail.tsx](../../dashboard/src/pages/PlaybookDetail.tsx) |
 | **Host shell** — `/host-shell` | An interactive login shell on the AQ machine for remote management, not an agent. Off unless enabled; see [host shell](#host-shell). | [HostShell.tsx](../../dashboard/src/pages/host-shell/HostShell.tsx) |
@@ -241,7 +238,8 @@ flowchart LR
 | **Provider banner** — desktop shell (768 px and wider) | Shown while any provider is unavailable (out of usage, logged out, failing or disabled), with what the outage moved and held and a link to that provider's card. | [ProviderAvailabilityBanner.tsx](../../dashboard/src/shell/ProviderAvailabilityBanner.tsx) |
 | **Waiting on** — `/waiting`, optionally `?project=:id` | Inspect verified versus claimed blockers, long wait chains, deadlocks, escalations, branch blockers and held messages. | [WaitingOn.tsx](../../dashboard/src/pages/WaitingOn.tsx) |
 | **Reviews** — `/reviews`, `/reviews/:id` | Read reviews, comments and requested changes. | [App.tsx](../../dashboard/src/App.tsx) |
-| **Needs you** — `/focus/inbox` | Respond to asks, reviews and escalations from one inbox. | [FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx) |
+| **Conversations** — `/conversations?conversation=:id` | Read supervisor history and reply to a selected conversation. | [GlobalChat.tsx](../../dashboard/src/pages/GlobalChat.tsx) |
+| **Needs you** — `/inbox` | Respond to asks, reviews and escalations from one inbox. | [InboxPage.tsx](../../dashboard/src/pages/InboxPage.tsx) |
 | **Settings** — `/settings/*` | Configure profiles, intelligence classes, project roots, messaging, and system config. | [SettingsLayout.tsx](../../dashboard/src/pages/settings/SettingsLayout.tsx), [SettingsSidebar.tsx](../../dashboard/src/components/nav/SettingsSidebar.tsx) |
 | **Activity drawer** and contextual panes | See recent dashboard events/gates or task-, session-, file-, and playbook-specific tools without leaving the current route. | [ActivityDrawer.tsx](../../dashboard/src/shell/ActivityDrawer.tsx), [panes/registry.ts](../../dashboard/src/panes/registry.ts) |
 
@@ -333,7 +331,7 @@ The daemon is authoritative for all dashboard feature state that should survive 
 | Device-local transport | Recoverable connection bookkeeping that has no product meaning elsewhere | WebSocket replay cursor and epoch; console-stream identity guard | `src/deviceLocal.ts` is the only browser-persistence boundary. Absence means reconnect/refetch, never a preference reset. |
 | Ephemeral | Current interaction, route, draft, cache, or mounted component state | URL navigation, selection, drafts, React Query cache, drag preview, agent-pushed panes | Keep it in the URL or memory; discard it on reload and do not synchronize it. |
 
-Desktop user-opened panes, pane widths and right-surface kind/activity tab are restored from `shell_preferences`. Compact layouts do not persist their surface changes or restore the desktop surface on initial load; focus routes also suppress initial restoration. Tasks & Knowledge detail belongs to its route rather than the global pane. Agent-pushed panes open transiently when a user-directed message arrives.
+Desktop user-opened panes, pane widths and right-surface kind/activity tab are restored from `shell_preferences`. Compact layouts do not persist their surface changes or restore the desktop surface on initial load. Tasks & Knowledge detail belongs to its route rather than the global pane. Agent-pushed panes open transiently when a user-directed message arrives.
 
 API mutations and queries should go through the generated TypeScript client configured by [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), usually wrapped by [dashboard/src/api/hooks.ts](../../dashboard/src/api/hooks.ts). PostgreSQL owns task, session, project, metric, audit, and dashboard-state data; vault markdown owns authored configuration such as playbooks and profiles; worker sessions and worktrees own terminal processes and checked-out files. The dashboard never substitutes local UI state for a successful daemon write.
 
@@ -382,7 +380,7 @@ The dashboard package's `predev`, `prebuild`, and `pretypecheck` hooks regenerat
 * `pages/command-center/` renders project graph/list workspaces, including the server-backed layout-v2 canvas and live graph refresh.
 * `pages/agents/` renders the global flock, workers, terminals, and pool configuration. `components/InteractiveTerminal.tsx` is the same shared terminal used by Host shell and every agent terminal route.
 * `pages/project/` provides project overview/configuration/workspace/onboarding surfaces; `pages/settings/` and `pages/system/` are settings curation routes and legacy-compatible page implementations.
-* `pages/focus/` is the phone-first focus view (`/focus`): its own shell, home page, and task, session and report pages. It reuses the Tasks tab's rows and `components/InteractiveTerminal.tsx`, including the host shell's attach socket, palette, options, fit logic, input handling and touch scrolling.
+* `pages/AskPage.tsx`, `InboxPage.tsx`, `EscalationPage.tsx` and `BatchDetail.tsx` expose requests and delivery in the main shell. `shell/LegacyFocusRedirect.tsx` preserves old posted links.
 * `pages/metrics/` turns durable metric queries plus a raw event feed into chart data; `pages/playbook-graph-v2/` renders the semantic playbook graph and run overlays.
 * `components/` contains shared task, modal, markdown, terminal, profile, navigation, and workspace controls. `shell/` is global navigation, keyboard shortcuts, palette, activity drawer, and right surface.
 * `panes/` registers contextual, lazy-compatible views; every pane has a manifest and arguments/state owned by the pane store. `ws/` owns the shared event and terminal sockets, not individual pages.
@@ -413,7 +411,7 @@ The last line checks the layout at phone and desktop sizes in headless Chrome ag
 
 ## Source and tests
 
-Primary sources: [dashboard/src/App.tsx](../../dashboard/src/App.tsx), [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), [dashboard/src/ws/useEventStream.ts](../../dashboard/src/ws/useEventStream.ts), [dashboard/vite.config.ts](../../dashboard/vite.config.ts), [dashboard/package.json](../../dashboard/package.json), [src/dashboard_server/](../../src/dashboard_server/), [src/cli/dashboard.py](../../src/cli/dashboard.py), [src/cli/daemon.py](../../src/cli/daemon.py), the focus view in [dashboard/src/pages/focus/](../../dashboard/src/pages/focus/), and the browser layout checks in [dashboard/layout-checks/](../../dashboard/layout-checks/).
+Primary sources: [dashboard/src/App.tsx](../../dashboard/src/App.tsx), [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), [dashboard/src/ws/useEventStream.ts](../../dashboard/src/ws/useEventStream.ts), [dashboard/vite.config.ts](../../dashboard/vite.config.ts), [dashboard/package.json](../../dashboard/package.json), [src/dashboard_server/](../../src/dashboard_server/), [src/cli/dashboard.py](../../src/cli/dashboard.py), [src/cli/daemon.py](../../src/cli/daemon.py), the browser layout checks in [dashboard/layout-checks/](../../dashboard/layout-checks/).
 
 The dashboard server and the daemon's pointer are covered by:
 

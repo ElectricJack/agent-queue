@@ -253,7 +253,7 @@ class PoolsMixin:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
         The loop is still per project — one ``count_ready_by_profile`` and
-        one ``count_available_workspaces`` per active project with a pool
+        per-kind ``count_available_workspaces`` checks per active project with a pool
         profile — but each project now folds into the *aggregate* key rather
         than minting one of its own, and also records its own breakdown
         (``PoolSupply.by_project``) and its standing as a placement
@@ -302,9 +302,14 @@ class PoolsMixin:
         measurement.pool_sessions = await self.db.list_sessions(
             lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
         )
-        from src.waits.occupancy import continuation_occupancy, evictable_sessions
+        from src.waits.occupancy import continuation_capacity, evictable_sessions
+        from src.routing.readiness import orchestrator_ready_projects
+
+        ready_projects = await orchestrator_ready_projects(self)
         evictable = await evictable_sessions(self.db, self.config)
-        resuming, reserved = await continuation_occupancy(self.db, self.config)
+        resuming, reserved, resume_demand = await continuation_capacity(
+            self.db, pool_profiles=pool_profiles, ready_projects=ready_projects,
+        )
         known = {session.id for session in measurement.pool_sessions}
         for session_id in resuming - known:
             session = await self.db.get_session(session_id)
@@ -313,9 +318,6 @@ class PoolsMixin:
         task_statuses = await self.db.get_task_statuses([
             s.task_id for s in measurement.pool_sessions if s.task_id
         ])
-        from src.routing.readiness import orchestrator_ready_projects
-
-        ready_projects = await orchestrator_ready_projects(self)
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
             status = task_statuses.get(session.task_id)
@@ -353,7 +355,7 @@ class PoolsMixin:
                     **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
-            # Demand is claimable work only (mandatory routing §9.1): an
+            # Ordinary demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
             policy = dict(
@@ -409,6 +411,10 @@ class PoolsMixin:
                 until, _reason = self._pool_quarantine_state(project.id, profile_id, now)
                 for kind_id in sorted(kind_ids):
                     ready, repair_ready = demand_by_profile.get((profile_id, kind_id), (0, 0))
+                    # Fresh resumes launch in project-repo workspaces and need seats, not starts.
+                    resumes = 0 if kind_id != "project-repo" else resume_demand.get(
+                        (project.id, profile_id), 0)
+                    ready += resumes
                     measurement.demand[key] += ready
                     local = PoolProjectSupply(running_busy=(
                         reserved.get((project.id, profile_id), 0) if kind_id == "project-repo" else 0
@@ -448,7 +454,7 @@ class PoolsMixin:
                                    if kind_id == "project-repo" else 0,
                         idle_session_ids=tuple(local.idle_session_ids),
                         starting=local.starting, repair_ready=repair_ready,
-                        evictable=local.evictable,
+                        evictable=local.evictable, resume_ready=resumes,
                     ))
 
         for key, sup in measurement.supply.items():
@@ -574,6 +580,10 @@ class PoolsMixin:
                          and (c.project_cap is None or c.project_live_total < c.project_cap))
                 for key, candidates in measurement.candidates.items()
             },
+            resume_demand={
+                key: sum(c.resume_ready for c in candidates)
+                for key, candidates in measurement.candidates.items()
+            },
         )
 
     async def _check_pool_progress(self) -> None:
@@ -600,7 +610,8 @@ class PoolsMixin:
             if start.reason != 'evict' and any(
                 candidate.project_id == start.project_id
                 and candidate.workspace_kind == start.workspace_kind
-                and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
+                and candidate.ready - candidate.resume_ready
+                > len(candidate.idle_session_ids) + candidate.starting
                 for candidate in measurement.candidates[start.key]
             )
         }
@@ -662,7 +673,10 @@ class PoolsMixin:
         actions, self._pool_surplus_since = self._size_pool_actions(measurement, now)
         from src.waits.sources import record_pool_observations
 
-        await record_pool_observations(self.db, measurement, now)
+        self._pool_observations = getattr(self, "_pool_observations", {})
+        await record_pool_observations(
+            self.db, measurement, now, last_observations=self._pool_observations,
+        )
         self._wait_slot_pressure = {}
         for key, candidates in measurement.candidates.items():
             for candidate in candidates:
@@ -1268,6 +1282,18 @@ class PoolsMixin:
             # session receives the checkout.
             if kind.is_git_repo:
                 await self._ensure_control_files_excluded(work_dir)
+                if workspace.is_slot:
+                    try:
+                        # Acquisition returns its pre-update snapshot; read the
+                        # incremented generation for the normalization fence.
+                        reserved = await self.db.get_workspace(workspace.id)
+                        if reserved is not None:
+                            await self._worktree_slots().normalize_pool_slot(reserved)
+                    except Exception:
+                        logger.warning(
+                            "Pool slot %s normalization deferred; source preserved",
+                            workspace.id, exc_info=True,
+                        )
 
             # Same guard as the task-launch path: a pool session may not run
             # in the base checkout (see :mod:`src.orchestrator.base_workspace`).
@@ -1405,6 +1431,17 @@ class PoolsMixin:
         if locks is None:
             locks = self._pool_teardown_locks = {}
         return locks.setdefault(session_id, asyncio.Lock())
+
+    async def _detach_idle_pool_branch(self, session) -> None:
+        """Best-effort branch release; the slot manager rechecks every ownership fence."""
+        slot = await self._slot_workspace_at(session.work_dir)
+        if slot is not None:
+            try:
+                await self._worktree_slots().detach_idle_slot_branch(slot)
+            except Exception:
+                logger.warning(
+                    "pool session %s: branch release deferred", session.id, exc_info=True,
+                )
 
     async def _terminate_pool_session(
         self,
@@ -1566,14 +1603,7 @@ class PoolsMixin:
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
         if not other_live and still_owned:
-            slot = await self._slot_workspace_at(session.work_dir)
-            if slot is not None:
-                try:
-                    await self._worktree_slots().detach_idle_slot_branch(slot)
-                except Exception:
-                    logger.warning(
-                        "pool session %s: branch release deferred", session.id, exc_info=True,
-                    )
+            await self._detach_idle_pool_branch(session)
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(

@@ -12,8 +12,6 @@ import pytest
 from hypothesis import settings
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
-from src.config import DatabaseConfig
-from tests.db_fixtures import lease_dsn
 
 # Fresh per-test PostgreSQL databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
@@ -28,9 +26,16 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
 def _resolve_base_dsn() -> str | None:
-    from tests.db_fixtures import base_dsn
+    from tests.pg_dsn import ensure_worker_postgres_dsn
 
-    return base_dsn()
+    return ensure_worker_postgres_dsn()
+
+
+def lease_dsn(name: str = "test") -> str:
+    """Load the lease pool only when a fixture actually requests a database."""
+    from tests.db_fixtures import lease_dsn as acquire
+
+    return acquire(name)
 
 
 def _refuse_production_database() -> None:
@@ -77,7 +82,7 @@ def pytest_configure(config) -> None:
     Bazel sets AQ_TEST_PG_MODE explicitly. Legacy pytest keeps its DSN-based
     behavior, including aq test's required-Postgres admission contract.
     """
-    from src.cli.test_runner import postgres_test_dsn_error
+    from src.test_dsn import postgres_test_dsn_error
     from tests import pg_dsn
 
     _refuse_stale_selection_catalogue(config)
@@ -227,12 +232,12 @@ def _no_provider_login_probes(monkeypatch):
     outcome would depend on the machine.  The probe reports "not probeable"
     here; tests that exercise it inject ``probe=`` into the service.
     """
-    from src.providers.availability_service import ProviderAvailabilityService
+    from src.providers.login_probe import LoginProbeMixin
 
     async def _not_probeable(self, provider, timeout):
         return None, {}
 
-    monkeypatch.setattr(ProviderAvailabilityService, "_login_probe", _not_probeable)
+    monkeypatch.setattr(LoginProbeMixin, "_login_probe", _not_probeable)
 
 
 @pytest.fixture(autouse=True)
@@ -278,7 +283,7 @@ async def _pg_backend():
 
 @pytest.fixture(scope="session")
 def _initialized_databases():
-    from tests.db_fixtures import InitializedDatabases
+    from tests.reuse_databases import InitializedDatabases
 
     return InitializedDatabases()
 
@@ -610,7 +615,7 @@ def command_handler_factory(tmp_path: Path):
 
     async def _make():
         from src.commands.handler import CommandHandler
-        from src.config import AppConfig, DiscordConfig
+        from src.config import AppConfig, DatabaseConfig, DiscordConfig
         from src.database import Database
         from src.orchestrator import Orchestrator
 
@@ -657,7 +662,7 @@ def orchestrator_factory(tmp_path: Path):
 
     async def _make():
         from src.commands.handler import CommandHandler
-        from src.config import AppConfig, DiscordConfig
+        from src.config import AppConfig, DatabaseConfig, DiscordConfig
         from src.database import Database
         from src.orchestrator import Orchestrator
 

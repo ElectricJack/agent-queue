@@ -210,7 +210,7 @@ async def git_first_frontier(orch, db, tmp_path):
     await db.update_profile("worker", default_class="standard-medium")
     orch.config.worktrees.enabled = False
     orch._worktree_slots = MagicMock(return_value=MagicMock(
-        prefetch_slot_for_task=AsyncMock(),
+        prefetch_slot_for_task=AsyncMock(return_value=False),
         reset_slot_for_task=AsyncMock(return_value="aq/second"),
     ))
     await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
@@ -725,9 +725,11 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
         "target_branch": "aq/second",
         "preserve_branch": True,
         "fetch_origin": False,
+        "origin_refreshed": False,
     }
     orch._worktree_slots().prefetch_slot_for_task.assert_awaited_once_with(
         prepare.await_args.args[0], base_branch=env.source, preserve_branch=True,
+        target_branch="aq/second",
     )
 
 
@@ -807,6 +809,16 @@ class _FakeSlotManager:
 
     def __init__(self, db):
         self.db = db
+        self.normalized = []
+
+    async def normalize_pool_slot(self, workspace):
+        assert workspace.locked_by_agent_id
+        assert workspace.locked_by_task_id is None
+        assert all(
+            session.work_dir != workspace.workspace_path
+            for session in await self.db.list_sessions(lifecycle="pool", live_only=True)
+        )
+        self.normalized.append(workspace.id)
 
     async def ensure_slots(self, project, base_ws, kind, count):
         slots = await self.db.list_slots_for_base(base_ws.id)
@@ -1389,6 +1401,7 @@ class TestReconcilePools:
         slots = await db.list_slots_for_base("base0")
         assert len(slots) == workers
         assert {slot.locked_by_agent_id for slot in slots} == {row.agent_id for row in pool}
+        assert set(orch._worktree_slot_manager.normalized) == {slot.id for slot in slots}
 
     async def test_terminate_pool_session_full_teardown(self, orch, db):
         await ready(db, "t1")
@@ -1410,6 +1423,7 @@ class TestReconcilePools:
 
     @pytest.mark.parametrize("mode", [
         "published", "unpublished", "dirty", "disabled", "owner", "stop_unproved", "successor",
+        "draining", "failed_preparation", "draining_dirty", "draining_unpublished",
     ])
     async def test_drain_frees_only_quiescent_clean_slot_branches(
         self, orch, db, tmp_path, monkeypatch, mode,
@@ -1437,11 +1451,11 @@ class TestReconcilePools:
         slot = await manager.create_slot(base, kind, 0)
         await manager.reset_slot_for_task(slot, await db.get_task("t1"))
         path = slot.workspace_path
-        if mode == "unpublished":
+        if mode in {"unpublished", "draining_unpublished"}:
             git(path, "commit", "--allow-empty", "-m", "private progress")
         else:
             git(path, "push", "origin", "HEAD:refs/heads/aq/t1")
-        if mode == "dirty":
+        if mode in {"dirty", "draining_dirty"}:
             from pathlib import Path
 
             Path(path, "private.txt").write_text("private bytes")
@@ -1474,14 +1488,28 @@ class TestReconcilePools:
 
             monkeypatch.setattr(manager, "detach_idle_slot_branch", acquired_before_detach)
 
-        await orch._terminate_pool_session(await db.get_session(session.id), reason="drained")
+        proactive = mode.startswith("draining") or mode == "failed_preparation"
+        if proactive:
+            await db.update_session(
+                session.id, state="draining", desired_state="stopped",
+                failed_preparation={"task_id": "t1"} if mode == "failed_preparation" else None,
+            )
+            await orch._detach_idle_pool_branch(await db.get_session(session.id))
+            assert (await db.get_session(session.id)).state == "draining"
+            assert (await db.get_workspace(slot.id)).locked_by_agent_id == session.agent_id
+        else:
+            await orch._terminate_pool_session(await db.get_session(session.id), reason="drained")
 
         assert git(path, "rev-parse", "HEAD") == head
         assert git(path, "rev-parse", "aq/t1") == head
-        assert manager.read_sentinel(path) == sentinel
-        expected = "HEAD" if mode in {"published", "unpublished", "disabled"} else "aq/t1"
+        expected = "HEAD" if mode in {
+            "published", "disabled", "draining", "failed_preparation",
+        } else "aq/t1"
+        assert manager.read_sentinel(path) == (
+            dataclasses.replace(sentinel, branch=None) if expected == "HEAD" else sentinel
+        )
         assert git(path, "rev-parse", "--abbrev-ref", "HEAD") == expected
-        if mode == "dirty":
+        if mode in {"dirty", "draining_dirty"}:
             assert Path(path, "private.txt").read_text() == "private bytes"
 
     @pytest.mark.parametrize("stop_confirmed", [False, True])
@@ -2387,6 +2415,98 @@ async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expec
     supply = measurement.supply[PoolKey("worker")]
     assert supply.running_busy == expected_busy
     assert supply.running_idle == 0
+
+
+@pytest.mark.parametrize("resume_state,hold,status,blocked,expected", [
+    ("queued", None, TaskStatus.RESUME_PENDING, None, 1),
+    # A capacity refusal still wants a seat; a policy hold does not (stark-ember-97).
+    ("queued", None, TaskStatus.RESUME_PENDING, ["slot"], 1),
+    ("queued", None, TaskStatus.RESUME_PENDING, ["policy_hold"], 0),
+    ("queued", None, TaskStatus.RESUME_PENDING, ["policy_hold", "slot"], 0),
+    ("queued", "operator_hold", TaskStatus.RESUME_PENDING, None, 0),
+    ("held", "operator_hold", TaskStatus.RESUME_PENDING, None, 0),
+    ("reserved", None, TaskStatus.RESUME_PENDING, None, 0),
+    ("launching", None, TaskStatus.RESUME_PENDING, None, 0),
+    ("delivered", None, TaskStatus.RESUME_PENDING, None, 0),
+    ("acknowledged", None, TaskStatus.IN_PROGRESS, None, 0),
+    ("queued", None, TaskStatus.HIBERNATED, None, 0),
+])
+async def test_queued_continuation_increases_pool_desired_above_busy(
+    orch, db, resume_state, hold, status, blocked, expected,
+):
+    from src.commands import CommandHandler
+    from src.database.tables import admission_reservations, continuations, wait_records
+    from src.scheduler import PoolKey, place_pool_actions
+
+    await ready(db, "busy")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    await db.transition_task("busy", TaskStatus.IN_PROGRESS)
+    await db.update_session(session.id, task_id="busy", claim_phase="active")
+    key = PoolKey("worker")
+    before = await orch._measure_pools()
+    assert before.supply[key].running_busy == 1
+    assert before.demand[key] == 0
+    assert orch._size_pool_actions(before, time.time())[0] == []
+
+    await db.create_task(Task(
+        id="resume", project_id=PROJECT_ID, title="resume", description="",
+        status=status, profile_id="worker", route_source="override",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(wait_records).values(
+            id="resume-wait", project_id=PROJECT_ID, owner_kind="task", owner_id="resume",
+            origin="agent", condition_kind="timer", condition={}, source_key="timer:resume",
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="timer:resume", verified_at=1, created_at=1, request_hash="resume",
+            outcome="satisfied", resolved_at=2, sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="resume-intent", task_id="resume", wait_id="resume-wait",
+            suspension_generation=1, branch="aq/resume", prior_status="IN_PROGRESS",
+            facts={} if blocked is None else {"reserve_retry": {
+                "refusals": 1, "due_at": 10, "blocked": blocked}},
+            held_cursor_seq=0, resume_state=resume_state, hold_reason=hold, stopped_at=2,
+        ))
+        if resume_state in {"reserved", "launching"}:
+            await conn.execute(insert(admission_reservations).values(
+                id="resume-seat", project_id=PROJECT_ID, continuation_id="resume-intent",
+                scope={"profile_id": "worker"}, effective_priority=0, provenance="resume",
+                deadline_at=100, state="granted", created_at=2,
+            ))
+
+    measurement = await orch._measure_pools()
+    assert measurement.demand[key] == expected
+    [candidate] = measurement.candidates[key]
+    assert candidate.ready == expected and candidate.workspace_capacity > 0
+    assert candidate.resume_ready == expected
+    actions, _ = orch._size_pool_actions(measurement, time.time())
+    starts, drains, starved = place_pool_actions(
+        actions=actions, candidates=measurement.candidates,
+    )
+    # The seat is the resume launch's own: no pool session can adopt it.
+    assert not starts and not drains and not starved
+    assert measurement.supply[key].running_busy == (
+        2 if resume_state in {"reserved", "launching"} else 1
+    )
+    status_result = await CommandHandler(orch, orch.config)._cmd_pool_status({})
+    [pool] = status_result["pools"]
+    assert pool["ready"] == expected
+    assert pool["desired"] == measurement.supply[key].running_busy + expected
+    # Demand is never authority for an ordinary pool claim to take this task.
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) is None
+    if expected:
+        await db.update_task("resume", route_source="unrouted", profile_id=None)
+        assert (await orch._measure_pools()).demand[key] == 0
+        await db.update_task("resume", route_source="override", profile_id="worker",
+                             intelligence_class="stale-class")
+        profile = await db.get_profile("worker")
+        await db.upsert_profile(replace(profile, default_class="standard-high"))
+        assert (await orch._measure_pools()).demand[key] == 0
 
 
 async def test_native_demand_launches_matching_workspace_and_counts_supply_once(orch, db, tmp_path):

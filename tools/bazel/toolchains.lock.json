@@ -167,6 +167,15 @@
         "version": "78.3"
       },
       {
+        "build": "he073ed8_9",
+        "depends": [],
+        "md5": "86d9cba083cd041bfbf242a01a7a1999",
+        "name": "kernel-headers_linux-64",
+        "sha256": "41557eeadf641de6aeae49486cef30d02a6912d8da98585d687894afd65b356a",
+        "url": "https://conda.anaconda.org/conda-forge/noarch/kernel-headers_linux-64-4.18.0-he073ed8_9.conda",
+        "version": "4.18.0"
+      },
+      {
         "build": "h7cc23a3_1",
         "depends": [
           "__glibc >=2.17,<3.0.a0",
@@ -634,6 +643,18 @@
         "version": "4.9"
       },
       {
+        "build": "he3f20f0_9",
+        "depends": [
+          "kernel-headers_linux-64 4.18.0 he073ed8_9",
+          "tzdata"
+        ],
+        "md5": "2eda1922900aa38230d6e7803124305a",
+        "name": "sysroot_linux-64",
+        "sha256": "e2c4c08188bc543756ce2cf596b9547a241398b0ddce1cef77aa93847f22a97e",
+        "url": "https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.28-he3f20f0_9.conda",
+        "version": "2.28"
+      },
+      {
         "build": "hb764a82_0",
         "depends": [
           "__glibc >=2.17,<3.0.a0",
@@ -681,15 +702,25 @@
         "version": "1.5.7"
       }
     ],
+    "sysroot": {
+      "arch": "x86_64",
+      "glibc": "2.28",
+      "os": "linux",
+      "package": "sysroot_linux-64",
+      "path": "x86_64-conda-linux-gnu/sysroot",
+      "reason": "H1 native lock lacked an ELF loader/libc closure; H2 namespace execution requires a declared ABI. Supervisor-authorized B1 prerequisite per approved Bazel spec; no host library fallback."
+    },
     "versions": {
       "bash": "5.2.37",
       "coreutils": "9.12",
       "findutils": "4.10.0",
       "git": "2.51.2",
       "grep": "3.12",
+      "kernel-headers_linux-64": "4.18.0",
       "postgresql": "18.1",
       "procps-ng": "4.0.4",
       "sed": "4.9",
+      "sysroot_linux-64": "2.28",
       "tmux": "3.6a"
     }
   },

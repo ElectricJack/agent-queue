@@ -6,6 +6,7 @@ same producer cases with their concrete services before runtime activation.
 
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -82,7 +83,8 @@ async def test_cycle_a_subscription_reobserves_actual_cycle_b_or_external_mutati
                                         locked_by_task_id="owner-p"))
     await db.save_provider_availability(dict(provider="codex", state="disabled", since=1,
                                              updated_at=1))
-    await record_pool_observations(db, measurement, 100)  # Unconditional, with no subscriptions.
+    last_observations = {}
+    await record_pool_observations(db, measurement, 100, last_observations=last_observations)
     blocker = dict(pool="slot", workspace="workspace", provider="provider", config="budget")[producer]
     row = await subscription(db, blocker=blocker)
 
@@ -113,8 +115,8 @@ async def test_cycle_a_subscription_reobserves_actual_cycle_b_or_external_mutati
         assert not await reobserve_resource_candidates(conn, [row], verify=verify)
     if producer == "pool":
         measurement.supply[key] = PoolSupply(running_busy=0)
-        await record_pool_observations(db, measurement, 200)
-        await record_pool_observations(db, measurement, 200)  # Same revision is a no-op.
+        await record_pool_observations(db, measurement, 200, last_observations=last_observations)
+        await record_pool_observations(db, measurement, 200, last_observations=last_observations)
     elif producer == "workspace":
         await db.release_workspaces_for_task("owner-p")
         await db.release_workspaces_for_task("owner-p")
@@ -149,6 +151,71 @@ async def test_cycle_a_subscription_reobserves_actual_cycle_b_or_external_mutati
         await conn.execute(update(tasks).where(tasks.c.id == "owner-p").values(claim_epoch=1))
     async with db._engine.connect() as conn:
         assert not await reobserve_resource_candidates(conn, [row], verify=verify)
+
+
+@pytest.mark.parametrize("changed", ["supply", "demand", "bounds"])
+async def test_pool_observations_publish_only_changed_profiles(changed):
+    db = SimpleNamespace(wait_source_batch_commit=AsyncMock())
+    active, disabled = PoolKey(profile_id="active"), PoolKey(profile_id="disabled")
+    measurement = SimpleNamespace(
+        supply={active: PoolSupply(running_busy=1), disabled: PoolSupply()},
+        demand={active: 1, disabled: 0}, bounds={active: (0, 2), disabled: (0, 0)},
+    )
+    cache = {}
+    await record_pool_observations(db, measurement, 100, last_observations=cache)
+    initial = db.wait_source_batch_commit.call_args.args[0]
+    assert {row["source_key"] for row in initial} == {
+        "resource_invalidation:pool:active", "resource_invalidation:pool:disabled",
+    }
+    await record_pool_observations(db, deepcopy(measurement), 101, last_observations=cache)
+    db.wait_source_batch_commit.assert_awaited_once()
+    if changed == "supply":
+        measurement.supply[active].running_busy = 2
+    elif changed == "demand":
+        measurement.demand[active] = 2
+    else:
+        measurement.bounds[active] = (1, 3)
+    await record_pool_observations(db, measurement, 102, last_observations=cache)
+    assert db.wait_source_batch_commit.await_count == 2
+    rows = db.wait_source_batch_commit.call_args.args[0]
+    assert len(rows) == 1
+    assert rows[0]["source_key"] == "resource_invalidation:pool:active"
+    assert rows[0]["payload"] != initial[0]["payload"]
+
+
+async def test_pool_observations_keep_alive_from_last_commit_and_reset_on_restart():
+    db = SimpleNamespace(wait_source_batch_commit=AsyncMock())
+    key = PoolKey(profile_id="worker")
+    measurement = SimpleNamespace(supply={key: PoolSupply()}, demand={}, bounds={key: (0, 0)})
+    cache = {}
+    for now in (100, 200, 699):
+        await record_pool_observations(db, measurement, now, last_observations=cache)
+    db.wait_source_batch_commit.assert_awaited_once()
+    await record_pool_observations(db, measurement, 700, last_observations=cache)
+    assert db.wait_source_batch_commit.await_count == 2
+    assert db.wait_source_batch_commit.call_args.args[0][0]["revision"] == "700"
+    await record_pool_observations(db, measurement, 701, last_observations=cache)
+    assert db.wait_source_batch_commit.await_count == 2
+    await record_pool_observations(db, measurement, 702, last_observations={})
+    assert db.wait_source_batch_commit.await_count == 3
+
+
+async def test_pool_observations_retry_failed_commit_without_advancing_cache():
+    db = SimpleNamespace(wait_source_batch_commit=AsyncMock())
+    key = PoolKey(profile_id="worker")
+    measurement = SimpleNamespace(supply={key: PoolSupply()}, demand={}, bounds={key: (0, 0)})
+    cache = {}
+    await record_pool_observations(db, measurement, 100, last_observations=cache)
+    previous = dict(cache)
+    measurement.demand[key] = 1
+    db.wait_source_batch_commit.side_effect = RuntimeError("commit failed")
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await record_pool_observations(db, measurement, 101, last_observations=cache)
+    assert cache == previous
+    db.wait_source_batch_commit.side_effect = None
+    await record_pool_observations(db, measurement, 102, last_observations=cache)
+    assert db.wait_source_batch_commit.await_count == 3
+    assert cache[key.profile_id][1] == 102
 
 
 async def test_bridge_scopes_canonical_bindings_and_pages_without_guessing_identity(db):

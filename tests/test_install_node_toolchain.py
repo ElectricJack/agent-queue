@@ -27,6 +27,11 @@ from src.install.node_toolchain import (
 SYSTEM, ARCH = "darwin", "arm64"
 
 
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """Archive verification uses temporary files and never allocates a database."""
+
+
 def _archive_bytes(name: str, *, with_node: bool = True, escape: bool = False) -> bytes:
     top = name.removesuffix(".tar.gz")
     buffer = io.BytesIO()

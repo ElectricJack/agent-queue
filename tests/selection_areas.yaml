@@ -19,7 +19,7 @@ areas:
     match: [tests/test_bazel_environment.py]
   - id: bazel-toolchains
     description: "Pinned toolchain, dependency lock and Linux ABI integrity boundaries."
-    match: [tests/test_bazel_manifest.py]
+    match: [tests/test_bazel_manifest.py, tests/test_bazel_test_dependencies.py, tests/test_bazel_subprocess_dependencies.py]
   - id: bazel-metrics
     description: "Verification obligation inventory and exact-identity delivery metric accounting."
     match: [tests/test_bazel_metrics.py]
@@ -488,6 +488,7 @@ areas:
     match:
       - tests/test_integration_lock.py
       - tests/test_integration_ownership.py
+      - tests/test_retained_holder_repair.py
       - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
       - tests/test_integration_stale_owners.py
@@ -718,7 +719,7 @@ areas:
       - tests/test_cli_client_generated.py
   - id: cli-test-runner
     description: "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit."
-    match: [tests/test_cli_test_runner.py, tests/test_resource_semaphore.py]
+    match: [tests/test_cli_test_runner.py, tests/test_bazel_cli.py, tests/test_resource_semaphore.py]
   - id: test-selection
     description: "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them."
     match: [tests/test_selection_*.py]
@@ -759,11 +760,12 @@ areas:
 
   # ------------------------------------------------------------ database and schema
   - id: database
-    description: "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, metadata-cast safety, model round trips and the SQLite removal ratchet."
+    description: "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, advisory locks held without an idle transaction, metadata-cast safety, model round trips and the SQLite removal ratchet."
     match:
       - tests/test_database*.py
       - tests/test_operational_retention.py
       - tests/test_db_immediate.py
+      - tests/test_advisory_locks.py
       - tests/test_metadata_cast_safety.py
       - tests/test_sqlite_removal.py
       - tests/test_models.py

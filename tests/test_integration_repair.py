@@ -8518,7 +8518,7 @@ async def test_ordinary_repair_exhaustion_queues_one_human_delivery_with_its_not
         assert result["outcome"] == "human_required"
     incident = await env.db.get_escalation(result["escalation_id"])
     assert incident["task_title"] == "Restore delivery of batch ordinary"
-    assert incident["deep_link"] == f"/focus/escalations/{incident['id']}"
+    assert incident["deep_link"] == f"/escalations/{incident['id']}"
     [root] = await env.db.list_escalation_deliveries(incident["id"])
     assert root["status"] == "pending"
     assert root["dedup_key"] == f"{incident['id']}:root:0"

@@ -370,7 +370,7 @@ class EscalationCommandsMixin:
             "ask_id": incident["id"], "alias_kind": "escalation",
         })
         alias = ({"ask_id": canonical["ask"]["id"],
-                  "ask_url": f"/focus/asks/{canonical['ask']['id']}",
+                  "ask_url": f"/asks/{canonical['ask']['id']}",
                   "deprecation": "Use aq ask show/reply/prepare/decide for human decisions; "
                                  "escalation get remains incident diagnostics"}
                  if canonical.get("success") else {})
@@ -673,7 +673,7 @@ class EscalationCommandsMixin:
             if not args.get("expected"):
                 return {**_error("ask.context_missing",
                     "Review the request effects and pass its expected version; use prepare first"),
-                    "ask_id": ask["id"], "ask_url": f"/focus/asks/{ask['id']}",
+                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
                     "expected": {k: ask[k] for k in (
                         "decision_generation", "source_fingerprint", "feedback_version")}}
             # No interpretation of an uncertain reply can become an approval.

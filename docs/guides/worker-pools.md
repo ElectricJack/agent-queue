@@ -902,6 +902,17 @@ admission reason resets the streak. On a second identical failure an idle sessio
 is marked for drain and receives `drain_requested`, stopping even older workers'
 claim loops. A retained preparation is never released by this guard.
 
+A taskless worker marked for drain receives a submitted `aq session drain-ack`
+instruction. It has the configured idle-stop grace to acknowledge; reconciliation
+then stops it even if the harness remains idle. Its task branch can be released
+before that acknowledgement, so another slot can retry the task immediately.
+Release requires locked session/workspace ownership checks, no claim file, live
+writer, retained owner or job pin, and a clean HEAD exactly matching the freshly
+fetched origin branch. The checkout becomes detached at the same commit and the
+local branch ref survives. A released preparation's diagnostic snapshot does not
+block this proof. Preparation also applies it to idle or stopped pool holders;
+dirty or unpublished holders remain untouched for recovery.
+
 A slot still bound to another task (a foreign `.aq/claim.json`, typically left by a
 paused holder, or a slot lock naming another task) is a workspace fault, not the
 claimant's. Preparation releases the task to `READY` with no `slot_reset_failed`

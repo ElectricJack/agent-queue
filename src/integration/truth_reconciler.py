@@ -237,7 +237,7 @@ class GitTruthReconciler:
         return counts["repaired"]
 
     async def _owners(self):
-        from src.integration.owner_recovery import COLLECTOR_ROLE, RECOVERABLE_STATES
+        from src.integration.owner_recovery import COLLECTOR_ROLE, recoverable_owner_clause
 
         if self.owner_recovery is None:
             return 0
@@ -245,7 +245,7 @@ class GitTruthReconciler:
         async with self.db._engine.connect() as conn:
             ids = list((await conn.execute(select(owners.c.id).where(
                 owners.c.id > self._owner_cursor,
-                owners.c.handoff_state.in_(RECOVERABLE_STATES),
+                recoverable_owner_clause(),
                 owners.c.owner_role != COLLECTOR_ROLE,
                 ~exists().where(
                     t.sessions.c.id == owners.c.session_id, session_attached_clause(),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -978,9 +979,26 @@ class TestListWorkspacesBoundedDiagnostics:
     ):
         handler, orch, base = worktree_handler
         slot_ws, slot_dir = await _make_slot_for(orch)
-        # Read the healthy checkout before the deadline starts: a real Git
-        # subprocess can also exceed 1s on a loaded CI worker.
+        # Snapshot healthy I/O before the deadline starts. PostgreSQL and the
+        # executor's directory checks can also stall on a loaded CI worker;
+        # only the deliberately stuck Git probe should consume this budget.
         base_status = await orch.git.aread_status_summary(str(base))
+        workspaces = await orch.db.list_workspaces(project_id="p1")
+        owner_facts = await orch.db.read_workspace_owner_facts(workspaces)
+        project = await orch.db.get_project("p1")
+        monkeypatch.setattr(
+            orch.db, "read_workspace_owner_facts", AsyncMock(return_value=owner_facts)
+        )
+        monkeypatch.setattr(orch.db, "get_project", AsyncMock(return_value=project))
+        presence = {str(path): path.is_dir() for path in (base, slot_dir)}
+        real_to_thread = asyncio.to_thread
+
+        async def _cached_presence(func, *args, **kwargs):
+            if func is os.path.isdir and len(args) == 1 and args[0] in presence:
+                return presence[args[0]]
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", _cached_presence)
         blocked = asyncio.Event()
         cancelled = asyncio.Event()
 

@@ -67,7 +67,7 @@ interface Props {
   registryOverride?: Record<string, PaneEntry>;
   /**
    * Skip restoring the roaming last pane. App sets it, once, when the page
-   * loads on a focus route or a compact viewport (mobile dashboard §4.2, D7),
+   * loads on a compact viewport (mobile dashboard §4.2, D7),
    * so a desktop's pane never pops up in a phone's first view — even after it
    * leaves the focus tree.
    */

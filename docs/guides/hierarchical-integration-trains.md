@@ -360,6 +360,12 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+Idle epic visits automatically request this attested refresh when every prerequisite
+missing from the epic is proven delivered to the default branch. This includes children
+waiting to be claimed and completed candidates blocked only by `prerequisite_pending`.
+The visit reports `epic_refresh_pending`; a genuinely undelivered prerequisite stays
+`prerequisite_pending`. An existing batch retains the lane and is never replaced by
+this trigger.
 For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
 and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
 command and any blocking batch ids. A conflicting apply files an ordinary train
@@ -762,6 +768,22 @@ and each settlement has its own transaction: a failed task rolls back, is logged
 with its project and task id, and appears in the scan's `errors` list. Other tasks
 continue and the project cursor advances; the failed task is retried on a later
 pass.
+
+A projection's `verification_state: verified` means the observation is current.
+Its `evidence_ref` is the observed head, which the target does not reach. Its
+inputs name the `repository_id`, `target_ref` and `target_oid` the inventory
+judged. An inventory of any other repository or ref counts as unavailable. A
+projection settles `satisfied` with `head_on_target: true` only when the
+inventory no longer lists the task, because the target reaches its head by
+ancestry or identical content. A head that is still unreached settles with
+`head_on_target: false`. It is `satisfied` under `delivery_accounted` when a
+recorded or proven delivery, or an ancestor branch, carries the work. Otherwise
+it is `cancelled` under `delivery_unwatched`: the task was archived, its branch
+is retiring, or only a `-wip` branch remains. The landing tasks a takeover files
+(`created_by_id: delivery-watchdog`) are never watched or landed in their own
+right. The generation they land keeps their progress and raises its incident
+when a completed landing still has not reached the target. A pre-existing
+projection of a landing task is cancelled under `landing_task_unwatched`.
 
 The train automatically re-runs a required Actions job once if its check stays
 `in_progress` for five minutes after its workflow or all job steps completed.

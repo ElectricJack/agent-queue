@@ -10,6 +10,7 @@ export async function run(t) {
   const response = await t.page.goto(t.url(`/focus/tasks/${CHILD_TASK_ID}`), { waitUntil: "networkidle0" });
   assert.equal(response.status(), 200);
   await waitForText(t.page, "Dotted child task");
+  assert.equal(new URL(t.page.url()).pathname, `/tasks/${CHILD_TASK_ID}`);
   const legacy = await t.page.goto(t.url(`/tasks/${CHILD_TASK_ID}`), { waitUntil: "networkidle0" });
   assert.equal(legacy.status(), 200);
   await waitForText(t.page, "Dotted child task");

@@ -330,6 +330,19 @@ statements ([tests/perf/test_claim_statements.py](../../../tests/perf/test_claim
 
 ### Preparation
 
+Claim preparation waits at most five seconds for each shared repository mutex
+acquisition, including slot reset, serialized fetches and compound Git operations.
+A train read or full integrity check retains its exclusive lock and its existing
+operation budget. Contention returns `prepare_failed` with a concrete repository
+lock reason and the ordinary `retry_after` / `refusal_count` instructions, rather
+than leaving the worker in `claim_in_progress` for minutes. The attempt unwinds
+its database and branch exclusions, retaining the same claim epoch, workspace and
+ref reservation for a later retry. It does not quarantine the slot, increment
+task retries, allocate an additional repair attempt, or internally repeat the
+timed-out acquisition.
+The bound applies only to acquisition during claim preparation; an acquired
+operation keeps its existing Git and fence budgets.
+
 `_prepare_and_activate` (claim_commands around L1316) runs under the task's
 control lock. It retries transient failures up to three times. The steps are:
 
@@ -350,6 +363,18 @@ Activation emits `task.claimed`, `task.started` and `pool.session_claimed`.
 identity comparison, `same_session_launch`. It compares eleven identity fields,
 so a relaunched session with the same id but a new instance cannot inherit a
 preparation that belonged to its predecessor.
+
+Only a starting or running, unended pool session may take a new claim. A draining or
+stopped session is refused inside the claim transaction even if its requested
+state still says running; it must never advance a task's epoch.
+
+Admission movement before selection may refresh its observation up to three
+times. Once a task has been reset, failed activation admission ends preparation
+with `prepare_failed`, the observed admission reason and preparation backoff.
+The long poll must not repeatedly reset and reclaim that task. Exhausted
+transaction/fence contention also returns `prepare_failed`, with its concrete
+failure and cooldown, while retaining the same preparation and epoch for a safe
+retry. Neither case is an empty frontier or unfinished background preparation.
 
 **When preparation fails**, two counters on the session decide what happens.
 They answer different questions, and older docs conflate them.

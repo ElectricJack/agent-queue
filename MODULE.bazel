@@ -56,3 +56,19 @@ use_repo(native, "aq_native", "aq_uv")
 register_toolchains("@aq_native//:toolchain")
 
 register_toolchains("//tools/bazel:prebuilt_cc_toolchain")
+
+generators = use_extension("//tools/bazel:generator_repositories.bzl", "generators")
+use_repo(generators, "aq_generator_npm")
+
+# Derived offline from npm v3 by the versioned strict importer. Never run a
+# resolver or lifecycle scripts while evaluating the verification graph.
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//tools/bazel:pnpm-lock.yaml",
+    data = ["//tools/bazel:pnpm-workspace.yaml"],
+    update_pnpm_lock = False,
+    run_lifecycle_hooks = False,
+    use_home_npmrc = False,
+)
+use_repo(npm, "npm")

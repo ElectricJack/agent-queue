@@ -153,7 +153,8 @@ async def _prove_pool_reservation(db, mgr, ws, holders):
     A pool session keeps its slot between claims (startup, the first claim,
     draining after a close) with no task lock. That is healthy only while one
     live pool session of exactly this agent and checkout holds no task,
-    preparation or failure, nothing names a task, and the source is free.
+    preparation or failure, and the source is detached. A clean predecessor
+    may retain its task attribution after transferring the task branch.
     """
     active = [row for row in holders if row["state"] in _LIVE_STATES]
     exact = [row for row in active if row["lifecycle"] == "pool"
@@ -176,14 +177,18 @@ async def _prove_pool_reservation(db, mgr, ws, holders):
     agent = await db.get_agent(ws.locked_by_agent_id)
     if agent is None or agent.current_task_id is not None:
         return "registered task/agent binding disagrees; source and lock preserved", None
-    # A free slot is detached with a sentinel naming no task or branch.
-    mismatch = await _source_disagreement(mgr, ws, None, None, "HEAD")
+    # Branch transfer preserves predecessor task attribution for salvage.
+    # It clears the branch while detaching, so that form is healthy too,
+    # provided the checkout is still clean and all reservation fences above hold.
+    mismatch = await _source_disagreement(mgr, ws, None, None, "HEAD", allow_predecessor=True)
     if mismatch is not None:
         return mismatch, session
     return None, session
 
 
-async def _source_disagreement(mgr, ws, task_id, branch, checkout) -> str | None:
+async def _source_disagreement(
+    mgr, ws, task_id, branch, checkout, *, allow_predecessor=False,
+) -> str | None:
     """Compare sentinel, repository and checkout with the proved holder.
 
     ``branch`` is the sentinel's expected branch and ``checkout`` the
@@ -195,7 +200,9 @@ async def _source_disagreement(mgr, ws, task_id, branch, checkout) -> str | None
         if (sentinel is None or sentinel.workspace_id != ws.id
                 or sentinel.project_id != ws.project_id
                 or sentinel.base_workspace_id != ws.base_workspace_id
-                or sentinel.task_id != task_id):
+                or (sentinel.task_id != task_id and not (
+                    allow_predecessor and sentinel.branch is None
+                ))):
             return "source sentinel disagrees with the active binding; source preserved"
         base = await mgr._base_of(ws)
         if (base is None or base.project_id != ws.project_id
@@ -205,6 +212,10 @@ async def _source_disagreement(mgr, ws, task_id, branch, checkout) -> str | None
         current = await mgr.git.aget_current_branch(ws.workspace_path)
         if current != checkout or sentinel.branch != branch:
             return "checkout branch disagrees with the active binding; source preserved"
+        if (allow_predecessor and sentinel.task_id is not None
+                and await mgr.git.ahas_uncommitted_changes(ws.workspace_path, strict=True)
+                is not False):
+            return "predecessor checkout is dirty or unproved; source preserved"
         # Process inventory failure cannot be interpreted as an empty inventory.
         await mgr._slot_is_live(ws)
     except Exception as exc:

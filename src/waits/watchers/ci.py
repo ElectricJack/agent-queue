@@ -17,10 +17,10 @@ import time
 
 from sqlalchemy import select
 
-from src.database.tables import integration_check_evidence, repos, wait_records
+from src.database.tables import repos, wait_records
 from src.git.manager import GitError
 from src.git.github_contracts import GitHubAccessError, rate_limit_cause
-from src.integration.checks import Conclusion, evaluate
+from src.integration.checks import Conclusion, evaluate, lock_check_evidence
 from src.integration.runtime_contracts import HeadIdentity
 from src.waits.adapters.ci import CIAdapter
 from src.waits.adapters.pull_request import PullRequestAdapter
@@ -36,6 +36,9 @@ TERMINAL = frozenset({Conclusion.SUCCESS, Conclusion.FAILURE, Conclusion.MISSING
 # Registration may read under the graph fence; listener dispatch prepares reads
 # before taking it. Bound remote work below the listener renewal interval.
 OBSERVATION_TIMEOUT_SECONDS = 5.0
+# The listener's complete transaction has a five second budget. Leave room for
+# source/owner locks and committing the observed outcome or durable retry.
+DISPATCH_OBSERVATION_TIMEOUT_SECONDS = 3.0
 
 
 def wait_source_handlers():
@@ -92,15 +95,10 @@ class CheckWatcher:
         read() before GRAPH_LOCK and revalidates these SQL bindings under this
         fence. Events and cached results never substitute for that observation.
         """
-        await conn.execute(select(repos.c.id).where(
-            repos.c.id == cond.parameters["repository_id"],
-            repos.c.project_id == cond.context["project_id"],
-        ).with_for_update(read=True))
-        table = integration_check_evidence
-        await conn.execute(select(table.c.id).where(
-            table.c.repository_id == cond.parameters["repository_id"],
-            table.c.sha == cond.parameters["head_sha"],
-        ).order_by(table.c.id).with_for_update(read=True))
+        await lock_check_evidence(
+            conn, cond.parameters["repository_id"], cond.parameters["head_sha"],
+            project_id=cond.context["project_id"],
+        )
 
     @staticmethod
     def head(cond):
@@ -222,7 +220,8 @@ class CheckWatcher:
             raise WaitError("wait.unavailable", "CI observation is backing off",
                             retry_after=self._backoff[repo_id] - self.clock())
         try:
-            async with asyncio.timeout(OBSERVATION_TIMEOUT_SECONDS):
+            async with asyncio.timeout(min(OBSERVATION_TIMEOUT_SECONDS,
+                                           DISPATCH_OBSERVATION_TIMEOUT_SECONDS)):
                 prepared = await self._prepare(conn, cond)
                 if prepared is None:
                     return None
